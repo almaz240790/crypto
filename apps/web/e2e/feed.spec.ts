@@ -50,7 +50,7 @@ test("лента: строки, живой P&L, фильтры в URL и сор�
   await expect(page.getByText("1 сигналов")).toBeVisible();
   await page.getByRole("button", { name: "сортировать по: Инструмент" }).click();
   await expect(page).toHaveURL(/sort=symbol/);
-  expect(calls.some((c) => c.includes("sort=symbol&order=desc"))).toBe(true);
+  await expect.poll(() => calls.some((c) => c.includes("sort=symbol&order=desc"))).toBe(true);
   await page.getByRole("button", { name: "сбросить" }).click();
   await expect(page).toHaveURL(/\/signals$/);
 });

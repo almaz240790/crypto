@@ -41,6 +41,7 @@ log = logging.getLogger("market_data")
 
 WS_URL = "wss://fstream.binance.com/stream?streams="
 STREAMS_PER_CONNECTION = 150
+SILENCE_TIMEOUT = 60
 TIMEFRAMES = (Timeframe.M1, Timeframe.H4, Timeframe.D1, Timeframe.W1)
 FLUSH_EVERY = 1.0
 DERIVATIVES_EVERY = 300
@@ -297,14 +298,33 @@ class MarketData:
                 async with connect(url, ping_interval=20, ping_timeout=20, max_size=2**22) as ws:
                     log.info("соединение %d: %d потоков", idx, len(streams))
                     backoff = 1.0
-                    async for raw in ws:
+                    received = 0
+                    while not self.stop.is_set():
+                        try:
+                            raw = await asyncio.wait_for(ws.recv(), timeout=SILENCE_TIMEOUT)
+                        except TimeoutError:
+                            # Binance шлёт kline каждые ~250 мс: тишина = мёртвое соединение
+                            log.warning(
+                                "соединение %d: нет данных %d с (получено %d), переподключаюсь",
+                                idx,
+                                SILENCE_TIMEOUT,
+                                received,
+                            )
+                            break
+                        received += 1
                         msg = json.loads(raw)
                         data = msg.get("data", {})
                         event = data.get("e")
+                        if received == 1:
+                            log.info("соединение %d: первое сообщение: %s", idx, str(raw)[:200])
                         if event == "kline":
                             self.on_kline(data["k"])
                         elif event == "forceOrder":
                             self.on_force_order(data["o"])
+                        elif "error" in msg or received <= 3:
+                            log.warning(
+                                "соединение %d: сообщение без данных: %s", idx, str(raw)[:300]
+                            )
             except (ConnectionClosed, OSError) as exc:
                 log.warning("соединение %d разорвано: %s; повтор через %.0f с", idx, exc, backoff)
             except Exception:
