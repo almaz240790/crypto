@@ -246,7 +246,10 @@ def main() -> int:
     p.add_argument(
         "--data-dir", type=Path, help="читать CSV-выгрузки вместо БД (локальные прогоны)"
     )
-    p.add_argument("--params-json", type=Path, help="JSON с переопределением параметров стратегии")
+    p.add_argument(
+        "--params-json",
+        help="переопределение параметров стратегии: путь к JSON-файлу или сам JSON (с «{»)",
+    )
     p.add_argument(
         "--strategy",
         choices=sorted(STRATEGIES),
@@ -272,7 +275,9 @@ def main() -> int:
     DATA_DIR = args.data_dir
     params = STRATEGIES[args.strategy] if args.strategy else StrategyParams()
     if args.params_json:
-        params = override_params(params, json.loads(args.params_json.read_text()))
+        raw = args.params_json.strip()
+        text_json = raw if raw.startswith("{") else Path(raw).read_text()
+        params = override_params(params, json.loads(text_json))
     start = datetime(args.start.year, args.start.month, args.start.day, tzinfo=UTC)
     end = datetime(args.end.year, args.end.month, args.end.day, tzinfo=UTC)
     warmup = start - timedelta(days=200)  # история для структуры, EMA50 D1 и ATR-перцентилей
