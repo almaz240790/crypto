@@ -32,6 +32,7 @@ from app.models import (
 from app.stats import filter_trades, load_trades, stats_payload, trade_rows, trades_from_run
 from engine.backtest import BacktestTrade
 from engine.candles import Timeframe
+from engine.strategies import STRATEGIES
 
 router = APIRouter(prefix="/v1", tags=["public"])
 OPEN_STATUSES = ("pending", "active", "tp1_hit", "tp2_hit")
@@ -407,11 +408,22 @@ def _since_until(
 
 
 def _latest_run(db: Session, run_id: int | None, version: str | None) -> BacktestRun | None:
+    """Прогон по id или версии; без них — последний прогон версии, которая сейчас live
+    (или forward), чтобы бэктест по умолчанию соответствовал работающей стратегии."""
     q = select(BacktestRun).order_by(BacktestRun.id.desc())
     if run_id is not None:
-        q = q.where(BacktestRun.id == run_id)
-    elif version:
-        q = q.where(BacktestRun.strategy_version == version)
+        return db.scalars(q.where(BacktestRun.id == run_id)).first()
+    if version:
+        return db.scalars(q.where(BacktestRun.strategy_version == version)).first()
+    for status in ("live", "forward"):
+        versions = db.scalars(
+            select(StrategyVersion.version).where(StrategyVersion.status == status)
+        ).all()
+        keys = [k for k in STRATEGIES if any(k.endswith("@" + v) for v in versions)]
+        if keys:
+            run = db.scalars(q.where(BacktestRun.strategy_version.in_(keys))).first()
+            if run is not None:
+                return run
     return db.scalars(q).first()
 
 
