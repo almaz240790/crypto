@@ -55,3 +55,15 @@ class LiquidityParams:
     def __post_init__(self) -> None:
         if self.equal_tolerance_atr <= 0 or self.equal_max_gap < 1 or self.atr_period < 1:
             raise ValueError("некорректные параметры LiquidityParams")
+
+
+@dataclass(frozen=True, slots=True)
+class BiasParams:
+    """Контекст D1/W1 (план 2.2)."""
+
+    ema_period: int = 50
+    slope_lookback: int = 10
+
+    def __post_init__(self) -> None:
+        if self.ema_period < 1 or self.slope_lookback < 1:
+            raise ValueError("ema_period и slope_lookback должны быть >= 1")
