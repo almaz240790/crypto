@@ -35,6 +35,23 @@ def _last_time(session, table: str, col: str, instrument_id: int) -> datetime | 
     return value.astimezone(UTC) if value else None
 
 
+def _first_time(session, table: str, col: str, instrument_id: int) -> datetime | None:  # type: ignore[no-untyped-def]
+    value = session.execute(
+        text(f"select min({col}) from {table} where instrument_id = :i"), {"i": instrument_id}
+    ).scalar()
+    return value.astimezone(UTC) if value else None
+
+
+def resume_from(session, table: str, col: str, instrument_id: int, wanted: date, gap_days: int = 7):  # type: ignore[no-untyped-def]
+    """Откуда грузить: от последней записи; но если история начинается сильно позже ``wanted``
+    (например, воркер успел записать только последние дни), — с ``wanted``, чтобы закрыть дыру."""
+    first = _first_time(session, table, col, instrument_id)
+    last = _last_time(session, table, col, instrument_id)
+    if last is None or first is None or first.date() > wanted + timedelta(days=gap_days):
+        return wanted
+    return max(wanted, last.date())
+
+
 def upsert_funding(session, instrument_id: int, rows: list[FundingRate]) -> int:  # type: ignore[no-untyped-def]
     if not rows:
         return 0
@@ -137,8 +154,7 @@ def main() -> int:
                 print(f"{symbol}: нет в instruments — сначала scripts/load_history.py", flush=True)
                 continue
             if "funding" in args.what:
-                last = _last_time(session, "funding_rates", "funding_time", inst.id)
-                start = max(args.start, last.date()) if last else args.start
+                start = resume_from(session, "funding_rates", "funding_time", inst.id, args.start)
                 n = sum(
                     upsert_funding(session, inst.id, batch)
                     for batch in history.iter_funding(symbol, start, args.end)
@@ -146,8 +162,9 @@ def main() -> int:
                 session.commit()
                 print(f"{symbol} funding: +{n} записей с {start}", flush=True)
             if "metrics" in args.what:
-                last = _last_time(session, "open_interest", "time", inst.id)
-                start = max(args.start, last.date() + timedelta(days=1)) if last else args.start
+                start = resume_from(session, "open_interest", "time", inst.id, args.start)
+                if start != args.start:
+                    start = start + timedelta(days=1)
                 n = missing = 0
                 for day, rows in history.iter_metrics(symbol, start, args.end):
                     if rows is None:
