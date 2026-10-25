@@ -73,9 +73,13 @@ def compute_bias(
     above = d1_close > ema_now
     reasons.append(f"D1: закрытие {'выше' if above else 'ниже'} EMA{params.ema_period}")
 
-    if d1_trend is Trend.UP and above and w1_trend is not Trend.DOWN:
+    w1_ok_long = w1_trend is Trend.UP if params.require_w1_agreement else w1_trend is not Trend.DOWN
+    w1_ok_short = (
+        w1_trend is Trend.DOWN if params.require_w1_agreement else w1_trend is not Trend.UP
+    )
+    if d1_trend is Trend.UP and above and w1_ok_long:
         bias = Bias.LONG
-    elif d1_trend is Trend.DOWN and not above and w1_trend is not Trend.UP:
+    elif d1_trend is Trend.DOWN and not above and w1_ok_short:
         bias = Bias.SHORT
     else:
         bias = Bias.NEUTRAL

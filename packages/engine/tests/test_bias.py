@@ -52,6 +52,18 @@ def test_short_bias_mirror() -> None:
     assert ctx.bias is Bias.SHORT and ctx.d1_trend is Trend.DOWN
 
 
+def test_require_w1_agreement_rejects_flat_w1() -> None:
+    d1 = zigzag(80, Timeframe.D1, 100, 2)
+    flat_w1 = [
+        Candle(c.open_time, Decimal(100), Decimal(101), Decimal(99), Decimal(100), c.volume)
+        for c in zigzag(20, Timeframe.W1, 100, 2)
+    ]
+    assert compute_bias(d1, flat_w1).bias is Bias.LONG
+    strict = BiasParams(require_w1_agreement=True)
+    assert compute_bias(d1, flat_w1, strict).bias is Bias.NEUTRAL
+    assert compute_bias(d1, zigzag(20, Timeframe.W1, 100, 2), strict).bias is Bias.LONG
+
+
 def test_neutral_when_w1_against() -> None:
     d1 = zigzag(80, Timeframe.D1, 100, 2)
     w1 = zigzag(20, Timeframe.W1, 300, -2)

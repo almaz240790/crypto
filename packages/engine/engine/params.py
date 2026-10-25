@@ -63,6 +63,8 @@ class BiasParams:
 
     ema_period: int = 50
     slope_lookback: int = 10
+    require_w1_agreement: bool = False
+    """True — W1 должен идти в ту же сторону (флэт не допускается); False — лишь не против."""
 
     def __post_init__(self) -> None:
         if self.ema_period < 1 or self.slope_lookback < 1:
