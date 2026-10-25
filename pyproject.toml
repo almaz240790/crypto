@@ -26,6 +26,9 @@ src = ["packages/engine", "apps/api"]
 select = ["E", "F", "W", "I", "N", "UP", "B", "SIM", "RUF", "DTZ"]
 ignore = ["RUF001", "RUF002", "RUF003"]  # кириллица в комментариях и строках допустима
 
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.params.Depends"]
+
 [tool.ruff.lint.isort]
 known-first-party = ["engine", "app"]
 

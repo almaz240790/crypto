@@ -1,12 +1,24 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from app.config import settings
 from app.db import engine
 from app.debug import router as debug_router
+from app.routers.auth import router as auth_router
+from app.routers.public import router as public_router
 
 app = FastAPI(title="Platform API", version="0.1.0")
 app.include_router(debug_router)
+app.include_router(auth_router)
+app.include_router(public_router)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[settings.frontend_url],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/health")

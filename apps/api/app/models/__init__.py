@@ -10,19 +10,37 @@ from app.models.derivatives import (
 from app.models.market import Candle, Instrument
 from app.models.signals import Signal, SignalEvent, SignalResult, Strategy, StrategyVersion
 from app.models.tracking import SignalTracking
+from app.models.users import (
+    AuthIdentity,
+    EmailToken,
+    JournalEntry,
+    RefreshToken,
+    RiskProfile,
+    User,
+    Watchlist,
+    WatchlistItem,
+)
 
 __all__ = [
+    "AuthIdentity",
     "BacktestRun",
     "Candle",
+    "EmailToken",
     "FundingRateRow",
     "Instrument",
+    "JournalEntry",
     "LiquidationRow",
     "LongShortRatioRow",
     "OpenInterestRow",
+    "RefreshToken",
+    "RiskProfile",
     "Signal",
     "SignalEvent",
     "SignalResult",
     "SignalTracking",
     "Strategy",
     "StrategyVersion",
+    "User",
+    "Watchlist",
+    "WatchlistItem",
 ]
