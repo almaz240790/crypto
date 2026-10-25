@@ -232,6 +232,11 @@ class BacktestRun:
     trades: list[BacktestTrade] = field(default_factory=list)
     skipped: dict[str, int] = field(default_factory=lambda: defaultdict(int))
     """Причины отсутствия сигнала по этапам (data/bias/trigger/filters/trade) — для анализа."""
+    skipped_by_symbol: dict[str, dict[str, int]] = field(
+        default_factory=lambda: defaultdict(lambda: defaultdict(int))
+    )
+    block_reasons: dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    """Какие фильтры блокировали (по имени из причины), чтобы видеть, что режет сигналы."""
     evaluated: int = 0
 
 
@@ -280,6 +285,10 @@ def run_backtest(
             res = evaluate(sliced, at, params)
             if not isinstance(res, SignalCandidate):
                 run.skipped[res.stage] += 1
+                run.skipped_by_symbol[inp.symbol][res.stage] += 1
+                if res.stage in ("filters", "trade"):
+                    for reason in res.reason.split("; "):
+                        run.block_reasons[reason.split(":")[0][:60]] += 1
                 continue
             if res.deferred:
                 run.skipped["deferred"] += 1

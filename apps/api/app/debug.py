@@ -274,3 +274,65 @@ def examples(token: str | None = None, seed: int = 1, count: int = 20) -> str:
         f"<p>Seed {seed}, {count} примеров. Другой набор: <code>?seed=2</code>.</p>"
         + "".join(items)
     )
+
+
+@router.get("/backtests")
+def backtests(token: str | None = None, limit: int = 20) -> list[dict[str, object]]:
+    """Список прогонов бэктеста с ключевыми метриками."""
+    _check(token)
+    with db_engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                "select id, created_at, strategy_version, period_start, period_end, note, "
+                "result_summary from backtest_runs order by id desc limit :n"
+            ),
+            {"n": limit},
+        ).all()
+    out = []
+    for r in rows:
+        m = (r[6] or {}).get("metrics", {})
+        out.append(
+            {
+                "id": r[0],
+                "created_at": r[1].isoformat(),
+                "strategy_version": r[2],
+                "period": [r[3].date().isoformat(), r[4].date().isoformat()],
+                "note": r[5],
+                "closed": m.get("closed"),
+                "winrate": m.get("winrate"),
+                "avg_r": m.get("avg_r"),
+                "profit_factor": m.get("profit_factor"),
+                "max_drawdown_r": m.get("max_drawdown_r"),
+                "sum_r": m.get("sum_r"),
+            }
+        )
+    return out
+
+
+@router.get("/backtests/{run_id}")
+def backtest_detail(
+    run_id: int, token: str | None = None, trades: bool = False
+) -> dict[str, object]:
+    _check(token)
+    with db_engine.connect() as conn:
+        r = conn.execute(
+            text(
+                "select id, created_at, strategy_version, params, execution, note, result_summary, "
+                "trades from backtest_runs where id = :i"
+            ),
+            {"i": run_id},
+        ).first()
+    if r is None:
+        raise HTTPException(404)
+    out: dict[str, object] = {
+        "id": r[0],
+        "created_at": r[1].isoformat(),
+        "strategy_version": r[2],
+        "params": r[3],
+        "execution": r[4],
+        "note": r[5],
+        "summary": r[6],
+    }
+    if trades:
+        out["trades"] = r[7]
+    return out

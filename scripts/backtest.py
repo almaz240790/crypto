@@ -23,7 +23,9 @@ from sqlalchemy import text
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "apps" / "api"))
 
+from app.db import SessionLocal
 from app.db import engine as db_engine
+from app.models import BacktestRun
 from engine.backtest import (
     BacktestTrade,
     ExecutionParams,
@@ -138,6 +140,8 @@ def main() -> int:
     p.add_argument("--entry", default="market", choices=["market", "limit"])
     p.add_argument("--window", type=int, default=700)
     p.add_argument("--trades", action="store_true", help="печатать список сделок CSV")
+    p.add_argument("--note", default="", help="комментарий к прогону (сохраняется в БД)")
+    p.add_argument("--no-save", action="store_true", help="не сохранять прогон в backtest_runs")
     p.add_argument(
         "--no-derivatives", action="store_true", help="не использовать funding/OI/long-short"
     )
@@ -195,6 +199,8 @@ def main() -> int:
         "entry": args.entry,
         "evaluated_candles": run.evaluated,
         "skipped": dict(run.skipped),
+        "skipped_by_symbol": {k: dict(v) for k, v in run.skipped_by_symbol.items()},
+        "block_reasons": dict(sorted(run.block_reasons.items(), key=lambda kv: -kv[1])[:30]),
         "elapsed_sec": round(elapsed),
         "metrics": metrics_dict(summarize(run.trades)),
         "by_grade": {
@@ -212,6 +218,46 @@ def main() -> int:
             for k, v in breakdown(run.trades, lambda t: t.direction.value).items()
         },
     }
+    if not args.no_save:
+        trades_json = [
+            {
+                "symbol": t.symbol,
+                "direction": t.direction.value,
+                "signal_time": t.signal_time.isoformat(),
+                "grade": t.grade.value,
+                "score": t.score,
+                "rr_tp2": str(t.rr_tp2),
+                "entry": str(t.entry),
+                "stop": str(t.stop),
+                "tp1": str(t.tp1),
+                "tp2": str(t.tp2),
+                "tp3": str(t.tp3),
+                "status": t.result.status.value,
+                "realized_r": str(t.result.realized_r),
+                "tp_hits": t.result.tp_hits,
+                "mfe_r": str(t.result.max_favorable_r),
+                "mae_r": str(t.result.max_adverse_r),
+                "exit_time": t.exit_time.isoformat() if t.exit_time else None,
+                "facts": list(t.facts),
+            }
+            for t in run.trades
+        ]
+        with SessionLocal() as session:
+            row = BacktestRun(
+                strategy_version=params.version,
+                params=json.loads(json.dumps(asdict(params), default=str)),
+                period_start=start,
+                period_end=end,
+                instruments=symbols,
+                execution=json.loads(json.dumps(asdict(exec_params), default=str)),
+                result_summary=json.loads(json.dumps(summary, default=_dec)),
+                trades=trades_json,
+                created_by="scripts/backtest.py",
+                note=args.note or None,
+            )
+            session.add(row)
+            session.commit()
+            print(f"сохранено: backtest_runs.id={row.id}", flush=True)
     print("BACKTEST_SUMMARY " + json.dumps(summary, default=_dec, ensure_ascii=False), flush=True)
     if args.trades:
         print(
