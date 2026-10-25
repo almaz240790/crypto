@@ -84,6 +84,9 @@ def _set_refresh_cookie(response: Response, raw: str) -> None:
 
 
 def _issue(db: Session, user: User, request: Request, response: Response) -> TokenOut:
+    if user.role == "user" and user.email.lower() in settings.owner_email_set:
+        user.role = "owner"
+        db.commit()
     raw = auth.issue_refresh(db, user, request.headers.get("user-agent"))
     _set_refresh_cookie(response, raw)
     return TokenOut(access_token=auth.make_access_token(user))

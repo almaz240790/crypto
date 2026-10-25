@@ -12,7 +12,7 @@ from decimal import Decimal
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from app import auth
@@ -22,6 +22,48 @@ from engine.candles import Timeframe
 
 router = APIRouter(prefix="/v1", tags=["public"])
 OPEN_STATUSES = ("pending", "active", "tp1_hit", "tp2_hit")
+SPARK_LEN = 24
+
+
+def _scope(scope: str, user: User | None) -> str:
+    """``live`` — всем; ``forward`` — только admin/owner (план 4: Premium — этап 3)."""
+    if scope == "forward" and (user is None or user.role not in ("admin", "owner")):
+        raise HTTPException(403, "форвард-сигналы не публикуются")
+    return scope
+
+
+def _sparklines(db: Session, instrument_ids: list[int]) -> dict[int, list[str]]:
+    """Последние 24 закрытия H4 по инструменту — для мини-графика в ленте (план 3.4)."""
+    if not instrument_ids:
+        return {}
+    rows = db.execute(
+        text(
+            "select instrument_id, close from ("
+            "  select instrument_id, close, open_time,"
+            "         row_number() over (partition by instrument_id order by open_time desc) rn"
+            "  from candles where timeframe='4h' and instrument_id = any(:ids)"
+            ") t where rn <= :n order by instrument_id, open_time"
+        ),
+        {"ids": instrument_ids, "n": SPARK_LEN},
+    ).all()
+    out: dict[int, list[str]] = {}
+    for iid, close in rows:
+        out.setdefault(int(iid), []).append(_dec(close) or "0")
+    return out
+
+
+def _last_prices(db: Session, instrument_ids: list[int]) -> dict[int, tuple[str, datetime]]:
+    if not instrument_ids:
+        return {}
+    rows = db.execute(
+        text(
+            "select distinct on (instrument_id) instrument_id, close, open_time from candles "
+            "where timeframe='1m' and instrument_id = any(:ids) "
+            "order by instrument_id, open_time desc"
+        ),
+        {"ids": instrument_ids},
+    ).all()
+    return {int(r[0]): (_dec(r[1]) or "0", r[2]) for r in rows}
 
 
 def optional_user(request: Request, db: Session = Depends(auth.get_db)) -> User | None:
@@ -60,12 +102,18 @@ def instruments(db: Session = Depends(auth.get_db)) -> list[dict[str, Any]]:
 
 
 def _signal_dict(
-    s: Signal, symbol: str, version: str, result: SignalResult | None
+    s: Signal,
+    symbol: str,
+    version: str,
+    result: SignalResult | None,
+    last_event_at: datetime | None = None,
 ) -> dict[str, Any]:
     return {
         "id": s.public_id,
         "symbol": symbol,
+        "instrument_id": s.instrument_id,
         "strategy_version": version,
+        "last_event_at": last_event_at.isoformat() if last_event_at else None,
         "direction": s.direction,
         "candle_close_time": s.candle_close_time.isoformat(),
         "created_at": s.created_at.isoformat(),
@@ -92,22 +140,37 @@ def _signal_dict(
     }
 
 
+SORT_COLUMNS = {
+    "time": Signal.candle_close_time,
+    "symbol": Instrument.symbol,
+    "grade": Signal.score,
+    "score": Signal.score,
+    "rr": Signal.rr_tp2,
+    "status": Signal.status,
+}
+
+
 @router.get("/signals")
 def signals(
     status: str | None = Query(None, description="open | closed | all"),
     symbol: str | None = None,
     grade: str | None = None,
     direction: str | None = None,
+    scope: str = Query("live", pattern="^(live|forward)$"),
+    days: int | None = Query(None, ge=1, le=3650),
+    sort: str = Query("time", pattern="^(time|symbol|grade|score|rr|status)$"),
+    order: str = Query("desc", pattern="^(asc|desc)$"),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
     user: User | None = Depends(optional_user),
     db: Session = Depends(auth.get_db),
 ) -> dict[str, Any]:
+    scope = _scope(scope, user)
     q = (
         select(Signal, Instrument.symbol, StrategyVersion.version)
         .join(Instrument, Instrument.id == Signal.instrument_id)
         .join(StrategyVersion, StrategyVersion.id == Signal.strategy_version_id)
-        .where(StrategyVersion.status == "live")
+        .where(StrategyVersion.status == scope)
     )
     if user is None:
         q = q.where(Signal.status.not_in(OPEN_STATUSES))  # без логина — только закрытые
@@ -116,12 +179,19 @@ def signals(
     elif status == "closed":
         q = q.where(Signal.status.not_in(OPEN_STATUSES))
     if symbol:
-        q = q.where(Instrument.symbol == symbol.upper())
+        q = q.where(Instrument.symbol.in_([s.strip().upper() for s in symbol.split(",")]))
     if grade:
-        q = q.where(Signal.grade == grade.upper())
+        q = q.where(Signal.grade.in_([g.strip().upper() for g in grade.split(",")]))
     if direction:
         q = q.where(Signal.direction == direction)
-    rows = db.execute(q.order_by(Signal.candle_close_time.desc()).limit(limit).offset(offset)).all()
+    if days:
+        q = q.where(Signal.candle_close_time >= datetime.now(tz=UTC) - timedelta(days=days))
+    total = db.scalar(select(func.count()).select_from(q.subquery())) or 0
+    col = SORT_COLUMNS[sort]
+    primary = col.asc() if order == "asc" else col.desc()
+    rows = db.execute(
+        q.order_by(primary, Signal.candle_close_time.desc()).limit(limit).offset(offset)
+    ).all()
     ids = [r[0].id for r in rows]
     results = (
         {
@@ -131,11 +201,82 @@ def signals(
         if ids
         else {}
     )
+    last_events = (
+        dict(
+            db.execute(
+                select(SignalEvent.signal_id, func.max(SignalEvent.occurred_at))
+                .where(SignalEvent.signal_id.in_(ids))
+                .group_by(SignalEvent.signal_id)
+            ).all()
+        )
+        if ids
+        else {}
+    )
+    inst_ids = sorted({r[0].instrument_id for r in rows})
+    sparks = _sparklines(db, inst_ids)
+    prices = _last_prices(db, inst_ids)
     return {
-        "items": [_signal_dict(s, sym, ver, results.get(s.id)) for s, sym, ver in rows],
+        "items": [
+            _signal_dict(s, sym, ver, results.get(s.id), last_events.get(s.id))
+            for s, sym, ver in rows
+        ],
+        "sparklines": {str(i): sparks.get(i, []) for i in inst_ids},
+        "prices": {str(i): {"p": p, "at": at.isoformat()} for i, (p, at) in prices.items()},
+        "total": int(total),
+        "scope": scope,
         "limit": limit,
         "offset": offset,
     }
+
+
+@router.get("/signals/summary")
+def signals_summary(
+    scope: str = Query("live", pattern="^(live|forward)$"),
+    user: User | None = Depends(optional_user),
+    db: Session = Depends(auth.get_db),
+) -> dict[str, Any]:
+    """Счётчики для шапки ленты: активных, новых сегодня, следующее закрытие H4 (план 3.4)."""
+    scope = _scope(scope, user)
+    now = datetime.now(tz=UTC)
+    base = (
+        select(func.count())
+        .select_from(Signal)
+        .join(StrategyVersion, StrategyVersion.id == Signal.strategy_version_id)
+        .where(StrategyVersion.status == scope)
+    )
+    active = db.scalar(base.where(Signal.status.in_(OPEN_STATUSES))) or 0
+    today = (
+        db.scalar(
+            base.where(
+                Signal.candle_close_time >= now.replace(hour=0, minute=0, second=0, microsecond=0)
+            )
+        )
+        or 0
+    )
+    floored = now.replace(minute=0, second=0, microsecond=0)
+    next_close = floored - timedelta(hours=floored.hour % 4) + timedelta(hours=4)
+    return {
+        "active": int(active),
+        "today_new": int(today),
+        "next_h4_close": next_close.isoformat(),
+        "now": now.isoformat(),
+        "scope": scope,
+    }
+
+
+@router.get("/prices")
+def prices(
+    symbols: str = Query(..., description="через запятую"),
+    db: Session = Depends(auth.get_db),
+) -> dict[str, Any]:
+    """Последняя цена (закрытие последней 1m-свечи) по инструментам."""
+    syms = [s.strip().upper() for s in symbols.split(",") if s.strip()][:200]
+    rows = db.execute(
+        select(Instrument.id, Instrument.symbol).where(Instrument.symbol.in_(syms))
+    ).all()
+    by_id = {int(i): s for i, s in rows}
+    last = _last_prices(db, list(by_id))
+    return {by_id[i]: {"p": p, "at": at.isoformat()} for i, (p, at) in last.items()}
 
 
 @router.get("/signals/{public_id}")
@@ -150,7 +291,9 @@ def signal_detail(
         .join(StrategyVersion, StrategyVersion.id == Signal.strategy_version_id)
         .where(Signal.public_id == public_id)
     ).first()
-    if row is None or row[3] != "live":
+    if row is None or row[3] not in ("live", "forward"):
+        raise HTTPException(404)
+    if row[3] == "forward" and (user is None or user.role not in ("admin", "owner")):
         raise HTTPException(404)
     s, symbol, version, _ = row
     if user is None and s.status in OPEN_STATUSES:

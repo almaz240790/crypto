@@ -38,6 +38,11 @@ let refreshing: Promise<string | null> | null = null;
 
 export const HINT_COOKIE = "pl_auth";
 
+/** Текущий access-токен (для WebSocket); null, если не вошли. */
+export function getAccessToken(): string | null {
+  return accessToken;
+}
+
 export function setHint(on: boolean) {
   document.cookie = on
     ? `${HINT_COOKIE}=1; path=/; max-age=${30 * 86400}; samesite=lax`

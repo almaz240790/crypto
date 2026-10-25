@@ -17,6 +17,12 @@ class Settings(BaseSettings):
     mail_from: str = "Platform <noreply@platform.local>"
     resend_api_key: str | None = None
     """Если не задан — письма пишутся в лог (local/staging)."""
+    owner_emails: str = ""
+    """Email владельцев через запятую: при входе получают роль owner (до админки 2.14)."""
+
+    @property
+    def owner_email_set(self) -> set[str]:
+        return {e.strip().lower() for e in self.owner_emails.split(",") if e.strip()}
 
 
 settings = Settings()

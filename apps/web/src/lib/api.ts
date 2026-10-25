@@ -40,7 +40,9 @@ export type Stats = {
 export type SignalRow = {
   id: string;
   symbol: string;
+  instrument_id: number;
   strategy_version: string;
+  last_event_at: string | null;
   direction: "long" | "short";
   candle_close_time: string;
   created_at: string;
