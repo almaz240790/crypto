@@ -31,11 +31,74 @@ export type Stats = {
   by_symbol: Record<string, Metrics>;
   by_month: Record<string, Metrics>;
   by_direction: Record<string, Metrics>;
+  by_entry_type: Record<string, Metrics>;
+  r_histogram: { from: number | null; to: number | null; n: number }[];
   equity: { t: string; r: number }[];
   worst_drawdowns: { start: string; trough: string; depth_r: number }[];
-  scope: string;
+  run?: BacktestRunMeta | null;
+  scope: "live" | "forward" | "backtest";
   generated_at: string;
 };
+
+export type BacktestRunMeta = {
+  id: number;
+  strategy_version: string;
+  period: [string, string];
+  instruments: number;
+  entry_type: string;
+  fee_rate?: string | null;
+  slippage?: string | null;
+  note: string | null;
+  created_at: string | null;
+  closed?: number | null;
+};
+
+export type StrategyVersionInfo = {
+  id: number;
+  strategy: string;
+  name: string;
+  version: string;
+  status: string;
+  activated_at: string | null;
+};
+
+export type StatsQuery = {
+  scope?: "live" | "forward" | "backtest";
+  version?: string;
+  run_id?: string;
+  symbol?: string;
+  grade?: string;
+  entry_type?: string;
+  days?: string;
+};
+
+export type TradeRowOut = {
+  id: string;
+  symbol: string;
+  direction: "long" | "short";
+  signal_time: string;
+  grade: string;
+  score: number;
+  entry: string;
+  stop: string;
+  rr_tp2: string;
+  entry_type: string;
+  status: string;
+  tp_hits: number;
+  realized_r: number | null;
+  mfe_r: number;
+  mae_r: number;
+  exit_time: string | null;
+};
+
+export function statsSearch(q: StatsQuery): string {
+  const sp = new URLSearchParams();
+  (Object.keys(q) as (keyof StatsQuery)[]).forEach((k) => {
+    const v = q[k];
+    if (v) sp.set(k, v);
+  });
+  return sp.toString();
+}
 
 export type SignalRow = {
   id: string;
@@ -89,6 +152,28 @@ async function get<T>(path: string, revalidate = 60): Promise<T | null> {
 
 export function getStats(days = 90): Promise<Stats | null> {
   return get<Stats>(`/v1/stats?days=${days}`);
+}
+
+export function getStatsFor(q: StatsQuery): Promise<Stats | null> {
+  return get<Stats>(`/v1/stats?${statsSearch(q)}`);
+}
+
+export function getStrategies(): Promise<StrategyVersionInfo[]> {
+  return get<StrategyVersionInfo[]>("/v1/strategies", 300).then((r) => r ?? []);
+}
+
+export function getRuns(): Promise<BacktestRunMeta[]> {
+  return get<BacktestRunMeta[]>("/v1/stats/runs", 300).then((r) => r ?? []);
+}
+
+export async function getStatsTrades(
+  q: StatsQuery,
+  offset = 0,
+  limit = 50,
+): Promise<{ items: TradeRowOut[]; total: number } | null> {
+  return get<{ items: TradeRowOut[]; total: number }>(
+    `/v1/stats/trades?${statsSearch(q)}&offset=${offset}&limit=${limit}`,
+  );
 }
 
 export async function getClosedSignals(limit = 5): Promise<SignalRow[]> {

@@ -21,13 +21,17 @@
   line-height: var(--lh);
   white-space: normal;
   box-shadow: var(--shadow);
-  opacity: 0;
+  display: none; /* скрытая подсказка не должна растягивать страницу */
   pointer-events: none;
-  transition: opacity 80ms linear;
 }
 
 .host:hover .tip,
 .host:focus-within .tip,
 .host:focus .tip {
-  opacity: 1;
+  display: block;
+}
+
+.host[data-align="right"] .tip {
+  left: auto;
+  right: 0;
 }

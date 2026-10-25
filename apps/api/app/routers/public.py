@@ -7,18 +7,30 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from app import auth
 from app.analysis import analyze_signal
-from app.models import Instrument, Signal, SignalEvent, SignalResult, StrategyVersion, User
-from app.stats import load_trades, stats_payload
+from app.models import (
+    BacktestRun,
+    Instrument,
+    Signal,
+    SignalEvent,
+    SignalResult,
+    Strategy,
+    StrategyVersion,
+    User,
+)
+from app.stats import filter_trades, load_trades, stats_payload, trade_rows, trades_from_run
+from engine.backtest import BacktestTrade
 from engine.candles import Timeframe
 
 router = APIRouter(prefix="/v1", tags=["public"])
@@ -384,21 +396,216 @@ def signal_candles(
     }
 
 
+def _since_until(
+    days: int | None, since: str | None, until: str | None
+) -> tuple[datetime | None, datetime | None]:
+    s = datetime.fromisoformat(since).astimezone(UTC) if since else None
+    u = datetime.fromisoformat(until).astimezone(UTC) if until else None
+    if days and not s:
+        s = datetime.now(tz=UTC) - timedelta(days=days)
+    return s, u
+
+
+def _latest_run(db: Session, run_id: int | None, version: str | None) -> BacktestRun | None:
+    q = select(BacktestRun).order_by(BacktestRun.id.desc())
+    if run_id is not None:
+        q = q.where(BacktestRun.id == run_id)
+    elif version:
+        q = q.where(BacktestRun.strategy_version == version)
+    return db.scalars(q).first()
+
+
+def _collect_trades(
+    db: Session,
+    scope: str,
+    strategy_version_id: int | None,
+    run_id: int | None,
+    version: str | None,
+    symbol: str | None,
+    grade: str | None,
+    entry_type: str | None,
+    since: datetime | None,
+    until: datetime | None,
+) -> tuple[list[BacktestTrade], dict[str, Any]]:
+    """Сделки по области: live/forward — из БД, backtest — из сохранённого прогона."""
+    if scope == "backtest":
+        run = _latest_run(db, run_id, version)
+        if run is None:
+            return [], {"run": None}
+        trades = filter_trades(
+            trades_from_run(run.trades, str((run.execution or {}).get("entry_type", "market"))),
+            symbol,
+            grade,
+            since,
+            until,
+        )
+        if entry_type and str((run.execution or {}).get("entry_type", "market")) != entry_type:
+            trades = []
+        meta = {
+            "run": {
+                "id": run.id,
+                "strategy_version": run.strategy_version,
+                "period": [run.period_start.date().isoformat(), run.period_end.date().isoformat()],
+                "instruments": len(run.instruments or []),
+                "entry_type": (run.execution or {}).get("entry_type", "market"),
+                "fee_rate": (run.execution or {}).get("fee_rate"),
+                "slippage": (run.execution or {}).get("slippage"),
+                "note": run.note,
+                "created_at": run.created_at.isoformat() if run.created_at else None,
+            }
+        }
+        return trades, meta
+    return load_trades(db, scope, strategy_version_id, symbol, since, until, grade, entry_type), {}
+
+
 @router.get("/stats")
 def stats(
-    scope: str = Query("live", pattern="^(live|forward)$"),
+    scope: str = Query("live", pattern="^(live|forward|backtest)$"),
     strategy_version_id: int | None = None,
+    version: str | None = Query(None, max_length=32),
+    run_id: int | None = None,
     symbol: str | None = None,
+    grade: str | None = Query(None, pattern="^[ABCabc]$"),
+    entry_type: str | None = Query(None, pattern="^(market|limit)$"),
     days: int | None = Query(None, ge=1, le=3650),
-    user: User | None = Depends(optional_user),
+    since: str | None = None,
+    until: str | None = None,
     db: Session = Depends(auth.get_db),
 ) -> dict[str, Any]:
-    """Публичная статистика. ``forward`` — только admin/owner (форвард не публикуется)."""
-    if scope == "forward" and (user is None or user.role not in ("admin", "owner")):
-        raise HTTPException(403, "статистика форварда не публикуется")
-    since = datetime.now(tz=UTC) - timedelta(days=days) if days else None
-    trades = load_trades(db, scope, strategy_version_id, symbol, since)
+    """Публичная статистика (план 2.11, 3.10). Три области помечены явно и не смешиваются:
+    ``live`` — опубликованные сигналы, ``forward`` — форвард-тест на живых данных,
+    ``backtest`` — сохранённый прогон бэктеста. Ручного ввода нет."""
+    s, u = _since_until(days, since, until)
+    if strategy_version_id is None and version and scope != "backtest":
+        strategy_version_id = db.scalar(
+            select(StrategyVersion.id).where(StrategyVersion.version == version)
+        )
+    trades, meta = _collect_trades(
+        db, scope, strategy_version_id, run_id, version, symbol, grade, entry_type, s, u
+    )
     payload = stats_payload(trades)
+    payload.update(meta)
     payload["scope"] = scope
     payload["generated_at"] = datetime.now(tz=UTC).isoformat()
     return payload
+
+
+@router.get("/stats/trades")
+def stats_trades(
+    scope: str = Query("live", pattern="^(live|forward|backtest)$"),
+    strategy_version_id: int | None = None,
+    version: str | None = Query(None, max_length=32),
+    run_id: int | None = None,
+    symbol: str | None = None,
+    grade: str | None = Query(None, pattern="^[ABCabc]$"),
+    entry_type: str | None = Query(None, pattern="^(market|limit)$"),
+    days: int | None = Query(None, ge=1, le=3650),
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    user: User | None = Depends(optional_user),
+    db: Session = Depends(auth.get_db),
+) -> dict[str, Any]:
+    """Полная таблица сделок с пагинацией, новые сверху. Форвард построчно — admin/owner."""
+    if scope == "forward" and (user is None or user.role not in ("admin", "owner")):
+        raise HTTPException(403, "построчная история форварда не публикуется")
+    s, u = _since_until(days, None, None)
+    trades, meta = _collect_trades(
+        db, scope, strategy_version_id, run_id, version, symbol, grade, entry_type, s, u
+    )
+    rows = trade_rows(sorted(trades, key=lambda t: t.signal_time, reverse=True))
+    return {
+        "items": rows[offset : offset + limit],
+        "total": len(rows),
+        "limit": limit,
+        "offset": offset,
+        "scope": scope,
+        **meta,
+    }
+
+
+@router.get("/stats/export.csv")
+def stats_export(
+    scope: str = Query("live", pattern="^(live|forward|backtest)$"),
+    version: str | None = Query(None, max_length=32),
+    run_id: int | None = None,
+    symbol: str | None = None,
+    user: User = Depends(auth.current_user),
+    db: Session = Depends(auth.get_db),
+) -> StreamingResponse:
+    """Экспорт полной истории в CSV — для зарегистрированных (правило честности 4)."""
+    if scope == "forward" and user.role not in ("admin", "owner"):
+        raise HTTPException(403, "форвард в CSV не публикуется")
+    trades, _ = _collect_trades(db, scope, None, run_id, version, symbol, None, None, None, None)
+    rows = trade_rows(sorted(trades, key=lambda t: t.signal_time))
+    cols = [
+        "id",
+        "symbol",
+        "direction",
+        "signal_time",
+        "grade",
+        "score",
+        "entry",
+        "stop",
+        "rr_tp2",
+        "entry_type",
+        "status",
+        "tp_hits",
+        "realized_r",
+        "mfe_r",
+        "mae_r",
+        "exit_time",
+    ]
+
+    def gen() -> Iterator[str]:
+        yield ",".join(cols) + "\n"
+        for r in rows:
+            yield ",".join("" if r[c] is None else str(r[c]) for c in cols) + "\n"
+
+    name = f"platform-{scope}-signals.csv"
+    return StreamingResponse(
+        gen(),
+        media_type="text/csv",
+        headers={"content-disposition": f"attachment; filename={name}"},
+    )
+
+
+@router.get("/stats/runs")
+def stats_runs(
+    limit: int = Query(20, ge=1, le=100), db: Session = Depends(auth.get_db)
+) -> list[dict[str, Any]]:
+    """Сохранённые прогоны бэктеста — для переключателя на /stats."""
+    runs = db.scalars(select(BacktestRun).order_by(BacktestRun.id.desc()).limit(limit)).all()
+    return [
+        {
+            "id": r.id,
+            "strategy_version": r.strategy_version,
+            "period": [r.period_start.date().isoformat(), r.period_end.date().isoformat()],
+            "instruments": len(r.instruments or []),
+            "entry_type": (r.execution or {}).get("entry_type", "market"),
+            "closed": ((r.result_summary or {}).get("metrics") or {}).get("closed"),
+            "note": r.note,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        }
+        for r in runs
+    ]
+
+
+@router.get("/strategies")
+def strategies(db: Session = Depends(auth.get_db)) -> list[dict[str, Any]]:
+    """Версии стратегии и их статус (backtest / forward / live / retired)."""
+    rows = db.execute(
+        select(StrategyVersion, Strategy.name, Strategy.slug)
+        .join(Strategy, Strategy.id == StrategyVersion.strategy_id)
+        .order_by(StrategyVersion.id)
+    ).all()
+    return [
+        {
+            "id": v.id,
+            "strategy": slug,
+            "name": name,
+            "version": v.version,
+            "status": v.status,
+            "activated_at": v.activated_at.isoformat() if v.activated_at else None,
+        }
+        for v, name, slug in rows
+    ]

@@ -15,7 +15,7 @@ export function Footer({ status }: { status?: string }) {
               <Link href="/#rules">Правила системы</Link>
             </li>
             <li>
-              <Link href="/#stats">Статистика</Link>
+              <Link href="/stats">Статистика</Link>
             </li>
             <li>
               <Link href="/#pricing">Тарифы</Link>
