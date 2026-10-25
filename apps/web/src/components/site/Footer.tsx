@@ -23,6 +23,9 @@ export function Footer({ status }: { status?: string }) {
             <li>
               <Link href="/#faq">Вопросы и ответы</Link>
             </li>
+            <li>
+              <Link href="/status">Статус системы</Link>
+            </li>
           </ul>
           <ul>
             <li>Условия использования — готовятся</li>

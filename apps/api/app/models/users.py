@@ -224,3 +224,17 @@ class PushSubscription(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_ok_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     failures: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class Incident(Base):
+    """Инциденты для публичной статус-страницы (план 6.7): открываются и закрываются монитором."""
+
+    __tablename__ = "incidents"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    component: Mapped[str] = mapped_column(String(32), index=True)
+    severity: Mapped[str] = mapped_column(String(10))  # degraded / down
+    message: Mapped[str] = mapped_column(Text)
+    opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    alerted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

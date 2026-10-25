@@ -1,6 +1,9 @@
 """Уведомитель (план 3.11): раз в ``POLL`` секунд читает новые live-сигналы и события трекера
 из БД и рассылает письма по настройкам пользователей. Последние обработанные id — в Redis,
 при первом запуске начинает с текущего максимума (старое не рассылает). Heartbeat — в Redis.
+
+Здесь же раз в ``MONITOR_EVERY`` секунд крутится монитор (план 6.7, задача 2.16): проверяет
+heartbeat воркеров и свежесть свечей, открывает инциденты и шлёт алерты владельцам.
 """
 
 from __future__ import annotations
@@ -11,16 +14,20 @@ import logging
 import signal as os_signal
 import time
 
+import redis
 import redis.asyncio as aioredis
+import sentry_sdk
 from sqlalchemy import func, select
 
 from app.config import settings
 from app.db import SessionLocal
 from app.models import Signal, SignalEvent
+from app.monitor import run_monitor
 from app.notify import notify_event, notify_new_signal
 
 log = logging.getLogger("notifier")
 POLL = 30
+MONITOR_EVERY = 60
 HEARTBEAT_KEY = "notifier:heartbeat"
 KEY_SIGNAL = "notifier:last_signal_id"
 KEY_EVENT = "notifier:last_event_id"
@@ -57,6 +64,16 @@ def process(last_signal: int, last_event: int) -> tuple[int, int, int]:
     return last_signal, last_event, sent
 
 
+def monitor_once() -> str:
+    """Синхронно: один прогон монитора. Возвращает общий статус."""
+    r = redis.from_url(settings.redis_url, socket_timeout=5)
+    try:
+        with SessionLocal() as db:
+            return str(run_monitor(db, r)["status"])
+    finally:
+        r.close()
+
+
 class Notifier:
     def __init__(self) -> None:
         self.redis = aioredis.from_url(settings.redis_url)
@@ -65,7 +82,16 @@ class Notifier:
     async def run(self) -> None:
         last_signal = int(await self.redis.get(KEY_SIGNAL) or -1)
         last_event = int(await self.redis.get(KEY_EVENT) or -1)
+        next_monitor = 0.0
         while not self.stop.is_set():
+            if time.monotonic() >= next_monitor:
+                next_monitor = time.monotonic() + MONITOR_EVERY
+                try:
+                    status = await asyncio.to_thread(monitor_once)
+                    if status != "ok":
+                        log.warning("монитор: %s", status)
+                except Exception:
+                    log.exception("цикл монитора")
             try:
                 last_signal, last_event, sent = await asyncio.to_thread(
                     process, last_signal, last_event
@@ -87,6 +113,8 @@ def main() -> None:
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )
     logging.getLogger("httpx").setLevel(logging.WARNING)
+    if settings.sentry_dsn:
+        sentry_sdk.init(dsn=settings.sentry_dsn, environment=settings.app_env)
     n = Notifier()
     loop = asyncio.new_event_loop()
     for sig in (os_signal.SIGINT, os_signal.SIGTERM):
