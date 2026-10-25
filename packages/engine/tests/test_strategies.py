@@ -2,11 +2,24 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from engine.strategies import STRATEGIES, TREND_OB_RETEST_1_0, TREND_OB_RETEST_1_1
+from engine.strategies import (
+    STRATEGIES,
+    TREND_OB_RETEST_1_0,
+    TREND_OB_RETEST_1_1,
+    TREND_OB_RETEST_1_2,
+)
 
 
 def test_versions_are_distinct_and_registered() -> None:
-    assert set(STRATEGIES) == {"trend-ob-retest@1.0.0", "trend-ob-retest@1.1.0"}
+    assert set(STRATEGIES) == {
+        "trend-ob-retest@1.0.0",
+        "trend-ob-retest@1.1.0",
+        "trend-ob-retest@1.2.0",
+    }
+    # 1.2 = 1.1 без лонгов, остальное не менялось
+    assert not TREND_OB_RETEST_1_2.bias.allow_long and TREND_OB_RETEST_1_2.bias.allow_short
+    assert TREND_OB_RETEST_1_2.trade == TREND_OB_RETEST_1_1.trade
+    assert TREND_OB_RETEST_1_2.bias.require_w1_agreement
     assert TREND_OB_RETEST_1_0.trade.min_rr == Decimal("1.8")
     assert TREND_OB_RETEST_1_1.trade.min_rr == Decimal("2.5")
     assert TREND_OB_RETEST_1_1.bias.require_w1_agreement

@@ -64,6 +64,21 @@ def test_require_w1_agreement_rejects_flat_w1() -> None:
     assert compute_bias(d1, zigzag(20, Timeframe.W1, 100, 2), strict).bias is Bias.LONG
 
 
+def test_direction_policy_disables_long_or_short() -> None:
+    import pytest
+
+    d1_up, w1_up = zigzag(80, Timeframe.D1, 100, 2), zigzag(20, Timeframe.W1, 100, 2)
+    d1_dn, w1_dn = zigzag(80, Timeframe.D1, 300, -2), zigzag(20, Timeframe.W1, 300, -2)
+    assert compute_bias(d1_up, w1_up).bias is Bias.LONG
+    no_long = BiasParams(allow_long=False)
+    ctx = compute_bias(d1_up, w1_up, no_long)
+    assert ctx.bias is Bias.NEUTRAL and any("отключено" in r for r in ctx.reasons)
+    assert compute_bias(d1_dn, w1_dn, no_long).bias is Bias.SHORT
+    assert compute_bias(d1_dn, w1_dn, BiasParams(allow_short=False)).bias is Bias.NEUTRAL
+    with pytest.raises(ValueError):
+        BiasParams(allow_long=False, allow_short=False)
+
+
 def test_neutral_when_w1_against() -> None:
     d1 = zigzag(80, Timeframe.D1, 100, 2)
     w1 = zigzag(20, Timeframe.W1, 300, -2)

@@ -83,6 +83,11 @@ def compute_bias(
         bias = Bias.SHORT
     else:
         bias = Bias.NEUTRAL
+    if (bias is Bias.LONG and not params.allow_long) or (
+        bias is Bias.SHORT and not params.allow_short
+    ):
+        reasons.append(f"bias: {bias}, направление отключено версией стратегии")
+        bias = Bias.NEUTRAL
     reasons.append(f"bias: {bias}")
     return BiasContext(bias, d1_trend, w1_trend, d1_close, ema_now, slope, tuple(reasons))
 
