@@ -57,6 +57,13 @@ def test_breakeven_after_tp1() -> None:
     assert r.realized_r == D("0.4")  # 40 % по TP1, остальное в ноль
 
 
+def test_no_breakeven_variant_keeps_original_stop() -> None:
+    params = TradeParams(be_after_tp1=False)
+    r = simulate_trade(LONG, [c(100, 104, 99, 103), c(103, 105, 96, 97)], params, NO_COST)
+    assert r.status is TradeStatus.CLOSED_SL and r.tp_hits == 1
+    assert r.realized_r == D("0.4") + D("0.6") * D(-1)
+
+
 def test_time_stop() -> None:
     path = [c(100, 102, 99, 101, i) for i in range(TP.time_stop_candles)]
     r = simulate_trade(LONG, path, TP, NO_COST)

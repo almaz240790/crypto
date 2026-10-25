@@ -155,6 +155,8 @@ class TradeParams:
     time_stop_candles: int = 15
     split: tuple[Decimal, Decimal, Decimal] = (Decimal("0.4"), Decimal("0.4"), Decimal("0.2"))
     """Доли закрытия на TP1/TP2/TP3."""
+    be_after_tp1: bool = True
+    """Переносить стоп в безубыток после TP1 (план 2.6). False — стоп остаётся на месте."""
 
     def __post_init__(self) -> None:
         if not (0 <= self.limit_zone_pct <= 1):
