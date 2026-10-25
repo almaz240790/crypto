@@ -21,6 +21,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
+import redis as redis_sync
 import redis.asyncio as aioredis
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
@@ -169,9 +170,28 @@ def _candles_after(
     return [Candle(r[0].astimezone(UTC), r[1], r[2], r[3], r[4], r[5], r[6], r[7]) for r in rows]
 
 
+CHANNEL_STATUS = "signals.status"
+
+
+def _publish_status(changes: list[dict[str, Any]]) -> None:
+    """Смена статуса → Redis ``signals.status`` (для WebSocket API). Ошибка Redis не критична."""
+    if not changes:
+        return
+    try:
+        r = redis_sync.Redis.from_url(settings.redis_url)
+        try:
+            for c in changes:
+                r.publish(CHANNEL_STATUS, json.dumps(c))
+        finally:
+            r.close()
+    except Exception:
+        log.warning("не удалось опубликовать смену статуса", exc_info=True)
+
+
 def catch_up(tf: Timeframe = Timeframe.M1, instrument_id: int | None = None) -> int:
     """Догон по всем открытым сигналам (или одного инструмента)."""
     total = 0
+    changes: list[dict[str, Any]] = []
     with SessionLocal() as session:
         q = select(Signal).where(Signal.status.in_(OPEN))
         if instrument_id is not None:
@@ -185,8 +205,19 @@ def catch_up(tf: Timeframe = Timeframe.M1, instrument_id: int | None = None) -> 
             )
             candles = _candles_after(session, sig.instrument_id, since, tf)
             if candles:
+                before = sig.status
                 total += apply_candles(session, sig, candles, tf)
+                if sig.status != before:
+                    changes.append(
+                        {
+                            "id": sig.public_id,
+                            "instrument_id": sig.instrument_id,
+                            "status": sig.status,
+                            "at": datetime.now(tz=UTC).isoformat(),
+                        }
+                    )
         session.commit()
+    _publish_status(changes)
     return total
 
 
