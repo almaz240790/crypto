@@ -84,3 +84,29 @@ def test_worst_drawdowns_and_payload() -> None:
     assert payload["metrics"]["closed"] == 5 and payload["equity"][-1]["r"] == 2.0
     assert "A" in payload["by_grade"] and "2026-01" in payload["by_month"]
     assert stats_payload([])["equity"] == [] and worst_drawdowns([]) == []
+
+
+def test_journal_realized_r() -> None:
+    from app.models import JournalEntry
+    from app.routers.user import _realized_r
+
+    e = JournalEntry(
+        direction="long", entry_price=Decimal(100), stop_loss=Decimal(95), exit_price=Decimal(110)
+    )
+    assert _realized_r(e) == Decimal(2)
+    s = JournalEntry(
+        direction="short", entry_price=Decimal(100), stop_loss=Decimal(105), exit_price=Decimal(97)
+    )
+    assert _realized_r(s) == Decimal("0.6")
+    assert (
+        _realized_r(
+            JournalEntry(
+                direction="long", entry_price=Decimal(100), stop_loss=None, exit_price=Decimal(1)
+            )
+        )
+        is None
+    )
+    bad = JournalEntry(
+        direction="long", entry_price=Decimal(100), stop_loss=Decimal(120), exit_price=Decimal(110)
+    )
+    assert _realized_r(bad) is None
