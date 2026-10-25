@@ -1,0 +1,118 @@
+/*
+ * Токены дизайн-системы Platform (план, раздел 5.3–5.6).
+ * Единственное место в apps/web, где разрешены литералы цветов.
+ * Проверка: `npm run lint:colors`.
+ */
+
+:root {
+  color-scheme: light;
+
+  /* Поверхности */
+  --bg: #f4f3ef;
+  --surface: #ffffff;
+  --surface-raised: #ffffff;
+  --border: #d9d6ce;
+  --row-hover: #eceae3;
+
+  /* Текст */
+  --text: #1a1a1a;
+  --text-2: #5c5a54;
+  --text-3: #8a877f;
+  --text-on-accent: #ffffff;
+
+  /* Семантика (только направление и результат) */
+  --up: #1f7a4d;
+  --down: #b3261e;
+  --accent: #0f4c81;
+  --warn: #9a6700;
+
+  /* Индикаторы на графике — 6 нейтральных оттенков */
+  --ind-1: #4a6fa5;
+  --ind-2: #8b6f3e;
+  --ind-3: #6b7f4a;
+  --ind-4: #7a5c7a;
+  --ind-5: #3e7f85;
+  --ind-6: #8a5a44;
+
+  /* Производные */
+  --accent-fill: color-mix(in srgb, var(--accent) 12%, transparent);
+  --up-fill: color-mix(in srgb, var(--up) 12%, transparent);
+  --down-fill: color-mix(in srgb, var(--down) 12%, transparent);
+  --warn-fill: color-mix(in srgb, var(--warn) 12%, transparent);
+  --focus: var(--accent);
+  --shadow: 0 1px 2px rgb(0 0 0 / 8%);
+
+  /* Геометрия */
+  --radius: 2px;
+  --radius-lg: 4px;
+  --row-h: 36px;
+  --panel-head-h: 32px;
+  --sidebar-w: 220px;
+  --sidebar-w-collapsed: 56px;
+  --container: 1440px;
+  --gap-1: 4px;
+  --gap-2: 8px;
+  --gap-3: 12px;
+  --gap-4: 16px;
+  --gap-5: 24px;
+  --gap-6: 32px;
+
+  /* Типографика */
+  --fs-caption: 12px;
+  --fs-table: 14px;
+  --fs-body: 15px;
+  --fs-h3: 16px;
+  --fs-h2: 20px;
+  --fs-h1: 26px;
+  --lh: 1.4;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #121417;
+  --surface: #1a1d21;
+  --surface-raised: #22262b;
+  --border: #2e333a;
+  --row-hover: #24282d;
+  --text: #e6e4de;
+  --text-2: #a09d95;
+  --text-3: #6e6b64;
+  --text-on-accent: #121417;
+  --up: #3daa6d;
+  --down: #e05a4e;
+  --accent: #6fa8dc;
+  --warn: #d4a72c;
+  --ind-1: #7fa3d6;
+  --ind-2: #c9a66b;
+  --ind-3: #9db36f;
+  --ind-4: #b08bb0;
+  --ind-5: #6fb3b8;
+  --ind-6: #c98b72;
+  --shadow: 0 1px 2px rgb(0 0 0 / 40%);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #121417;
+    --surface: #1a1d21;
+    --surface-raised: #22262b;
+    --border: #2e333a;
+    --row-hover: #24282d;
+    --text: #e6e4de;
+    --text-2: #a09d95;
+    --text-3: #6e6b64;
+    --text-on-accent: #121417;
+    --up: #3daa6d;
+    --down: #e05a4e;
+    --accent: #6fa8dc;
+    --warn: #d4a72c;
+    --ind-1: #7fa3d6;
+    --ind-2: #c9a66b;
+    --ind-3: #9db36f;
+    --ind-4: #b08bb0;
+    --ind-5: #6fb3b8;
+    --ind-6: #c98b72;
+    --shadow: 0 1px 2px rgb(0 0 0 / 40%);
+  }
+}

@@ -1,0 +1,33 @@
+.host {
+  position: relative;
+  display: inline-flex;
+  border-bottom: 1px dotted var(--text-3);
+  cursor: help;
+}
+
+.tip {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 6px);
+  z-index: 10;
+  min-width: 160px;
+  max-width: 280px;
+  padding: var(--gap-2) var(--gap-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-raised);
+  color: var(--text);
+  font-size: var(--fs-caption);
+  line-height: var(--lh);
+  white-space: normal;
+  box-shadow: var(--shadow);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 80ms linear;
+}
+
+.host:hover .tip,
+.host:focus-within .tip,
+.host:focus .tip {
+  opacity: 1;
+}

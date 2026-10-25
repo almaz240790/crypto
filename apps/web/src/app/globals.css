@@ -1,0 +1,145 @@
+@import "../styles/tokens.css";
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+
+html {
+  font-family: var(--font-sans), "IBM Plex Sans", "Source Sans 3", system-ui, sans-serif;
+  font-size: var(--fs-body);
+  line-height: var(--lh);
+  -webkit-text-size-adjust: 100%;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  margin: 0;
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1.25;
+}
+
+h1 {
+  font-size: var(--fs-h1);
+}
+
+h2 {
+  font-size: var(--fs-h2);
+}
+
+h3 {
+  font-size: var(--fs-h3);
+}
+
+p {
+  margin: 0;
+}
+
+p + p {
+  margin-top: var(--gap-3);
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+code,
+kbd,
+pre,
+.mono,
+[data-mono] {
+  font-family: var(--font-mono), "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.95em;
+}
+
+table {
+  border-collapse: collapse;
+  border-spacing: 0;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+::selection {
+  background: var(--accent-fill);
+}
+
+/* Служебные классы (минимум) */
+.container {
+  max-width: var(--container);
+  margin: 0 auto;
+  padding: 0 var(--gap-4);
+}
+
+@media (min-width: 900px) {
+  .container {
+    padding: 0 var(--gap-5);
+  }
+}
+
+.text-2 {
+  color: var(--text-2);
+}
+
+.text-3 {
+  color: var(--text-3);
+}
+
+.caption {
+  font-size: var(--fs-caption);
+  color: var(--text-2);
+}
+
+.up {
+  color: var(--up);
+}
+
+.down {
+  color: var(--down);
+}
+
+.num {
+  font-family: var(--font-mono), "IBM Plex Mono", ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}

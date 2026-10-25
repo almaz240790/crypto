@@ -1,0 +1,74 @@
+.badge {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: var(--fs-caption);
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  color: var(--text-2);
+  background: transparent;
+}
+
+.up {
+  color: var(--up);
+  border-color: var(--up);
+  background: var(--up-fill);
+}
+
+.down {
+  color: var(--down);
+  border-color: var(--down);
+  background: var(--down-fill);
+}
+
+.accent {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-fill);
+}
+
+.warn {
+  color: var(--warn);
+  border-color: var(--warn);
+  background: var(--warn-fill);
+}
+
+.muted {
+  color: var(--text-3);
+}
+
+/* Градация A/B/C — буква в рамке, без цвета (план 5.3). */
+.grade {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--text);
+  border-radius: var(--radius);
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: var(--fs-caption);
+  font-weight: 600;
+  line-height: 1;
+  color: var(--text);
+}
+
+.gradeB {
+  border-color: var(--text-2);
+  color: var(--text-2);
+}
+
+.gradeC {
+  border-color: var(--text-3);
+  color: var(--text-3);
+}
+
+.dir {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
