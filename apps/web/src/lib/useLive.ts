@@ -30,10 +30,24 @@ export function useLive(symbols: string[], token: string | null, onSignal?: (s: 
     let timer: ReturnType<typeof setTimeout> | undefined;
     let ping: ReturnType<typeof setInterval> | undefined;
 
-    function connect() {
+    let base: string | null = null;
+
+    async function wsBase(): Promise<string> {
+      if (base) return base;
+      try {
+        const r = await fetch("/config");
+        base = ((await r.json()) as { ws: string }).ws;
+      } catch {
+        const proto = window.location.protocol === "https:" ? "wss" : "ws";
+        base = `${proto}://${window.location.host}/v1/ws`;
+      }
+      return base;
+    }
+
+    async function connect() {
       if (closed) return;
-      const proto = window.location.protocol === "https:" ? "wss" : "ws";
-      const url = `${proto}://${window.location.host}/v1/ws${token ? `?token=${encodeURIComponent(token)}` : ""}`;
+      const url = `${await wsBase()}${token ? `?token=${encodeURIComponent(token)}` : ""}`;
+      if (closed) return;
       const ws = new WebSocket(url);
       wsRef.current = ws;
       ws.onopen = () => {
@@ -54,11 +68,11 @@ export function useLive(symbols: string[], token: string | null, onSignal?: (s: 
       ws.onclose = () => {
         setConnected(false);
         if (ping) clearInterval(ping);
-        if (!closed) timer = setTimeout(connect, 3000 + Math.random() * 2000);
+        if (!closed) timer = setTimeout(() => void connect(), 3000 + Math.random() * 2000);
       };
       ws.onerror = () => ws.close();
     }
-    connect();
+    void connect();
     return () => {
       closed = true;
       if (timer) clearTimeout(timer);
