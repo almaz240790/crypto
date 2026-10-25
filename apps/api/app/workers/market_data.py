@@ -20,6 +20,7 @@ import logging
 import signal as os_signal
 import time
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -34,7 +35,7 @@ from app.config import settings
 from app.db import SessionLocal
 from app.forward import UPSERT_CHUNK, _refresh_derivatives, upsert_candles
 from app.models import Instrument, LiquidationRow
-from engine.candles import Timeframe
+from engine.candles import Candle, Timeframe
 from engine.data.binance import BinanceHistory
 
 log = logging.getLogger("market_data")
@@ -44,6 +45,10 @@ WS_URL = "wss://fstream.binance.com/ws"
 ``{"result": null, "id": 1}`` (с длинным URL combined-stream сервер молчал)."""
 STREAMS_PER_CONNECTION = 150
 SILENCE_TIMEOUT = 60
+POLL_EVERY = 15
+"""REST-опрос при молчащем стриме: 1m каждые 15 с, старшие tf — каждую минуту.
+Вес ~400/мин при 59 инструментах (лимит Binance 2400/мин). Ликвидации по REST недоступны."""
+POLL_WORKERS = 4
 TIMEFRAMES = (Timeframe.M1, Timeframe.H4, Timeframe.D1, Timeframe.W1)
 FLUSH_EVERY = 1.0
 DERIVATIVES_EVERY = 300
@@ -72,6 +77,10 @@ class MarketData:
         self.n_flushed = 0
         self.n_published = 0
         self.n_flush_errors = 0
+        # REST-резерв: Binance может держать WebSocket открытым и не слать данные (гео-политика)
+        self.ws_silent = False
+        self.n_polled = 0
+        self.last_closed: dict[tuple[int, str], datetime] = {}
 
     # --- инструменты и догрузка ----------------------------------------------------------------
     def load_symbols(self) -> None:
@@ -119,33 +128,93 @@ class MarketData:
         if inst_id is None:
             return
         self.n_klines += 1
-        tf = k["i"]
-        open_time = _dt(int(k["t"]))
-        row = {
+        self.ws_silent = False
+        self._put_candle(
+            symbol,
+            inst_id,
+            k["i"],
+            Candle(
+                open_time=_dt(int(k["t"])),
+                open=Decimal(k["o"]),
+                high=Decimal(k["h"]),
+                low=Decimal(k["l"]),
+                close=Decimal(k["c"]),
+                volume=Decimal(k["v"]),
+                quote_volume=Decimal(k["q"]),
+                trades=int(k["n"]),
+            ),
+            closed=bool(k["x"]),
+        )
+
+    def _put_candle(self, symbol: str, inst_id: int, tf: str, c: Candle, closed: bool) -> None:
+        """Свеча в буфер записи; закрытая — ещё и событие ``candles.closed`` (один раз)."""
+        self.candle_buffer[(inst_id, tf, c.open_time)] = {
             "instrument_id": inst_id,
             "timeframe": tf,
-            "open_time": open_time,
-            "open": Decimal(k["o"]),
-            "high": Decimal(k["h"]),
-            "low": Decimal(k["l"]),
-            "close": Decimal(k["c"]),
-            "volume": Decimal(k["v"]),
-            "quote_volume": Decimal(k["q"]),
-            "trades": int(k["n"]),
-            "is_closed": bool(k["x"]),
+            "open_time": c.open_time,
+            "open": c.open,
+            "high": c.high,
+            "low": c.low,
+            "close": c.close,
+            "volume": c.volume,
+            "quote_volume": c.quote_volume,
+            "trades": c.trades,
+            "is_closed": closed,
         }
-        self.candle_buffer[(inst_id, tf, open_time)] = row
-        if row["is_closed"]:
+        if closed:
+            key = (inst_id, tf)
+            prev = self.last_closed.get(key)
+            if prev is not None and c.open_time <= prev:
+                return
+            self.last_closed[key] = c.open_time
             self.closed_events.append(
                 {
                     "symbol": symbol,
                     "instrument_id": inst_id,
                     "tf": tf,
-                    "open_time": open_time.isoformat(),
-                    "close_time": (open_time + Timeframe(tf).delta).isoformat(),
-                    "close": k["c"],
+                    "open_time": c.open_time.isoformat(),
+                    "close_time": (c.open_time + Timeframe(tf).delta).isoformat(),
+                    "close": format(c.close.normalize(), "f"),
                 }
             )
+
+    # --- REST-резерв -------------------------------------------------------------------------
+    def _poll_symbol(self, history: BinanceHistory, symbol: str, tfs: tuple[Timeframe, ...]) -> int:
+        inst_id = self.symbols[symbol]
+        now = datetime.now(tz=UTC)
+        n = 0
+        for tf in tfs:
+            try:
+                candles = history.fetch_rest(symbol, tf, now - tf.delta * 2, now)
+            except Exception as exc:
+                log.warning("%s %s: REST-опрос не удался: %s", symbol, tf.value, exc)
+                continue
+            for c in candles:
+                self._put_candle(symbol, inst_id, tf.value, c, closed=c.close_time(tf) <= now)
+                n += 1
+        return n
+
+    async def poller(self) -> None:
+        """Пока стрим молчит — REST-опрос: 1m каждый цикл, старшие tf — каждый 4-й цикл."""
+        history = BinanceHistory("futures")
+        cycle = 0
+        loop = asyncio.get_running_loop()
+        with ThreadPoolExecutor(max_workers=POLL_WORKERS) as pool:
+            while not self.stop.is_set():
+                await asyncio.sleep(POLL_EVERY)
+                if not self.ws_silent:
+                    continue
+                cycle += 1
+                tfs: tuple[Timeframe, ...] = TIMEFRAMES if cycle % 4 == 0 else (Timeframe.M1,)
+                if cycle == 1:
+                    log.warning("стрим молчит — включаю REST-опрос свечей")
+                    tfs = TIMEFRAMES
+                futures = [
+                    loop.run_in_executor(pool, self._poll_symbol, history, s, tfs)
+                    for s in self.symbols
+                ]
+                results = await asyncio.gather(*futures, return_exceptions=True)
+                self.n_polled += sum(r for r in results if isinstance(r, int))
 
     def on_force_order(self, o: dict[str, Any]) -> None:
         inst_id = self.symbols.get(o["s"])
@@ -239,6 +308,8 @@ class MarketData:
                 json.dumps(
                     {
                         "klines": self.n_klines,
+                        "polled": self.n_polled,
+                        "mode": "rest" if self.ws_silent else "ws",
                         "flushed": self.n_flushed,
                         "published": self.n_published,
                         "flush_errors": self.n_flush_errors,
@@ -253,11 +324,13 @@ class MarketData:
         while not self.stop.is_set():
             await asyncio.sleep(REPORT_EVERY)
             log.info(
-                "сводка: klines=%d записано=%d опубликовано=%d ошибок записи=%d",
+                "сводка: klines=%d rest=%d записано=%d опубликовано=%d ошибок записи=%d режим=%s",
                 self.n_klines,
+                self.n_polled,
                 self.n_flushed,
                 self.n_published,
                 self.n_flush_errors,
+                "rest" if self.ws_silent else "ws",
             )
 
     # --- деривативы -----------------------------------------------------------------------------
@@ -314,6 +387,7 @@ class MarketData:
                                 SILENCE_TIMEOUT,
                                 received,
                             )
+                            self.ws_silent = True
                             break
                         received += 1
                         msg = json.loads(raw)
@@ -350,6 +424,7 @@ class MarketData:
             asyncio.create_task(self.flusher()),
             asyncio.create_task(self.derivatives_loop()),
             asyncio.create_task(self.reporter()),
+            asyncio.create_task(self.poller()),
         ]
         tasks += [
             asyncio.create_task(self.connection(chunk, i))
