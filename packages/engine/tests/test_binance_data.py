@@ -129,3 +129,17 @@ def test_fetch_rest_pagination() -> None:
     candles = history.fetch_rest("BTCUSDT", Timeframe.H4, start, end)
     assert len(candles) == 1501
     assert calls[1] == T0 + 1500 * H4_MS
+
+
+def test_weekly_uses_rest_only() -> None:
+    hosts: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        hosts.append(request.url.host)
+        return httpx.Response(200, json=[_row(T0)])
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    history = BinanceHistory("futures", client=client)
+    candles = history.fetch_range("BTCUSDT", Timeframe.W1, date(2024, 1, 1), date(2024, 3, 1))
+    assert len(candles) == 1
+    assert "data.binance.vision" not in hosts

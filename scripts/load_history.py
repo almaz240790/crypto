@@ -155,7 +155,7 @@ def main() -> int:
     history = BinanceHistory(market)
     has_gaps = False
 
-    with SessionLocal() as session, session.begin():
+    with SessionLocal() as session:
         for symbol in symbols:
             inst = (
                 ensure_instrument(session, symbol, market, info)
@@ -192,7 +192,6 @@ def main() -> int:
                         flush=True,
                     )
             session.commit()
-            session.begin()
     return 1 if has_gaps else 0
 
 

@@ -142,7 +142,10 @@ class BinanceHistory:
         """
         start_dt = datetime(start.year, start.month, start.day, tzinfo=UTC)
         last: datetime | None = None
-        for year, month in month_range(start, end):
+        # Месячные архивы 1w на Data Vision неполные (недели на стыке месяцев теряются),
+        # а объём W1 мал — берём недельные свечи целиком через REST.
+        months = [] if tf is Timeframe.W1 else list(month_range(start, end))
+        for year, month in months:
             batch = self.fetch_month(symbol, tf, year, month)
             if batch:
                 last = batch[-1].open_time
