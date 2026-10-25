@@ -21,7 +21,7 @@ export function Panel({
     <section className={[s.panel, className ?? ""].join(" ")}>
       {(title || actions) && (
         <header className={s.head}>
-          <h3 className={s.title}>{title}</h3>
+          <div className={s.title}>{title}</div>
           {actions && <div className={s.actions}>{actions}</div>}
         </header>
       )}
