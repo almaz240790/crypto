@@ -58,6 +58,14 @@ class Component:
     checks: list[str] = field(default_factory=list)
 
 
+def parse_done_key(key: str) -> datetime | None:
+    """``sched:done:{symbol}:{YYYYmmddTHHMM}`` → граница H4 (UTC, aware)."""
+    try:
+        return datetime.strptime(key.split(":", 3)[-1], "%Y%m%dT%H%M").replace(tzinfo=UTC)
+    except ValueError:
+        return None
+
+
 def last_h4_close(now: datetime) -> datetime:
     floored = now.replace(minute=0, second=0, microsecond=0)
     return floored - timedelta(hours=floored.hour % 4)
@@ -177,16 +185,12 @@ def collect(db: Session, r: Any | None) -> Snapshot:
         if r is not None:
             try:
                 keys = r.keys("sched:done:*")
-                counts: dict[str, int] = {}
+                counts: dict[datetime, int] = {}
                 for k in keys:
-                    kk = k.decode() if isinstance(k, bytes) else k
-                    close = kk.split(":", 3)[-1]
-                    counts[close] = counts.get(close, 0) + 1
-                good = [
-                    datetime.fromisoformat(c)
-                    for c, n in counts.items()
-                    if active and n >= 0.95 * active
-                ]
+                    close = parse_done_key(k.decode() if isinstance(k, bytes) else k)
+                    if close is not None:
+                        counts[close] = counts.get(close, 0) + 1
+                good = [c for c, n in counts.items() if active and n >= 0.95 * active]
                 engine_last = max(good) if good else None
             except Exception:
                 redis_ok = False
