@@ -30,7 +30,7 @@ services:
   api:
     build:
       context: ..
-      dockerfile: infra/api.Dockerfile
+      dockerfile: Dockerfile
     environment:
       DATABASE_URL: postgresql+psycopg://platform:platform@db:5432/platform
       REDIS_URL: redis://redis:6379/0
