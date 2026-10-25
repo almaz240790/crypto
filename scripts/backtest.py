@@ -38,6 +38,7 @@ from engine.candles import Candle, Timeframe
 from engine.derivatives import FundingRate, LongShortRatio, OpenInterest
 from engine.params import StrategyParams
 from engine.signal import MarketInputs
+from engine.strategies import STRATEGIES
 
 DATA_DIR: Path | None = None
 """Если задан (--data-dir), свечи и деривативы читаются из CSV-выгрузок /debug/export вместо БД."""
@@ -246,6 +247,11 @@ def main() -> int:
         "--data-dir", type=Path, help="читать CSV-выгрузки вместо БД (локальные прогоны)"
     )
     p.add_argument("--params-json", type=Path, help="JSON с переопределением параметров стратегии")
+    p.add_argument(
+        "--strategy",
+        choices=sorted(STRATEGIES),
+        help="версия стратегии из реестра (engine.strategies); по умолчанию базовая",
+    )
     p.add_argument("--out", type=Path, help="сохранить сводку и сделки в JSON-файл")
     p.add_argument(
         "--no-derivatives", action="store_true", help="не использовать funding/OI/long-short"
@@ -264,7 +270,7 @@ def main() -> int:
 
     global DATA_DIR
     DATA_DIR = args.data_dir
-    params = StrategyParams()
+    params = STRATEGIES[args.strategy] if args.strategy else StrategyParams()
     if args.params_json:
         params = override_params(params, json.loads(args.params_json.read_text()))
     start = datetime(args.start.year, args.start.month, args.start.day, tzinfo=UTC)
