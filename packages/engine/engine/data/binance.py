@@ -4,7 +4,8 @@
 - Data Vision — месячные zip-архивы klines:
   https://data.binance.vision/data/{futures/um|spot}/monthly/klines/{SYMBOL}/{tf}/{SYMBOL}-{tf}-{YYYY-MM}.zip
 - REST — для догрузки текущего месяца:
-  https://fapi.binance.com/fapi/v1/klines (perpetual USDT-M), https://api.binance.com/api/v3/klines (spot).
+  https://fapi.binance.com/fapi/v1/klines (perpetual USDT-M),
+  https://api.binance.com/api/v3/klines (spot).
 
 Формат строки kline (csv и REST одинаковы по порядку полей):
 open_time, open, high, low, close, volume, close_time, quote_volume, trades,
@@ -29,7 +30,10 @@ from engine.candles import Candle, Timeframe
 Market = Literal["futures", "spot"]
 
 DATA_VISION = "https://data.binance.vision/data"
-REST_BASE = {"futures": "https://fapi.binance.com/fapi/v1/klines", "spot": "https://api.binance.com/api/v3/klines"}
+REST_BASE = {
+    "futures": "https://fapi.binance.com/fapi/v1/klines",
+    "spot": "https://api.binance.com/api/v3/klines",
+}
 REST_LIMIT = 1500
 
 
@@ -81,7 +85,8 @@ def month_range(start: date, end: date) -> Iterator[tuple[int, int]]:
 
 def data_vision_url(symbol: str, tf: Timeframe, year: int, month: int, market: Market) -> str:
     prefix = "futures/um" if market == "futures" else "spot"
-    return f"{DATA_VISION}/{prefix}/monthly/klines/{symbol}/{tf.value}/{symbol}-{tf.value}-{year}-{month:02d}.zip"
+    name = f"{symbol}-{tf.value}-{year}-{month:02d}.zip"
+    return f"{DATA_VISION}/{prefix}/monthly/klines/{symbol}/{tf.value}/{name}"
 
 
 class BinanceHistory:
@@ -100,7 +105,9 @@ class BinanceHistory:
         resp.raise_for_status()
         return parse_zip(resp.content)
 
-    def fetch_rest(self, symbol: str, tf: Timeframe, start: datetime, end: datetime) -> list[Candle]:
+    def fetch_rest(
+        self, symbol: str, tf: Timeframe, start: datetime, end: datetime
+    ) -> list[Candle]:
         """Догрузка через REST постранично (по 1500 свечей)."""
         out: list[Candle] = []
         cursor = int(start.timestamp() * 1000)
@@ -132,7 +139,8 @@ class BinanceHistory:
             batch = self.fetch_month(symbol, tf, year, month)
             if batch:
                 candles.extend(batch)
-        last = candles[-1].open_time if candles else datetime(start.year, start.month, start.day, tzinfo=UTC)
+        start_dt = datetime(start.year, start.month, start.day, tzinfo=UTC)
+        last = candles[-1].open_time if candles else start_dt
         end_dt = datetime(end.year, end.month, end.day, tzinfo=UTC) + Timeframe.D1.delta
         tail = self.fetch_rest(symbol, tf, last + tf.delta, end_dt)
         candles.extend(tail)
