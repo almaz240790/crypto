@@ -52,7 +52,7 @@ export function ThemeToggle({ size = "sm" }: { size?: "sm" | "md" }) {
   const theme = useTheme();
   const next = ORDER[(ORDER.indexOf(theme) + 1) % ORDER.length];
   return (
-    <Button size={size} variant="ghost" onClick={() => applyTheme(next)} aria-label="переключить тему">
+    <Button size={size} variant="ghost" onClick={() => applyTheme(next)} title="переключить тему">
       {LABEL[theme]}
     </Button>
   );
