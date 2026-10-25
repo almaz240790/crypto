@@ -163,3 +163,33 @@ class TradeParams:
             raise ValueError("ожидается tp1_r < tp2_min_r <= tp2_max_r <= tp3_r")
         if sum(self.split) != 1:
             raise ValueError("доли закрытия должны давать 1")
+
+
+@dataclass(frozen=True, slots=True)
+class ScoringParams:
+    """Веса скоринга и пороги градаций (план 2.7)."""
+
+    w1_same: int = 15
+    w1_flat: int = 7
+    bos_tiers: tuple[tuple[Decimal, int], ...] = ((Decimal("0.3"), 15), (Decimal("0.1"), 8))
+    zone_three: int = 20
+    zone_two: int = 12
+    zone_one: int = 6
+    sweep_points: int = 15
+    sweep_lookback: int = 10
+    volume_tiers: tuple[tuple[Decimal, int], ...] = ((Decimal("1.5"), 10), (Decimal("1.2"), 5))
+    rr_tiers: tuple[tuple[Decimal, int], ...] = (
+        (Decimal(3), 15),
+        (Decimal("2.5"), 10),
+        (Decimal("1.8"), 5),
+    )
+    no_obstacle_points: int = 10
+    filters_min: int = -45
+    filters_max: int = 25
+    grade_a: int = 75
+    grade_b: int = 55
+    grade_c: int = 40
+
+    def __post_init__(self) -> None:
+        if not (self.grade_c < self.grade_b < self.grade_a <= 100):
+            raise ValueError("пороги градаций: grade_c < grade_b < grade_a <= 100")
