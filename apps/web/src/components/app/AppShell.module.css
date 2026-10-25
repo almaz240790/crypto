@@ -1,0 +1,135 @@
+.shell {
+  display: grid;
+  grid-template-columns: var(--sidebar-w) 1fr;
+  min-height: 100vh;
+}
+
+.side {
+  border-right: 1px solid var(--border);
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+}
+
+.brand {
+  height: 48px;
+  display: flex;
+  align-items: center;
+  padding: 0 var(--gap-4);
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.brand:hover {
+  text-decoration: none;
+}
+
+.nav {
+  display: grid;
+  padding: var(--gap-2) 0;
+}
+
+.nav a {
+  display: flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 var(--gap-4);
+  color: var(--text-2);
+  font-size: var(--fs-table);
+}
+
+.nav a:hover {
+  background: var(--row-hover);
+  text-decoration: none;
+  color: var(--text);
+}
+
+.nav a[aria-current="page"] {
+  color: var(--text);
+  box-shadow: inset 2px 0 0 var(--accent);
+  background: var(--row-hover);
+}
+
+.nav .soon {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 32px;
+  padding: 0 var(--gap-4);
+  color: var(--text-3);
+  font-size: var(--fs-table);
+}
+
+.soon span {
+  font-size: var(--fs-caption);
+}
+
+.user {
+  margin-top: auto;
+  padding: var(--gap-3) var(--gap-4);
+  border-top: 1px solid var(--border);
+  display: grid;
+  gap: var(--gap-2);
+  font-size: var(--fs-caption);
+  color: var(--text-2);
+}
+
+.email {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.content {
+  min-width: 0;
+  padding: var(--gap-4);
+}
+
+.top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gap-3);
+  margin-bottom: var(--gap-4);
+}
+
+.mobileBar {
+  display: none;
+}
+
+@media (max-width: 900px) {
+  .shell {
+    grid-template-columns: 1fr;
+  }
+
+  .side {
+    display: none;
+  }
+
+  .mobileBar {
+    display: flex;
+    align-items: center;
+    gap: var(--gap-3);
+    height: 44px;
+    padding: 0 var(--gap-4);
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    overflow-x: auto;
+    white-space: nowrap;
+    font-size: var(--fs-table);
+  }
+
+  .mobileBar a {
+    color: var(--text-2);
+  }
+
+  .mobileBar a[aria-current="page"] {
+    color: var(--text);
+    font-weight: 500;
+  }
+}

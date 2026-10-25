@@ -62,3 +62,9 @@ jobs:
       - run: npm run build
         env:
           NEXT_TELEMETRY_DISABLED: "1"
+      - name: Playwright (e2e входа и онбординга)
+        run: |
+          npx playwright install --with-deps chromium
+          npm run e2e
+        env:
+          CI: "1"
