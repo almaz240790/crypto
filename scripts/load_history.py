@@ -179,6 +179,18 @@ def main() -> int:
                     print(f"{symbol} {tf.value}: загружено {n} свечей", flush=True)
                 stored = db_candles(session, inst.id, tf)
                 gaps = find_gaps(stored, tf)
+                if gaps and not args.check_only:
+                    # В месячных архивах Data Vision у части пар отсутствуют отдельные дни
+                    # (например, 26.02–01.03.2022). Добираем такие окна через REST.
+                    filled = 0
+                    for expected, got in gaps:
+                        filled += upsert_candles(
+                            session, inst.id, tf, history.fetch_rest(symbol, tf, expected, got)
+                        )
+                    session.flush()
+                    print(f"{symbol} {tf.value}: добрано через REST {filled} свечей", flush=True)
+                    stored = db_candles(session, inst.id, tf)
+                    gaps = find_gaps(stored, tf)
                 if gaps:
                     has_gaps = True
                     print(
