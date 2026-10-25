@@ -29,6 +29,7 @@ from app.models import (
     StrategyVersion,
     User,
 )
+from app.screener import screener_cached
 from app.stats import filter_trades, load_trades, stats_payload, trade_rows, trades_from_run
 from engine.backtest import BacktestTrade
 from engine.candles import Timeframe
@@ -600,6 +601,19 @@ def stats_runs(
         }
         for r in runs
     ]
+
+
+@router.get("/screener")
+def screener(
+    symbols: str | None = Query(None, description="через запятую — только эти инструменты"),
+    db: Session = Depends(auth.get_db),
+) -> dict[str, Any]:
+    """Скринер (план 3.6): что близко к сетапу до появления сигнала. Кэш 2 минуты."""
+    rows, when = screener_cached(db)
+    if symbols:
+        wanted = {s.strip().upper() for s in symbols.split(",") if s.strip()}
+        rows = [r for r in rows if r["symbol"] in wanted]
+    return {"items": rows, "generated_at": when.isoformat()}
 
 
 @router.get("/strategies")

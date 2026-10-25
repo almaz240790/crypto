@@ -7,8 +7,16 @@ import { useAuth } from "@/components/auth/AuthProvider";
 import { Button, ThemeToggle } from "@/components/ui";
 import s from "./AppShell.module.css";
 
-const NAV: { href: string; label: string }[] = [{ href: "/signals", label: "Сигналы" }];
-const SOON = ["Статистика", "Вотчлист", "Журнал", "Калькулятор", "Скринер", "Настройки"];
+const NAV: { href: string; label: string }[] = [
+  { href: "/signals", label: "Сигналы" },
+  { href: "/screener", label: "Скринер" },
+  { href: "/watchlist", label: "Вотчлист" },
+  { href: "/journal", label: "Журнал" },
+  { href: "/calculator", label: "Калькулятор" },
+  { href: "/stats", label: "Статистика" },
+  { href: "/settings", label: "Настройки" },
+];
+const SOON: string[] = [];
 
 export function AppShell({ title, actions, children }: { title: string; actions?: ReactNode; children: ReactNode }) {
   const path = usePathname();

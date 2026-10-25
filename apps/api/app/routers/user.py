@@ -2,17 +2,30 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app import auth
-from app.models import Instrument, JournalEntry, RiskProfile, Signal, User, Watchlist, WatchlistItem
+from app.models import (
+    AuthIdentity,
+    Instrument,
+    JournalEntry,
+    RiskProfile,
+    Signal,
+    SignalResult,
+    StrategyVersion,
+    User,
+    Watchlist,
+    WatchlistItem,
+)
 from app.routers.auth import UserOut, _user_out
 
 router = APIRouter(prefix="/v1", tags=["user"])
@@ -79,6 +92,51 @@ def change_password(
     user.password_hash = auth.hash_password(body.new_password)
     db.commit()
     return Response(status_code=204)
+
+
+@router.get("/me/identities")
+def identities(
+    user: User = Depends(auth.current_user), db: Session = Depends(auth.get_db)
+) -> list[dict[str, Any]]:
+    """Подключённые способы входа (план 3.12)."""
+    rows = db.scalars(select(AuthIdentity).where(AuthIdentity.user_id == user.id)).all()
+    out = [
+        {
+            "provider": r.provider,
+            "label": r.data.get("username") or r.data.get("email") or r.provider_user_id,
+            "connected_at": r.created_at.isoformat() if r.created_at else None,
+        }
+        for r in rows
+    ]
+    if user.password_hash:
+        out.insert(0, {"provider": "password", "label": user.email, "connected_at": None})
+    return out
+
+
+@router.get("/me/export.json")
+def export_data(
+    user: User = Depends(auth.current_user), db: Session = Depends(auth.get_db)
+) -> dict[str, Any]:
+    """Выгрузка данных пользователя перед удалением (GDPR, план 3.12)."""
+    risk = db.get(RiskProfile, user.id)
+    journal = db.execute(
+        select(JournalEntry, Instrument.symbol)
+        .join(Instrument, Instrument.id == JournalEntry.instrument_id)
+        .where(JournalEntry.user_id == user.id)
+        .order_by(JournalEntry.entry_at)
+    ).all()
+    wl = _watchlist(db, user)
+    symbols = db.scalars(
+        select(Instrument.symbol)
+        .join(WatchlistItem, WatchlistItem.instrument_id == Instrument.id)
+        .where(WatchlistItem.watchlist_id == wl.id)
+    ).all()
+    return {
+        "exported_at": datetime.now(tz=UTC).isoformat(),
+        "profile": _user_out(user, risk).model_dump(),
+        "watchlist": list(symbols),
+        "journal": [_journal_dict(e, sym) for e, sym in journal],
+    }
 
 
 @router.delete("/me", status_code=204)
@@ -241,13 +299,97 @@ def journal_list(
     items = [_journal_dict(e, sym) for e, sym in rows]
     closed = [e for e, _ in rows if e.realized_r is not None]
     rs = [e.realized_r for e in closed if e.realized_r is not None]
-    summary = {
+    summary: dict[str, Any] = {
         "trades": len(rows),
         "closed": len(closed),
         "sum_r": format(sum(rs, Decimal(0)), "f") if rs else "0",
+        "avg_r": format(sum(rs, Decimal(0)) / len(rs), "f") if rs else None,
         "winrate": (sum(1 for r in rs if r > 0) / len(rs)) if rs else None,
     }
+    summary.update(_vs_system(db, user, [e for e, _ in rows]))
     return {"items": items, "summary": summary, "limit": limit, "offset": offset}
+
+
+def _vs_system(db: Session, user: User, entries: list[JournalEntry]) -> dict[str, Any]:
+    """Сравнение с сигналами (план 3.8): доля исполненных live-сигналов за период журнала
+    и средний R пользователя против среднего R тех же сигналов по трекеру."""
+    linked = [e for e in entries if e.signal_id is not None]
+    if not entries:
+        return {"executed_share": None, "system_avg_r": None, "linked": 0}
+    since = min(e.entry_at for e in entries)
+    live_total = (
+        db.scalar(
+            select(func.count())
+            .select_from(Signal)
+            .join(StrategyVersion, StrategyVersion.id == Signal.strategy_version_id)
+            .where(StrategyVersion.status == "live", Signal.candle_close_time >= since)
+        )
+        or 0
+    )
+    sys_rs = (
+        db.scalars(
+            select(SignalResult.realized_r).where(
+                SignalResult.signal_id.in_([e.signal_id for e in linked])
+            )
+        ).all()
+        if linked
+        else []
+    )
+    return {
+        "linked": len(linked),
+        "executed_share": (len(linked) / live_total) if live_total else None,
+        "system_avg_r": format(sum(sys_rs, Decimal(0)) / len(sys_rs), "f") if sys_rs else None,
+    }
+
+
+@router.get("/journal/export.csv")
+def journal_export(
+    user: User = Depends(auth.current_user), db: Session = Depends(auth.get_db)
+) -> StreamingResponse:
+    rows = db.execute(
+        select(JournalEntry, Instrument.symbol)
+        .join(Instrument, Instrument.id == JournalEntry.instrument_id)
+        .where(JournalEntry.user_id == user.id)
+        .order_by(JournalEntry.entry_at)
+    ).all()
+    cols = [
+        "id",
+        "symbol",
+        "direction",
+        "entry_at",
+        "entry_price",
+        "stop_loss",
+        "take_profits",
+        "size",
+        "exit_at",
+        "exit_price",
+        "realized_r",
+        "realized_quote",
+        "fees",
+        "tags",
+        "note",
+        "source",
+        "signal_id",
+    ]
+
+    def gen() -> Iterator[str]:
+        yield ",".join(cols) + "\n"
+        for e, sym in rows:
+            d = _journal_dict(e, sym)
+            vals = []
+            for c in cols:
+                v = d[c]
+                if isinstance(v, list):
+                    v = " ".join(str(x) for x in v)
+                s = "" if v is None else str(v).replace('"', "'")
+                vals.append(f'"{s}"' if ("," in s or "\n" in s) else s)
+            yield ",".join(vals) + "\n"
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/csv",
+        headers={"content-disposition": "attachment; filename=platform-journal.csv"},
+    )
 
 
 def _apply_journal(e: JournalEntry, body: JournalIn, db: Session) -> None:
