@@ -65,10 +65,15 @@ class BiasParams:
     slope_lookback: int = 10
     require_w1_agreement: bool = False
     """True — W1 должен идти в ту же сторону (флэт не допускается); False — лишь не против."""
+    allow_long: bool = True
+    allow_short: bool = True
+    """Политика направлений: выключенное направление даёт нейтральный bias (сигнала нет)."""
 
     def __post_init__(self) -> None:
         if self.ema_period < 1 or self.slope_lookback < 1:
             raise ValueError("ema_period и slope_lookback должны быть >= 1")
+        if not (self.allow_long or self.allow_short):
+            raise ValueError("хотя бы одно направление должно быть разрешено")
 
 
 @dataclass(frozen=True, slots=True)
