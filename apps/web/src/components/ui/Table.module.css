@@ -1,0 +1,102 @@
+.wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.table {
+  width: 100%;
+  font-size: var(--fs-table);
+  font-variant-numeric: tabular-nums;
+}
+
+.table th,
+.table td {
+  height: var(--row-h);
+  padding: 0 var(--gap-3);
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.table thead th {
+  font-size: var(--fs-caption);
+  font-weight: 500;
+  color: var(--text-2);
+  background: var(--surface);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.table tbody tr:hover {
+  background: var(--row-hover);
+}
+
+.table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.table .num {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  text-align: right;
+}
+
+.clickable tbody tr {
+  cursor: pointer;
+}
+
+.compact th,
+.compact td {
+  height: 28px;
+  padding: 0 var(--gap-2);
+}
+
+/* Мобильная версия: плотный список по две строки на запись (план 5.5). */
+@media (max-width: 720px) {
+  .stack thead {
+    display: none;
+  }
+
+  .stack,
+  .stack tbody,
+  .stack tr,
+  .stack td {
+    display: block;
+  }
+
+  .stack tr {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    grid-auto-flow: row dense;
+    row-gap: 2px;
+    padding: var(--gap-2) var(--gap-3);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .stack td {
+    grid-column: 1;
+    height: auto;
+    padding: 0;
+    border: 0;
+    white-space: normal;
+  }
+
+  .stack td[data-mobile="hidden"] {
+    display: none;
+  }
+
+  .stack td[data-mobile="secondary"] {
+    font-size: var(--fs-caption);
+    color: var(--text-2);
+  }
+
+  .stack td[data-mobile="right"] {
+    text-align: right;
+    grid-column: 2;
+  }
+
+  .stack .num {
+    text-align: right;
+  }
+}

@@ -1,0 +1,10 @@
+.empty {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gap-3);
+  flex-wrap: wrap;
+  padding: var(--gap-3);
+  font-size: var(--fs-table);
+  color: var(--text-2);
+}

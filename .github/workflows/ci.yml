@@ -41,3 +41,24 @@ jobs:
           uv run alembic upgrade head
       - name: Tests
         run: uv run pytest --cov=engine --cov-report=term-missing --cov-fail-under=90
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - run: npm ci
+      - name: Lint (eslint + запрет цветов вне токенов)
+        run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
