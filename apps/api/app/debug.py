@@ -404,6 +404,22 @@ def export_derivatives(
 def live_status(token: str | None = None) -> dict[str, Any]:
     """Состояние WebSocket-хаба: слушатель Redis, клиенты, счётчики (план 2.16)."""
     _check(token)
+    import redis as redis_sync
+
     from app.live import hub
 
-    return hub.status()
+    out = hub.status()
+    try:
+        r = redis_sync.Redis.from_url(settings.redis_url, decode_responses=True)
+        try:
+            out["workers"] = {
+                "market_data_heartbeat": r.get("market_data:heartbeat"),
+                "market_data_status": r.get("market_data:status"),
+                "tracker_heartbeat": r.get("tracker:heartbeat"),
+                "now": int(datetime.now(tz=UTC).timestamp()),
+            }
+        finally:
+            r.close()
+    except Exception as exc:
+        out["workers"] = {"error": f"{type(exc).__name__}: {exc}"[:200]}
+    return out

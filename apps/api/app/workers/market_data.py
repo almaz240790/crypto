@@ -45,6 +45,8 @@ TIMEFRAMES = (Timeframe.M1, Timeframe.H4, Timeframe.D1, Timeframe.W1)
 FLUSH_EVERY = 1.0
 DERIVATIVES_EVERY = 300
 HEARTBEAT_KEY = "market_data:heartbeat"
+STATUS_KEY = "market_data:status"
+REPORT_EVERY = 60
 CHANNEL_CLOSED = "candles.closed"
 
 
@@ -62,6 +64,11 @@ class MarketData:
         )
         self.closed_events: list[dict[str, Any]] = []
         self.stop = asyncio.Event()
+        # счётчики для ежеминутной сводки в лог и ключа статуса в Redis (план 2.16)
+        self.n_klines = 0
+        self.n_flushed = 0
+        self.n_published = 0
+        self.n_flush_errors = 0
 
     # --- инструменты и догрузка ----------------------------------------------------------------
     def load_symbols(self) -> None:
@@ -108,6 +115,7 @@ class MarketData:
         inst_id = self.symbols.get(symbol)
         if inst_id is None:
             return
+        self.n_klines += 1
         tf = k["i"]
         open_time = _dt(int(k["t"]))
         row = {
@@ -215,11 +223,39 @@ class MarketData:
             if candles or liqs:
                 try:
                     await asyncio.to_thread(self._flush_sync, candles, liqs)
+                    self.n_flushed += len(candles)
                 except Exception:
+                    self.n_flush_errors += 1
                     log.exception("ошибка записи в БД; данные будут догружены по REST")
             for e in events:
                 await self.redis.publish(CHANNEL_CLOSED, json.dumps(e))
+                self.n_published += 1
             await self.redis.set(HEARTBEAT_KEY, int(time.time()))
+            await self.redis.set(
+                STATUS_KEY,
+                json.dumps(
+                    {
+                        "klines": self.n_klines,
+                        "flushed": self.n_flushed,
+                        "published": self.n_published,
+                        "flush_errors": self.n_flush_errors,
+                        "buffer": len(self.candle_buffer),
+                        "at": int(time.time()),
+                    }
+                ),
+            )
+
+    async def reporter(self) -> None:
+        """Раз в минуту — строка сводки в лог: видно, идут ли данные и пишутся ли они."""
+        while not self.stop.is_set():
+            await asyncio.sleep(REPORT_EVERY)
+            log.info(
+                "сводка: klines=%d записано=%d опубликовано=%d ошибок записи=%d",
+                self.n_klines,
+                self.n_flushed,
+                self.n_published,
+                self.n_flush_errors,
+            )
 
     # --- деривативы -----------------------------------------------------------------------------
     def _derivatives_sync(self) -> None:
@@ -288,6 +324,7 @@ class MarketData:
         tasks = [
             asyncio.create_task(self.flusher()),
             asyncio.create_task(self.derivatives_loop()),
+            asyncio.create_task(self.reporter()),
         ]
         tasks += [
             asyncio.create_task(self.connection(chunk, i))

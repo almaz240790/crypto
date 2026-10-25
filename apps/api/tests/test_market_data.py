@@ -16,6 +16,7 @@ def _md() -> MarketData:
 
     md.liq_buffer = defaultdict(lambda: [Decimal(0), Decimal(0)])
     md.closed_events = []
+    md.n_klines = md.n_flushed = md.n_published = md.n_flush_errors = 0
     return md
 
 
