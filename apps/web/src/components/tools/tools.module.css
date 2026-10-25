@@ -1,0 +1,130 @@
+.wrap {
+  display: grid;
+  gap: var(--gap-4);
+  max-width: 1100px;
+}
+
+.two {
+  display: grid;
+  gap: var(--gap-4);
+  grid-template-columns: minmax(280px, 5fr) minmax(280px, 6fr);
+  align-items: start;
+}
+
+.form {
+  display: grid;
+  gap: var(--gap-3);
+}
+
+.row {
+  display: grid;
+  gap: var(--gap-2);
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+}
+
+.out {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px var(--gap-3);
+  font-size: var(--fs-table);
+  margin: 0;
+}
+
+.out dt {
+  color: var(--text-2);
+}
+
+.out dd {
+  margin: 0;
+  text-align: right;
+}
+
+.strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gap-4);
+  font-size: var(--fs-table);
+  color: var(--text-2);
+}
+
+.strip strong {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gap-2);
+  align-items: center;
+}
+
+.toast {
+  font-size: var(--fs-caption);
+  color: var(--text-2);
+}
+
+.toast[data-kind="error"] {
+  color: var(--down);
+}
+
+.inline {
+  display: flex;
+  gap: var(--gap-2);
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+
+.inline input,
+.inline select {
+  height: 32px;
+  padding: 0 var(--gap-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--fs-table);
+}
+
+.sortBtn {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.sortBtn[data-active="true"] {
+  color: var(--text);
+}
+
+.small {
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text-2);
+  font-size: var(--fs-caption);
+  cursor: pointer;
+}
+
+.small:hover {
+  background: var(--row-hover);
+  color: var(--text);
+}
+
+.danger {
+  border-color: var(--down);
+  color: var(--down);
+}
+
+@media (max-width: 900px) {
+  .two {
+    grid-template-columns: 1fr;
+  }
+}

@@ -1,0 +1,142 @@
+import { expect, test, type Page } from "@playwright/test";
+
+/** Инструменты 2.12: калькулятор, вотчлист, журнал, скринер, настройки. API — перехват в браузере. */
+
+const ME = {
+  id: 7, email: "trader@example.com", name: "Al", email_verified: true, role: "user", locale: "ru", timezone: "UTC", theme: "system",
+  risk: { deposit: "10000", risk_pct: "1.00", exchange: "binance", market_type: "futures", default_leverage: 3, experience: null },
+};
+const INSTR = [{ id: 1, symbol: "BTCUSDT", base: "BTC", quote: "USDT", tick_size: "0.1", lot_size: "0.001" }, { id: 2, symbol: "ETHUSDT", base: "ETH", quote: "USDT", tick_size: "0.01", lot_size: "0.01" }];
+const SCREEN = (sym: string, zoneAtr: string | null) => ({
+  symbol: sym, instrument_id: sym === "BTCUSDT" ? 1 : 2, exchange: "binance", price: sym === "BTCUSDT" ? "65000" : "2600", change_24h: sym === "BTCUSDT" ? "1.5" : "-0.8", volume_24h: "1500000000",
+  bias: sym === "BTCUSDT" ? "long" : "neutral", d1_trend: "up", w1_trend: sym === "BTCUSDT" ? "up" : "flat",
+  last_event: { type: "bos", direction: "up", time: "2026-10-24T16:00:00Z", level: "64000" },
+  zone: zoneAtr === null ? null : { kind: "ob", direction: "up", top: "64500", bottom: "64000", status: "active", distance_atr: zoneAtr, distance_pct: "1" },
+  atr_pct: "1.2", atr_percentile: "48", beta_btc: sym === "BTCUSDT" ? "1" : "1.3", funding: "0.01", funding_pct: "55", oi_change_24h: "2.1", liq_long_24h: "1200000", liq_short_24h: "800000",
+});
+
+async function mock(page: Page, calls: string[], state: { watch: string[]; journal: Record<string, unknown>[] }) {
+  await page.context().addCookies([{ name: "pl_auth", value: "1", url: "http://localhost:3101" }]);
+  await page.route("**/v1/**", (route) => {
+    const req = route.request();
+    const u = new URL(req.url());
+    const p = u.pathname;
+    calls.push(`${req.method()} ${p}`);
+    const json = (status: number, body: unknown) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
+    if (p === "/v1/auth/refresh") return json(200, { access_token: "t" });
+    if (p === "/v1/auth/me") return json(200, ME);
+    if (p === "/v1/instruments") return json(200, INSTR);
+    if (p === "/v1/screener") {
+      const want = u.searchParams.get("symbols")?.split(",");
+      const all = [SCREEN("BTCUSDT", "0.4"), SCREEN("ETHUSDT", null)];
+      return json(200, { items: want ? all.filter((r) => want.includes(r.symbol)) : all, generated_at: new Date().toISOString() });
+    }
+    if (p === "/v1/watchlist") return json(200, { id: 1, name: "Основной", items: state.watch.map((s, i) => ({ symbol: s, instrument_id: i + 1, added_at: "" })) });
+    if (p === "/v1/watchlist/items" && req.method() === "POST") {
+      const b = req.postDataJSON() as { symbol: string };
+      if (!state.watch.includes(b.symbol)) state.watch.push(b.symbol);
+      return json(201, { symbol: b.symbol });
+    }
+    if (p.startsWith("/v1/watchlist/items/") && req.method() === "DELETE") {
+      state.watch = state.watch.filter((s) => s !== p.split("/").pop());
+      return route.fulfill({ status: 204 });
+    }
+    if (p === "/v1/signals") return json(200, { items: [], sparklines: {}, prices: {}, total: 0, scope: "live", limit: 50, offset: 0 });
+    if (p === "/v1/journal" && req.method() === "GET") {
+      const closed = state.journal.filter((e) => e.realized_r != null);
+      return json(200, { items: state.journal, summary: { trades: state.journal.length, closed: closed.length, sum_r: "1.5", avg_r: "0.75", winrate: 0.5, linked: 0, executed_share: null, system_avg_r: null } });
+    }
+    if (p === "/v1/journal" && req.method() === "POST") {
+      const b = req.postDataJSON() as Record<string, unknown>;
+      const e = { id: state.journal.length + 1, ...b, take_profits: b.take_profits ?? [], tags: b.tags ?? [], realized_r: b.exit_price ? "2.000" : null, realized_quote: null, source: "manual", signal_id: null, created_at: null, fees: null, size: b.size ?? null };
+      state.journal.unshift(e);
+      return json(201, e);
+    }
+    if (p.startsWith("/v1/journal/") && req.method() === "DELETE") {
+      state.journal = state.journal.filter((e) => String(e.id) !== p.split("/").pop());
+      return route.fulfill({ status: 204 });
+    }
+    if (p === "/v1/me/identities") return json(200, [{ provider: "password", label: ME.email, connected_at: null }]);
+    if (p === "/v1/me" && req.method() === "PATCH") return json(200, { ...ME, ...(req.postDataJSON() as object) });
+    if (p === "/v1/me/risk" && req.method() === "PATCH") return json(200, { ...ME, risk: { ...ME.risk, ...(req.postDataJSON() as object) } });
+    return json(404, { detail: "нет заглушки" });
+  });
+}
+
+test("калькулятор: размер по риску и округление к lot size", async ({ page }) => {
+  const calls: string[] = [];
+  await mock(page, calls, { watch: [], journal: [] });
+  await page.goto("/calculator");
+  await page.getByLabel("Вход").fill("100");
+  await page.getByLabel("Стоп").fill("98");
+  await page.getByLabel("TP2").fill("105");
+  // депозит 10000 и риск 1 % — из профиля: 100 / 2 = 50 BTC
+  await expect(page.getByTestId("calc-size")).toContainText("50 BTC");
+  await expect(page.getByText("R:R до TP2")).toBeVisible();
+  await page.getByLabel("Риск, %").fill("0.33");
+  await expect(page.getByTestId("calc-size")).toContainText("16.5 BTC");
+  await page.getByLabel("имя пресета").fill("btc-1");
+  await page.getByRole("button", { name: "Сохранить пресет" }).click();
+  await expect(page.getByRole("button", { name: "btc-1" })).toBeVisible();
+});
+
+test("вотчлист: добавить и убрать", async ({ page }) => {
+  const calls: string[] = [];
+  await mock(page, calls, { watch: ["BTCUSDT"], journal: [] });
+  await page.goto("/watchlist");
+  await expect(page.getByText("1 инструментов")).toBeVisible();
+  await expect(page.getByText("OB up · 0.40 ATR")).toBeVisible();
+  await page.getByLabel("инструмент").fill("ETHUSDT");
+  await page.getByRole("button", { name: "Добавить" }).click();
+  await expect(page.getByText("2 инструментов")).toBeVisible();
+  await page.getByRole("button", { name: "убрать BTCUSDT" }).click();
+  await expect(page.getByText("1 инструментов")).toBeVisible();
+  expect(calls).toContain("DELETE /v1/watchlist/items/BTCUSDT");
+});
+
+test("журнал: добавить запись, итоги, удалить", async ({ page }, testInfo) => {
+  const calls: string[] = [];
+  await mock(page, calls, { watch: [], journal: [] });
+  await page.goto("/journal");
+  await expect(page.getByText("Записей пока нет.")).toBeVisible();
+  await page.getByRole("button", { name: "Добавить сделку" }).click();
+  await page.getByLabel("Инструмент").fill("BTCUSDT");
+  await page.getByLabel("Вход, цена").fill("100");
+  await page.getByLabel("Стоп").fill("98");
+  await page.getByLabel("Выход, цена").fill("104");
+  await page.getByRole("button", { name: "Добавить", exact: true }).click();
+  await expect(page.getByRole("status")).toContainText("Запись добавлена");
+  await expect(page.getByRole("cell", { name: /\+2\.00.R/ })).toBeVisible();
+  await expect(page.getByLabel("итоги")).toContainText("сделок 1");
+  await page.screenshot({ path: testInfo.outputPath("journal.png"), fullPage: true });
+  page.once("dialog", (d) => d.accept());
+  await page.getByRole("button", { name: "удалить" }).click();
+  await expect(page.getByText("Записей пока нет.")).toBeVisible();
+});
+
+test("скринер: таблица, фильтр по зоне, сортировка", async ({ page }, testInfo) => {
+  const calls: string[] = [];
+  await mock(page, calls, { watch: [], journal: [] });
+  await page.goto("/screener");
+  await expect(page.getByText("2 из 2")).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("screener.png"), fullPage: true });
+  await page.getByLabel("до зоны").selectOption("1");
+  await expect(page.getByText("1 из 2")).toBeVisible();
+  await page.getByLabel("до зоны").selectOption("");
+  await page.getByRole("button", { name: "сортировать по: 24 ч" }).click();
+  const first = page.locator("tbody tr").first();
+  await expect(first).toContainText("BTCUSDT");
+  await page.getByRole("button", { name: "сортировать по: 24 ч" }).click();
+  await expect(page.locator("tbody tr").first()).toContainText("ETHUSDT");
+});
+
+test("настройки: сохранить риск-профиль", async ({ page }) => {
+  const calls: string[] = [];
+  await mock(page, calls, { watch: [], journal: [] });
+  await page.goto("/settings");
+  await expect(page.getByLabel("Email", { exact: true })).toHaveValue("trader@example.com");
+  await page.getByLabel("Риск на сделку, %").fill("2");
+  await page.getByRole("button", { name: "Сохранить риск" }).click();
+  await expect(page.getByRole("status")).toContainText("Риск-профиль сохранён");
+  expect(calls).toContain("PATCH /v1/me/risk");
+});
