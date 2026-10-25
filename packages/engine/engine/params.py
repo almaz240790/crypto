@@ -135,3 +135,31 @@ class FilterParams:
             raise ValueError("atr_low_pct < atr_high_pct в [0; 1]")
         if self.atr_window < 2 or self.volume_avg_window < 1 or self.choch_lookback < 1:
             raise ValueError("окна должны быть положительными")
+
+
+@dataclass(frozen=True, slots=True)
+class TradeParams:
+    """Параметры сделки (план 2.6)."""
+
+    limit_zone_pct: Decimal = Decimal("0.5")
+    """Лимитный вход — доля высоты зоны от её нижней границы (0.5 — середина)."""
+    sl_buffer_atr: Decimal = Decimal("0.25")
+    sl_buffer_pct: Decimal = Decimal("0.0015")
+    max_sl_atr: Decimal = Decimal("2.5")
+    tp1_r: Decimal = Decimal(1)
+    tp2_min_r: Decimal = Decimal("1.8")
+    tp2_max_r: Decimal = Decimal(3)
+    tp3_r: Decimal = Decimal(4)
+    min_rr: Decimal = Decimal("1.8")
+    limit_expiry_candles: int = 6
+    time_stop_candles: int = 15
+    split: tuple[Decimal, Decimal, Decimal] = (Decimal("0.4"), Decimal("0.4"), Decimal("0.2"))
+    """Доли закрытия на TP1/TP2/TP3."""
+
+    def __post_init__(self) -> None:
+        if not (0 <= self.limit_zone_pct <= 1):
+            raise ValueError("limit_zone_pct в [0; 1]")
+        if not (self.tp1_r < self.tp2_min_r <= self.tp2_max_r <= self.tp3_r):
+            raise ValueError("ожидается tp1_r < tp2_min_r <= tp2_max_r <= tp3_r")
+        if sum(self.split) != 1:
+            raise ValueError("доли закрытия должны давать 1")
