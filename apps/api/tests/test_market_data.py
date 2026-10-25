@@ -16,7 +16,9 @@ def _md() -> MarketData:
 
     md.liq_buffer = defaultdict(lambda: [Decimal(0), Decimal(0)])
     md.closed_events = []
-    md.n_klines = md.n_flushed = md.n_published = md.n_flush_errors = 0
+    md.n_klines = md.n_flushed = md.n_published = md.n_flush_errors = md.n_polled = 0
+    md.ws_silent = False
+    md.last_closed = {}
     return md
 
 
@@ -65,3 +67,24 @@ def test_streams_are_chunked() -> None:
     chunks = md._streams()
     assert sum(len(c) for c in chunks) == 40 * 5
     assert all(len(c) <= 150 for c in chunks) and len(chunks) == 2
+
+
+def test_put_candle_rest_fallback_publishes_closed_once() -> None:
+    from datetime import UTC, datetime
+
+    from engine.candles import Candle
+
+    md = _md()
+    t0 = datetime(2026, 10, 25, 12, 0, tzinfo=UTC)
+    c = Candle(t0, Decimal(1), Decimal(2), Decimal(1), Decimal("1.5"), Decimal(10))
+    md._put_candle("BTCUSDT", 1, "1m", c, closed=True)
+    md._put_candle("BTCUSDT", 1, "1m", c, closed=True)  # повторный опрос той же свечи
+    assert len(md.closed_events) == 1 and md.closed_events[0]["close"] == "1.5"
+    md._put_candle(
+        "BTCUSDT",
+        1,
+        "1m",
+        Candle(t0, Decimal(1), Decimal(2), Decimal(1), Decimal(1), Decimal(1)),
+        closed=False,
+    )
+    assert len(md.closed_events) == 1 and md.candle_buffer[(1, "1m", t0)]["is_closed"] is False
