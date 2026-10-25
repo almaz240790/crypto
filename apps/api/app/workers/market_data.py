@@ -39,7 +39,9 @@ from engine.data.binance import BinanceHistory
 
 log = logging.getLogger("market_data")
 
-WS_URL = "wss://fstream.binance.com/stream?streams="
+WS_URL = "wss://fstream.binance.com/ws"
+"""Подключение без потоков в URL; подписка командой SUBSCRIBE — Binance подтверждает её ответом
+``{"result": null, "id": 1}`` (с длинным URL combined-stream сервер молчал)."""
 STREAMS_PER_CONNECTION = 150
 SILENCE_TIMEOUT = 60
 TIMEFRAMES = (Timeframe.M1, Timeframe.H4, Timeframe.D1, Timeframe.W1)
@@ -291,12 +293,14 @@ class MarketData:
         ]
 
     async def connection(self, streams: list[str], idx: int) -> None:
-        url = WS_URL + "/".join(streams)
         backoff = 1.0
         while not self.stop.is_set():
             try:
-                async with connect(url, ping_interval=20, ping_timeout=20, max_size=2**22) as ws:
-                    log.info("соединение %d: %d потоков", idx, len(streams))
+                async with connect(WS_URL, ping_interval=20, ping_timeout=20, max_size=2**22) as ws:
+                    await ws.send(
+                        json.dumps({"method": "SUBSCRIBE", "params": streams, "id": idx + 1})
+                    )
+                    log.info("соединение %d: подписка на %d потоков", idx, len(streams))
                     backoff = 1.0
                     received = 0
                     while not self.stop.is_set():
@@ -313,7 +317,8 @@ class MarketData:
                             break
                         received += 1
                         msg = json.loads(raw)
-                        data = msg.get("data", {})
+                        # raw-стрим отдаёт событие как есть; combined — в поле "data"
+                        data = msg.get("data", msg) if isinstance(msg, dict) else {}
                         event = data.get("e")
                         if received == 1:
                             log.info("соединение %d: первое сообщение: %s", idx, str(raw)[:200])
