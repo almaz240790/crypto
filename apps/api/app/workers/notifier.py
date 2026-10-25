@@ -2,8 +2,10 @@
 из БД и рассылает письма по настройкам пользователей. Последние обработанные id — в Redis,
 при первом запуске начинает с текущего максимума (старое не рассылает). Heartbeat — в Redis.
 
-Здесь же раз в ``MONITOR_EVERY`` секунд крутится монитор (план 6.7, задача 2.16): проверяет
-heartbeat воркеров и свежесть свечей, открывает инциденты и шлёт алерты владельцам.
+Здесь же пересчитываются снимки статистики (план 2.4): после закрытия сигнала и раз в
+``STATS_EVERY`` секунд. И раз в ``MONITOR_EVERY`` секунд крутится монитор (план 6.7, задача
+2.16): проверяет heartbeat воркеров и свежесть свечей, открывает инциденты и шлёт алерты
+владельцам.
 """
 
 from __future__ import annotations
@@ -24,18 +26,26 @@ from app.db import SessionLocal
 from app.models import Signal, SignalEvent
 from app.monitor import run_monitor
 from app.notify import notify_event, notify_new_signal
+from app.snapshots import recompute
+
+CLOSING = {"closed_sl", "closed_be", "closed_tp3", "closed_time", "expired", "cancelled"}
 
 log = logging.getLogger("notifier")
 POLL = 30
 MONITOR_EVERY = 60
+STATS_EVERY = 600
 HEARTBEAT_KEY = "notifier:heartbeat"
 KEY_SIGNAL = "notifier:last_signal_id"
 KEY_EVENT = "notifier:last_event_id"
 
 
-def process(last_signal: int, last_event: int) -> tuple[int, int, int]:
-    """Синхронно: новые сигналы и события после указанных id. Возвращает новые id и число писем."""
+def process(last_signal: int, last_event: int) -> tuple[int, int, int, bool]:
+    """Синхронно: новые сигналы и события после указанных id.
+
+    Возвращает новые id, число писем и признак «был закрыт сигнал» (повод пересчитать снимки).
+    """
     sent = 0
+    closed = False
     with SessionLocal() as db:
         if last_signal < 0:
             last_signal = db.scalar(select(func.max(Signal.id))) or 0
@@ -55,13 +65,19 @@ def process(last_signal: int, last_event: int) -> tuple[int, int, int]:
             .where(SignalEvent.id > last_event, SignalEvent.type != "created")
             .order_by(SignalEvent.id)
         ).all():
+            closed = closed or ev.type in CLOSING
             try:
                 sent += notify_event(db, ev)
             except Exception:
                 log.exception("событие %s: ошибка рассылки", ev.id)
                 db.rollback()
             last_event = ev.id
-    return last_signal, last_event, sent
+    return last_signal, last_event, sent, closed
+
+
+def stats_once() -> int:
+    with SessionLocal() as db:
+        return recompute(db)
 
 
 def monitor_once() -> str:
@@ -83,6 +99,7 @@ class Notifier:
         last_signal = int(await self.redis.get(KEY_SIGNAL) or -1)
         last_event = int(await self.redis.get(KEY_EVENT) or -1)
         next_monitor = 0.0
+        next_stats = 0.0
         while not self.stop.is_set():
             if time.monotonic() >= next_monitor:
                 next_monitor = time.monotonic() + MONITOR_EVERY
@@ -93,15 +110,23 @@ class Notifier:
                 except Exception:
                     log.exception("цикл монитора")
             try:
-                last_signal, last_event, sent = await asyncio.to_thread(
+                last_signal, last_event, sent, closed = await asyncio.to_thread(
                     process, last_signal, last_event
                 )
                 await self.redis.set(KEY_SIGNAL, last_signal)
                 await self.redis.set(KEY_EVENT, last_event)
                 if sent:
                     log.info("отправлено писем: %d", sent)
+                if closed:
+                    next_stats = 0.0
             except Exception:
                 log.exception("цикл уведомителя")
+            if time.monotonic() >= next_stats:
+                next_stats = time.monotonic() + STATS_EVERY
+                try:
+                    await asyncio.to_thread(stats_once)
+                except Exception:
+                    log.exception("снимки статистики")
             await self.redis.set(HEARTBEAT_KEY, int(time.time()))
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self.stop.wait(), timeout=POLL)

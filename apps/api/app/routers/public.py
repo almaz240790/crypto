@@ -30,6 +30,7 @@ from app.models import (
     User,
 )
 from app.screener import screener_cached
+from app.snapshots import find as find_snapshot
 from app.stats import filter_trades, load_trades, stats_payload, trade_rows, trades_from_run
 from engine.backtest import BacktestTrade
 from engine.candles import Timeframe
@@ -493,12 +494,21 @@ def stats(
         strategy_version_id = db.scalar(
             select(StrategyVersion.id).where(StrategyVersion.version == version)
         )
+    if scope != "backtest" and not (entry_type or s or u):
+        snap = find_snapshot(db, scope, strategy_version_id, symbol, grade)
+        if snap is not None:
+            payload = dict(snap.metrics)
+            payload["scope"] = scope
+            payload["source"] = "snapshot"
+            payload["generated_at"] = snap.computed_at.isoformat()
+            return payload
     trades, meta = _collect_trades(
         db, scope, strategy_version_id, run_id, version, symbol, grade, entry_type, s, u
     )
     payload = stats_payload(trades)
     payload.update(meta)
     payload["scope"] = scope
+    payload["source"] = "live"
     payload["generated_at"] = datetime.now(tz=UTC).isoformat()
     return payload
 
