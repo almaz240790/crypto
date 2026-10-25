@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,3 +20,23 @@ class StructureParams:
     def __post_init__(self) -> None:
         if self.swing_len < 1:
             raise ValueError("swing_len должен быть >= 1")
+
+
+@dataclass(frozen=True, slots=True)
+class ZoneParams:
+    """Зоны интереса (план 2.4)."""
+
+    ob_aggressive: bool = False
+    """OB до high/low свечи (True) или до open (False, консервативно)."""
+    sd_min_impulse_atr: Decimal = Decimal("1.5")
+    """Минимальный импульс после базы в ATR, чтобы база считалась зоной S/D."""
+    sd_base_max_candles: int = 3
+    sd_body_max_ratio: Decimal = Decimal("0.5")
+    """Тело свечи базы меньше этой доли диапазона."""
+    atr_period: int = 14
+
+    def __post_init__(self) -> None:
+        if self.sd_base_max_candles < 1 or self.atr_period < 1:
+            raise ValueError("sd_base_max_candles и atr_period должны быть >= 1")
+        if not (0 < self.sd_body_max_ratio <= 1):
+            raise ValueError("sd_body_max_ratio в (0; 1]")
