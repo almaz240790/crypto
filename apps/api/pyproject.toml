@@ -12,6 +12,8 @@ dependencies = [
     "psycopg[binary]>=3.2",
     "pydantic-settings>=2.6",
     "matplotlib>=3.9",
+    "redis>=5.2",
+    "websockets>=13",
 ]
 
 [tool.uv.sources]
