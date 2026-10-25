@@ -26,6 +26,7 @@ from app.models import (
     Watchlist,
     WatchlistItem,
 )
+from app.notify import send_test, settings_dict, settings_for, unsubscribe
 from app.routers.auth import UserOut, _user_out
 
 router = APIRouter(prefix="/v1", tags=["user"])
@@ -456,3 +457,69 @@ def journal_delete(
     db.delete(e)
     db.commit()
     return Response(status_code=204)
+
+
+# --- уведомления (план 3.11) --------------------------------------------------------------------
+
+
+class NotificationsIn(BaseModel):
+    email_digest: str | None = Field(default=None, pattern="^(daily|weekly|off)$")
+    email_signals: bool | None = None
+    email_events: bool | None = None
+    grades: list[str] | None = Field(default=None, max_length=3)
+    scope: str | None = Field(default=None, pattern="^(all|watchlist)$")
+    quiet_from: int | None = Field(default=None, ge=0, le=23)
+    quiet_to: int | None = Field(default=None, ge=0, le=23)
+    daily_limit: int | None = Field(default=None, ge=1, le=200)
+    clear_quiet: bool = False
+
+
+@router.get("/me/notifications")
+def get_notifications(
+    user: User = Depends(auth.current_user), db: Session = Depends(auth.get_db)
+) -> dict[str, Any]:
+    ns = settings_for(db, user)
+    db.commit()
+    return settings_dict(ns)
+
+
+@router.patch("/me/notifications")
+def update_notifications(
+    body: NotificationsIn,
+    user: User = Depends(auth.current_user),
+    db: Session = Depends(auth.get_db),
+) -> dict[str, Any]:
+    ns = settings_for(db, user)
+    data = body.model_dump(exclude_none=True)
+    data.pop("clear_quiet", None)
+    if "grades" in data:
+        data["grades"] = sorted({g.upper() for g in data["grades"] if g.upper() in ("A", "B", "C")})
+    for k, v in data.items():
+        setattr(ns, k, v)
+    if body.clear_quiet:
+        ns.quiet_from = None
+        ns.quiet_to = None
+    db.commit()
+    return settings_dict(ns)
+
+
+@router.post("/me/notifications/test")
+def test_notification(
+    user: User = Depends(auth.current_user), db: Session = Depends(auth.get_db)
+) -> dict[str, str]:
+    """Тестовое письмо себе (приёмка 2.13). Требует подтверждённый email."""
+    if user.email_verified_at is None:
+        raise HTTPException(400, "сначала подтвердите email")
+    return {"status": send_test(db, user)}
+
+
+class UnsubscribeIn(BaseModel):
+    token: str = Field(min_length=10, max_length=128)
+
+
+@router.post("/notifications/unsubscribe")
+def unsubscribe_all(body: UnsubscribeIn, db: Session = Depends(auth.get_db)) -> dict[str, str]:
+    """Отписка по ссылке из письма — без входа (приёмка 2.13: «отписка работает»)."""
+    if not unsubscribe(db, body.token):
+        raise HTTPException(404, "ссылка отписки недействительна")
+    return {"status": "ok"}

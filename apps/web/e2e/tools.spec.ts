@@ -140,3 +140,39 @@ test("настройки: сохранить риск-профиль", async ({ 
   await expect(page.getByRole("status")).toContainText("Риск-профиль сохранён");
   expect(calls).toContain("PATCH /v1/me/risk");
 });
+
+test("уведомления: сохранить настройки, тестовое письмо, отписка по ссылке", async ({ page }) => {
+  const calls: string[] = [];
+  await mock(page, calls, { watch: [], journal: [] });
+  let ns = { email_digest: "daily", email_signals: false, email_events: false, grades: ["A", "B", "C"], scope: "all", quiet_from: null, quiet_to: null, daily_limit: 20, telegram_linked: false };
+  await page.route("**/v1/me/notifications**", (route) => {
+    const req = route.request();
+    const p = new URL(req.url()).pathname;
+    calls.push(`${req.method()} ${p}`);
+    if (p.endsWith("/test")) return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ status: "отправлено" }) });
+    if (req.method() === "PATCH") ns = { ...ns, ...(req.postDataJSON() as object) };
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(ns) });
+  });
+  await page.route("**/v1/notifications/unsubscribe", (route) => {
+    const b = route.request().postDataJSON() as { token: string };
+    return b.token === "good" ? route.fulfill({ status: 200, contentType: "application/json", body: '{"status":"ok"}' }) : route.fulfill({ status: 404, contentType: "application/json", body: '{"detail":"ссылка отписки недействительна"}' });
+  });
+  await page.goto("/settings");
+  await page.getByLabel("Письма о новых сигналах").selectOption("on");
+  await page.getByRole("checkbox", { name: "C" }).uncheck();
+  await page.getByLabel("Тихие часы с (UTC)").selectOption("22");
+  await page.getByLabel("до (UTC)").selectOption("7");
+  await page.getByRole("button", { name: "Сохранить уведомления" }).click();
+  await expect(page.getByRole("status")).toContainText("Уведомления сохранены");
+  expect(ns.email_signals).toBe(true);
+  expect(ns.grades).toEqual(["A", "B"]);
+  expect(ns.quiet_from).toBe(22);
+  await page.getByRole("button", { name: "Отправить тестовое письмо" }).click();
+  await expect(page.getByRole("status")).toContainText("Тестовое письмо: отправлено");
+  await page.goto("/unsubscribe?token=bad");
+  await page.getByRole("button", { name: "Отписаться" }).click();
+  await expect(page.getByRole("alert").filter({ hasText: "недействительна" })).toBeVisible();
+  await page.goto("/unsubscribe?token=good");
+  await page.getByRole("button", { name: "Отписаться" }).click();
+  await expect(page.getByRole("status")).toContainText("Вы отписаны");
+});
