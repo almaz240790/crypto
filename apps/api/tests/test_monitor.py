@@ -57,3 +57,12 @@ def test_engine_not_run_and_stream_silent() -> None:
     assert c["data"].status == "down"
     c = _by(evaluate(_snap(redis_ok=False)))
     assert c["api"].status == "down" and overall(evaluate(_snap(redis_ok=False))) == "down"
+
+
+def test_parse_done_key_is_utc_aware() -> None:
+    from app.monitor import parse_done_key
+
+    d = parse_done_key("sched:done:BTCUSDT:20261025T0800")
+    assert d == datetime(2026, 10, 25, 8, tzinfo=UTC)
+    assert d.tzinfo is not None
+    assert parse_done_key("sched:done:BTCUSDT:bad") is None
