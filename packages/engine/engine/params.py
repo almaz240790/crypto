@@ -40,3 +40,18 @@ class ZoneParams:
             raise ValueError("sd_base_max_candles и atr_period должны быть >= 1")
         if not (0 < self.sd_body_max_ratio <= 1):
             raise ValueError("sd_body_max_ratio в (0; 1]")
+
+
+@dataclass(frozen=True, slots=True)
+class LiquidityParams:
+    """Ликвидность (план 2.4)."""
+
+    equal_tolerance_atr: Decimal = Decimal("0.1")
+    """Разница между экстремумами меньше этой доли ATR — «равные» максимумы/минимумы."""
+    equal_max_gap: int = 60
+    """Максимум свечей между соседними swing-ами одного уровня."""
+    atr_period: int = 14
+
+    def __post_init__(self) -> None:
+        if self.equal_tolerance_atr <= 0 or self.equal_max_gap < 1 or self.atr_period < 1:
+            raise ValueError("некорректные параметры LiquidityParams")
