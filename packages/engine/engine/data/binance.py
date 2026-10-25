@@ -112,13 +112,18 @@ class BinanceHistory:
         out: list[Candle] = []
         cursor = int(start.timestamp() * 1000)
         end_ms = int(end.timestamp() * 1000)
+        step_ms = tf.seconds * 1000
         while cursor < end_ms:
+            # Вес запроса у Binance растёт с limit (≤100 → 1, ≤500 → 2, ≤1000 → 5, иначе 10):
+            # просим ровно столько свечей, сколько помещается в окно, а не всегда 1500.
+            need = (end_ms - cursor + step_ms - 1) // step_ms + 1
+            limit = max(1, min(REST_LIMIT, need))
             params = {
                 "symbol": symbol,
                 "interval": tf.value,
                 "startTime": cursor,
                 "endTime": end_ms,
-                "limit": REST_LIMIT,
+                "limit": limit,
             }
             resp = self._client.get(REST_BASE[self.market], params=params)
             resp.raise_for_status()
@@ -127,8 +132,8 @@ class BinanceHistory:
                 break
             batch = [parse_kline_row(r) for r in rows]
             out.extend(batch)
-            cursor = int(batch[-1].open_time.timestamp() * 1000) + tf.seconds * 1000
-            if len(rows) < REST_LIMIT:
+            cursor = int(batch[-1].open_time.timestamp() * 1000) + step_ms
+            if len(rows) < limit:
                 break
         return out
 

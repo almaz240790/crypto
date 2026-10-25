@@ -25,6 +25,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
+import httpx
 import redis.asyncio as aioredis
 from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert
@@ -48,7 +49,8 @@ SILENCE_TIMEOUT = 60
 POLL_EVERY = 15
 """REST-опрос при молчащем стриме: 1m каждые 15 с, старшие tf — каждую минуту.
 Вес ~400/мин при 59 инструментах (лимит Binance 2400/мин). Ликвидации по REST недоступны."""
-POLL_WORKERS = 4
+POLL_WORKERS = 2
+RATE_LIMIT_PAUSE = 120
 TIMEFRAMES = (Timeframe.M1, Timeframe.H4, Timeframe.D1, Timeframe.W1)
 FLUSH_EVERY = 1.0
 DERIVATIVES_EVERY = 300
@@ -81,6 +83,7 @@ class MarketData:
         self.ws_silent = False
         self.n_polled = 0
         self.last_closed: dict[tuple[int, str], datetime] = {}
+        self.poll_pause_until = 0.0  # 429/418 от Binance: пауза опроса до этого момента
 
     # --- инструменты и догрузка ----------------------------------------------------------------
     def load_symbols(self) -> None:
@@ -184,8 +187,22 @@ class MarketData:
         now = datetime.now(tz=UTC)
         n = 0
         for tf in tfs:
+            if time.time() < self.poll_pause_until:
+                return n
             try:
                 candles = history.fetch_rest(symbol, tf, now - tf.delta * 2, now)
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code in (418, 429):
+                    retry = int(exc.response.headers.get("Retry-After") or RATE_LIMIT_PAUSE)
+                    self.poll_pause_until = time.time() + max(retry, RATE_LIMIT_PAUSE)
+                    log.warning(
+                        "Binance %s: лимит запросов, пауза опроса %d с",
+                        exc.response.status_code,
+                        max(retry, RATE_LIMIT_PAUSE),
+                    )
+                    return n
+                log.warning("%s %s: REST-опрос не удался: %s", symbol, tf.value, exc)
+                continue
             except Exception as exc:
                 log.warning("%s %s: REST-опрос не удался: %s", symbol, tf.value, exc)
                 continue
@@ -202,7 +219,7 @@ class MarketData:
         with ThreadPoolExecutor(max_workers=POLL_WORKERS) as pool:
             while not self.stop.is_set():
                 await asyncio.sleep(POLL_EVERY)
-                if not self.ws_silent:
+                if not self.ws_silent or time.time() < self.poll_pause_until:
                     continue
                 cycle += 1
                 tfs: tuple[Timeframe, ...] = TIMEFRAMES if cycle % 4 == 0 else (Timeframe.M1,)
