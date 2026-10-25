@@ -8,13 +8,13 @@ from __future__ import annotations
 
 import io
 import random
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import matplotlib
 from fastapi import APIRouter, HTTPException, Query, Response
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from sqlalchemy import text
 
 from app.config import settings
@@ -336,3 +336,64 @@ def backtest_detail(
     if trades:
         out["trades"] = r[7]
     return out
+
+
+@router.get("/export/candles.csv")
+def export_candles(symbol: str, token: str | None = None, tf: str = "4h") -> StreamingResponse:
+    """Выгрузка свечей инструмента CSV (для локальных прогонов бэктеста)."""
+    _check(token)
+    timeframe = Timeframe(tf)
+
+    def rows() -> Iterator[str]:
+        yield "open_time,open,high,low,close,volume,quote_volume,trades\n"
+        with db_engine.connect() as conn:
+            result = conn.execution_options(stream_results=True).execute(
+                text(
+                    "select c.open_time, c.open, c.high, c.low, c.close, c.volume, "
+                    "c.quote_volume, c.trades from candles c "
+                    "join instruments i on i.id = c.instrument_id "
+                    "where i.symbol = :s and i.market_type = 'futures' and c.timeframe = :tf "
+                    "order by c.open_time"
+                ),
+                {"s": symbol.upper(), "tf": timeframe.value},
+            )
+            for r in result:
+                yield f"{int(r[0].timestamp())},{r[1]},{r[2]},{r[3]},{r[4]},{r[5]},{r[6]},{r[7]}\n"
+
+    name = f"{symbol.upper()}-{timeframe.value}.csv"
+    return StreamingResponse(
+        rows(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={name}"},
+    )
+
+
+@router.get("/export/derivatives.csv")
+def export_derivatives(
+    symbol: str, token: str | None = None, what: str = "funding"
+) -> StreamingResponse:
+    """funding: time,rate; oi: time,oi_quote; ls: time,top_traders_ratio,global_ratio."""
+    _check(token)
+    queries = {
+        "funding": "select f.funding_time, f.rate from funding_rates f",
+        "oi": "select o.time, o.oi_quote from open_interest o",
+        "ls": "select l.time, l.top_traders_ratio, l.global_ratio from long_short_ratios l",
+    }
+    if what not in queries:
+        raise HTTPException(400, "what: funding | oi | ls")
+    alias = queries[what].split()[-1]
+    time_col = "funding_time" if what == "funding" else "time"
+
+    def rows() -> Iterator[str]:
+        with db_engine.connect() as conn:
+            result = conn.execution_options(stream_results=True).execute(
+                text(
+                    f"{queries[what]} join instruments i on i.id = {alias}.instrument_id "
+                    f"where i.symbol = :s and i.market_type = 'futures' order by {alias}.{time_col}"
+                ),
+                {"s": symbol.upper()},
+            )
+            for r in result:
+                yield ",".join([str(int(r[0].timestamp())), *(str(x) for x in r[1:])]) + "\n"
+
+    return StreamingResponse(rows(), media_type="text/csv")

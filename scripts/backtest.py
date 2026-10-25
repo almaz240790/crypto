@@ -39,8 +39,60 @@ from engine.derivatives import FundingRate, LongShortRatio, OpenInterest
 from engine.params import StrategyParams
 from engine.signal import MarketInputs
 
+DATA_DIR: Path | None = None
+"""Если задан (--data-dir), свечи и деривативы читаются из CSV-выгрузок /debug/export вместо БД."""
+
+
+def _csv_candles(symbol: str, tf: Timeframe, start: datetime, end: datetime) -> list[Candle]:
+    assert DATA_DIR is not None
+    path = DATA_DIR / f"{symbol}-{tf.value}.csv"
+    if not path.exists():
+        return []
+    out: list[Candle] = []
+    with path.open() as f:
+        next(f)
+        for line in f:
+            ts, o, h, lo, c, v, qv, n = line.rstrip("\n").split(",")
+            t = datetime.fromtimestamp(int(ts), tz=UTC)
+            if start <= t < end:
+                out.append(
+                    Candle(
+                        t,
+                        Decimal(o),
+                        Decimal(h),
+                        Decimal(lo),
+                        Decimal(c),
+                        Decimal(v),
+                        Decimal(qv),
+                        int(n),
+                    )
+                )
+    return out
+
+
+def _csv_derivatives(
+    symbol: str, start: datetime, end: datetime
+) -> tuple[list[FundingRate], list[OpenInterest], list[LongShortRatio]]:
+    assert DATA_DIR is not None
+
+    def read(name: str) -> list[list[str]]:
+        path = DATA_DIR / f"{symbol}-{name}.csv"
+        if not path.exists():
+            return []
+        rows = [line.rstrip("\n").split(",") for line in path.open() if line.strip()]
+        return [r for r in rows if start <= datetime.fromtimestamp(int(r[0]), tz=UTC) < end]
+
+    ts = lambda r: datetime.fromtimestamp(int(r[0]), tz=UTC)  # noqa: E731
+    return (
+        [FundingRate(ts(r), Decimal(r[1])) for r in read("funding")],
+        [OpenInterest(ts(r), Decimal(r[1])) for r in read("oi")],
+        [LongShortRatio(ts(r), Decimal(r[1]) / (1 + Decimal(r[1]))) for r in read("ls")],
+    )
+
 
 def load_candles(symbol: str, tf: Timeframe, start: datetime, end: datetime) -> list[Candle]:
+    if DATA_DIR is not None:
+        return _csv_candles(symbol, tf, start, end)
     with db_engine.connect() as conn:
         rows = conn.execute(
             text(
@@ -58,6 +110,8 @@ def load_candles(symbol: str, tf: Timeframe, start: datetime, end: datetime) -> 
 def load_derivatives(
     symbol: str, start: datetime, end: datetime
 ) -> tuple[list[FundingRate], list[OpenInterest], list[LongShortRatio]]:
+    if DATA_DIR is not None:
+        return _csv_derivatives(symbol, start, end)
     with db_engine.connect() as conn:
         inst = conn.execute(
             text("select id from instruments where symbol = :s and market_type = 'futures'"),
@@ -93,6 +147,32 @@ def load_derivatives(
     )
 
 
+def override_params(
+    base: StrategyParams, overrides: dict[str, dict[str, object]]
+) -> StrategyParams:
+    """{"trade": {"tp2_min_r": "2.5"}, "version": "..."} → новый StrategyParams."""
+    from dataclasses import fields, replace
+
+    kwargs: dict[str, object] = {}
+    for group, values in overrides.items():
+        if group == "version":
+            kwargs["version"] = values
+            continue
+        sub = getattr(base, group)
+        typed: dict[str, object] = {}
+        for f in fields(sub):
+            if f.name in values:  # type: ignore[operator]
+                raw = values[f.name]  # type: ignore[index]
+                current = getattr(sub, f.name)
+                typed[f.name] = (
+                    type(current)(raw)
+                    if isinstance(current, (Decimal, int)) and not isinstance(current, bool)
+                    else raw
+                )
+        kwargs[group] = replace(sub, **typed)  # type: ignore[arg-type]
+    return replace(base, **kwargs)  # type: ignore[arg-type]
+
+
 def _dec(o: object) -> object:
     if isinstance(o, Decimal):
         return float(round(o, 4))
@@ -103,6 +183,26 @@ def _dec(o: object) -> object:
 
 def metrics_dict(m: Metrics) -> dict[str, object]:
     return asdict(m)
+
+
+def trade_dict(t: BacktestTrade) -> dict[str, object]:
+    return {
+        "symbol": t.symbol,
+        "direction": t.direction.value,
+        "signal_time": t.signal_time.isoformat(),
+        "grade": t.grade.value,
+        "score": t.score,
+        "rr_tp2": str(t.rr_tp2),
+        "entry": str(t.entry),
+        "stop": str(t.stop),
+        "status": t.result.status.value,
+        "realized_r": str(t.result.realized_r),
+        "tp_hits": t.result.tp_hits,
+        "mfe_r": str(t.result.max_favorable_r),
+        "mae_r": str(t.result.max_adverse_r),
+        "exit_time": t.exit_time.isoformat() if t.exit_time else None,
+        "facts": list(t.facts),
+    }
 
 
 def trade_row(t: BacktestTrade) -> str:
@@ -143,6 +243,11 @@ def main() -> int:
     p.add_argument("--note", default="", help="комментарий к прогону (сохраняется в БД)")
     p.add_argument("--no-save", action="store_true", help="не сохранять прогон в backtest_runs")
     p.add_argument(
+        "--data-dir", type=Path, help="читать CSV-выгрузки вместо БД (локальные прогоны)"
+    )
+    p.add_argument("--params-json", type=Path, help="JSON с переопределением параметров стратегии")
+    p.add_argument("--out", type=Path, help="сохранить сводку и сделки в JSON-файл")
+    p.add_argument(
         "--no-derivatives", action="store_true", help="не использовать funding/OI/long-short"
     )
     args = p.parse_args()
@@ -157,7 +262,11 @@ def main() -> int:
     if not symbols:
         p.error("укажите --symbols или --symbols-file")
 
+    global DATA_DIR
+    DATA_DIR = args.data_dir
     params = StrategyParams()
+    if args.params_json:
+        params = override_params(params, json.loads(args.params_json.read_text()))
     start = datetime(args.start.year, args.start.month, args.start.day, tzinfo=UTC)
     end = datetime(args.end.year, args.end.month, args.end.day, tzinfo=UTC)
     warmup = start - timedelta(days=200)  # история для структуры, EMA50 D1 и ATR-перцентилей
@@ -218,7 +327,7 @@ def main() -> int:
             for k, v in breakdown(run.trades, lambda t: t.direction.value).items()
         },
     }
-    if not args.no_save:
+    if not args.no_save and DATA_DIR is None:
         trades_json = [
             {
                 "symbol": t.symbol,
@@ -258,6 +367,14 @@ def main() -> int:
             session.add(row)
             session.commit()
             print(f"сохранено: backtest_runs.id={row.id}", flush=True)
+    if args.out:
+        args.out.write_text(
+            json.dumps(
+                {"summary": summary, "trades": [trade_dict(t) for t in run.trades]},
+                default=_dec,
+                ensure_ascii=False,
+            )
+        )
     print("BACKTEST_SUMMARY " + json.dumps(summary, default=_dec, ensure_ascii=False), flush=True)
     if args.trades:
         print(
