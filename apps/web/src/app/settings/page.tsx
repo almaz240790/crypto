@@ -5,12 +5,12 @@ import { useEffect, useState, type FormEvent } from "react";
 import { AppShell } from "@/components/app/AppShell";
 import { useAuth } from "@/components/auth/AuthProvider";
 import s from "@/components/tools/tools.module.css";
+import { NotificationsPanel } from "@/components/settings/Notifications";
 import { applyTheme } from "@/components/ui/ThemeToggle";
 import { Button, EmptyState, Input, Panel, Select } from "@/components/ui";
 import { patchProfile, patchRisk, pwnedCount } from "@/lib/auth-client";
 import { changePassword, deleteAccount, exportData, getIdentities } from "@/lib/user";
 
-const TG_BOT = process.env.NEXT_PUBLIC_TELEGRAM_BOT;
 const TZ = ["UTC", "Europe/Moscow", "Europe/Kyiv", "Europe/Berlin", "Europe/London", "Asia/Almaty", "Asia/Tashkent", "Asia/Dubai", "Asia/Singapore", "Asia/Tokyo", "America/New_York", "America/Los_Angeles"];
 
 export default function SettingsPage() {
@@ -187,23 +187,7 @@ export default function SettingsPage() {
               </div>
             </form>
           </Panel>
-          <Panel title="Уведомления" footer="Логика сигналов одинакова для всех каналов.">
-            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 14, display: "grid", gap: 6 }}>
-              <li>Email-дайджест раз в день — включён для подтверждённого адреса.</li>
-              <li>
-                Telegram —{" "}
-                {TG_BOT ? (
-                  <a href={`https://t.me/${TG_BOT}?start=${user.id}`} target="_blank" rel="noreferrer">
-                    открыть бота
-                  </a>
-                ) : (
-                  "появится вместе с запуском уведомлений"
-                )}
-                .
-              </li>
-              <li>Push в браузере — после установки приложения на телефон.</li>
-            </ul>
-          </Panel>
+          <NotificationsPanel userId={user.id} onMessage={note} />
         </div>
         <Panel title="Данные и аккаунт" footer="Удаление необратимо: email анонимизируется, сессии отзываются, записи журнала остаются в базе без привязки к вам 30 дней на случай ошибки.">
           <div className={s.form}>

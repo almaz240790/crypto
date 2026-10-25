@@ -134,3 +134,42 @@ class JournalEntry(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class NotificationSettings(Base):
+    """Настройки уведомлений (план 3.11): каналы, типы, градации, инструменты, тихие часы."""
+
+    __tablename__ = "notification_settings"
+
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    email_digest: Mapped[str] = mapped_column(String(8), default="daily")  # daily / weekly / off
+    email_signals: Mapped[bool] = mapped_column(Boolean, default=False)
+    """Письмо о каждом новом сигнале (с учётом градаций, инструментов, тихих часов)."""
+    email_events: Mapped[bool] = mapped_column(Boolean, default=False)
+    """Письма о событиях: вход, TP, безубыток, стоп, истечение."""
+    grades: Mapped[list[Any]] = mapped_column(JSONB, default=lambda: ["A", "B", "C"])
+    scope: Mapped[str] = mapped_column(String(10), default="all")  # all / watchlist
+    quiet_from: Mapped[int | None] = mapped_column(Integer)  # час UTC, начало тихих часов
+    quiet_to: Mapped[int | None] = mapped_column(Integer)
+    daily_limit: Mapped[int] = mapped_column(Integer, default=20)
+    sent_day: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    sent_today: Mapped[int] = mapped_column(Integer, default=0)
+    unsubscribe_token: Mapped[str] = mapped_column(String(64), unique=True)
+    telegram_chat_id: Mapped[str | None] = mapped_column(String(32))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class NotificationLog(Base):
+    """Что и кому отправлено — для лимитов, повторов и аудита."""
+
+    __tablename__ = "notification_log"
+    __table_args__ = (UniqueConstraint("user_id", "channel", "kind", "ref"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    channel: Mapped[str] = mapped_column(String(10))  # email / telegram / push
+    kind: Mapped[str] = mapped_column(String(16))  # signal / event / digest / test
+    ref: Mapped[str] = mapped_column(String(64))  # public_id сигнала, id события, дата дайджеста
+    sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
