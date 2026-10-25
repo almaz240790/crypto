@@ -1,0 +1,52 @@
+"use client";
+
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
+import { Button } from "@/components/ui";
+import { consumeMagic, verifyEmail } from "@/lib/auth-client";
+import { useAuth } from "./AuthProvider";
+import s from "./AuthCard.module.css";
+
+/** Страницы по ссылке из письма: /verify?token и /magic?token. Выполняется один раз. */
+export function TokenAction({ kind, token }: { kind: "verify" | "magic"; token: string | null }) {
+  const router = useRouter();
+  const { reload } = useAuth();
+  const ran = useRef(false);
+  const [state, setState] = useState<"busy" | "ok" | "error">(token ? "busy" : "error");
+  const [msg, setMsg] = useState(token ? "" : "в ссылке нет токена");
+
+  useEffect(() => {
+    if (ran.current || !token) return;
+    ran.current = true;
+    (async () => {
+      try {
+        if (kind === "verify") {
+          await verifyEmail(token);
+          setState("ok");
+          setMsg("Email подтверждён.");
+        } else {
+          await consumeMagic(token);
+          await reload();
+          router.replace("/signals");
+        }
+      } catch (e) {
+        setState("error");
+        setMsg(e instanceof Error ? e.message : "ссылка недействительна");
+      }
+    })();
+  }, [kind, token, reload, router]);
+
+  if (state === "busy") return <p className="text-2">Проверяем ссылку…</p>;
+  return (
+    <div className={s.form}>
+      <div className={state === "ok" ? s.ok : s.error} role="status">
+        {msg}
+      </div>
+      <div className={s.row}>
+        <Button href="/signals">К сигналам</Button>
+        {state === "error" && <Link href="/login">Войти заново</Link>}
+      </div>
+    </div>
+  );
+}

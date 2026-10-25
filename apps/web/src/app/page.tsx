@@ -15,6 +15,9 @@ import { getClosedSignals, getHealth, getStats, type Metrics } from "@/lib/api";
 import { formatDuration, formatPct, formatR, formatTimeUTC, plural } from "@/lib/format";
 import s from "./page.module.css";
 
+// Рендер на каждый запрос (данные fetch кэшируются на 60 с): при сборке образа API недоступен.
+export const dynamic = "force-dynamic";
+
 export const metadata: Metadata = {
   title: "Platform — сигналы на H4 с публичной статистикой каждой сделки",
   description:

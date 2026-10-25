@@ -1,0 +1,116 @@
+"use client";
+
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useCallback, useMemo, useState, type FormEvent } from "react";
+import { DISCLAIMER } from "@/components/site";
+import { Button, Input, Select } from "@/components/ui";
+import { pwnedCount, register } from "@/lib/auth-client";
+import { countryOptions } from "@/lib/countries";
+import { useAuth } from "./AuthProvider";
+import s from "./AuthCard.module.css";
+import { Social } from "./Social";
+
+const MIN = 10;
+
+export function RegisterForm({ next }: { next: string }) {
+  const router = useRouter();
+  const { reload } = useAuth();
+  const countries = useMemo(() => countryOptions("ru"), []);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [name, setName] = useState("");
+  const [country, setCountry] = useState("");
+  const [terms, setTerms] = useState(false);
+  const [marketing, setMarketing] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [pwError, setPwError] = useState<string | null>(null);
+
+  const done = useCallback(async () => {
+    await reload();
+    router.replace(next);
+  }, [reload, router, next]);
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    setError(null);
+    if (password.length < MIN) {
+      setPwError(`минимум ${MIN} символов`);
+      return;
+    }
+    setBusy(true);
+    try {
+      const n = await pwnedCount(password);
+      if (n && n > 0) {
+        setPwError(`этот пароль встречается в утечках (${n.toLocaleString("ru-RU")} раз), выберите другой`);
+        return;
+      }
+      await register({
+        email,
+        password,
+        name: name.trim() || undefined,
+        country: country || undefined,
+        marketing_opt_in: marketing,
+      });
+      await done();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "не удалось зарегистрироваться");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form className={s.form} onSubmit={submit} noValidate>
+      {error && (
+        <div className={s.error} role="alert">
+          {error}
+        </div>
+      )}
+      <Input label="Email" type="email" name="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
+      <Input
+        label="Пароль"
+        type="password"
+        name="password"
+        autoComplete="new-password"
+        required
+        minLength={MIN}
+        value={password}
+        onChange={(e) => {
+          setPassword(e.target.value);
+          setPwError(null);
+        }}
+        error={pwError}
+        hint={`не короче ${MIN} символов; проверяется по базе утечек`}
+      />
+      <Input label="Имя (необязательно)" name="name" autoComplete="name" maxLength={100} value={name} onChange={(e) => setName(e.target.value)} />
+      <Select label="Страна" name="country" value={country} onChange={(e) => setCountry(e.target.value)} hint="нужна для соблюдения ограничений по юрисдикциям">
+        <option value="">— не указывать —</option>
+        {countries.map((c) => (
+          <option key={c.code} value={c.code}>
+            {c.name}
+          </option>
+        ))}
+      </Select>
+      <label className={s.check}>
+        <input type="checkbox" name="terms" checked={terms} onChange={(e) => setTerms(e.target.checked)} required />
+        <span>
+          Я принимаю условия использования и понимаю: {DISCLAIMER}
+        </span>
+      </label>
+      <label className={s.check}>
+        <input type="checkbox" name="marketing" checked={marketing} onChange={(e) => setMarketing(e.target.checked)} />
+        <span>Получать письма о новых функциях (не чаще раза в месяц)</span>
+      </label>
+      <Button type="submit" variant="primary" block disabled={busy || !email || !password || !terms}>
+        {busy ? "Проверяем…" : "Создать аккаунт"}
+      </Button>
+      <Social next={next} onDone={done} onError={setError} />
+      <div className={s.row}>
+        <span className="text-2">Уже есть аккаунт?</span>
+        <Link href={`/login?next=${encodeURIComponent(next)}`}>Войти</Link>
+      </div>
+    </form>
+  );
+}
