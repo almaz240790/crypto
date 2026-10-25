@@ -199,6 +199,8 @@ def main() -> int:
         "entry": args.entry,
         "evaluated_candles": run.evaluated,
         "skipped": dict(run.skipped),
+        "skipped_by_symbol": {k: dict(v) for k, v in run.skipped_by_symbol.items()},
+        "block_reasons": dict(sorted(run.block_reasons.items(), key=lambda kv: -kv[1])[:30]),
         "elapsed_sec": round(elapsed),
         "metrics": metrics_dict(summarize(run.trades)),
         "by_grade": {

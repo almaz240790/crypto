@@ -121,6 +121,7 @@ def test_run_backtest_on_synthetic_setup() -> None:
     assert t.symbol == "BTCUSDT" and t.direction is Direction.UP and t.grade.value == "B"
     assert t.result.tp_hits >= 2 and t.exit_time is not None
     assert run.skipped["trigger"] >= 1
+    assert run.skipped_by_symbol["BTCUSDT"]["trigger"] == run.skipped["trigger"]
     m = summarize(run.trades)
     assert m.closed == 1 and m.winrate == D(1) and m.sum_r == t.realized_r
     assert breakdown(run.trades, lambda x: x.grade.value)["B"].closed == 1
