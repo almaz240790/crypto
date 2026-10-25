@@ -37,19 +37,26 @@ class MetricsSample:
     time: datetime
     oi_contracts: Decimal
     oi_quote: Decimal
-    top_traders_ratio: Decimal
-    """Long/short ratio топ-трейдеров по числу аккаунтов (long/short, не доля)."""
-    global_ratio: Decimal
-    taker_ratio: Decimal
+    top_traders_ratio: Decimal | None
+    """Long/short ratio топ-трейдеров по числу аккаунтов (long/short, не доля).
+    В архивах до середины 2022 года поля пустые — тогда None."""
+    global_ratio: Decimal | None
+    taker_ratio: Decimal | None
 
     @property
-    def top_long_pct(self) -> Decimal:
+    def has_ratios(self) -> bool:
+        return self.top_traders_ratio is not None and self.global_ratio is not None
+
+    @property
+    def top_long_pct(self) -> Decimal | None:
         """Доля лонгов 0–1 из отношения long/short."""
-        return self.top_traders_ratio / (1 + self.top_traders_ratio)
+        r = self.top_traders_ratio
+        return None if r is None else r / (1 + r)
 
     @property
-    def global_long_pct(self) -> Decimal:
-        return self.global_ratio / (1 + self.global_ratio)
+    def global_long_pct(self) -> Decimal | None:
+        r = self.global_ratio
+        return None if r is None else r / (1 + r)
 
 
 def _read_csv_from_zip(content: bytes) -> list[list[str]]:
@@ -71,6 +78,11 @@ def parse_funding_rows(rows: list[list[str]]) -> list[FundingRate]:
     return out
 
 
+def _opt(value: str) -> Decimal | None:
+    value = value.strip()
+    return Decimal(value) if value else None
+
+
 def parse_metrics_rows(rows: list[list[str]], step_minutes: int = 60) -> list[MetricsSample]:
     """Оставляет записи, у которых минута кратна ``step_minutes`` (по умолчанию — каждый час)."""
     out: list[MetricsSample] = []
@@ -85,9 +97,9 @@ def parse_metrics_rows(rows: list[list[str]], step_minutes: int = 60) -> list[Me
                 time=t,
                 oi_contracts=Decimal(row[2]),
                 oi_quote=Decimal(row[3]),
-                top_traders_ratio=Decimal(row[4]),
-                global_ratio=Decimal(row[6]),
-                taker_ratio=Decimal(row[7]),
+                top_traders_ratio=_opt(row[4]),
+                global_ratio=_opt(row[6]),
+                taker_ratio=_opt(row[7]),
             )
         )
     out.sort(key=lambda r: r.time)

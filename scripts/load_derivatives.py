@@ -69,6 +69,9 @@ def upsert_metrics(session, instrument_id: int, rows: list[MetricsSample]) -> in
             set_={"oi_contracts": oi.excluded.oi_contracts, "oi_quote": oi.excluded.oi_quote},
         )
     )
+    with_ratios = [r for r in rows if r.has_ratios]
+    if not with_ratios:
+        return len(rows)
     ls = insert(LongShortRatioRow).values(
         [
             {
@@ -78,7 +81,7 @@ def upsert_metrics(session, instrument_id: int, rows: list[MetricsSample]) -> in
                 "global_ratio": r.global_ratio,
                 "taker_ratio": r.taker_ratio,
             }
-            for r in rows
+            for r in with_ratios
         ]
     )
     session.execute(
