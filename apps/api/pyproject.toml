@@ -11,6 +11,7 @@ dependencies = [
     "alembic>=1.14",
     "psycopg[binary]>=3.2",
     "pydantic-settings>=2.6",
+    "matplotlib>=3.9",
 ]
 
 [tool.uv.sources]
