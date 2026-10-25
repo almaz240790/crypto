@@ -158,7 +158,11 @@ def simulate_trade(
                 tp1_only = exit_r
             if full_tp2 is None:
                 full_tp2 = exit_r
-            status = TradeStatus.CLOSED_BE if hits >= 1 else TradeStatus.CLOSED_SL
+            status = (
+                TradeStatus.CLOSED_BE
+                if hits >= 1 and trade_params.be_after_tp1
+                else TradeStatus.CLOSED_SL
+            )
             exit_index = i
             break
         while hits < 3 and hit_above(c, tps[hits]):
@@ -167,7 +171,8 @@ def simulate_trade(
             remaining -= split[hits]
             hits += 1
             if hits == 1:
-                stop = entry_price  # безубыток
+                if trade_params.be_after_tp1:
+                    stop = entry_price  # безубыток
                 tp1_only = tp_r
             if hits == 2 and full_tp2 is None:
                 full_tp2 = tp_r
