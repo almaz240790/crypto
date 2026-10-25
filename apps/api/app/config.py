@@ -17,6 +17,10 @@ class Settings(BaseSettings):
     mail_from: str = "Platform <noreply@platform.local>"
     resend_api_key: str | None = None
     """Если не задан — письма пишутся в лог (local/staging)."""
+    vapid_private_key: str | None = None
+    vapid_public_key: str | None = None
+    """Ключи Web Push (base64url, P-256). Без них push не отправляется."""
+    vapid_subject: str = "mailto:support@platform.local"
     owner_emails: str = ""
     """Email владельцев через запятую: при входе получают роль owner (до админки 2.14)."""
 

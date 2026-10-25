@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import s from "@/components/tools/tools.module.css";
 import { Button, EmptyState, Input, Panel, Select } from "@/components/ui";
 import { api } from "@/lib/auth-client";
+import { currentSubscription, pushSupported, subscribePush, testPush, unsubscribePush } from "@/lib/push";
 
 export type NotificationSettings = {
   email_digest: "daily" | "weekly" | "off";
@@ -14,6 +15,8 @@ export type NotificationSettings = {
   quiet_from: number | null;
   quiet_to: number | null;
   daily_limit: number;
+  push_signals: boolean;
+  push_events: boolean;
   telegram_linked: boolean;
 };
 
@@ -23,6 +26,16 @@ export function NotificationsPanel({ userId, onMessage }: { userId: number; onMe
   const [ns, setNs] = useState<NotificationSettings | null>(null);
   const [draft, setDraft] = useState<Partial<NotificationSettings> | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [pushState, setPushState] = useState<"unknown" | "on" | "off" | "unsupported">("unknown");
+  useEffect(() => {
+    if (!pushSupported()) {
+      queueMicrotask(() => setPushState("unsupported"));
+      return;
+    }
+    currentSubscription()
+      .then((s) => setPushState(s ? "on" : "off"))
+      .catch(() => setPushState("off"));
+  }, []);
 
   useEffect(() => {
     api<NotificationSettings>("/v1/me/notifications")
@@ -116,6 +129,45 @@ export function NotificationsPanel({ userId, onMessage }: { userId: number; onMe
             ))}
           </Select>
         </div>
+        <div className={s.row}>
+          <Select label="Push о сигналах" value={v("push_signals") ? "on" : "off"} onChange={(e) => set("push_signals", e.target.value === "on")}>
+            <option value="on">да</option>
+            <option value="off">нет</option>
+          </Select>
+          <Select label="Push о событиях" value={v("push_events") ? "on" : "off"} onChange={(e) => set("push_events", e.target.value === "on")}>
+            <option value="on">да</option>
+            <option value="off">нет</option>
+          </Select>
+          <div>
+            <div className="caption" style={{ marginBottom: 4 }}>
+              Push на этом устройстве
+            </div>
+            <div className={s.actions}>
+              {pushState === "unsupported" ? (
+                <span className="caption">браузер не поддерживает push (на iPhone — установите приложение на экран «Домой»)</span>
+              ) : (
+                <>
+                  <Button type="button" size="sm" variant={pushState === "on" ? "default" : "primary"} onClick={async () => {
+                    try {
+                      const msg = pushState === "on" ? await unsubscribePush() : await subscribePush();
+                      setPushState(pushState === "on" ? "off" : msg === "подписка включена" ? "on" : "off");
+                      onMessage(msg, msg === "подписка включена" || msg === "подписка выключена" ? "ok" : "error");
+                    } catch (err) {
+                      onMessage(err instanceof Error ? err.message : "ошибка", "error");
+                    }
+                  }}>
+                    {pushState === "on" ? "Выключить push здесь" : "Включить push здесь"}
+                  </Button>
+                  {pushState === "on" && (
+                    <Button type="button" size="sm" onClick={() => testPush().then((r) => onMessage(`Push: ${r.status}`)).catch((e: Error) => onMessage(e.message, "error"))}>
+                      Тестовый push
+                    </Button>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        </div>
         <ul style={{ margin: 0, paddingLeft: 18, fontSize: 14, color: "var(--text-2)" }}>
           <li>
             Telegram —{" "}
@@ -128,7 +180,6 @@ export function NotificationsPanel({ userId, onMessage }: { userId: number; onMe
             )}
             .
           </li>
-          <li>Push в браузере — после установки приложения на телефон.</li>
         </ul>
         <div className={s.actions}>
           <Button type="submit" size="sm" variant="primary" disabled={!draft}>

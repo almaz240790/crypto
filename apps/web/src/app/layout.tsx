@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
 import { IBM_Plex_Mono, IBM_Plex_Sans } from "next/font/google";
 import { AuthProvider } from "@/components/auth/AuthProvider";
+import { RegisterSW } from "@/components/pwa/Register";
 import "./globals.css";
 
 const sans = IBM_Plex_Sans({
@@ -21,11 +22,19 @@ const mono = IBM_Plex_Mono({
 export const metadata: Metadata = {
   title: { default: "Platform", template: "%s — Platform" },
   description: "Торговые сигналы на H4 по крипторынку: правила, статистика, журнал.",
+  applicationName: "Platform",
+  appleWebApp: { capable: true, title: "Platform", statusBarStyle: "default" },
+  icons: { icon: "/icons/icon-192.png", apple: "/icons/apple-touch-icon.png" },
 };
 
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
+  viewportFit: "cover",
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#f4f3ef" }, // color-ok: токен --bg
+    { media: "(prefers-color-scheme: dark)", color: "#121417" }, // color-ok: токен --bg
+  ],
 };
 
 // Тема выставляется до первой отрисовки, чтобы не мигала (светлая по умолчанию по системе).
@@ -39,6 +48,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       </head>
       <body>
         <AuthProvider>{children}</AuthProvider>
+        <RegisterSW />
       </body>
     </html>
   );

@@ -7,17 +7,19 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app import auth
+from app.config import settings
 from app.models import (
     AuthIdentity,
     Instrument,
     JournalEntry,
+    PushSubscription,
     RiskProfile,
     Signal,
     SignalResult,
@@ -471,6 +473,8 @@ class NotificationsIn(BaseModel):
     quiet_from: int | None = Field(default=None, ge=0, le=23)
     quiet_to: int | None = Field(default=None, ge=0, le=23)
     daily_limit: int | None = Field(default=None, ge=1, le=200)
+    push_signals: bool | None = None
+    push_events: bool | None = None
     clear_quiet: bool = False
 
 
@@ -523,3 +527,84 @@ def unsubscribe_all(body: UnsubscribeIn, db: Session = Depends(auth.get_db)) -> 
     if not unsubscribe(db, body.token):
         raise HTTPException(404, "ссылка отписки недействительна")
     return {"status": "ok"}
+
+
+# --- web push (план 3.11, задача 2.15) ---------------------------------------------------------
+
+
+class PushIn(BaseModel):
+    endpoint: str = Field(min_length=20, max_length=2000)
+    keys: dict[str, str]
+
+
+@router.get("/push/public-key")
+def push_public_key() -> dict[str, str | None]:
+    from app.push import enabled
+
+    return {"key": settings.vapid_public_key if enabled() else None}
+
+
+@router.post("/me/push", status_code=201)
+def push_subscribe(
+    body: PushIn,
+    request: Request,
+    user: User = Depends(auth.current_user),
+    db: Session = Depends(auth.get_db),
+) -> dict[str, Any]:
+    p256dh, auth_key = body.keys.get("p256dh"), body.keys.get("auth")
+    if not p256dh or not auth_key:
+        raise HTTPException(400, "в подписке нет ключей")
+    sub = db.scalar(select(PushSubscription).where(PushSubscription.endpoint == body.endpoint))
+    if sub is None:
+        sub = PushSubscription(
+            user_id=user.id, endpoint=body.endpoint, p256dh=p256dh, auth_key=auth_key
+        )
+        db.add(sub)
+    sub.user_id = user.id
+    sub.p256dh = p256dh
+    sub.auth_key = auth_key
+    sub.user_agent = (request.headers.get("user-agent") or "")[:255]
+    sub.failures = 0
+    db.commit()
+    count = db.scalar(
+        select(func.count())
+        .select_from(PushSubscription)
+        .where(PushSubscription.user_id == user.id)
+    )
+    return {"subscriptions": int(count or 0)}
+
+
+class PushDeleteIn(BaseModel):
+    endpoint: str
+
+
+@router.delete("/me/push", status_code=204)
+def push_unsubscribe(
+    body: PushDeleteIn, user: User = Depends(auth.current_user), db: Session = Depends(auth.get_db)
+) -> Response:
+    sub = db.scalar(
+        select(PushSubscription).where(
+            PushSubscription.endpoint == body.endpoint, PushSubscription.user_id == user.id
+        )
+    )
+    if sub:
+        db.delete(sub)
+        db.commit()
+    return Response(status_code=204)
+
+
+@router.post("/me/push/test")
+def push_test(
+    user: User = Depends(auth.current_user), db: Session = Depends(auth.get_db)
+) -> dict[str, Any]:
+    from app.push import enabled, send_to_user
+
+    if not enabled():
+        return {"sent": 0, "status": "ключи push не заданы"}
+    n = send_to_user(
+        db,
+        user.id,
+        {"title": "Platform", "body": "Push работает.", "url": "/signals", "tag": "test"},
+    )
+    db.commit()
+    return {"sent": n, "status": "отправлено" if n else "нет активных подписок"}

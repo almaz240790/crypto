@@ -47,6 +47,10 @@ files = ["packages/engine/engine", "apps/api/app"]
 module = "engine.*"
 strict = true
 
+[[tool.mypy.overrides]]
+module = "pywebpush"
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["packages/engine/tests", "apps/api/tests"]
 addopts = "-q --import-mode=importlib"
