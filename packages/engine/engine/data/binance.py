@@ -132,19 +132,33 @@ class BinanceHistory:
                 break
         return out
 
-    def fetch_range(self, symbol: str, tf: Timeframe, start: date, end: date) -> list[Candle]:
-        """История с ``start`` по ``end``: архивы по месяцам + REST для хвоста."""
-        candles: list[Candle] = []
+    def iter_range(
+        self, symbol: str, tf: Timeframe, start: date, end: date
+    ) -> Iterator[list[Candle]]:
+        """История порциями (по месяцу архива, затем REST-хвост) — без накопления в памяти.
+
+        Порции не пересекаются: REST начинается со свечи после последней архивной.
+        Для 1m это важно: 4 года × 30 пар не помещаются в память целиком.
+        """
+        start_dt = datetime(start.year, start.month, start.day, tzinfo=UTC)
+        last: datetime | None = None
         for year, month in month_range(start, end):
             batch = self.fetch_month(symbol, tf, year, month)
             if batch:
-                candles.extend(batch)
-        start_dt = datetime(start.year, start.month, start.day, tzinfo=UTC)
-        last = candles[-1].open_time if candles else start_dt
+                last = batch[-1].open_time
+                yield batch
         end_dt = datetime(end.year, end.month, end.day, tzinfo=UTC) + Timeframe.D1.delta
-        tail = self.fetch_rest(symbol, tf, last + tf.delta, end_dt)
-        candles.extend(tail)
-        # дедупликация по open_time (архив и REST могут пересечься на границе месяца)
+        rest_from = (last + tf.delta) if last is not None else start_dt
+        tail = self.fetch_rest(symbol, tf, rest_from, end_dt)
+        if tail:
+            yield tail
+
+    def fetch_range(self, symbol: str, tf: Timeframe, start: date, end: date) -> list[Candle]:
+        """Вся история списком (для небольших таймфреймов и тестов)."""
+        candles: list[Candle] = []
+        for batch in self.iter_range(symbol, tf, start, end):
+            candles.extend(batch)
+        # дедупликация по open_time на случай пересечения архива и REST
         seen: dict[datetime, Candle] = {}
         for c in candles:
             seen[c.open_time] = c

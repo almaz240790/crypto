@@ -172,17 +172,27 @@ def main() -> int:
             for tf_value in args.tf:
                 tf = Timeframe(tf_value)
                 if not args.check_only:
-                    candles = history.fetch_range(symbol, tf, args.start, args.end)
-                    n = upsert_candles(session, inst.id, tf, candles)
-                    print(f"{symbol} {tf.value}: загружено {n} свечей")
+                    n = 0
+                    for batch in history.iter_range(symbol, tf, args.start, args.end):
+                        n += upsert_candles(session, inst.id, tf, batch)
+                        session.flush()
+                    print(f"{symbol} {tf.value}: загружено {n} свечей", flush=True)
                 stored = db_candles(session, inst.id, tf)
                 gaps = find_gaps(stored, tf)
                 if gaps:
                     has_gaps = True
-                    print(f"{symbol} {tf.value}: ПРОПУСКИ {len(gaps)} — первые: {gaps[:3]}")
+                    print(
+                        f"{symbol} {tf.value}: ПРОПУСКИ {len(gaps)} — первые: {gaps[:3]}",
+                        flush=True,
+                    )
                 else:
                     first = stored[0].open_time.date() if stored else None
-                    print(f"{symbol} {tf.value}: без пропусков, {len(stored)} свечей с {first}")
+                    print(
+                        f"{symbol} {tf.value}: без пропусков, {len(stored)} свечей с {first}",
+                        flush=True,
+                    )
+            session.commit()
+            session.begin()
     return 1 if has_gaps else 0
 
 

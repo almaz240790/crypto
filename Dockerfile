@@ -11,6 +11,7 @@ RUN uv sync --all-packages --no-dev --frozen --no-install-workspace
 
 COPY packages/engine packages/engine
 COPY apps/api apps/api
+COPY scripts scripts
 RUN uv sync --all-packages --no-dev --frozen
 
 WORKDIR /srv/apps/api
