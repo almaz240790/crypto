@@ -78,9 +78,17 @@ def parse_funding_rows(rows: list[list[str]]) -> list[FundingRate]:
     return out
 
 
+# Binance изредка отдаёт мусор в ratio-полях (например, taker ratio 37655 вместо ~1).
+# Соотношение long/short вне [0, 1000) считаем ошибкой данных и храним как None.
+RATIO_MAX = Decimal(1000)
+
+
 def _opt(value: str) -> Decimal | None:
     value = value.strip()
-    return Decimal(value) if value else None
+    if not value:
+        return None
+    d = Decimal(value)
+    return d if 0 <= d < RATIO_MAX else None
 
 
 def parse_metrics_rows(rows: list[list[str]], step_minutes: int = 60) -> list[MetricsSample]:

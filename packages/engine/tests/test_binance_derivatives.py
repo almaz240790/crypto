@@ -89,6 +89,19 @@ def test_parse_metrics_hourly_sampling_and_pcts() -> None:
     assert len(parse_metrics_rows(METRICS_CSV, step_minutes=5)) == 4
 
 
+def test_parse_metrics_drops_garbage_ratios() -> None:
+    """Binance отдаёт мусор вроде taker ratio 37655 — такие значения становятся None."""
+    rows = parse_metrics_rows(
+        [
+            ["create_time", "symbol", "oi", "oi_value", "a", "b", "c", "d"],
+            ["2023-11-16 06:00:00", "ADAUSDT", "1", "2", "3.10", "0.7", "3.33", "37655.00000000"],
+            ["2023-11-16 07:00:00", "ADAUSDT", "1", "2", "-1", "0.7", "3.33", "0.79"],
+        ]
+    )
+    assert rows[0].taker_ratio is None and rows[0].global_ratio == Decimal("3.33")
+    assert rows[1].top_traders_ratio is None and rows[1].taker_ratio == Decimal("0.79")
+
+
 def test_urls() -> None:
     assert funding_url("BTCUSDT", 2024, 1).endswith(
         "/fundingRate/BTCUSDT/BTCUSDT-fundingRate-2024-01.zip"
