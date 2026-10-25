@@ -10,7 +10,7 @@ htmlcov/
 *.egg-info/
 dist/
 build/
-data/
+/data/
 *.zip
 *.parquet
 node_modules/
