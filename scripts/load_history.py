@@ -37,7 +37,7 @@ EXCHANGE_INFO = {
 }
 
 
-def ensure_instrument(session, symbol: str, market: Market, info: dict) -> Instrument:  # type: ignore[no-untyped-def]
+def ensure_instrument(session, symbol: str, market: Market, info: dict) -> Instrument | None:  # type: ignore[no-untyped-def]
     inst = session.scalar(
         select(Instrument).where(
             Instrument.exchange == "binance",
@@ -49,7 +49,7 @@ def ensure_instrument(session, symbol: str, market: Market, info: dict) -> Instr
         return inst
     meta = info.get(symbol)
     if meta is None:
-        raise SystemExit(f"{symbol}: нет в exchangeInfo ({market})")
+        return None
     inst = Instrument(
         exchange="binance",
         symbol=symbol,
@@ -167,7 +167,10 @@ def main() -> int:
                 )
             )
             if inst is None:
-                print(f"{symbol}: нет в БД, пропускаю")
+                print(
+                    f"{symbol}: нет в exchangeInfo/БД (делистинг или опечатка), пропускаю",
+                    flush=True,
+                )
                 continue
             for tf_value in args.tf:
                 tf = Timeframe(tf_value)
