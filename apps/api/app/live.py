@@ -11,7 +11,7 @@ import asyncio
 import json
 import logging
 from contextlib import suppress
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 import redis.asyncio as aioredis
@@ -41,6 +41,22 @@ class Hub:
     def __init__(self) -> None:
         self.clients: set[Client] = set()
         self.task: asyncio.Task[None] | None = None
+        # диагностика для /debug/live (план 2.16)
+        self.messages = 0
+        self.sent = 0
+        self.last_message_at: str | None = None
+        self.last_error: str | None = None
+
+    def status(self) -> dict[str, Any]:
+        return {
+            "listener": "running" if self.task and not self.task.done() else "stopped",
+            "clients": len(self.clients),
+            "subscriptions": sorted({s for c in self.clients for s in c.symbols})[:50],
+            "messages": self.messages,
+            "sent": self.sent,
+            "last_message_at": self.last_message_at,
+            "last_error": self.last_error,
+        }
 
     async def start(self) -> None:
         if self.task is None:
@@ -60,6 +76,7 @@ class Hub:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                self.last_error = f"{type(exc).__name__}: {exc}"[:200]
                 log.warning(
                     "redis недоступен (%s), повтор через %ss", type(exc).__name__, RETRY_SECONDS
                 )
@@ -77,10 +94,12 @@ class Hub:
                 if isinstance(channel, bytes):
                     channel = channel.decode()
                 data = json.loads(msg["data"])
+                self.messages += 1
+                self.last_message_at = datetime.now(tz=UTC).isoformat()
                 if channel == CHANNEL_CLOSED:
                     if data.get("tf") != "1m" or not self._anyone_wants(data["symbol"]):
                         continue
-                    price = await asyncio.to_thread(
+                    price = data.get("close") or await asyncio.to_thread(
                         _close_price, int(data["instrument_id"]), data["open_time"]
                     )
                     if price is not None:
@@ -112,6 +131,7 @@ class Hub:
                 continue
             try:
                 await c.ws.send_text(text_)
+                self.sent += 1
             except Exception:
                 self.clients.discard(c)
 

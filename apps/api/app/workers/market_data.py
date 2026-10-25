@@ -132,6 +132,7 @@ class MarketData:
                     "tf": tf,
                     "open_time": open_time.isoformat(),
                     "close_time": (open_time + Timeframe(tf).delta).isoformat(),
+                    "close": k["c"],
                 }
             )
 

@@ -11,6 +11,7 @@ import random
 from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from typing import Any
 
 import matplotlib
 from fastapi import APIRouter, HTTPException, Query, Response
@@ -397,3 +398,12 @@ def export_derivatives(
                 yield ",".join([str(int(r[0].timestamp())), *(str(x) for x in r[1:])]) + "\n"
 
     return StreamingResponse(rows(), media_type="text/csv")
+
+
+@router.get("/live")
+def live_status(token: str | None = None) -> dict[str, Any]:
+    """Состояние WebSocket-хаба: слушатель Redis, клиенты, счётчики (план 2.16)."""
+    _check(token)
+    from app.live import hub
+
+    return hub.status()
