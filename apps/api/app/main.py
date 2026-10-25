@@ -1,12 +1,16 @@
+import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
+import redis
+import sentry_sdk
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from app.config import settings
-from app.db import engine
+from app.db import SessionLocal, engine
 from app.debug import router as debug_router
 from app.live import hub
 from app.live import router as live_router
@@ -14,6 +18,14 @@ from app.routers.admin import router as admin_router
 from app.routers.auth import router as auth_router
 from app.routers.public import router as public_router
 from app.routers.user import router as user_router
+
+if settings.sentry_dsn:
+    sentry_sdk.init(
+        dsn=settings.sentry_dsn,
+        environment=settings.app_env,
+        traces_sample_rate=0.0,
+        send_default_pii=False,
+    )
 
 
 @asynccontextmanager
@@ -57,3 +69,25 @@ def health() -> dict[str, str]:
         "candles": candles,
         "env": settings.app_env,
     }
+
+
+@app.get("/status")
+def public_status() -> dict[str, Any]:
+    """Публичная статус-страница (план 6.7): состояние компонентов и инциденты за 7 дней.
+
+    Монитор крутится в уведомителе раз в минуту и кладёт результат в Redis; если кэша нет —
+    считаем на месте (без алертов, чтобы не слать письма из API).
+    """
+    from app.monitor import collect, evaluate, status_payload
+
+    r: Any | None
+    try:
+        r = redis.from_url(settings.redis_url, socket_timeout=2)
+        cached = r.get("monitor:status")
+        if cached:
+            return dict(json.loads(cached))
+    except Exception:
+        r = None
+    with SessionLocal() as db:
+        snap = collect(db, r)
+        return status_payload(db, evaluate(snap), snap.now)

@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     """Ключи Web Push (base64url, P-256). Без них push не отправляется."""
     vapid_subject: str = "mailto:support@platform.local"
     owner_emails: str = ""
+    sentry_dsn: str | None = None
     """Email владельцев через запятую: при входе получают роль owner (до админки 2.14)."""
 
     @property

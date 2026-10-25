@@ -50,6 +50,23 @@ http
     if (p === "/v1/stats/runs") return J(200, [{ id: 3, strategy_version: "1.1.0", period: ["2022-01-01", "2026-10-01"], instruments: 20, entry_type: "market", closed: 40, note: "walk-forward", created_at: null }]);
     if (p === "/v1/strategies") return J(200, [{ id: 1, strategy: "trend-ob-retest", name: "Trend OB retest", version: "1.0.0", status: "forward", activated_at: null }, { id: 2, strategy: "trend-ob-retest", name: "Trend OB retest", version: "1.1.0", status: "forward", activated_at: null }]);
     if (p === "/v1/signals") return J(200, { items: [], sparklines: {}, prices: {}, total: 0, scope: "live", limit: 50, offset: 0 });
+    if (p === "/status")
+      return J(200, {
+        status: "degraded",
+        generated_at: "2026-10-25T10:01:00+00:00",
+        components: [
+          { key: "data", title: "Данные с биржи", status: "ok", detail: "heartbeat 12 с назад, 1m-свеча 40 с назад", uptime_7d: 100 },
+          { key: "candles", title: "Свечи H4", status: "degraded", detail: "нет закрытия по 1 из 20 инструментов", uptime_7d: 100 },
+          { key: "engine", title: "Движок сигналов", status: "ok", detail: "прогон по H4 08:00", uptime_7d: 99.8 },
+          { key: "tracker", title: "Трекер сигналов", status: "ok", detail: "heartbeat 5 с назад", uptime_7d: 100 },
+          { key: "notifier", title: "Уведомления", status: "ok", detail: "heartbeat 20 с назад", uptime_7d: 100 },
+          { key: "api", title: "API и база", status: "ok", detail: "БД и Redis отвечают", uptime_7d: 100 },
+        ],
+        incidents: [
+          { component: "candles", severity: "degraded", message: "нет закрытия по 1 из 20 инструментов", opened_at: "2026-10-25T09:58:00+00:00", closed_at: null },
+          { component: "engine", severity: "down", message: "движок не отработал по 20 из 20 инструментов", opened_at: "2026-10-23T04:02:00+00:00", closed_at: "2026-10-23T04:31:00+00:00" },
+        ],
+      });
     if (p === "/v1/instruments") return J(200, [{ id: 1, symbol: "BTCUSDT", tick_size: "0.1" }]);
     J(404, { detail: "нет заглушки" });
   })
