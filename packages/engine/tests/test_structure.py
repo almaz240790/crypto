@@ -66,7 +66,7 @@ def test_bos_up_after_close_above_swing_high() -> None:
 
 
 def test_choch_when_close_breaks_last_higher_low() -> None:
-    closes = UPTREND + [107, 104, 99, 97]  # закрытие 99 < swing low 100 (свеча 12: 101 - 1)
+    closes = [*UPTREND, 107, 104, 99, 97]  # закрытие 99 < swing low 100 (свеча 12: 101 - 1)
     s = analyze_structure(path(closes))
     down = [e for e in s.events if e.direction is Direction.DOWN]
     assert down and down[0].type is EventType.CHOCH

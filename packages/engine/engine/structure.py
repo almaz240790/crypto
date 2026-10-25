@@ -130,8 +130,11 @@ def _is_swing(candles: Sequence[Candle], j: int, length: int, kind: SwingKind) -
     return all(c.low < x.low for x in window) and all(c.low < x.low for x in right)
 
 
+DEFAULT_PARAMS = StructureParams()
+
+
 def analyze_structure(
-    candles: Sequence[Candle], params: StructureParams = StructureParams()
+    candles: Sequence[Candle], params: StructureParams = DEFAULT_PARAMS
 ) -> MarketStructure:
     """Полный проход по закрытым свечам. Вход — результат ``closed_only``."""
     length = params.swing_len
