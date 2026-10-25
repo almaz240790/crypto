@@ -97,6 +97,10 @@ def refresh_market_data(session: Session, instruments: list[Instrument], now: da
     session.commit()
 
 
+UPSERT_CHUNK = 2000
+"""Строк за один INSERT: 11 параметров на строку, лимит psycopg — 65 535 параметров."""
+
+
 def upsert_candles(
     session: Session, instrument_id: int, tf: Timeframe, candles: list[Candle]
 ) -> None:
@@ -116,16 +120,17 @@ def upsert_candles(
         }
         for c in candles
     ]
-    stmt = insert(CandleRow).values(rows)
-    session.execute(
-        stmt.on_conflict_do_update(
-            index_elements=["instrument_id", "timeframe", "open_time"],
-            set_={
-                k: stmt.excluded[k]
-                for k in ("open", "high", "low", "close", "volume", "quote_volume", "trades")
-            },
+    for i in range(0, len(rows), UPSERT_CHUNK):
+        stmt = insert(CandleRow).values(rows[i : i + UPSERT_CHUNK])
+        session.execute(
+            stmt.on_conflict_do_update(
+                index_elements=["instrument_id", "timeframe", "open_time"],
+                set_={
+                    k: stmt.excluded[k]
+                    for k in ("open", "high", "low", "close", "volume", "quote_volume", "trades")
+                },
+            )
         )
-    )
 
 
 def _refresh_derivatives(
@@ -275,7 +280,7 @@ def ensure_strategy_versions(session: Session) -> dict[str, StrategyVersion]:
             session.flush()
         out[key] = row
     session.commit()
-    return {k: v for k, v in out.items() if v.status == "forward"}
+    return {k: v for k, v in out.items() if v.status in ("forward", "live")}
 
 
 # --- сигналы ----------------------------------------------------------------------------------
@@ -433,7 +438,10 @@ def track_open_signals(session: Session, versions: dict[str, StrategyVersion]) -
 
 
 def run_forward(
-    symbols: list[str] | None = None, refresh: bool = True, now: datetime | None = None
+    symbols: list[str] | None = None,
+    refresh: bool = True,
+    now: datetime | None = None,
+    track: bool = True,
 ) -> dict[str, int]:
     now = now or datetime.now(tz=UTC)
     at = last_h4_close(now)
@@ -468,5 +476,5 @@ def run_forward(
                         flush=True,
                     )
         session.commit()
-        stats["tracked"] = track_open_signals(session, versions)
+        stats["tracked"] = track_open_signals(session, versions) if track else 0
     return stats

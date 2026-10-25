@@ -9,6 +9,7 @@ from app.models.derivatives import (
 )
 from app.models.market import Candle, Instrument
 from app.models.signals import Signal, SignalEvent, SignalResult, Strategy, StrategyVersion
+from app.models.tracking import SignalTracking
 
 __all__ = [
     "BacktestRun",
@@ -21,6 +22,7 @@ __all__ = [
     "Signal",
     "SignalEvent",
     "SignalResult",
+    "SignalTracking",
     "Strategy",
     "StrategyVersion",
 ]

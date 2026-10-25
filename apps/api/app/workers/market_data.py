@@ -32,7 +32,7 @@ from websockets.exceptions import ConnectionClosed
 
 from app.config import settings
 from app.db import SessionLocal
-from app.forward import _refresh_derivatives, upsert_candles
+from app.forward import UPSERT_CHUNK, _refresh_derivatives, upsert_candles
 from app.models import Instrument, LiquidationRow
 from engine.candles import Timeframe
 from engine.data.binance import BinanceHistory
@@ -154,10 +154,10 @@ class MarketData:
         liqs: dict[tuple[int, datetime], list[Decimal]],
     ) -> None:
         with SessionLocal() as s:
-            if candles:
-                from app.models import Candle as CandleRow
+            from app.models import Candle as CandleRow
 
-                stmt = insert(CandleRow).values(candles)
+            for i in range(0, len(candles), UPSERT_CHUNK):
+                stmt = insert(CandleRow).values(candles[i : i + UPSERT_CHUNK])
                 s.execute(
                     stmt.on_conflict_do_update(
                         index_elements=["instrument_id", "timeframe", "open_time"],
@@ -303,6 +303,7 @@ def main() -> None:
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     md = MarketData()
     loop = asyncio.new_event_loop()
     for sig in (os_signal.SIGINT, os_signal.SIGTERM):

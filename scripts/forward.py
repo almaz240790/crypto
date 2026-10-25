@@ -23,8 +23,11 @@ def main() -> int:
     )
     p.add_argument("--symbols", nargs="*")
     p.add_argument("--no-refresh", action="store_true", help="не догружать данные по REST")
+    p.add_argument(
+        "--no-track", action="store_true", help="не вести сигналы по H4 (их ведёт 1m-трекер)"
+    )
     args = p.parse_args()
-    stats = run_forward(args.symbols or None, refresh=not args.no_refresh)
+    stats = run_forward(args.symbols or None, refresh=not args.no_refresh, track=not args.no_track)
     print(f"готово: {stats}", flush=True)
     return 0
 
