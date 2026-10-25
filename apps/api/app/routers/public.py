@@ -16,6 +16,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from app import auth
+from app.analysis import analyze_signal
 from app.models import Instrument, Signal, SignalEvent, SignalResult, StrategyVersion, User
 from app.stats import load_trades, stats_payload
 from engine.candles import Timeframe
@@ -316,6 +317,29 @@ def signal_detail(
         ).all()
     ]
     return out
+
+
+@router.get("/signals/{public_id}/analysis")
+def signal_analysis(
+    public_id: str,
+    user: User | None = Depends(optional_user),
+    db: Session = Depends(auth.get_db),
+) -> dict[str, Any]:
+    """Структура, зоны и уровни на момент сигнала — для отрисовки на графике карточки."""
+    row = db.execute(
+        select(Signal, Instrument, StrategyVersion.status)
+        .join(Instrument, Instrument.id == Signal.instrument_id)
+        .join(StrategyVersion, StrategyVersion.id == Signal.strategy_version_id)
+        .where(Signal.public_id == public_id)
+    ).first()
+    if row is None or row[2] not in ("live", "forward"):
+        raise HTTPException(404)
+    if row[2] == "forward" and (user is None or user.role not in ("admin", "owner")):
+        raise HTTPException(404)
+    s, inst, _ = row
+    if user is None and s.status in OPEN_STATUSES:
+        raise HTTPException(403)
+    return analyze_signal(db, s, inst)
 
 
 @router.get("/signals/{public_id}/candles")
