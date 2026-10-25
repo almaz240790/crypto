@@ -10,6 +10,7 @@ from app.db import engine
 from app.debug import router as debug_router
 from app.live import hub
 from app.live import router as live_router
+from app.routers.admin import router as admin_router
 from app.routers.auth import router as auth_router
 from app.routers.public import router as public_router
 from app.routers.user import router as user_router
@@ -25,6 +26,7 @@ app = FastAPI(title="Platform API", version="0.1.0", lifespan=lifespan)
 app.include_router(live_router)
 app.include_router(debug_router)
 app.include_router(auth_router)
+app.include_router(admin_router)
 app.include_router(public_router)
 app.include_router(user_router)
 app.add_middleware(

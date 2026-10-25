@@ -23,7 +23,8 @@ export function AppShell({ title, actions, children }: { title: string; actions?
   const router = useRouter();
   const { user, loading, logout } = useAuth();
 
-  const links = NAV.map((n) => (
+  const nav = user && (user.role === "admin" || user.role === "owner") ? [...NAV, { href: "/admin", label: "Админка" }] : NAV;
+  const links = nav.map((n) => (
     <Link key={n.href} href={n.href} aria-current={path === n.href || path.startsWith(n.href + "/") ? "page" : undefined}>
       {n.label}
     </Link>
