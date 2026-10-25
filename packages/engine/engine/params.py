@@ -193,3 +193,19 @@ class ScoringParams:
     def __post_init__(self) -> None:
         if not (self.grade_c < self.grade_b < self.grade_a <= 100):
             raise ValueError("пороги градаций: grade_c < grade_b < grade_a <= 100")
+
+
+@dataclass(frozen=True, slots=True)
+class StrategyParams:
+    """Полный набор параметров версии стратегии (``strategy_versions.params``)."""
+
+    version: str = "trend-ob-retest@1.0.0"
+    structure: StructureParams = StructureParams()
+    zones: ZoneParams = ZoneParams()
+    liquidity: LiquidityParams = LiquidityParams()
+    bias: BiasParams = BiasParams()
+    filters: FilterParams = FilterParams()
+    trade: TradeParams = TradeParams()
+    scoring: ScoringParams = ScoringParams()
+    min_h4_history: int = 250
+    hash_candles: int = 400
