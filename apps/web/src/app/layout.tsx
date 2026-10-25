@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from "next";
+import type { ReactNode } from "react";
 import { IBM_Plex_Mono, IBM_Plex_Sans } from "next/font/google";
 import "./globals.css";
 
@@ -29,7 +30,7 @@ export const viewport: Viewport = {
 // Тема выставляется до первой отрисовки, чтобы не мигала (светлая по умолчанию по системе).
 const themeScript = `(function(){try{var t=localStorage.getItem("theme");if(t==="light"||t==="dark"){document.documentElement.dataset.theme=t}}catch(e){}})();`;
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
+export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="ru" className={`${sans.variable} ${mono.variable}`} suppressHydrationWarning>
       <head>
