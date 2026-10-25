@@ -222,6 +222,8 @@ def current_user(request: Request, db: Session = Depends(get_db)) -> User:
     user = db.get(User, int(payload["sub"]))
     if user is None or user.deleted_at is not None:
         raise HTTPException(401, "пользователь не найден")
+    if user.blocked_at is not None:
+        raise HTTPException(403, "аккаунт заблокирован")
     return user
 
 

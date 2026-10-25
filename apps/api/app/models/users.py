@@ -40,6 +40,8 @@ class User(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     terms_accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     marketing_opt_in: Mapped[bool] = mapped_column(Boolean, default=False)
+    blocked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    blocked_reason: Mapped[str | None] = mapped_column(String(255))
 
 
 class AuthIdentity(Base):
@@ -173,3 +175,34 @@ class NotificationLog(Base):
     kind: Mapped[str] = mapped_column(String(16))  # signal / event / digest / test
     ref: Mapped[str] = mapped_column(String(64))  # public_id сигнала, id события, дата дайджеста
     sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class StatusChangeRequest(Base):
+    """Заявка на смену статуса версии стратегии — четырёхглазый принцип (план 3.15, 10.4)."""
+
+    __tablename__ = "status_change_requests"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    strategy_version_id: Mapped[int] = mapped_column(ForeignKey("strategy_versions.id"), index=True)
+    from_status: Mapped[str] = mapped_column(String(16))
+    to_status: Mapped[str] = mapped_column(String(16))
+    reason: Mapped[str] = mapped_column(Text)
+    requested_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    decided_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    decision: Mapped[str] = mapped_column(String(10), default="pending")  # pending/applied/rejected
+    decision_note: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AdminAudit(Base):
+    """Аудит-лог действий админов (план 3.15): кто, что, с чем, когда."""
+
+    __tablename__ = "admin_audit"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    actor_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    action: Mapped[str] = mapped_column(String(48))
+    target: Mapped[str] = mapped_column(String(128))
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

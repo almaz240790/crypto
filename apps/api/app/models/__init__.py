@@ -11,6 +11,7 @@ from app.models.market import Candle, Instrument
 from app.models.signals import Signal, SignalEvent, SignalResult, Strategy, StrategyVersion
 from app.models.tracking import SignalTracking
 from app.models.users import (
+    AdminAudit,
     AuthIdentity,
     EmailToken,
     JournalEntry,
@@ -18,12 +19,14 @@ from app.models.users import (
     NotificationSettings,
     RefreshToken,
     RiskProfile,
+    StatusChangeRequest,
     User,
     Watchlist,
     WatchlistItem,
 )
 
 __all__ = [
+    "AdminAudit",
     "AuthIdentity",
     "BacktestRun",
     "Candle",
@@ -42,6 +45,7 @@ __all__ = [
     "SignalEvent",
     "SignalResult",
     "SignalTracking",
+    "StatusChangeRequest",
     "Strategy",
     "StrategyVersion",
     "User",
