@@ -11,7 +11,7 @@ export function Header() {
         </Link>
         <nav className={s.nav} aria-label="разделы">
           <Link href="/#signals">Сигналы</Link>
-          <Link href="/#stats">Статистика</Link>
+          <Link href="/stats">Статистика</Link>
           <Link href="/#rules">Правила</Link>
           <Link href="/#pricing">Тарифы</Link>
           <Link href="/#faq">Вопросы</Link>

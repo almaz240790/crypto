@@ -110,3 +110,73 @@ def test_journal_realized_r() -> None:
         direction="long", entry_price=Decimal(100), stop_loss=Decimal(120), exit_price=Decimal(110)
     )
     assert _realized_r(bad) is None
+
+
+def test_r_histogram_entry_type_and_run_trades() -> None:
+    from app.stats import r_histogram, trade_rows, trades_from_run
+
+    run_trades = [
+        {
+            "symbol": "BTCUSDT",
+            "direction": "up",
+            "signal_time": "2026-01-02T00:00:00+00:00",
+            "grade": "A",
+            "score": 80,
+            "rr_tp2": "2.5",
+            "entry": "100",
+            "stop": "98",
+            "status": "closed_tp3",
+            "realized_r": "2.9",
+            "tp_hits": 3,
+            "mfe_r": "3",
+            "mae_r": "0.2",
+            "exit_time": "2026-01-03T00:00:00+00:00",
+            "facts": [],
+        },
+        {
+            "symbol": "ETHUSDT",
+            "direction": "down",
+            "signal_time": "2026-01-04T00:00:00+00:00",
+            "grade": "B",
+            "score": 65,
+            "rr_tp2": "2.1",
+            "entry": "50",
+            "stop": "52",
+            "status": "closed_sl",
+            "realized_r": "-1",
+            "tp_hits": 0,
+            "mfe_r": "0.3",
+            "mae_r": "1",
+            "exit_time": None,
+            "facts": [],
+        },
+        {
+            "symbol": "ETHUSDT",
+            "direction": "down",
+            "signal_time": "2026-01-05T00:00:00+00:00",
+            "grade": "C",
+            "score": 50,
+            "rr_tp2": "2",
+            "entry": "50",
+            "stop": "52",
+            "status": "expired",
+            "realized_r": "0",
+            "tp_hits": 0,
+            "mfe_r": "0",
+            "mae_r": "0",
+            "exit_time": None,
+            "facts": [],
+        },
+    ]
+    trades = trades_from_run(run_trades, "limit")
+    assert [t.result.closed for t in trades] == [True, True, False]
+    payload = stats_payload(trades)
+    assert payload["metrics"]["closed"] == 2 and payload["metrics"]["expired"] == 1
+    assert set(payload["by_entry_type"]) == {"limit"}
+    hist = r_histogram(trades)
+    assert sum(b["n"] for b in hist) == 2
+    assert next(b for b in hist if b["from"] == -1 and b["to"] == -0.5)["n"] == 1
+    assert hist[-1]["to"] is None and hist[0]["from"] is None
+    rows = trade_rows(trades)
+    assert rows[0]["entry_type"] == "limit" and rows[0]["realized_r"] == 2.9
+    assert rows[2]["realized_r"] is None and rows[1]["direction"] == "short"

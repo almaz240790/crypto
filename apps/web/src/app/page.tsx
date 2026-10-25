@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { DISCLAIMER, EquityChart, Footer, Header } from "@/components/site";
 import {
   Button,
@@ -137,7 +138,7 @@ export default async function Home() {
               <Button href="/login" variant="primary">
                 Создать аккаунт
               </Button>
-              <Button href="#stats">Открытая статистика</Button>
+              <Button href="/stats">Открытая статистика</Button>
             </div>
             <p className={s.fine}>{DISCLAIMER}</p>
           </div>
@@ -329,8 +330,11 @@ export default async function Home() {
               </Panel>
             </div>
           ) : (
-            <Panel title="Статистика live-сигналов">
-              <EmptyState text="Публикуем только результаты live-версии стратегии. Бэктест и форвард-тест не выдаём за реальный результат; их отчёты появятся на отдельной странице с пометкой типа данных." />
+            <Panel title="Статистика live-сигналов" actions={<Link href="/stats">вся статистика</Link>}>
+              <EmptyState
+                text="Live-сигналов пока нет. Результаты форвард-теста и бэктеста открыты на странице статистики с явной пометкой типа данных — мы не выдаём их за реальный результат."
+                action={<Button href="/stats?scope=forward" size="sm">Форвард и бэктест</Button>}
+              />
             </Panel>
           )}
         </section>
