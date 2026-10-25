@@ -35,6 +35,7 @@ from app.models import (
     Watchlist,
     WatchlistItem,
 )
+from app.push import send_to_user
 from app.stats import load_trades
 from engine.backtest import summarize
 
@@ -157,6 +158,16 @@ def _record(db: Session, user_id: int, kind: str, ref: str) -> bool:
         return False
 
 
+def _record_push(db: Session, user_id: int, kind: str, ref: str) -> bool:
+    db.add(NotificationLog(user_id=user_id, channel="push", kind=kind, ref=ref))
+    try:
+        db.flush()
+        return True
+    except IntegrityError:
+        db.rollback()
+        return False
+
+
 def _live_signal(db: Session, sig: Signal) -> bool:
     return (
         db.scalar(
@@ -195,6 +206,22 @@ def notify_new_signal(db: Session, sig: Signal, now: datetime | None = None) -> 
         )
         ns.sent_today += 1
         sent += 1
+    for user, ns in _recipients(db, "push_signals"):
+        if not should_notify(ns, sig, now, _watchlist_ids(db, user.id)):
+            continue
+        if not _record_push(db, user.id, "signal", sig.public_id):
+            continue
+        sent += send_to_user(
+            db,
+            user.id,
+            {
+                "title": f"{symbol} {sig.direction.upper()} · {sig.grade}",
+                "body": f"вход {_dec(sig.entry_limit or sig.entry_market)}, "
+                f"стоп {_dec(sig.stop_loss)}, TP2 {_dec(sig.tp2)} (R:R {_dec(sig.rr_tp2)})",
+                "url": f"/signals/{sig.public_id}",
+                "tag": f"signal-{sig.public_id}",
+            },
+        )
     db.commit()
     return sent
 
@@ -224,6 +251,21 @@ def notify_event(db: Session, ev: SignalEvent, now: datetime | None = None) -> i
         )
         ns.sent_today += 1
         sent += 1
+    for user, ns in _recipients(db, "push_events"):
+        if not should_notify(ns, sig, now, _watchlist_ids(db, user.id)):
+            continue
+        if not _record_push(db, user.id, "event", str(ev.id)):
+            continue
+        sent += send_to_user(
+            db,
+            user.id,
+            {
+                "title": f"{symbol} {sig.direction.upper()}: {EVENT_TEXT[ev.type].split(' — ')[0]}",
+                "body": f"{_dec(ev.price)}" if ev.price is not None else "",
+                "url": f"/signals/{sig.public_id}",
+                "tag": f"event-{ev.id}",
+            },
+        )
     db.commit()
     return sent
 
@@ -352,5 +394,7 @@ def settings_dict(ns: NotificationSettings) -> dict[str, Any]:
         "quiet_from": ns.quiet_from,
         "quiet_to": ns.quiet_to,
         "daily_limit": ns.daily_limit,
+        "push_signals": ns.push_signals,
+        "push_events": ns.push_events,
         "telegram_linked": ns.telegram_chat_id is not None,
     }

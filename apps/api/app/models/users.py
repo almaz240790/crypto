@@ -149,6 +149,8 @@ class NotificationSettings(Base):
     """Письмо о каждом новом сигнале (с учётом градаций, инструментов, тихих часов)."""
     email_events: Mapped[bool] = mapped_column(Boolean, default=False)
     """Письма о событиях: вход, TP, безубыток, стоп, истечение."""
+    push_signals: Mapped[bool] = mapped_column(Boolean, default=True)
+    push_events: Mapped[bool] = mapped_column(Boolean, default=True)
     grades: Mapped[list[Any]] = mapped_column(JSONB, default=lambda: ["A", "B", "C"])
     scope: Mapped[str] = mapped_column(String(10), default="all")  # all / watchlist
     quiet_from: Mapped[int | None] = mapped_column(Integer)  # час UTC, начало тихих часов
@@ -206,3 +208,19 @@ class AdminAudit(Base):
     target: Mapped[str] = mapped_column(String(128))
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class PushSubscription(Base):
+    """Подписка Web Push (план 3.11, задача 2.15): endpoint браузера и ключи шифрования."""
+
+    __tablename__ = "push_subscriptions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    endpoint: Mapped[str] = mapped_column(Text, unique=True)
+    p256dh: Mapped[str] = mapped_column(String(255))
+    auth_key: Mapped[str] = mapped_column(String(255))
+    user_agent: Mapped[str | None] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_ok_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    failures: Mapped[int] = mapped_column(Integer, default=0)
