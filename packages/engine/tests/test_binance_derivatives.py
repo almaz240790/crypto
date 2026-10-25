@@ -53,6 +53,7 @@ METRICS_CSV = [
         "1.10175992",
     ],
     ["2024-01-05 01:00:00", "BTCUSDT", "71000", "3100000000", "1.0", "1.1", "1.5", "0.9"],
+    ["2024-01-05 02:00:00", "BTCUSDT", "70500", "3050000000", "", "", "", ""],
 ]
 
 
@@ -76,13 +77,16 @@ def test_parse_funding_sorted() -> None:
 
 def test_parse_metrics_hourly_sampling_and_pcts() -> None:
     rows = parse_metrics_rows(METRICS_CSV)
-    assert [r.time.minute for r in rows] == [0, 0] and len(rows) == 2
+    assert [r.time.minute for r in rows] == [0, 0, 0] and len(rows) == 3
+    assert not rows[2].has_ratios and rows[2].top_long_pct is None
+    assert rows[2].oi_quote == Decimal("3050000000")
     first = rows[0]
     assert first.oi_quote == Decimal("3150422054.789")
     assert first.top_traders_ratio == Decimal("1.12838535")
     assert abs(first.top_long_pct - Decimal("0.5301")) < Decimal("0.001")
+    assert rows[1].global_long_pct is not None
     assert abs(rows[1].global_long_pct - Decimal("0.6")) < Decimal("0.0001")
-    assert len(parse_metrics_rows(METRICS_CSV, step_minutes=5)) == 3
+    assert len(parse_metrics_rows(METRICS_CSV, step_minutes=5)) == 4
 
 
 def test_urls() -> None:
@@ -116,4 +120,4 @@ def test_iter_funding_archive_plus_rest_and_metrics_days() -> None:
     assert batches[1][0].time == datetime(2024, 1, 1, 16, tzinfo=UTC)
     days = list(h.iter_metrics("BTCUSDT", date(2024, 1, 4), date(2024, 1, 5)))
     assert days[0] == (date(2024, 1, 4), None)
-    assert days[1][0] == date(2024, 1, 5) and len(days[1][1] or []) == 2
+    assert days[1][0] == date(2024, 1, 5) and len(days[1][1] or []) == 3
