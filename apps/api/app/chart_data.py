@@ -100,7 +100,8 @@ def load_candles(
             text(
                 "select open_time, open, high, low, close, volume, quote_volume, trades "
                 "from candles "
-                "where instrument_id=:i and timeframe=:tf and (:b is null or open_time < :b) "
+                "where instrument_id=:i and timeframe=:tf "
+                "and (CAST(:b AS timestamptz) is null or open_time < CAST(:b AS timestamptz)) "
                 "order by open_time desc limit :n"
             ),
             {"i": instrument_id, "tf": tf.value, "b": before, "n": limit + 1},
@@ -112,7 +113,8 @@ def load_candles(
             text(
                 "select open_time, open, high, low, close, volume, quote_volume, trades "
                 "from candles "
-                "where instrument_id=:i and timeframe='1m' and (:b is null or open_time < :b) "
+                "where instrument_id=:i and timeframe='1m' "
+                "and (CAST(:b AS timestamptz) is null or open_time < CAST(:b AS timestamptz)) "
                 "order by open_time desc limit :n"
             ),
             {"i": instrument_id, "b": before, "n": (limit + 2) * mult},

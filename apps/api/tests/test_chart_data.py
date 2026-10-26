@@ -57,3 +57,86 @@ def test_fold_and_bucket_start() -> None:
         c.open_time == start and c.open == 100 and c.close == 197 and c.high == 198 and c.low == 99
     )
     assert c.volume == 97
+
+
+# --- на реальной БД (как в CI): нулевой параметр before и агрегация из хранимых 1m -------------
+
+
+def _db_available() -> bool:
+    from sqlalchemy import text as _t
+    from sqlalchemy.exc import DBAPIError, OperationalError
+
+    from app.db import engine
+
+    try:
+        with engine.connect() as conn:
+            conn.execute(_t("select 1 from candles limit 1"))
+        return True
+    except (OperationalError, DBAPIError):
+        return False
+
+
+import pytest  # noqa: E402
+
+db_only = pytest.mark.skipif(not _db_available(), reason="БД с миграциями недоступна")
+
+
+@db_only
+def test_load_candles_with_and_without_before() -> None:
+    from app.chart_data import current_candle, load_candles
+    from app.db import SessionLocal
+    from app.models import Instrument
+    from app.models.market import Candle as CandleRow
+
+    with SessionLocal() as s:
+        s.begin()
+        try:
+            inst = Instrument(
+                exchange="binance", symbol="CHARTTESTUSDT", base="CT", quote="USDT",
+                market_type="futures", tick_size=Decimal("0.01"), lot_size=Decimal("0.001"),
+            )  # fmt: skip
+            s.add(inst)
+            s.flush()
+            start = datetime(2026, 10, 26, 0, 0, tzinfo=UTC)
+            for i in range(130):  # 130 минут → 1h: 00:00 (60), 01:00 (60), 02:00 (10, неполная)
+                o = Decimal(100 + i)
+                s.add(
+                    CandleRow(
+                        instrument_id=inst.id,
+                        timeframe="1m",
+                        open_time=start + timedelta(minutes=i),
+                        open=o,
+                        high=o + 2,
+                        low=o - 1,
+                        close=o + 1,
+                        volume=Decimal(1),
+                    )
+                )
+            for i in range(3):
+                s.add(
+                    CandleRow(
+                        instrument_id=inst.id,
+                        timeframe="4h",
+                        open_time=start + timedelta(hours=4 * i),
+                        open=Decimal(1),
+                        high=Decimal(2),
+                        low=Decimal(1),
+                        close=Decimal(2),
+                        volume=Decimal(5),
+                    )
+                )
+            s.flush()
+            rows, more = load_candles(s, inst.id, Timeframe.H4, None, 500)
+            assert len(rows) == 3 and more is False
+            rows, more = load_candles(s, inst.id, Timeframe.H4, start + timedelta(hours=8), 2)
+            assert [r.open_time for r in rows] == [
+                start,
+                start + timedelta(hours=4),
+            ] and more is False
+            rows, more = load_candles(s, inst.id, Timeframe.H1, None, 500)
+            assert [r.open_time.hour for r in rows] == [0, 1, 2]
+            assert rows[0].volume == 60 and rows[2].volume == 10
+            cur = current_candle(s, inst.id, Timeframe.H4, start + timedelta(hours=2, minutes=15))
+            assert cur is not None and cur.open_time == start and cur.volume == 130
+        finally:
+            s.rollback()
