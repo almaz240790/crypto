@@ -19,6 +19,7 @@ from app.routers.admin import router as admin_router
 from app.routers.auth import router as auth_router
 from app.routers.billing import router as billing_router
 from app.routers.public import router as public_router
+from app.routers.support import router as support_router
 from app.routers.user import router as user_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -46,6 +47,7 @@ app.include_router(auth_router)
 app.include_router(billing_router)
 app.include_router(admin_router)
 app.include_router(public_router)
+app.include_router(support_router)
 app.include_router(user_router)
 app.add_middleware(
     CORSMiddleware,

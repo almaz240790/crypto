@@ -11,6 +11,7 @@ from app.models.derivatives import (
 from app.models.market import Candle, Instrument
 from app.models.signals import Signal, SignalEvent, SignalResult, Strategy, StrategyVersion
 from app.models.stats import StatsSnapshot
+from app.models.support import SupportTicket
 from app.models.tracking import SignalTracking
 from app.models.users import (
     AdminAudit,
@@ -59,6 +60,7 @@ __all__ = [
     "Strategy",
     "StrategyVersion",
     "Subscription",
+    "SupportTicket",
     "User",
     "Watchlist",
     "WatchlistItem",

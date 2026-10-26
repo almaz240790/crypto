@@ -26,6 +26,9 @@ export function Footer({ status }: { status?: string }) {
             <li>
               <Link href="/status">Статус системы</Link>
             </li>
+            <li>
+              <Link href="/support">Поддержка</Link>
+            </li>
           </ul>
           <ul>
             <li>Условия использования — готовятся</li>
