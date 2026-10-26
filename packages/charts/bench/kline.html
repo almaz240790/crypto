@@ -1,0 +1,24 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>html,body{margin:0;background:#101214;color:#ddd;font:13px system-ui}#c{width:100vw;height:70vh;touch-action:none}</style></head>
+<body><div id="c"></div><div id="info"></div>
+<script>window.process = { env: { NODE_ENV: "production" } };</script>
+<script type="module">
+import { init } from "/node_modules/klinecharts/dist/index.esm.js";
+import { makeCandles, startFrameMeter } from "/bench/common.js";
+const N = Number(new URLSearchParams(location.search).get("n") || 5000);
+const t0 = performance.now();
+const candles = makeCandles(N).map((c) => ({ timestamp: c.time * 1000, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume }));
+const chart = init("c", { styles: { grid: { horizontal: { color: "#1c1f23" }, vertical: { color: "#1c1f23" } } } });
+chart.setSymbol({ ticker: "BTCUSDT", pricePrecision: 2, volumePrecision: 0 });
+chart.setPeriod({ span: 4, type: "hour" });
+chart.setDataLoader({ getBars: ({ callback }) => callback(candles, false) });
+chart.createIndicator("VOL", false, { id: "candle_pane" });
+chart.createIndicator("RSI", false, { height: 90 });
+chart.createOverlay({ name: "segment", points: [{ timestamp: candles[N - 400].timestamp, value: candles[N - 400].low }, { timestamp: candles[N - 50].timestamp, value: candles[N - 50].low }] });
+requestAnimationFrame(() => { window.__firstFrame = performance.now() - t0; });
+startFrameMeter();
+window.__panBy = (bars) => chart.scrollByDistance(bars * chart.getBarSpace().bar, 0);
+window.__zoomBy = (k) => chart.zoomAtCoordinate(k, { x: window.innerWidth / 2, y: 100 }, 0);
+document.getElementById("info").textContent = `KLineChart v10, ${N} свечей`;
+</script></body></html>
