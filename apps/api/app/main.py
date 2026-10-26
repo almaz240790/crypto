@@ -18,6 +18,7 @@ from app.live import router as live_router
 from app.routers.admin import router as admin_router
 from app.routers.auth import router as auth_router
 from app.routers.billing import router as billing_router
+from app.routers.chart import router as chart_router
 from app.routers.public import router as public_router
 from app.routers.support import router as support_router
 from app.routers.user import router as user_router
@@ -45,6 +46,7 @@ app.include_router(live_router)
 app.include_router(debug_router)
 app.include_router(auth_router)
 app.include_router(billing_router)
+app.include_router(chart_router)
 app.include_router(admin_router)
 app.include_router(public_router)
 app.include_router(support_router)

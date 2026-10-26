@@ -34,12 +34,14 @@ class Entitlements:
     """Экспериментальные стратегии (forward) — Premium."""
     journal_limit: int | None
     watchlist_limit: int | None
+    intraday: bool = True
+    """Таймфреймы 1m–15m на графике (Free — нет, план 2A.3)."""
 
 
 ENTITLEMENTS: dict[str, Entitlements] = {
-    FREE: Entitlements(FREE, ("A",), 12, False, False, False, False, 20, 5),
-    PRO: Entitlements(PRO, None, 0, True, True, True, False, None, 50),
-    PREMIUM: Entitlements(PREMIUM, None, 0, True, True, True, True, None, None),
+    FREE: Entitlements(FREE, ("A",), 12, False, False, False, False, 20, 5, False),
+    PRO: Entitlements(PRO, None, 0, True, True, True, False, None, 50, True),
+    PREMIUM: Entitlements(PREMIUM, None, 0, True, True, True, True, None, None, True),
 }
 
 
@@ -98,4 +100,5 @@ def restrictions_dict(ent: Entitlements) -> dict[str, object]:
         "forward_scope": ent.forward_scope,
         "journal_limit": ent.journal_limit,
         "watchlist_limit": ent.watchlist_limit,
+        "intraday": ent.intraday,
     }

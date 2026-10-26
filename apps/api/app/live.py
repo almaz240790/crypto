@@ -99,9 +99,10 @@ class Hub:
                 if channel == CHANNEL_CLOSED:
                     if data.get("tf") != "1m" or not self._anyone_wants(data["symbol"]):
                         continue
-                    price = data.get("close") or await asyncio.to_thread(
-                        _close_price, int(data["instrument_id"]), data["open_time"]
+                    candle = await asyncio.to_thread(
+                        _candle_row, int(data["instrument_id"]), data["open_time"]
                     )
+                    price = (candle or {}).get("c") or data.get("close")
                     if price is not None:
                         await self.broadcast(
                             {
@@ -110,6 +111,11 @@ class Hub:
                                 "p": price,
                                 "at": data["close_time"],
                             },
+                            symbol=data["symbol"],
+                        )
+                    if candle is not None:
+                        await self.broadcast(
+                            {"t": "candle", "s": data["symbol"], "tf": "1m", "c": candle},
                             symbol=data["symbol"],
                         )
                 elif channel == CHANNEL_STATUS:
@@ -139,6 +145,10 @@ class Hub:
 CLOSE_SQL = text(
     "select close from candles where instrument_id=:i and timeframe='1m' and open_time=:t"
 )
+CANDLE_SQL = text(
+    "select open_time, open, high, low, close, volume from candles "
+    "where instrument_id=:i and timeframe='1m' and open_time=:t"
+)
 
 
 def _close_price(instrument_id: int, open_time: str) -> str | None:
@@ -147,6 +157,28 @@ def _close_price(instrument_id: int, open_time: str) -> str | None:
             CLOSE_SQL, {"i": instrument_id, "t": datetime.fromisoformat(open_time)}
         ).first()
     return None if row is None else format(row[0].normalize(), "f")
+
+
+def _candle_row(instrument_id: int, open_time: str) -> dict[str, Any] | None:
+    """Закрытая минутная свеча целиком — терминал сворачивает её в текущую свечу своего tf."""
+    with SessionLocal() as s:
+        row = s.execute(
+            CANDLE_SQL, {"i": instrument_id, "t": datetime.fromisoformat(open_time)}
+        ).first()
+    if row is None:
+        return None
+
+    def fmt(x: Any) -> str:
+        return format(x.normalize(), "f")
+
+    return {
+        "t": int(row[0].timestamp()),
+        "o": fmt(row[1]),
+        "h": fmt(row[2]),
+        "l": fmt(row[3]),
+        "c": fmt(row[4]),
+        "v": fmt(row[5]),
+    }
 
 
 hub = Hub()
