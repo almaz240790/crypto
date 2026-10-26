@@ -14,7 +14,7 @@ const row = (id: string, iid: number, symbol: string, direction: string, grade: 
 });
 const ITEMS = [row("a", 1, "BTCUSDT", "long", "A", "active"), row("b", 2, "ETHUSDT", "short", "B", "pending")];
 
-async function mock(page: Page, calls: string[]) {
+async function mock(page: Page, calls: string[], restrictions: Record<string, unknown> | null = null) {
   await page.context().addCookies([{ name: "pl_auth", value: "1", url: "http://localhost:3101" }]);
   await page.route("**/v1/**", (route) => {
     const u = new URL(route.request().url());
@@ -31,7 +31,7 @@ async function mock(page: Page, calls: string[]) {
       if (g) items = items.filter((i) => i.grade === g);
       const d = u.searchParams.get("direction");
       if (d) items = items.filter((i) => i.direction === d);
-      return json(200, { items, sparklines: { "1": ["1", "2", "3"], "2": ["3", "2", "1"] }, prices: { "1": { p: "102.5", at: "" } }, total: items.length, scope: "live", limit: 50, offset: 0 });
+      return json(200, { items, sparklines: { "1": ["1", "2", "3"], "2": ["3", "2", "1"] }, prices: { "1": { p: "102.5", at: "" } }, total: items.length, scope: "live", limit: 50, offset: 0, restrictions });
     }
     if (p === "/v1/watchlist/items") return json(201, {});
     if (p === "/v1/journal") return json(201, {});
@@ -65,4 +65,16 @@ test("лента: вотчлист и «я вошёл»", async ({ page }) => {
   await expect(page.getByRole("status")).toContainText("Запись в журнале");
   expect(calls).toContain("POST /v1/watchlist/items");
   expect(calls).toContain("POST /v1/journal");
+});
+
+test("лента: пометка об ограничениях тарифа Free", async ({ page }) => {
+  const calls: string[] = [];
+  await mock(page, calls, { plan: "free", grades: ["A"], delay_hours: 12, all_instruments: false });
+  await page.goto("/signals");
+  const note = page.getByRole("note");
+  await expect(note).toContainText("Тариф free");
+  await expect(note).toContainText("задержкой 12 ч");
+  await expect(note).toContainText("инструменты вотчлиста");
+  await note.getByRole("link", { name: "Тарифы" }).click();
+  await expect(page).toHaveURL(/\/pricing$/);
 });

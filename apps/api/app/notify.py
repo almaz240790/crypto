@@ -178,13 +178,16 @@ def _live_signal(db: Session, sig: Signal) -> bool:
 
 
 def _recipients(db: Session, flag: str) -> list[tuple[User, NotificationSettings]]:
+    """Получатели мгновенных уведомлений: Free получает только дневной дайджест (раздел 4)."""
+    from app.entitlements import entitlements_for
+
     rows = db.execute(
         select(User, NotificationSettings)
         .join(NotificationSettings, NotificationSettings.user_id == User.id)
         .where(User.deleted_at.is_(None), User.email_verified_at.is_not(None))
         .where(getattr(NotificationSettings, flag).is_(True))
     ).all()
-    return [(u, ns) for u, ns in rows]
+    return [(u, ns) for u, ns in rows if entitlements_for(db, u).instant_notifications]
 
 
 def notify_new_signal(db: Session, sig: Signal, now: datetime | None = None) -> int:

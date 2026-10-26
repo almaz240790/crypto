@@ -19,6 +19,14 @@ from sqlalchemy.orm import Session
 
 from app import auth
 from app.analysis import analyze_signal
+from app.entitlements import (
+    Entitlements,
+    allowed_instrument_ids,
+    entitlements_for,
+    restrictions_dict,
+    signal_visible,
+    visible_since,
+)
 from app.models import (
     BacktestRun,
     Instrument,
@@ -41,11 +49,29 @@ OPEN_STATUSES = ("pending", "active", "tp1_hit", "tp2_hit")
 SPARK_LEN = 24
 
 
-def _scope(scope: str, user: User | None) -> str:
-    """``live`` — всем; ``forward`` — только admin/owner (план 4: Premium — этап 3)."""
-    if scope == "forward" and (user is None or user.role not in ("admin", "owner")):
-        raise HTTPException(403, "форвард-сигналы не публикуются")
+def _scope(scope: str, user: User | None, ent: Entitlements | None = None) -> str:
+    """``live`` — всем; ``forward`` — Premium и admin/owner (план 4)."""
+    if scope == "forward":
+        allowed = user is not None and (
+            user.role in ("admin", "owner") or (ent is not None and ent.forward_scope)
+        )
+        if not allowed:
+            raise HTTPException(403, "форвард-сигналы доступны на тарифе Premium")
     return scope
+
+
+def _apply_entitlements(
+    q: Any, ent: Entitlements, allowed_ids: list[int] | None, now: datetime
+) -> Any:
+    """Ограничения тарифа на выборку сигналов: градации, задержка, инструменты."""
+    if ent.signal_grades is not None:
+        q = q.where(Signal.grade.in_(list(ent.signal_grades)))
+    vs = visible_since(ent, now)
+    if vs is not None:
+        q = q.where(Signal.candle_close_time <= vs)
+    if allowed_ids is not None:
+        q = q.where(Signal.instrument_id.in_(allowed_ids))
+    return q
 
 
 def _sparklines(db: Session, instrument_ids: list[int]) -> dict[int, list[str]]:
@@ -181,7 +207,9 @@ def signals(
     user: User | None = Depends(optional_user),
     db: Session = Depends(auth.get_db),
 ) -> dict[str, Any]:
-    scope = _scope(scope, user)
+    now = datetime.now(tz=UTC)
+    ent = entitlements_for(db, user, now)
+    scope = _scope(scope, user, ent)
     q = (
         select(Signal, Instrument.symbol, StrategyVersion.version)
         .join(Instrument, Instrument.id == Signal.instrument_id)
@@ -190,9 +218,11 @@ def signals(
     )
     if user is None:
         q = q.where(Signal.status.not_in(OPEN_STATUSES))  # без логина — только закрытые
-    elif status == "open":
+    else:
+        q = _apply_entitlements(q, ent, allowed_instrument_ids(db, user, ent), now)
+    if user is not None and status == "open":
         q = q.where(Signal.status.in_(OPEN_STATUSES))
-    elif status == "closed":
+    elif user is not None and status == "closed":
         q = q.where(Signal.status.not_in(OPEN_STATUSES))
     if symbol:
         q = q.where(Instrument.symbol.in_([s.strip().upper() for s in symbol.split(",")]))
@@ -242,6 +272,7 @@ def signals(
         "scope": scope,
         "limit": limit,
         "offset": offset,
+        "restrictions": restrictions_dict(ent) if user is not None else None,
     }
 
 
@@ -252,8 +283,8 @@ def signals_summary(
     db: Session = Depends(auth.get_db),
 ) -> dict[str, Any]:
     """Счётчики для шапки ленты: активных, новых сегодня, следующее закрытие H4 (план 3.4)."""
-    scope = _scope(scope, user)
     now = datetime.now(tz=UTC)
+    scope = _scope(scope, user, entitlements_for(db, user, now))
     base = (
         select(func.count())
         .select_from(Signal)
@@ -309,11 +340,24 @@ def signal_detail(
     ).first()
     if row is None or row[3] not in ("live", "forward"):
         raise HTTPException(404)
-    if row[3] == "forward" and (user is None or user.role not in ("admin", "owner")):
+    now = datetime.now(tz=UTC)
+    ent = entitlements_for(db, user, now)
+    if row[3] == "forward" and (
+        user is None or (user.role not in ("admin", "owner") and not ent.forward_scope)
+    ):
         raise HTTPException(404)
     s, symbol, version, _ = row
     if user is None and s.status in OPEN_STATUSES:
         raise HTTPException(403, "активные сигналы доступны после входа")
+    if user is not None and not signal_visible(ent, s.grade, s.candle_close_time, now):
+        raise HTTPException(
+            403,
+            f"на тарифе {ent.plan} сигнал появится через {ent.signal_delay_hours} ч "
+            "после закрытия свечи; градации: " + ", ".join(ent.signal_grades or ()),
+        )
+    allowed = allowed_instrument_ids(db, user, ent)
+    if user is not None and allowed is not None and s.instrument_id not in allowed:
+        raise HTTPException(403, "на тарифе Free доступны BTC, ETH и инструменты вотчлиста")
     out = _signal_dict(s, symbol, version, db.get(SignalResult, s.id))
     out["facts"] = (s.rationale_facts or {}).get("facts", [])
     out["zone"] = (s.rationale_facts or {}).get("zone")
@@ -555,8 +599,11 @@ def stats_export(
     user: User = Depends(auth.current_user),
     db: Session = Depends(auth.get_db),
 ) -> StreamingResponse:
-    """Экспорт полной истории в CSV — для зарегистрированных (правило честности 4)."""
-    if scope == "forward" and user.role not in ("admin", "owner"):
+    """Экспорт полной истории в CSV — Pro и выше (раздел 4)."""
+    ent = entitlements_for(db, user)
+    if not ent.csv_export:
+        raise HTTPException(403, "экспорт CSV доступен на тарифе Pro")
+    if scope == "forward" and user.role not in ("admin", "owner") and not ent.forward_scope:
         raise HTTPException(403, "форвард в CSV не публикуется")
     trades, _ = _collect_trades(db, scope, None, run_id, version, symbol, None, None, None, None)
     rows = trade_rows(sorted(trades, key=lambda t: t.signal_time))
