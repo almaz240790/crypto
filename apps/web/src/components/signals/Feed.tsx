@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "@/components/auth/AuthProvider";
@@ -213,6 +215,13 @@ export function Feed({ instruments }: { instruments: { symbol: string; tick_size
         </div>
       )}
 
+      {data?.restrictions && (data.restrictions.delay_hours > 0 || data.restrictions.grades) && (
+        <p className="caption" role="note">
+          Тариф {data.restrictions.plan}: сигналы градации {data.restrictions.grades?.join(", ") ?? "всех"} с задержкой {data.restrictions.delay_hours} ч
+          {!data.restrictions.all_instruments && ", только BTC, ETH и инструменты вотчлиста"}.{" "}
+          <Link href="/pricing">Тарифы</Link>
+        </p>
+      )}
       <Panel flush title={data ? `${data.total} ${data.scope === "forward" ? "форвард-" : ""}сигналов` : "Сигналы"} actions={<span>обновляется по WebSocket и каждую свечу H4</span>}>
         {error ? (
           <EmptyState text={`Не удалось загрузить ленту: ${error}`} />

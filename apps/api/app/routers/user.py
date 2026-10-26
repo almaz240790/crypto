@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from app import auth
 from app.config import settings
+from app.entitlements import entitlements_for
 from app.models import (
     AuthIdentity,
     Instrument,
@@ -208,6 +209,19 @@ def add_watch_item(
         )
     )
     if exists is None:
+        ent = entitlements_for(db, user)
+        count = (
+            db.scalar(
+                select(func.count())
+                .select_from(WatchlistItem)
+                .where(WatchlistItem.watchlist_id == wl.id)
+            )
+            or 0
+        )
+        if ent.watchlist_limit is not None and count >= ent.watchlist_limit:
+            raise HTTPException(
+                403, f"на тарифе {ent.plan} в вотчлисте до {ent.watchlist_limit} инструментов"
+            )
         db.add(WatchlistItem(watchlist_id=wl.id, instrument_id=inst.id))
         db.commit()
     return {"symbol": inst.symbol, "instrument_id": inst.id}
@@ -425,6 +439,18 @@ def _apply_journal(e: JournalEntry, body: JournalIn, db: Session) -> None:
 def journal_create(
     body: JournalIn, user: User = Depends(auth.current_user), db: Session = Depends(auth.get_db)
 ) -> dict[str, Any]:
+    ent = entitlements_for(db, user)
+    if ent.journal_limit is not None:
+        count = (
+            db.scalar(
+                select(func.count())
+                .select_from(JournalEntry)
+                .where(JournalEntry.user_id == user.id)
+            )
+            or 0
+        )
+        if count >= ent.journal_limit:
+            raise HTTPException(403, f"на тарифе {ent.plan} журнал до {ent.journal_limit} записей")
     e = JournalEntry(user_id=user.id)
     _apply_journal(e, body, db)
     db.add(e)

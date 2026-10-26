@@ -14,6 +14,7 @@ export type FeedResponse = {
   scope: "live" | "forward";
   limit: number;
   offset: number;
+  restrictions?: { plan: string; grades: string[] | null; delay_hours: number; all_instruments: boolean } | null;
 };
 
 export type Summary = {
