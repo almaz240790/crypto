@@ -124,7 +124,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
         <span className="caption">{data.connected ? "live" : "без связи"}</span>
         {st.type === "heikin" && <span className="caption">Heikin Ashi: паттерны и сигналы считаются по обычным свечам</span>}
       </div>
-      <div style={{ position: "relative", minHeight: 0 }}>
+      <div className={s.area}>
         {data.error && !intradayLocked ? (
           <div className={s.empty} role="alert">
             {data.error}

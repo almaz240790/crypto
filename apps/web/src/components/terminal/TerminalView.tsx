@@ -176,24 +176,27 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
     const boxes = [];
     const markers: SeriesMarker<Time>[] = [];
     if (st && layersOn.zones) {
-      for (const z of st.zones.slice(-40)) {
-        const active = z.status === "active";
-        boxes.push({ id: `${z.kind}-${z.from_t}`, from: Math.max(snap(z.from_t), first) as Time, to: null, top: Number(z.top), bottom: Number(z.bottom), fill: alpha(tokens.accent, active ? 0.12 : 0.04), stroke: active ? tokens.accent : tokens.text3, label: z.kind.toUpperCase() });
+      // активные зоны — с заливкой и подписью; отработанные — только последние 8, контуром без подписи
+      const active = st.zones.filter((z) => z.status === "active");
+      const inactive = st.zones.filter((z) => z.status !== "active").slice(-8);
+      for (const z of [...inactive, ...active]) {
+        const isActive = z.status === "active";
+        boxes.push({ id: `${z.kind}-${z.from_t}`, from: Math.max(snap(z.from_t), first) as Time, to: null, top: Number(z.top), bottom: Number(z.bottom), fill: alpha(tokens.accent, isActive ? 0.12 : 0), stroke: isActive ? tokens.accent : alpha(tokens.text3, 0.5), label: isActive ? z.kind.toUpperCase() : undefined });
       }
     }
     if (st && layersOn.structure) {
-      for (const e of st.events.slice(-30)) seg(e.from_t, e.t, Number(e.level), e.type === "bos" ? tokens.accent : tokens.warn, 1);
-      for (const sw of st.swings.slice(-80)) {
+      for (const e of st.events.slice(-12)) seg(e.from_t, e.t, Number(e.level), e.type === "bos" ? tokens.accent : tokens.warn, 1);
+      for (const sw of st.swings.slice(-40)) {
         const t = snap(sw.t);
         if (t < first) continue;
-        markers.push({ time: t as Time, position: sw.kind === "high" ? "aboveBar" : "belowBar", shape: "circle", color: tokens.text3, text: sw.kind === "high" ? "H" : "L", size: 0 });
+        markers.push({ time: t as Time, position: sw.kind === "high" ? "aboveBar" : "belowBar", shape: "circle", color: alpha(tokens.text3, 0.7), size: 0.5 });
       }
-      for (const sw of st.sweeps.slice(-20)) {
+      for (const sw of st.sweeps.slice(-6)) {
         const t = snap(sw.t);
         if (t < first) continue;
         markers.push({ time: t as Time, position: sw.kind === "low" ? "belowBar" : "aboveBar", shape: "square", color: tokens.warn, text: "sweep", size: 0 });
       }
-      for (const e of st.equal_levels.slice(-10)) seg(e.from_t, e.to_t, Number(e.p), tokens.text3, 2);
+      for (const e of st.equal_levels.slice(-6)) seg(e.from_t, e.to_t, Number(e.p), tokens.text3, 2);
     }
     if (st && layersOn.levels) {
       for (const k of ["pdh", "pdl", "pwh", "pwl"]) {
