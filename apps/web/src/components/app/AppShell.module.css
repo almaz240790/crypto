@@ -1,6 +1,6 @@
 .shell {
   display: grid;
-  grid-template-columns: var(--sidebar-w) 1fr;
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
   min-height: 100vh;
 }
 
@@ -85,6 +85,11 @@
   color: var(--text);
 }
 
+.body {
+  /* грид-элемент: без min-width: 0 прокручиваемое меню телефона растягивает страницу */
+  min-width: 0;
+}
+
 .content {
   min-width: 0;
   padding: var(--gap-4);
@@ -108,7 +113,7 @@
 
 @media (max-width: 900px) {
   .shell {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .side {

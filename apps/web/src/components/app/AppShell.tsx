@@ -67,7 +67,7 @@ export function AppShell({ title, actions, children, flush = false }: { title: s
           </div>
         </div>
       </aside>
-      <div>
+      <div className={s.body}>
         <div className={s.mobileBar}>
           <Link href="/" className={s.brand} style={{ border: 0, height: "auto", padding: 0 }}>
             Platform
