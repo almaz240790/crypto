@@ -1,6 +1,7 @@
 """Модели БД. Соответствуют разделу 7 плана; на этапе 0 — только движок и сигналы."""
 
 from app.models.backtests import BacktestRun
+from app.models.billing import BalanceEntry, Payment, PromoCode, Subscription
 from app.models.derivatives import (
     FundingRateRow,
     LiquidationRow,
@@ -32,6 +33,7 @@ __all__ = [
     "AdminAudit",
     "AuthIdentity",
     "BacktestRun",
+    "BalanceEntry",
     "Candle",
     "EmailToken",
     "FundingRateRow",
@@ -43,6 +45,8 @@ __all__ = [
     "NotificationLog",
     "NotificationSettings",
     "OpenInterestRow",
+    "Payment",
+    "PromoCode",
     "PushSubscription",
     "RefreshToken",
     "RiskProfile",
@@ -54,6 +58,7 @@ __all__ = [
     "StatusChangeRequest",
     "Strategy",
     "StrategyVersion",
+    "Subscription",
     "User",
     "Watchlist",
     "WatchlistItem",

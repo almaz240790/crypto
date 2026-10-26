@@ -23,6 +23,13 @@ class Settings(BaseSettings):
     vapid_subject: str = "mailto:support@platform.local"
     owner_emails: str = ""
     sentry_dsn: str | None = None
+    api_public_url: str = "http://localhost:8000"
+    """Публичный адрес API — для вебхуков провайдера оплаты."""
+    billing_enabled: bool = False
+    """Пока False — все пользователи на уровне Pro (лендинг), оформление оплаты закрыто."""
+    nowpayments_api_key: str | None = None
+    nowpayments_ipn_secret: str | None = None
+    nowpayments_sandbox: bool = False
     """Email владельцев через запятую: при входе получают роль owner (до админки 2.14)."""
 
     @property
