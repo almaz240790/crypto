@@ -23,5 +23,6 @@ export function proxy(req: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/signals/:path*", "/onboarding", "/settings/:path*", "/watchlist", "/journal", "/calculator", "/screener", "/admin", "/login", "/register"],
+  // Список должен совпадать с PROTECTED и GUEST_ONLY: путь вне matcher прокси не видит.
+  matcher: ["/signals/:path*", "/onboarding", "/settings/:path*", "/watchlist", "/journal", "/calculator", "/screener", "/billing", "/admin", "/login", "/register"],
 };
