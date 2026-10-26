@@ -140,3 +140,18 @@ def test_load_candles_with_and_without_before() -> None:
             assert cur is not None and cur.open_time == start and cur.volume == 130
         finally:
             s.rollback()
+
+
+def test_bucket_last_and_sum() -> None:
+    from app.chart_data import bucket_last, bucket_sum
+
+    t0 = datetime(2026, 10, 26, 12, 0, tzinfo=UTC)
+    rows = [(t0 + timedelta(minutes=m), Decimal(m)) for m in (0, 5, 10, 240, 245)]
+    out = bucket_last(rows, 14400)
+    assert [(o["t"], o["v"]) for o in out] == [
+        (int(t0.timestamp()), "10"),
+        (int(t0.timestamp()) + 14400, "245"),
+    ]
+    liq = [(t0 + timedelta(minutes=m), Decimal(1), Decimal(2)) for m in (0, 1, 240)]
+    out2 = bucket_sum(liq, 14400)
+    assert out2[0]["long"] == "2" and out2[0]["short"] == "4" and out2[1]["long"] == "1"

@@ -1,8 +1,11 @@
 .page {
   display: grid;
   grid-template-rows: auto auto 1fr auto;
+  grid-template-columns: minmax(0, 1fr);
   height: calc(100dvh - 56px);
   min-height: 480px;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .top {
@@ -81,6 +84,9 @@
   min-height: 300px;
   touch-action: none;
   overscroll-behavior: contain;
+  /* внутренние слои LWC с большими z-index не должны перекрывать листы и тулбары */
+  isolation: isolate;
+  z-index: 0;
 }
 
 .canvas {
@@ -125,7 +131,7 @@
   padding: 12px;
   display: grid;
   gap: 8px;
-  z-index: 2;
+  z-index: 10;
 }
 
 .sheet label {
@@ -147,6 +153,21 @@
 @media (max-width: 640px) {
   .page {
     height: calc(100dvh - 48px);
+  }
+
+  .top {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .top select {
+    flex: 0 0 auto;
+    max-width: 44vw;
+  }
+
+  .tfs {
+    flex: 0 0 auto;
   }
 
   .strip {

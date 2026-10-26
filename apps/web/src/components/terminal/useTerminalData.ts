@@ -2,7 +2,7 @@
 
 import { foldMinute, type Candle, type Timeframe } from "@platform/charts";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getCandles, getLayers, toCandle, type LayersResponse } from "@/lib/chart";
+import { getCandles, getDerivatives, getLayers, toCandle, type Derivatives, type LayersResponse } from "@/lib/chart";
 import { useLive, type LiveCandle } from "@/lib/useLive";
 
 /** Свечи инструмента/таймфрейма: первая порция, подгрузка влево, текущая свеча из минутных по WebSocket. */
@@ -11,6 +11,7 @@ export function useTerminalData(symbol: string, tf: Timeframe, token: string | n
   const [hasOlder, setHasOlder] = useState(true);
   const [current, setCurrent] = useState<Candle | null>(null);
   const [layers, setLayers] = useState<LayersResponse | null>(null);
+  const [derivatives, setDerivatives] = useState<Derivatives | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tick, setTick] = useState<string | null>(null);
   const loadingOlder = useRef(false);
@@ -24,6 +25,7 @@ export function useTerminalData(symbol: string, tf: Timeframe, token: string | n
       setCandles(null);
       setCurrent(null);
       setLayers(null);
+      setDerivatives(null);
       setError(null);
     });
     getCandles(symbol, tf)
@@ -41,6 +43,9 @@ export function useTerminalData(symbol: string, tf: Timeframe, token: string | n
       .catch((e: Error) => !dead && setError(e.message));
     getLayers(symbol, tf)
       .then((r) => !dead && setLayers(r))
+      .catch(() => {});
+    getDerivatives(symbol, tf)
+      .then((r) => !dead && setDerivatives(r))
       .catch(() => {});
     return () => {
       dead = true;
@@ -79,5 +84,5 @@ export function useTerminalData(symbol: string, tf: Timeframe, token: string | n
   );
 
   const { prices, connected } = useLive([symbol], token, undefined, onCandle);
-  return { candles, current, hasOlder, layers, error, tick, loadOlder, price: prices[symbol]?.p ?? null, connected };
+  return { candles, current, hasOlder, layers, derivatives, error, tick, loadOlder, price: prices[symbol]?.p ?? null, connected };
 }

@@ -27,6 +27,8 @@ async function mock(page: Page, calls: string[], authed = false) {
       const items = Array.from({ length: n }, (_, i) => candle(before ? i - 500 : i));
       return json(200, { symbol: "BTCUSDT", tf, candles: items, current: { ...candle(n), t: T0 + n * 14400, open: true }, has_older: !before, tick_size: "0.1", server_time: "" });
     }
+    if (p === "/v1/chart/derivatives")
+      return json(200, { symbol: "BTCUSDT", tf: "4h", funding: [{ t: T0 + 100 * 14400, v: "0.0001" }, { t: T0 + 200 * 14400, v: "0.00012" }], funding_current: "0.00012", next_funding_t: Math.floor(Date.now() / 1000) + 3600, oi: [{ t: T0 + 100 * 14400, v: "1000000" }], liquidations: [{ t: T0 + 100 * 14400, long: "1000", short: "2000" }], liquidations_note: "" });
     if (p === "/v1/chart/layers")
       return json(200, {
         symbol: "BTCUSDT", tf: "4h",
@@ -57,8 +59,10 @@ test("график: загрузка, строка состояния, смен�
   // индикаторы: добавить RSI (отдельная панель), слои: выключить зоны
   await page.getByRole("button", { name: /Индикаторы/ }).click();
   await page.getByRole("dialog", { name: "Индикаторы" }).getByLabel(/RSI/).check();
+  await page.getByRole("dialog", { name: "Индикаторы" }).getByLabel(/Funding/).check();
   await page.getByRole("button", { name: "Готово" }).click();
-  await expect(page.getByRole("button", { name: "Индикаторы (2)" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Индикаторы (3)" })).toBeVisible();
+  await expect(strip).toContainText("funding 0.0120 %");
   await page.getByRole("button", { name: "Слои" }).click();
   await page.getByRole("dialog", { name: "Слои" }).getByLabel("Зоны").uncheck();
   await page.getByRole("button", { name: "Готово" }).click();
@@ -67,7 +71,7 @@ test("график: загрузка, строка состояния, смен�
   await expect(strip).toContainText("Heikin Ashi");
   // настройки сохраняются между загрузками
   await page.reload();
-  await expect(page.getByRole("button", { name: "Индикаторы (2)" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Индикаторы (3)" })).toBeVisible();
 });
 
 test("график: смена инструмента и сигналы по инструменту", async ({ page }) => {
