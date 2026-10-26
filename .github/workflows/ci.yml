@@ -54,6 +54,9 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
+      - name: Зависимости пакета графика (file:../../packages/charts)
+        run: npm ci --no-audit --no-fund
+        working-directory: packages/charts
       - run: npm ci
       - name: Lint (eslint + запрет цветов вне токенов)
         run: npm run lint
