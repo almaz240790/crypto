@@ -183,7 +183,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
         <button type="button" className={s.chip} aria-pressed={sheet === "layers"} onClick={() => setSheet(sheet === "layers" ? null : "layers")}>
           Слои
         </button>
-        <span className="caption">двойной клик — сброс масштаба · свечи до закрытия рисуются контуром в строке состояния</span>
+        <span className="caption">двойной клик — сброс масштаба</span>
         {data.layers?.signals.length ? (
           <Link className="caption" href={`/signals?symbol=${symbol}&tab=all`}>
             сигналов по инструменту: {data.layers.signals.length}

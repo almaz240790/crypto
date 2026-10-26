@@ -229,12 +229,8 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
     }
     if (st && layersOn.structure) {
       for (const e of st.events.slice(-12)) seg(e.from_t, e.t, Number(e.level), e.type === "bos" ? tokens.accent : tokens.warn, 1);
-      for (const sw of st.swings.slice(-40)) {
-        const t = snap(sw.t);
-        if (t < first) continue;
-        markers.push({ time: t as Time, position: sw.kind === "high" ? "aboveBar" : "belowBar", shape: "circle", color: alpha(tokens.text3, 0.6), size: 0.2 });
-      }
-      for (const sw of st.sweeps.slice(-6)) {
+      // свинги маркерами не рисуем: на телефоне LWC делает их крупными кружками и они перекрывают свечи
+      for (const sw of st.sweeps.slice(-4)) {
         const t = snap(sw.t);
         if (t < first) continue;
         markers.push({ time: t as Time, position: sw.kind === "low" ? "belowBar" : "aboveBar", shape: "square", color: tokens.warn, text: "sweep", size: 0 });
