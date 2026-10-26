@@ -1,0 +1,21 @@
+{
+  "name": "@platform/charts",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Терминал-график: обёртка Lightweight Charts v5, слои, индикаторы (план 2A, 2B).",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "bench": "node bench/run.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "lightweight-charts": "^5.2.1"
+  },
+  "devDependencies": {
+    "klinecharts": "^10.1.0",
+    "typescript": "^5.6.0",
+    "vitest": "^3.0.0"
+  }
+}

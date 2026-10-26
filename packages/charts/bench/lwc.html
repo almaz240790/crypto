@@ -1,0 +1,51 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>html,body{margin:0;background:#101214;color:#ddd;font:13px system-ui}#c{width:100vw;height:70vh;touch-action:none}</style></head>
+<body><div id="c"></div><div id="info"></div>
+<script type="module">
+import { createChart, CandlestickSeries, LineSeries, HistogramSeries } from "/node_modules/lightweight-charts/dist/lightweight-charts.standalone.production.mjs";
+import { makeCandles, rsi, startFrameMeter } from "/bench/common.js";
+const N = Number(new URLSearchParams(location.search).get("n") || 5000);
+const t0 = performance.now();
+const candles = makeCandles(N);
+const chart = createChart(document.getElementById("c"), {
+  layout: { background: { color: "#101214" }, textColor: "#aaa", panes: { separatorColor: "#333", enableResize: false } },
+  grid: { vertLines: { color: "#1c1f23" }, horzLines: { color: "#1c1f23" } },
+  timeScale: { timeVisible: true },
+});
+const s = chart.addSeries(CandlestickSeries, { upColor: "#2a9d6a", downColor: "#d64545", borderVisible: false, wickUpColor: "#2a9d6a", wickDownColor: "#d64545" });
+s.setData(candles);
+const vol = chart.addSeries(HistogramSeries, { priceFormat: { type: "volume" }, priceScaleId: "" }, 0);
+vol.setData(candles.map((c) => ({ time: c.time, value: c.volume, color: c.close >= c.open ? "#2a9d6a55" : "#d6454555" })));
+vol.priceScale().applyOptions({ scaleMargins: { top: 0.8, bottom: 0 } });
+// вторая панель: RSI
+const r = chart.addSeries(LineSeries, { color: "#e0a030", lineWidth: 1 }, 1);
+r.setData(rsi(candles));
+// примитив: одна трендовая линия между двумя свечами
+class TrendLine {
+  constructor(series, p1, p2) { this._s = series; this._p1 = p1; this._p2 = p2; this._chart = chart; }
+  attached(p) { this._chart = p.chart; this._req = p.requestUpdate; }
+  updateAllViews() {}
+  paneViews() {
+    const s = this._s, ch = this._chart, p1 = this._p1, p2 = this._p2;
+    return [{
+      zOrder: () => "normal",
+      renderer: () => ({
+        draw: (target) => target.useMediaCoordinateSpace(({ context: ctx }) => {
+          const x1 = ch.timeScale().timeToCoordinate(p1.time), x2 = ch.timeScale().timeToCoordinate(p2.time);
+          const y1 = s.priceToCoordinate(p1.price), y2 = s.priceToCoordinate(p2.price);
+          if (x1 == null || x2 == null || y1 == null || y2 == null) return;
+          ctx.strokeStyle = "#6aa0ff"; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+        }),
+      }),
+    }];
+  }
+}
+s.attachPrimitive(new TrendLine(s, { time: candles[N - 400].time, price: candles[N - 400].low }, { time: candles[N - 50].time, price: candles[N - 50].low }));
+chart.timeScale().setVisibleLogicalRange({ from: N - 150, to: N + 5 });
+requestAnimationFrame(() => { window.__firstFrame = performance.now() - t0; });
+startFrameMeter();
+window.__panBy = (bars) => { const r = chart.timeScale().getVisibleLogicalRange(); chart.timeScale().setVisibleLogicalRange({ from: r.from - bars, to: r.to - bars }); };
+window.__zoomBy = (k) => { const r = chart.timeScale().getVisibleLogicalRange(); const mid = (r.from + r.to) / 2, half = ((r.to - r.from) / 2) * k; chart.timeScale().setVisibleLogicalRange({ from: mid - half, to: mid + half }); };
+document.getElementById("info").textContent = `LWC v5, ${N} свечей`;
+</script></body></html>
