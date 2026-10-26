@@ -68,3 +68,22 @@ jobs:
           npm run e2e
         env:
           CI: "1"
+  charts:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/charts
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: packages/charts/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - name: Perf-тест графика (Pixel 5, CPU ×4, порог из ADR-0003)
+        run: |
+          npx playwright install --with-deps chromium
+          npm run perf-check
