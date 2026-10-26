@@ -15,6 +15,7 @@ import contextlib
 import logging
 import signal as os_signal
 import time
+from typing import Any
 
 import redis
 import redis.asyncio as aioredis
@@ -27,6 +28,7 @@ from app.models import Signal, SignalEvent
 from app.monitor import run_monitor
 from app.notify import notify_event, notify_new_signal
 from app.snapshots import recompute
+from app.subscriptions import run_hourly
 
 CLOSING = {"closed_sl", "closed_be", "closed_tp3", "closed_time", "expired", "cancelled"}
 
@@ -34,6 +36,7 @@ log = logging.getLogger("notifier")
 POLL = 30
 MONITOR_EVERY = 60
 STATS_EVERY = 600
+BILLING_EVERY = 3600
 HEARTBEAT_KEY = "notifier:heartbeat"
 KEY_SIGNAL = "notifier:last_signal_id"
 KEY_EVENT = "notifier:last_event_id"
@@ -80,6 +83,11 @@ def stats_once() -> int:
         return recompute(db)
 
 
+def billing_once() -> dict[str, Any]:
+    with SessionLocal() as db:
+        return run_hourly(db)
+
+
 def monitor_once() -> str:
     """Синхронно: один прогон монитора. Возвращает общий статус."""
     r = redis.from_url(settings.redis_url, socket_timeout=5)
@@ -100,7 +108,14 @@ class Notifier:
         last_event = int(await self.redis.get(KEY_EVENT) or -1)
         next_monitor = 0.0
         next_stats = 0.0
+        next_billing = 0.0
         while not self.stop.is_set():
+            if time.monotonic() >= next_billing:
+                next_billing = time.monotonic() + BILLING_EVERY
+                try:
+                    await asyncio.to_thread(billing_once)
+                except Exception:
+                    log.exception("цикл подписок")
             if time.monotonic() >= next_monitor:
                 next_monitor = time.monotonic() + MONITOR_EVERY
                 try:

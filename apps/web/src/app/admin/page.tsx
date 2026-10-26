@@ -15,6 +15,7 @@ const TABS = [
   ["instruments", "Инструменты"],
   ["signals", "Сигналы"],
   ["users", "Пользователи"],
+  ["billing", "Биллинг"],
   ["system", "Система"],
   ["audit", "Аудит"],
 ] as const;
@@ -370,6 +371,7 @@ function Users({ run, me }: { run: Run; me: { id: number; role: string } }) {
               <tr>
                 <Th>Email</Th>
                 <Th>Роль</Th>
+                <Th>Тариф</Th>
                 <Th>Страна</Th>
                 <Th>Подтверждён</Th>
                 <Th>Создан</Th>
@@ -396,11 +398,34 @@ function Users({ run, me }: { run: Run; me: { id: number; role: string } }) {
                       u.role
                     )}
                   </Td>
+                  <Td>
+                    {u.plan ?? "free"}
+                    {u.plan_until && <span className="caption"> до {formatTimeUTC(u.plan_until, { withYear: true })}</span>}
+                    {u.plan_status === "trialing" && <span className="caption"> триал</span>}
+                  </Td>
                   <Td>{u.country ?? "—"}</Td>
                   <Td>{u.verified ? "да" : "нет"}</Td>
                   <Td className="caption">{u.created_at ? formatTimeUTC(u.created_at, { withYear: true }) : "—"}</Td>
                   <Td>{u.blocked_at ? <Badge tone="down">{u.blocked_reason ?? "заблокирован"}</Badge> : u.deleted ? <Badge tone="muted">удалён</Badge> : "—"}</Td>
                   <Td>
+                    {!u.deleted && (
+                      <button
+                        type="button"
+                        className={t.small}
+                        aria-label={`выдать тариф ${u.email}`}
+                        onClick={() => {
+                          const plan = prompt("Тариф: pro или premium", "pro");
+                          if (plan !== "pro" && plan !== "premium") return;
+                          const months = Number(prompt("Срок, месяцев (1, 3 или 12)", "1"));
+                          if (![1, 3, 12].includes(months)) return;
+                          const reason = prompt("Причина (попадёт в аудит)");
+                          if (!reason || reason.length < 5) return;
+                          void run(() => A.grantSubscription(u.id, plan, months, reason), "Тариф выдан", () => void load());
+                        }}
+                      >
+                        выдать тариф
+                      </button>
+                    )}{" "}
                     {u.id !== me.id && u.role !== "owner" && !u.deleted && (
                       <button
                         type="button"
@@ -414,6 +439,105 @@ function Users({ run, me }: { run: Run; me: { id: number; role: string } }) {
                         {u.blocked_at ? "разблокировать" : "заблокировать"}
                       </button>
                     )}
+                  </Td>
+                </tr>
+              ))}
+            </tbody>
+          </Table>
+        )}
+      </Panel>
+    </div>
+  );
+}
+
+function Billing({ run }: { run: Run }) {
+  const [rows, setRows] = useState<A.Promo[] | null>(null);
+  const [form, setForm] = useState({ code: "", percent: "10", fixed_usd: "0", plan: "", max_uses: "", expires_at: "" });
+  const load = useCallback(() => A.getPromos().then((x) => setRows(x)).catch(() => setRows([])), []);
+  useEffect(() => {
+    queueMicrotask(() => void load());
+  }, [load]);
+  const f = (k: keyof typeof form, v: string) => setForm((p) => ({ ...p, [k]: v }));
+  return (
+    <div className={s.grid}>
+      <Panel title="Новый промокод">
+        <form
+          className={t.form}
+          onSubmit={(e) => {
+            e.preventDefault();
+            void run(
+              () =>
+                A.createPromo({
+                  code: form.code.trim().toUpperCase(),
+                  percent: Number(form.percent) || 0,
+                  fixed_usd: form.fixed_usd || "0",
+                  plan: form.plan || null,
+                  max_uses: form.max_uses ? Number(form.max_uses) : null,
+                  expires_at: form.expires_at ? new Date(form.expires_at).toISOString() : null,
+                }),
+              "Промокод создан",
+              () => {
+                setForm({ code: "", percent: "10", fixed_usd: "0", plan: "", max_uses: "", expires_at: "" });
+                void load();
+              },
+            );
+          }}
+        >
+          <div className={t.row}>
+            <Input label="Код" value={form.code} onChange={(e) => f("code", e.target.value)} required minLength={3} maxLength={32} style={{ textTransform: "uppercase" }} />
+            <Input label="Скидка, %" inputMode="numeric" value={form.percent} onChange={(e) => f("percent", e.target.value)} />
+            <Input label="Или сумма, USD" inputMode="decimal" value={form.fixed_usd} onChange={(e) => f("fixed_usd", e.target.value)} />
+            <Select label="Тариф" value={form.plan} onChange={(e) => f("plan", e.target.value)}>
+              <option value="">любой</option>
+              <option value="pro">pro</option>
+              <option value="premium">premium</option>
+            </Select>
+            <Input label="Макс. использований" inputMode="numeric" value={form.max_uses} onChange={(e) => f("max_uses", e.target.value)} />
+            <Input label="Действует до" type="date" value={form.expires_at} onChange={(e) => f("expires_at", e.target.value)} />
+          </div>
+          <div className={t.actions}>
+            <Button type="submit" size="sm" variant="primary">
+              Создать промокод
+            </Button>
+          </div>
+        </form>
+      </Panel>
+      <Panel title="Промокоды" flush footer="Деактивированный код не принимается при оформлении; история использований сохраняется.">
+        {!rows ? (
+          <EmptyState text="Загрузка…" />
+        ) : rows.length === 0 ? (
+          <EmptyState text="Промокодов пока нет." />
+        ) : (
+          <Table compact stack={false}>
+            <thead>
+              <tr>
+                <Th>Код</Th>
+                <Th>Скидка</Th>
+                <Th>Тариф</Th>
+                <Th num>Использован</Th>
+                <Th>До</Th>
+                <Th>Статус</Th>
+                <Th />
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((p) => (
+                <tr key={p.id}>
+                  <Td>
+                    <strong>{p.code}</strong>
+                  </Td>
+                  <Td>{p.percent ? `${p.percent} %` : `${p.fixed_usd} USD`}</Td>
+                  <Td>{p.plan ?? "любой"}</Td>
+                  <Td num>
+                    {p.used}
+                    {p.max_uses ? ` / ${p.max_uses}` : ""}
+                  </Td>
+                  <Td className="caption">{p.expires_at ? formatTimeUTC(p.expires_at, { withYear: true }) : "—"}</Td>
+                  <Td>{p.active ? <Badge tone="up">активен</Badge> : <Badge tone="muted">выключен</Badge>}</Td>
+                  <Td>
+                    <button type="button" className={t.small} aria-label={`${p.active ? "выключить" : "включить"} ${p.code}`} onClick={() => void run(() => A.togglePromo(p.id, !p.active), p.active ? "Промокод выключен" : "Промокод включён", () => void load())}>
+                      {p.active ? "выключить" : "включить"}
+                    </button>
                   </Td>
                 </tr>
               ))}
@@ -540,6 +664,7 @@ function AdminInner() {
       {tab === "instruments" && <Instruments run={run} />}
       {tab === "signals" && <Signals run={run} />}
       {tab === "users" && <Users run={run} me={{ id: user.id, role: user.role }} />}
+      {tab === "billing" && <Billing run={run} />}
       {tab === "system" && <System />}
       {tab === "audit" && <Audit />}
     </>
