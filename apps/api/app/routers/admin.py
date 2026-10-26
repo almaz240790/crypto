@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
-from app import auth
+from app import auth, billing
 from app.admin_rules import can_decide, transition_allowed
 from app.config import settings
 from app.models import (
@@ -24,11 +24,13 @@ from app.models import (
     BacktestRun,
     Instrument,
     NotificationLog,
+    PromoCode,
     Signal,
     SignalEvent,
     StatusChangeRequest,
     Strategy,
     StrategyVersion,
+    Subscription,
     User,
 )
 
@@ -368,10 +370,14 @@ def users(
     stmt = select(User).order_by(User.id.desc()).limit(limit)
     if q:
         stmt = stmt.where(User.email.ilike(f"%{q.strip()}%"))
+    subs = {s.user_id: s for s in db.scalars(select(Subscription)).all()}
     return [
         {
             "id": u.id,
             "email": u.email,
+            "plan": subs[u.id].plan if u.id in subs else "free",
+            "plan_until": subs[u.id].current_period_end.isoformat() if u.id in subs else None,
+            "plan_status": subs[u.id].status if u.id in subs else None,
             "name": u.name,
             "role": u.role,
             "country": u.country,
@@ -504,3 +510,105 @@ def audit(
         }
         for a, email in rows
     ]
+
+
+# --- биллинг: промокоды и ручная выдача подписки (план 3.13) ------------------------------------
+
+
+class PromoIn(BaseModel):
+    code: str = Field(min_length=3, max_length=32, pattern="^[A-Za-z0-9_-]+$")
+    percent: int = Field(0, ge=0, le=100)
+    fixed_usd: Decimal = Field(Decimal(0), ge=0)
+    plan: str | None = Field(default=None, pattern="^(pro|premium)$")
+    max_uses: int | None = Field(default=None, ge=1)
+    expires_at: datetime | None = None
+
+
+def _promo_out(p: PromoCode) -> dict[str, Any]:
+    return {
+        "id": p.id,
+        "code": p.code,
+        "percent": p.percent,
+        "fixed_usd": str(p.fixed_usd),
+        "plan": p.plan,
+        "max_uses": p.max_uses,
+        "used": p.used,
+        "expires_at": p.expires_at.isoformat() if p.expires_at else None,
+        "active": p.active,
+        "created_at": p.created_at.isoformat() if p.created_at else None,
+    }
+
+
+@router.get("/promo")
+def promo_list(
+    user: User = Depends(ADMIN), db: Session = Depends(auth.get_db)
+) -> list[dict[str, Any]]:
+    return [
+        _promo_out(p) for p in db.scalars(select(PromoCode).order_by(PromoCode.id.desc())).all()
+    ]
+
+
+@router.post("/promo", status_code=201)
+def promo_create(
+    body: PromoIn, user: User = Depends(ADMIN), db: Session = Depends(auth.get_db)
+) -> dict[str, Any]:
+    code = body.code.upper()
+    if db.scalar(select(PromoCode).where(PromoCode.code == code)):
+        raise HTTPException(409, "такой промокод уже есть")
+    if body.percent == 0 and body.fixed_usd == 0:
+        raise HTTPException(400, "укажите процент или сумму скидки")
+    p = PromoCode(
+        code=code,
+        percent=body.percent,
+        fixed_usd=body.fixed_usd,
+        plan=body.plan,
+        max_uses=body.max_uses,
+        expires_at=body.expires_at,
+    )
+    db.add(p)
+    _audit(db, user, "promo.create", f"promo:{code}", body.model_dump(mode="json"))
+    db.commit()
+    return _promo_out(p)
+
+
+@router.patch("/promo/{promo_id}")
+def promo_toggle(
+    promo_id: int, active: bool, user: User = Depends(ADMIN), db: Session = Depends(auth.get_db)
+) -> dict[str, Any]:
+    p = db.get(PromoCode, promo_id)
+    if p is None:
+        raise HTTPException(404)
+    p.active = active
+    _audit(db, user, "promo.toggle", f"promo:{p.code}", {"active": active})
+    db.commit()
+    return _promo_out(p)
+
+
+class GrantIn(BaseModel):
+    plan: str = Field(pattern="^(pro|premium)$")
+    months: int = Field(ge=1, le=12)
+    reason: str = Field(min_length=5, max_length=255)
+
+
+@router.post("/users/{user_id}/subscription", status_code=201)
+def grant_subscription(
+    user_id: int, body: GrantIn, user: User = Depends(ADMIN), db: Session = Depends(auth.get_db)
+) -> dict[str, Any]:
+    """Ручная выдача/продление тарифа (бета-тестеры, компенсации). Платёж с provider=manual."""
+    u = db.get(User, user_id)
+    if u is None:
+        raise HTTPException(404)
+    now = datetime.now(tz=UTC)
+    q = billing.Quote(body.plan, body.months, Decimal(0), Decimal(0), Decimal(0), Decimal(0), None)
+    p = billing.create_payment(db, u, q, "manual", now)
+    p.raw = {"reason": body.reason, "by": user.email}
+    sub = billing.activate(db, p, now)
+    _audit(
+        db,
+        user,
+        "subscription.grant",
+        f"user:{u.id}",
+        {"plan": body.plan, "months": body.months, "reason": body.reason},
+    )
+    db.commit()
+    return {"plan": sub.plan, "current_period_end": sub.current_period_end.isoformat()}
