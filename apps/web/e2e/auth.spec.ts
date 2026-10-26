@@ -45,6 +45,11 @@ async function mockApi(page: Page, calls: string[]) {
 test("защищённая страница без входа ведёт на /login", async ({ page }) => {
   await page.goto("/signals");
   await expect(page).toHaveURL(/\/login\?next=%2Fsignals/);
+  // каждый защищённый раздел: список PROTECTED и matcher в src/proxy.ts должны совпадать
+  for (const path of ["/billing", "/admin", "/journal", "/watchlist", "/screener", "/calculator", "/settings"]) {
+    await page.goto(path);
+    await expect(page).toHaveURL(new RegExp(`/login\\?next=${encodeURIComponent(path).replace(/\//g, "%2F")}`));
+  }
 });
 
 test("вход по email и паролю", async ({ page }) => {
