@@ -31,3 +31,15 @@ export function toCandle(c: CandleOut): Candle {
 export const getCandles = (symbol: string, tf: Timeframe, before?: number) =>
   api<CandlesResponse>(`/v1/chart/candles?symbol=${symbol}&tf=${tf}${before ? `&before=${before}` : ""}&limit=500`);
 export const getLayers = (symbol: string, tf: Timeframe) => api<LayersResponse>(`/v1/chart/layers?symbol=${symbol}&tf=${tf}`);
+
+export type Derivatives = {
+  symbol: string;
+  tf: string;
+  funding: { t: number; v: string }[];
+  funding_current: string | null;
+  next_funding_t: number | null;
+  oi: { t: number; v: string }[];
+  liquidations: { t: number; long: string; short: string }[];
+  liquidations_note: string;
+};
+export const getDerivatives = (symbol: string, tf: Timeframe) => api<Derivatives>(`/v1/chart/derivatives?symbol=${symbol}&tf=${tf}&limit=500`, { auth: false });

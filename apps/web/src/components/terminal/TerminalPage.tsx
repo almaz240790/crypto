@@ -11,7 +11,7 @@ import { INTRADAY, TIMEFRAMES } from "@/lib/timeframes";
 import { formatPct, formatPrice } from "@/lib/format";
 import { getInstruments, type Instrument } from "@/lib/user";
 import s from "./terminal.module.css";
-import { TerminalView, type ActiveIndicator, type LayerKey } from "./TerminalView";
+import { PANELS, TerminalView, type ActiveIndicator, type LayerKey, type PanelKey } from "./TerminalView";
 import { useTerminalData } from "./useTerminalData";
 
 const TYPE_LABEL: Record<ChartType, string> = { candles: "Свечи", bars: "Бары", line: "Линия", heikin: "Heikin Ashi" };
@@ -19,10 +19,10 @@ const LAYER_LABEL: Record<LayerKey, string> = { structure: "Структура",
 const DEFAULT_INDICATORS: ActiveIndicator[] = [{ id: "ema", params: { period: 50 } }];
 const STORAGE = "pl-terminal";
 
-type Saved = { type: ChartType; indicators: ActiveIndicator[]; layers: Record<LayerKey, boolean> };
+type Saved = { type: ChartType; indicators: ActiveIndicator[]; layers: Record<LayerKey, boolean>; panels: PanelKey[] };
 
 function load(): Saved {
-  const base: Saved = { type: "candles", indicators: DEFAULT_INDICATORS, layers: { structure: true, zones: true, levels: true, signals: true } };
+  const base: Saved = { type: "candles", indicators: DEFAULT_INDICATORS, layers: { structure: true, zones: true, levels: true, signals: true }, panels: [] };
   try {
     const raw = localStorage.getItem(STORAGE);
     return raw ? { ...base, ...(JSON.parse(raw) as Partial<Saved>) } : base;
@@ -79,6 +79,12 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
       const spec = INDICATORS.find((i) => i.id === id)!;
       return { ...cur, indicators: has ? cur.indicators.filter((i) => i.id !== id) : [...cur.indicators, { id, params: defaultParams(spec) }] };
     });
+  const togglePanel = (k: PanelKey) =>
+    setSaved((p) => {
+      const cur = p ?? load();
+      const has = cur.panels.includes(k);
+      return { ...cur, panels: has ? cur.panels.filter((x) => x !== k) : [...cur.panels, k] };
+    });
   const toggleLayer = (k: LayerKey) => setSaved((p) => ({ ...(p ?? load()), layers: { ...(p ?? load()).layers, [k]: !(p ?? load()).layers[k] } }));
   const indicatorIds = useMemo(() => new Set(st.indicators.map((i) => i.id)), [st.indicators]);
 
@@ -121,6 +127,12 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
           </span>
         )}
         {data.layers?.structure?.atr && <span>ATR {formatPrice(data.layers.structure.atr)}</span>}
+        {data.derivatives?.funding_current && (
+          <span>
+            funding <strong>{(Number(data.derivatives.funding_current) * 100).toFixed(4)} %</strong>
+            {data.derivatives.next_funding_t && <> через {fmtCountdown(Math.max(0, data.derivatives.next_funding_t - now))}</>}
+          </span>
+        )}
         <span className="caption">{data.connected ? "live" : "без связи"}</span>
         {st.type === "heikin" && <span className="caption">Heikin Ashi: паттерны и сигналы считаются по обычным свечам</span>}
       </div>
@@ -134,17 +146,25 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
             Таймфреймы 1m–15m доступны после входа на тарифе Pro. <Link href="/pricing">Тарифы</Link>
           </div>
         ) : (
-          <TerminalView candles={data.candles ?? []} current={data.current} tf={tf} type={st.type} indicators={st.indicators} layersOn={st.layers} layers={data.layers} tick={data.tick} onNeedOlder={data.loadOlder} />
+          <TerminalView candles={data.candles ?? []} current={data.current} tf={tf} type={st.type} indicators={st.indicators} layersOn={st.layers} layers={data.layers} derivatives={data.derivatives} panels={st.panels} tick={data.tick} onNeedOlder={data.loadOlder} />
         )}
         {sheet && (
           <div className={s.sheet} role="dialog" aria-label={sheet === "indicators" ? "Индикаторы" : "Слои"}>
             {sheet === "indicators"
-              ? INDICATORS.map((i) => (
-                  <label key={i.id}>
-                    <input type="checkbox" checked={indicatorIds.has(i.id)} onChange={() => toggleIndicator(i.id)} /> {i.title}
-                    <span className="caption">{i.pane === "overlay" ? "на графике" : "панель"}</span>
-                  </label>
-                ))
+              ? [
+                  ...INDICATORS.map((i) => (
+                    <label key={i.id}>
+                      <input type="checkbox" checked={indicatorIds.has(i.id)} onChange={() => toggleIndicator(i.id)} /> {i.title}
+                      <span className="caption">{i.pane === "overlay" ? "на графике" : "панель"}</span>
+                    </label>
+                  )),
+                  ...PANELS.map((pn) => (
+                    <label key={pn.id}>
+                      <input type="checkbox" checked={st.panels.includes(pn.id)} onChange={() => togglePanel(pn.id)} /> {pn.title}
+                      <span className="caption">{pn.id === "liq" ? "панель · данные публичного потока, не полный объём" : "панель · деривативы"}</span>
+                    </label>
+                  )),
+                ]
               : (Object.keys(LAYER_LABEL) as LayerKey[]).map((k) => (
                   <label key={k}>
                     <input type="checkbox" checked={st.layers[k]} onChange={() => toggleLayer(k)} /> {LAYER_LABEL[k]}
@@ -158,7 +178,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
       </div>
       <div className={s.bottom}>
         <button type="button" className={s.chip} aria-pressed={sheet === "indicators"} onClick={() => setSheet(sheet === "indicators" ? null : "indicators")}>
-          Индикаторы ({st.indicators.length})
+          Индикаторы ({st.indicators.length + st.panels.length})
         </button>
         <button type="button" className={s.chip} aria-pressed={sheet === "layers"} onClick={() => setSheet(sheet === "layers" ? null : "layers")}>
           Слои

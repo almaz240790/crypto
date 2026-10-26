@@ -18,6 +18,7 @@ from app.chart_data import (
     current_candle,
     layers_cached,
     load_candles,
+    load_derivatives,
     signal_layer,
 )
 from app.config import settings
@@ -110,4 +111,26 @@ def layers(
         "structure": structure,
         "signals": signals,
         "server_time": now.isoformat(),
+    }
+
+
+@router.get("/derivatives")
+def derivatives(
+    symbol: str,
+    tf: str = "4h",
+    before: int | None = Query(None),
+    limit: int = Query(PAGE, ge=20, le=PAGE),
+    user: User | None = Depends(optional_user),
+    db: Session = Depends(auth.get_db),
+) -> dict[str, Any]:
+    """Панели funding / OI / ликвидаций, выровненные по корзинам tf, за окно ``limit`` свечей."""
+    timeframe = _tf(tf)
+    inst = _instrument(db, symbol)
+    until = datetime.fromtimestamp(before, tz=UTC) if before else None
+    end = until or datetime.now(tz=UTC)
+    since = end - timeframe.delta * limit
+    return {
+        "symbol": inst.symbol,
+        "tf": timeframe.value,
+        **load_derivatives(db, inst.id, timeframe, since, until),
     }

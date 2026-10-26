@@ -324,3 +324,63 @@ def signal_layer(
         }
         for s, ver in rows
     ]
+
+
+# --- крипто-панели: funding, OI, ликвидации (план 2A.4, задача 2B.5) ----------------------------
+
+
+def bucket_last(rows: list[tuple[datetime, Decimal]], size: int) -> list[dict[str, Any]]:
+    """Последнее значение в каждой корзине tf (для OI)."""
+    out: dict[int, Decimal] = {}
+    for t, v in rows:
+        out[(int(t.timestamp()) // size) * size] = v
+    return [{"t": k, "v": _dec(v)} for k, v in sorted(out.items())]
+
+
+def bucket_sum(rows: list[tuple[datetime, Decimal, Decimal]], size: int) -> list[dict[str, Any]]:
+    """Суммы long/short в каждой корзине tf (для ликвидаций)."""
+    out: dict[int, tuple[Decimal, Decimal]] = {}
+    for t, a, b in rows:
+        k = (int(t.timestamp()) // size) * size
+        pa, pb = out.get(k, (Decimal(0), Decimal(0)))
+        out[k] = (pa + a, pb + b)
+    return [{"t": k, "long": _dec(a), "short": _dec(b)} for k, (a, b) in sorted(out.items())]
+
+
+def load_derivatives(
+    db: Session, instrument_id: int, tf: Timeframe, since: datetime, until: datetime | None
+) -> dict[str, Any]:
+    until = until or datetime.now(tz=UTC)
+    size = tf.seconds
+    f = db.execute(
+        text(
+            "select funding_time, rate, interval_hours from funding_rates "
+            "where instrument_id=:i and funding_time>=:s and funding_time<:u order by 1"
+        ),
+        {"i": instrument_id, "s": since, "u": until},
+    ).all()
+    oi = db.execute(
+        text(
+            "select time, oi_quote from open_interest "
+            "where instrument_id=:i and time>=:s and time<:u order by 1"
+        ),
+        {"i": instrument_id, "s": since, "u": until},
+    ).all()
+    liq = db.execute(
+        text(
+            "select time, long_usd, short_usd from liquidations "
+            "where instrument_id=:i and time>=:s and time<:u order by 1"
+        ),
+        {"i": instrument_id, "s": since, "u": until},
+    ).all()
+    last_f = f[-1] if f else None
+    interval = int(last_f[2] or 8) if last_f else 8
+    next_funding = int(last_f[0].timestamp()) + interval * 3600 if last_f is not None else None
+    return {
+        "funding": [{"t": int(r[0].timestamp()), "v": _dec(r[1])} for r in f],
+        "funding_current": _dec(last_f[1]) if last_f else None,
+        "next_funding_t": next_funding,
+        "oi": bucket_last([(r[0], r[1]) for r in oi], size),
+        "liquidations": bucket_sum([(r[0], r[1], r[2]) for r in liq], size),
+        "liquidations_note": "ликвидации из публичного потока Binance (не полный объём)",
+    }

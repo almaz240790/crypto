@@ -5,11 +5,17 @@ import { INDICATORS, defaultParams, indicatorById, type IndicatorSpec } from "@p
 import { LineSeries, createSeriesMarkers, type ISeriesApi, type ISeriesMarkersPluginApi, type SeriesMarker, type Time, type UTCTimestamp } from "lightweight-charts";
 import { useEffect, useRef } from "react";
 import { BoxPrimitive } from "@/components/chart/BoxPrimitive";
-import type { LayersResponse } from "@/lib/chart";
+import type { Derivatives, LayersResponse } from "@/lib/chart";
 import s from "./terminal.module.css";
 
 export type ActiveIndicator = { id: string; params: Record<string, number> };
 export type LayerKey = "structure" | "zones" | "levels" | "signals";
+export type PanelKey = "funding" | "oi" | "liq";
+export const PANELS: { id: PanelKey; title: string }[] = [
+  { id: "funding", title: "Funding" },
+  { id: "oi", title: "Open interest" },
+  { id: "liq", title: "Ликвидации" },
+];
 
 type Props = {
   candles: Candle[];
@@ -19,6 +25,8 @@ type Props = {
   indicators: ActiveIndicator[];
   layersOn: Record<LayerKey, boolean>;
   layers: LayersResponse | null;
+  derivatives: Derivatives | null;
+  panels: PanelKey[];
   tick: string | null;
   onNeedOlder: (before: number) => Promise<{ candles: Candle[]; hasOlder: boolean } | null>;
 };
@@ -33,10 +41,11 @@ function precisionOf(tick: string | null): { precision: number; minMove: number 
 type Pane = { spec: IndicatorSpec; paneIndex: number | null; series: Record<string, ISeriesApi<"Line" | "Histogram">> };
 
 /** Обёртка React над Terminal из packages/charts: данные, индикаторы, слои, тема. */
-export function TerminalView({ candles, current, tf, type, indicators, layersOn, layers, tick, onNeedOlder }: Props) {
+export function TerminalView({ candles, current, tf, type, indicators, layersOn, layers, derivatives, panels, tick, onNeedOlder }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const panesRef = useRef<Map<string, Pane>>(new Map());
+  const cryptoRef = useRef<Map<PanelKey, { paneIndex: number; series: ISeriesApi<"Line" | "Histogram">[] }>>(new Map());
   const auxRef = useRef<ISeriesApi<"Line">[]>([]);
   const boxRef = useRef<BoxPrimitive | null>(null);
   const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
@@ -141,6 +150,40 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
     }
   }, [indicators, candles, current]);
 
+  // крипто-панели (план 2A.4): funding, OI, ликвидации — данные с сервера, выровнены по корзинам tf
+  useEffect(() => {
+    const term = termRef.current;
+    if (!term) return;
+    const tokens = tokensFromElement(ref.current!);
+    const want = new Set(panels);
+    for (const [k, p] of cryptoRef.current) {
+      if (!want.has(k)) {
+        p.series.forEach((sr) => term.removeSeries(sr));
+        cryptoRef.current.delete(k);
+      }
+    }
+    if (!derivatives) return;
+    const asLine = (rows: { t: number; v: string }[]) => rows.map((r) => ({ time: r.t as UTCTimestamp, value: Number(r.v) }));
+    for (const k of panels) {
+      let p = cryptoRef.current.get(k);
+      if (!p) {
+        const paneIndex = term.addPane(80);
+        const series: ISeriesApi<"Line" | "Histogram">[] = [];
+        if (k === "funding") series.push(term.addLine(paneIndex, tokens.warn, 1));
+        else if (k === "oi") series.push(term.addLine(paneIndex, tokens.accent, 1));
+        else series.push(term.addHistogram(paneIndex, tokens.up), term.addHistogram(paneIndex, tokens.down));
+        p = { paneIndex, series };
+        cryptoRef.current.set(k, p);
+      }
+      if (k === "funding") p.series[0]!.setData(asLine(derivatives.funding.map((r) => ({ t: r.t, v: String(Number(r.v) * 100) }))) as never);
+      else if (k === "oi") p.series[0]!.setData(asLine(derivatives.oi) as never);
+      else {
+        p.series[0]!.setData(derivatives.liquidations.map((r) => ({ time: r.t as UTCTimestamp, value: Number(r.long), color: tokens.up })) as never);
+        p.series[1]!.setData(derivatives.liquidations.map((r) => ({ time: r.t as UTCTimestamp, value: -Number(r.short), color: tokens.down })) as never);
+      }
+    }
+  }, [derivatives, panels]);
+
   // слои: зоны (прямоугольники), структура (отрезки BOS/CHoCH, свинги), уровни, сигналы
   useEffect(() => {
     const term = termRef.current;
@@ -189,7 +232,7 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
       for (const sw of st.swings.slice(-40)) {
         const t = snap(sw.t);
         if (t < first) continue;
-        markers.push({ time: t as Time, position: sw.kind === "high" ? "aboveBar" : "belowBar", shape: "circle", color: alpha(tokens.text3, 0.7), size: 0.5 });
+        markers.push({ time: t as Time, position: sw.kind === "high" ? "aboveBar" : "belowBar", shape: "circle", color: alpha(tokens.text3, 0.6), size: 0.2 });
       }
       for (const sw of st.sweeps.slice(-6)) {
         const t = snap(sw.t);
