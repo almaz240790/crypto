@@ -1,0 +1,148 @@
+.page {
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
+  height: calc(100dvh - 56px);
+  min-height: 480px;
+}
+
+.top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+
+.top select,
+.top input {
+  height: 32px;
+}
+
+.tfs {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-2);
+}
+
+.tfs a {
+  padding: 4px 9px;
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-2);
+  text-decoration: none;
+}
+
+.tfs a[aria-current="page"] {
+  background: var(--bg);
+  color: var(--text);
+  box-shadow: 0 1px 0 var(--border);
+}
+
+.tfs a[data-primary="true"] {
+  font-weight: 600;
+}
+
+.tfs a[aria-disabled="true"] {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+.strip {
+  display: flex;
+  gap: 16px;
+  padding: 4px 12px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-2);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.strip strong {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.chart {
+  position: relative;
+  min-height: 300px;
+  touch-action: none;
+  overscroll-behavior: contain;
+}
+
+.canvas {
+  position: absolute;
+  inset: 0;
+}
+
+.bottom {
+  display: flex;
+  gap: 8px;
+  padding: 6px 12px;
+  border-top: 1px solid var(--border);
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.chip {
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text-2);
+  font: inherit;
+  font-size: 13px;
+}
+
+.chip[aria-pressed="true"] {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.sheet {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  max-height: 60%;
+  overflow: auto;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  padding: 12px;
+  display: grid;
+  gap: 8px;
+  z-index: 2;
+}
+
+.sheet label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+}
+
+.empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--text-3);
+  font-size: 13px;
+}
+
+@media (max-width: 640px) {
+  .page {
+    height: calc(100dvh - 48px);
+  }
+
+  .strip {
+    gap: 10px;
+  }
+}

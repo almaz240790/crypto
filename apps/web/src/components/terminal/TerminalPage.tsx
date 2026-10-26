@@ -1,0 +1,175 @@
+"use client";
+
+import { CHART_TYPES, INDICATORS, defaultParams, secondsToClose, type ChartType, type Timeframe } from "@platform/charts";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useEffect, useMemo, useState } from "react";
+import { useAuth } from "@/components/auth/AuthProvider";
+import { Badge } from "@/components/ui";
+import { getAccessToken } from "@/lib/auth-client";
+import { INTRADAY, TIMEFRAMES } from "@/lib/timeframes";
+import { formatPct, formatPrice } from "@/lib/format";
+import { getInstruments, type Instrument } from "@/lib/user";
+import s from "./terminal.module.css";
+import { TerminalView, type ActiveIndicator, type LayerKey } from "./TerminalView";
+import { useTerminalData } from "./useTerminalData";
+
+const TYPE_LABEL: Record<ChartType, string> = { candles: "Свечи", bars: "Бары", line: "Линия", heikin: "Heikin Ashi" };
+const LAYER_LABEL: Record<LayerKey, string> = { structure: "Структура", zones: "Зоны", levels: "Уровни", signals: "Сигналы" };
+const DEFAULT_INDICATORS: ActiveIndicator[] = [{ id: "ema", params: { period: 50 } }];
+const STORAGE = "pl-terminal";
+
+type Saved = { type: ChartType; indicators: ActiveIndicator[]; layers: Record<LayerKey, boolean> };
+
+function load(): Saved {
+  const base: Saved = { type: "candles", indicators: DEFAULT_INDICATORS, layers: { structure: true, zones: true, levels: true, signals: true } };
+  try {
+    const raw = localStorage.getItem(STORAGE);
+    return raw ? { ...base, ...(JSON.parse(raw) as Partial<Saved>) } : base;
+  } catch {
+    return base;
+  }
+}
+
+function fmtCountdown(sec: number): string {
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), ss = sec % 60;
+  return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${String(ss).padStart(2, "0")}` : `${m}:${String(ss).padStart(2, "0")}`;
+}
+
+export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) {
+  const router = useRouter();
+  const { user } = useAuth();
+  const [saved, setSaved] = useState<Saved | null>(null);
+  const [instruments, setInstruments] = useState<Instrument[]>([]);
+  const [sheet, setSheet] = useState<"indicators" | "layers" | null>(null);
+  const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
+  const data = useTerminalData(symbol, tf, user ? getAccessToken() : null);
+
+  useEffect(() => {
+    queueMicrotask(() => setSaved(load()));
+    getInstruments()
+      .then((r) => setInstruments(r))
+      .catch(() => {});
+    const t = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 1000);
+    return () => clearInterval(t);
+  }, []);
+  useEffect(() => {
+    if (saved) {
+      try {
+        localStorage.setItem(STORAGE, JSON.stringify(saved));
+      } catch {
+        /* приватный режим */
+      }
+    }
+  }, [saved]);
+
+  const st = saved ?? load();
+  const last = data.current ?? data.candles?.[data.candles.length - 1] ?? null;
+  const prevClose = data.candles && data.candles.length > 1 ? data.candles[data.candles.length - (data.current ? 1 : 2)]!.close : null;
+  const price = data.price ? Number(data.price) : last?.close ?? null;
+  const change = price != null && prevClose ? ((price - prevClose) / prevClose) * 100 : null;
+  const countdown = last ? secondsToClose(tf, last.time, now) : null;
+  const intradayLocked = !user || (data.error ?? "").includes("тарифе");
+  const bias = data.layers?.structure?.bias;
+
+  const toggleIndicator = (id: string) =>
+    setSaved((p) => {
+      const cur = p ?? load();
+      const has = cur.indicators.some((i) => i.id === id);
+      const spec = INDICATORS.find((i) => i.id === id)!;
+      return { ...cur, indicators: has ? cur.indicators.filter((i) => i.id !== id) : [...cur.indicators, { id, params: defaultParams(spec) }] };
+    });
+  const toggleLayer = (k: LayerKey) => setSaved((p) => ({ ...(p ?? load()), layers: { ...(p ?? load()).layers, [k]: !(p ?? load()).layers[k] } }));
+  const indicatorIds = useMemo(() => new Set(st.indicators.map((i) => i.id)), [st.indicators]);
+
+  return (
+    <div className={s.page}>
+      <div className={s.top}>
+        <select aria-label="инструмент" value={symbol} onChange={(e) => router.push(`/chart/${e.target.value}/${tf}`)}>
+          {(instruments.length ? instruments : [{ symbol } as Instrument]).map((i) => (
+            <option key={i.symbol} value={i.symbol}>
+              {i.symbol}
+            </option>
+          ))}
+        </select>
+        <nav className={s.tfs} aria-label="таймфрейм">
+          {TIMEFRAMES.map((t) => (
+            <Link key={t} href={`/chart/${symbol}/${t}`} aria-current={t === tf ? "page" : undefined} data-primary={t === "4h"} aria-disabled={INTRADAY.includes(t) && !user ? "true" : undefined} title={INTRADAY.includes(t) && !user ? "после входа, тариф Pro" : undefined}>
+              {t === "4h" ? "H4" : t.toUpperCase()}
+            </Link>
+          ))}
+        </nav>
+        <select aria-label="тип графика" value={st.type} onChange={(e) => setSaved({ ...st, type: e.target.value as ChartType })}>
+          {CHART_TYPES.map((t) => (
+            <option key={t} value={t}>
+              {TYPE_LABEL[t]}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className={s.strip} aria-label="состояние">
+        <span>
+          цена <strong>{formatPrice(price == null ? null : String(price))}</strong>
+        </span>
+        <span className={change == null ? "" : change >= 0 ? "up" : "down"}>{formatPct(change)}</span>
+        <span>
+          до закрытия <strong>{countdown == null ? "—" : fmtCountdown(countdown)}</strong>
+        </span>
+        {bias && (
+          <span>
+            bias <Badge tone={bias.bias === "long" ? "up" : bias.bias === "short" ? "down" : "muted"}>{bias.bias}</Badge> D1 {bias.d1_trend} · W1 {bias.w1_trend}
+          </span>
+        )}
+        {data.layers?.structure?.atr && <span>ATR {formatPrice(data.layers.structure.atr)}</span>}
+        <span className="caption">{data.connected ? "live" : "без связи"}</span>
+        {st.type === "heikin" && <span className="caption">Heikin Ashi: паттерны и сигналы считаются по обычным свечам</span>}
+      </div>
+      <div style={{ position: "relative", minHeight: 0 }}>
+        {data.error && !intradayLocked ? (
+          <div className={s.empty} role="alert">
+            {data.error}
+          </div>
+        ) : intradayLocked && data.error ? (
+          <div className={s.empty}>
+            Таймфреймы 1m–15m доступны после входа на тарифе Pro. <Link href="/pricing">Тарифы</Link>
+          </div>
+        ) : (
+          <TerminalView candles={data.candles ?? []} current={data.current} tf={tf} type={st.type} indicators={st.indicators} layersOn={st.layers} layers={data.layers} tick={data.tick} onNeedOlder={data.loadOlder} />
+        )}
+        {sheet && (
+          <div className={s.sheet} role="dialog" aria-label={sheet === "indicators" ? "Индикаторы" : "Слои"}>
+            {sheet === "indicators"
+              ? INDICATORS.map((i) => (
+                  <label key={i.id}>
+                    <input type="checkbox" checked={indicatorIds.has(i.id)} onChange={() => toggleIndicator(i.id)} /> {i.title}
+                    <span className="caption">{i.pane === "overlay" ? "на графике" : "панель"}</span>
+                  </label>
+                ))
+              : (Object.keys(LAYER_LABEL) as LayerKey[]).map((k) => (
+                  <label key={k}>
+                    <input type="checkbox" checked={st.layers[k]} onChange={() => toggleLayer(k)} /> {LAYER_LABEL[k]}
+                  </label>
+                ))}
+            <button type="button" className={s.chip} onClick={() => setSheet(null)}>
+              Готово
+            </button>
+          </div>
+        )}
+      </div>
+      <div className={s.bottom}>
+        <button type="button" className={s.chip} aria-pressed={sheet === "indicators"} onClick={() => setSheet(sheet === "indicators" ? null : "indicators")}>
+          Индикаторы ({st.indicators.length})
+        </button>
+        <button type="button" className={s.chip} aria-pressed={sheet === "layers"} onClick={() => setSheet(sheet === "layers" ? null : "layers")}>
+          Слои
+        </button>
+        <span className="caption">двойной клик — сброс масштаба · свечи до закрытия рисуются контуром в строке состояния</span>
+        {data.layers?.signals.length ? (
+          <Link className="caption" href={`/signals?symbol=${symbol}&tab=all`}>
+            сигналов по инструменту: {data.layers.signals.length}
+          </Link>
+        ) : null}
+      </div>
+    </div>
+  );
+}

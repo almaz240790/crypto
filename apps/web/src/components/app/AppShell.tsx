@@ -9,6 +9,7 @@ import s from "./AppShell.module.css";
 
 const NAV: { href: string; label: string }[] = [
   { href: "/signals", label: "Сигналы" },
+  { href: "/chart", label: "График" },
   { href: "/screener", label: "Скринер" },
   { href: "/watchlist", label: "Вотчлист" },
   { href: "/journal", label: "Журнал" },
@@ -20,7 +21,7 @@ const NAV: { href: string; label: string }[] = [
 ];
 const SOON: string[] = [];
 
-export function AppShell({ title, actions, children }: { title: string; actions?: ReactNode; children: ReactNode }) {
+export function AppShell({ title, actions, children, flush = false }: { title: string; actions?: ReactNode; children: ReactNode; flush?: boolean }) {
   const path = usePathname();
   const router = useRouter();
   const { user, loading, logout } = useAuth();
@@ -76,11 +77,14 @@ export function AppShell({ title, actions, children }: { title: string; actions?
             <ThemeToggle />
           </span>
         </div>
-        <main className={s.content}>
-          <div className={s.top}>
-            <h1 style={{ fontSize: "var(--fs-h2)" }}>{title}</h1>
-            {actions}
-          </div>
+        <main className={s.content} data-flush={flush || undefined}>
+          {!flush && (
+            <div className={s.top}>
+              <h1 style={{ fontSize: "var(--fs-h2)" }}>{title}</h1>
+              {actions}
+            </div>
+          )}
+          {flush && <h1 className="sr-only">{title}</h1>}
           {children}
         </main>
       </div>

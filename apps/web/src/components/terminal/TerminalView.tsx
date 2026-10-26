@@ -1,0 +1,229 @@
+"use client";
+
+import { createTerminal, tokensFromElement, type Candle, type ChartType, type Terminal, type Timeframe } from "@platform/charts";
+import { INDICATORS, defaultParams, indicatorById, type IndicatorSpec } from "@platform/charts";
+import { LineSeries, createSeriesMarkers, type ISeriesApi, type ISeriesMarkersPluginApi, type SeriesMarker, type Time, type UTCTimestamp } from "lightweight-charts";
+import { useEffect, useRef } from "react";
+import { BoxPrimitive } from "@/components/chart/BoxPrimitive";
+import type { LayersResponse } from "@/lib/chart";
+import s from "./terminal.module.css";
+
+export type ActiveIndicator = { id: string; params: Record<string, number> };
+export type LayerKey = "structure" | "zones" | "levels" | "signals";
+
+type Props = {
+  candles: Candle[];
+  current: Candle | null;
+  tf: Timeframe;
+  type: ChartType;
+  indicators: ActiveIndicator[];
+  layersOn: Record<LayerKey, boolean>;
+  layers: LayersResponse | null;
+  tick: string | null;
+  onNeedOlder: (before: number) => Promise<{ candles: Candle[]; hasOlder: boolean } | null>;
+};
+
+function precisionOf(tick: string | null): { precision: number; minMove: number } {
+  if (!tick) return { precision: 2, minMove: 0.01 };
+  const t = tick.replace(/0+$/, "");
+  const i = t.indexOf(".");
+  return { precision: i < 0 ? 0 : t.length - i - 1, minMove: Number(tick) || 0.01 };
+}
+
+type Pane = { spec: IndicatorSpec; paneIndex: number | null; series: Record<string, ISeriesApi<"Line" | "Histogram">> };
+
+/** Обёртка React над Terminal из packages/charts: данные, индикаторы, слои, тема. */
+export function TerminalView({ candles, current, tf, type, indicators, layersOn, layers, tick, onNeedOlder }: Props) {
+  const ref = useRef<HTMLDivElement>(null);
+  const termRef = useRef<Terminal | null>(null);
+  const panesRef = useRef<Map<string, Pane>>(new Map());
+  const auxRef = useRef<ISeriesApi<"Line">[]>([]);
+  const boxRef = useRef<BoxPrimitive | null>(null);
+  const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
+  const needOlderRef = useRef(onNeedOlder);
+  useEffect(() => {
+    needOlderRef.current = onNeedOlder;
+  }, [onNeedOlder]);
+
+  // создание терминала
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const term = createTerminal(el, {
+      tokens: tokensFromElement(el),
+      type,
+      onNeedOlder: (before) => {
+        void needOlderRef.current(before).then((r) => {
+          if (!r) return;
+          term.addOlder(r.candles, r.hasOlder);
+        });
+      },
+    });
+    termRef.current = term;
+    const obs = new MutationObserver(() => term.setTheme(tokensFromElement(el)));
+    obs.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const onMq = () => term.setTheme(tokensFromElement(el));
+    mq.addEventListener("change", onMq);
+    const onDbl = () => term.resetView(120);
+    el.addEventListener("dblclick", onDbl);
+    const panes = panesRef.current;
+    return () => {
+      obs.disconnect();
+      mq.removeEventListener("change", onMq);
+      el.removeEventListener("dblclick", onDbl);
+      panes.clear();
+      auxRef.current = [];
+      boxRef.current = null;
+      markersRef.current = null;
+      term.destroy();
+      termRef.current = null;
+    };
+    // тип меняется через setType ниже, не пересоздаём
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // данные
+  useEffect(() => {
+    const term = termRef.current;
+    if (!term) return;
+    const all = current ? [...candles, current] : candles;
+    term.setCandles(all, true);
+    term.resetView(150);
+    const { precision, minMove } = precisionOf(tick);
+    term.chart.applyOptions({ localization: { priceFormatter: (p: number) => p.toFixed(precision) } });
+    void minMove;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [candles, tick]);
+
+  useEffect(() => {
+    const term = termRef.current;
+    if (term && current) term.update(current);
+  }, [current]);
+
+  useEffect(() => {
+    termRef.current?.setType(type);
+  }, [type]);
+
+  // индикаторы: по активному списку создаём панели/серии, считаем на всех свечах
+  useEffect(() => {
+    const term = termRef.current;
+    if (!term) return;
+    const tokens = tokensFromElement(ref.current!);
+    const color = (k: string) => (({ accent: tokens.accent, up: tokens.up, down: tokens.down, warn: tokens.warn, text2: tokens.text2, text3: tokens.text3 }) as Record<string, string>)[k] ?? tokens.accent;
+    const want = new Map(indicators.map((i) => [i.id, i]));
+    for (const [id, pane] of panesRef.current) {
+      if (!want.has(id)) {
+        Object.values(pane.series).forEach((sr) => term.removeSeries(sr));
+        panesRef.current.delete(id);
+      }
+    }
+    const all = current ? [...candles, current] : candles;
+    for (const ind of indicators) {
+      const spec = indicatorById(ind.id);
+      if (!spec) continue;
+      let pane = panesRef.current.get(ind.id);
+      if (!pane) {
+        const paneIndex = spec.pane === "separate" ? term.addPane(90) : null;
+        const series: Pane["series"] = {};
+        for (const sp of spec.series) {
+          series[sp.key] = sp.kind === "histogram" ? term.addHistogram(paneIndex ?? 0, color(sp.color)) : term.addLine(paneIndex ?? 0, color(sp.color), sp.width ?? 1);
+        }
+        pane = { spec, paneIndex, series };
+        panesRef.current.set(ind.id, pane);
+      }
+      const out = spec.compute(all, { ...defaultParams(spec), ...ind.params });
+      for (const sp of spec.series) {
+        const values = out[sp.key] ?? [];
+        const data = all.map((c, i) => ({ time: c.time as UTCTimestamp, value: values[i] })).filter((d) => d.value != null) as { time: UTCTimestamp; value: number }[];
+        pane.series[sp.key]!.setData(data as never);
+      }
+    }
+  }, [indicators, candles, current]);
+
+  // слои: зоны (прямоугольники), структура (отрезки BOS/CHoCH, свинги), уровни, сигналы
+  useEffect(() => {
+    const term = termRef.current;
+    if (!term || candles.length === 0) return;
+    const el = ref.current!;
+    const tokens = tokensFromElement(el);
+    const alpha = (hex: string, a: number) => {
+      const m = /^#([0-9a-f]{6})$/i.exec(hex);
+      if (!m) return hex;
+      const n = parseInt(m[1]!, 16);
+      return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`; // color-ok: из токена
+    };
+    const main = term.mainSeries;
+    auxRef.current.forEach((sr) => term.chart.removeSeries(sr));
+    auxRef.current = [];
+    if (!boxRef.current) {
+      boxRef.current = new BoxPrimitive();
+      main.attachPrimitive(boxRef.current);
+    }
+    const first = candles[0]!.time;
+    const last = (current ?? candles[candles.length - 1]!).time;
+    const step = (candles[1]?.time ?? first + 1) - first;
+    const snap = (t: number) => Math.floor(t / step) * step;
+    const seg = (from: number, to: number | null, price: number, c: string, style: number, width: 1 | 2 = 1) => {
+      const a = Math.max(snap(from), first);
+      const b = to === null ? last : Math.min(Math.max(snap(to), a + step), last);
+      if (a > last) return;
+      const ls = term.chart.addSeries(LineSeries, { color: c, lineWidth: width, lineStyle: style, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
+      ls.setData([{ time: a as UTCTimestamp, value: price }, { time: b as UTCTimestamp, value: price }]);
+      auxRef.current.push(ls);
+    };
+    const st = layers?.structure;
+    const boxes = [];
+    const markers: SeriesMarker<Time>[] = [];
+    if (st && layersOn.zones) {
+      for (const z of st.zones.slice(-40)) {
+        const active = z.status === "active";
+        boxes.push({ id: `${z.kind}-${z.from_t}`, from: Math.max(snap(z.from_t), first) as Time, to: null, top: Number(z.top), bottom: Number(z.bottom), fill: alpha(tokens.accent, active ? 0.12 : 0.04), stroke: active ? tokens.accent : tokens.text3, label: z.kind.toUpperCase() });
+      }
+    }
+    if (st && layersOn.structure) {
+      for (const e of st.events.slice(-30)) seg(e.from_t, e.t, Number(e.level), e.type === "bos" ? tokens.accent : tokens.warn, 1);
+      for (const sw of st.swings.slice(-80)) {
+        const t = snap(sw.t);
+        if (t < first) continue;
+        markers.push({ time: t as Time, position: sw.kind === "high" ? "aboveBar" : "belowBar", shape: "circle", color: tokens.text3, text: sw.kind === "high" ? "H" : "L", size: 0 });
+      }
+      for (const sw of st.sweeps.slice(-20)) {
+        const t = snap(sw.t);
+        if (t < first) continue;
+        markers.push({ time: t as Time, position: sw.kind === "low" ? "belowBar" : "aboveBar", shape: "square", color: tokens.warn, text: "sweep", size: 0 });
+      }
+      for (const e of st.equal_levels.slice(-10)) seg(e.from_t, e.to_t, Number(e.p), tokens.text3, 2);
+    }
+    if (st && layersOn.levels) {
+      for (const k of ["pdh", "pdl", "pwh", "pwl"]) {
+        const v = st.levels[k];
+        if (v) seg(first, null, Number(v), tokens.text3, 3);
+      }
+    }
+    if (layers && layersOn.signals) {
+      for (const sg of layers.signals.slice(0, 20)) {
+        const t = snap(sg.t - 1);
+        if (t < first) continue;
+        const open = !["closed_sl", "closed_be", "closed_tp3", "closed_time", "expired", "cancelled"].includes(sg.status);
+        markers.push({ time: t as Time, position: sg.dir === "long" ? "belowBar" : "aboveBar", shape: sg.dir === "long" ? "arrowUp" : "arrowDown", color: open ? tokens.accent : tokens.text3, text: `${sg.grade}${open ? "" : " · " + sg.status}`, size: 1 });
+        if (open && sg.entry) seg(t, null, Number(sg.entry), tokens.accent, 0, 1);
+        if (open && sg.sl) seg(t, null, Number(sg.sl), tokens.down, 1);
+        if (open) for (const tp of sg.tp) if (tp) seg(t, null, Number(tp), tokens.up, 1);
+      }
+    }
+    boxRef.current.setBoxes(boxes);
+    markers.sort((a, b) => (a.time as number) - (b.time as number));
+    if (!markersRef.current) markersRef.current = createSeriesMarkers(main, markers);
+    else markersRef.current.setMarkers(markers);
+  }, [layers, layersOn, candles, current, tf]);
+
+  return (
+    <div className={s.chart}>
+      <div ref={ref} className={s.canvas} data-testid="terminal" />
+      {candles.length === 0 && <div className={s.empty}>Нет свечей.</div>}
+    </div>
+  );
+}
+
+export { INDICATORS };

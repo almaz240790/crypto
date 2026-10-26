@@ -58,6 +58,11 @@ export class Terminal {
     return this.type;
   }
 
+  /** Основная серия — для примитивов слоёв и маркеров. */
+  get mainSeries(): ISeriesApi<SeriesType> {
+    return this.main;
+  }
+
   get candles(): readonly Candle[] {
     return this.buffer.candles;
   }
