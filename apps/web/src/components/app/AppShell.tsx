@@ -16,6 +16,7 @@ const NAV: { href: string; label: string }[] = [
   { href: "/stats", label: "Статистика" },
   { href: "/billing", label: "Тариф" },
   { href: "/settings", label: "Настройки" },
+  { href: "/support", label: "Поддержка" },
 ];
 const SOON: string[] = [];
 

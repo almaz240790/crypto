@@ -31,8 +31,10 @@ from app.models import (
     Strategy,
     StrategyVersion,
     Subscription,
+    SupportTicket,
     User,
 )
+from app.support import reply_ticket, ticket_dict
 
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
 ADMIN = auth.require_role("admin", "owner")
@@ -612,3 +614,52 @@ def grant_subscription(
     )
     db.commit()
     return {"plan": sub.plan, "current_period_end": sub.current_period_end.isoformat()}
+
+
+# --- поддержка: тикеты (план 3.16) ---------------------------------------------------------------
+
+
+@router.get("/tickets")
+def tickets(
+    status: str | None = Query(None, pattern="^(open|answered|closed)$"),
+    user: User = Depends(ADMIN),
+    db: Session = Depends(auth.get_db),
+) -> list[dict[str, Any]]:
+    stmt = select(SupportTicket).order_by(SupportTicket.id.desc()).limit(200)
+    if status:
+        stmt = stmt.where(SupportTicket.status == status)
+    return [ticket_dict(t) for t in db.scalars(stmt).all()]
+
+
+class ReplyIn(BaseModel):
+    reply: str = Field(min_length=2, max_length=5000)
+    close: bool = True
+
+
+@router.post("/tickets/{ticket_id}/reply")
+def ticket_reply(
+    ticket_id: int, body: ReplyIn, user: User = Depends(ADMIN), db: Session = Depends(auth.get_db)
+) -> dict[str, Any]:
+    t = db.get(SupportTicket, ticket_id)
+    if t is None:
+        raise HTTPException(404)
+    reply_ticket(db, t, user, body.reply, body.close)
+    _audit(db, user, "ticket.reply", f"ticket:{t.id}", {"close": body.close})
+    db.commit()
+    return ticket_dict(t)
+
+
+@router.patch("/tickets/{ticket_id}")
+def ticket_status(
+    ticket_id: int,
+    status: str = Query(pattern="^(open|answered|closed)$"),
+    user: User = Depends(ADMIN),
+    db: Session = Depends(auth.get_db),
+) -> dict[str, Any]:
+    t = db.get(SupportTicket, ticket_id)
+    if t is None:
+        raise HTTPException(404)
+    t.status = status
+    _audit(db, user, "ticket.status", f"ticket:{t.id}", {"status": status})
+    db.commit()
+    return ticket_dict(t)

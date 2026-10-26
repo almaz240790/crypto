@@ -7,6 +7,7 @@ import { useAuth } from "@/components/auth/AuthProvider";
 import t from "@/components/tools/tools.module.css";
 import { Badge, Button, EmptyState, Input, Panel, Select, StatusBadge, Table, Td, Th } from "@/components/ui";
 import * as A from "@/lib/admin";
+import { getAdminTickets, replyTicket, setTicketStatus, type Ticket } from "@/lib/support";
 import { formatTimeUTC } from "@/lib/format";
 import s from "./page.module.css";
 
@@ -16,6 +17,7 @@ const TABS = [
   ["signals", "Сигналы"],
   ["users", "Пользователи"],
   ["billing", "Биллинг"],
+  ["tickets", "Тикеты"],
   ["system", "Система"],
   ["audit", "Аудит"],
 ] as const;
@@ -549,6 +551,69 @@ function Billing({ run }: { run: Run }) {
   );
 }
 
+function Tickets({ run }: { run: Run }) {
+  const [rows, setRows] = useState<Ticket[] | null>(null);
+  const [filter, setFilter] = useState("open");
+  const [reply, setReply] = useState<Record<number, string>>({});
+  const load = useCallback(() => getAdminTickets(filter === "all" ? undefined : filter).then((x) => setRows(x)).catch(() => setRows([])), [filter]);
+  useEffect(() => {
+    queueMicrotask(() => void load());
+  }, [load]);
+  return (
+    <div className={s.grid}>
+      <div className={t.inline}>
+        <select aria-label="фильтр тикетов" value={filter} onChange={(e) => setFilter(e.target.value)}>
+          <option value="open">открытые</option>
+          <option value="answered">с ответом</option>
+          <option value="closed">закрытые</option>
+          <option value="all">все</option>
+        </select>
+      </div>
+      <Panel title={rows ? `${rows.length} обращений` : "Обращения"} flush footer="Ответ уходит письмом на адрес обращения и сохраняется здесь.">
+        {!rows ? (
+          <EmptyState text="Загрузка…" />
+        ) : rows.length === 0 ? (
+          <EmptyState text="Обращений нет." />
+        ) : (
+          <ul style={{ margin: 0, padding: 0, listStyle: "none" }}>
+            {rows.map((tk) => (
+              <li key={tk.id} style={{ padding: "12px 16px", borderBottom: "1px solid var(--border)", display: "grid", gap: 6 }}>
+                <div>
+                  <strong>#{tk.id}</strong> {tk.subject} <span className="caption">{tk.email} · {tk.created_at ? formatTimeUTC(tk.created_at) : ""}</span>{" "}
+                  <Badge tone={tk.status === "open" ? "warn" : tk.status === "answered" ? "up" : "muted"}>{tk.status}</Badge>
+                </div>
+                <p className="text-2" style={{ margin: 0, whiteSpace: "pre-wrap" }}>
+                  {tk.message}
+                </p>
+                <p className="caption" style={{ margin: 0 }}>
+                  страница {tk.context.page ?? "—"} · тариф {tk.context.plan ?? "—"} · версия {tk.context.version ?? "—"}
+                </p>
+                {tk.reply && (
+                  <p style={{ margin: 0, whiteSpace: "pre-wrap" }}>
+                    <span className="caption">ответ: </span>
+                    {tk.reply}
+                  </p>
+                )}
+                {tk.status !== "closed" && (
+                  <div className={t.inline}>
+                    <input aria-label={`ответ на обращение ${tk.id}`} placeholder="текст ответа" value={reply[tk.id] ?? ""} onChange={(e) => setReply((p) => ({ ...p, [tk.id]: e.target.value }))} style={{ flex: 1, minWidth: 240 }} />
+                    <Button size="sm" variant="primary" disabled={!(reply[tk.id] ?? "").trim()} onClick={() => void run(() => replyTicket(tk.id, reply[tk.id], true), "Ответ отправлен", () => void load())}>
+                      Ответить и закрыть
+                    </Button>
+                    <button type="button" className={t.small} onClick={() => void run(() => setTicketStatus(tk.id, "closed"), "Закрыто", () => void load())}>
+                      закрыть без ответа
+                    </button>
+                  </div>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </Panel>
+    </div>
+  );
+}
+
 function System() {
   const [d, setD] = useState<A.SystemStatus | null>(null);
   useEffect(() => {
@@ -665,6 +730,7 @@ function AdminInner() {
       {tab === "signals" && <Signals run={run} />}
       {tab === "users" && <Users run={run} me={{ id: user.id, role: user.role }} />}
       {tab === "billing" && <Billing run={run} />}
+      {tab === "tickets" && <Tickets run={run} />}
       {tab === "system" && <System />}
       {tab === "audit" && <Audit />}
     </>
