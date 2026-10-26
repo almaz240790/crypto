@@ -416,7 +416,8 @@ export default async function Home() {
           </Panel>
           <p className="caption">
             Оплата появится после запуска: USDT, USDC, BTC, ETH, TON. До этого все
-            зарегистрированные пользователи получают доступ уровня Pro.
+            зарегистрированные пользователи получают доступ уровня Pro. Подробнее — на{" "}
+            <Link href="/pricing">странице тарифов</Link>.
           </p>
         </section>
 

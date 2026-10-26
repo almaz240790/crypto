@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 
 /** Редиректы по cookie-подсказке (без секретов). Настоящая проверка — на API по токену. */
-const PROTECTED = ["/signals", "/onboarding", "/settings", "/watchlist", "/journal", "/calculator", "/screener", "/admin"];
+const PROTECTED = ["/signals", "/onboarding", "/settings", "/watchlist", "/journal", "/calculator", "/screener", "/billing", "/admin"];
 const GUEST_ONLY = ["/login", "/register"];
 
 export function proxy(req: NextRequest) {

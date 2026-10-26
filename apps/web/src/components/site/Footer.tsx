@@ -18,7 +18,7 @@ export function Footer({ status }: { status?: string }) {
               <Link href="/stats">Статистика</Link>
             </li>
             <li>
-              <Link href="/#pricing">Тарифы</Link>
+              <Link href="/pricing">Тарифы</Link>
             </li>
             <li>
               <Link href="/#faq">Вопросы и ответы</Link>
