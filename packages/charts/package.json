@@ -20,5 +20,12 @@
     "playwright": "^1.64.1",
     "typescript": "^5.6.0",
     "vitest": "^3.0.0"
+  },
+  "types": "src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
   }
 }

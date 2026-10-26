@@ -7,22 +7,26 @@
 import { useEffect, useRef, useState } from "react";
 
 export type LiveSignal = { id: string; instrument_id: number; status: string; at: string };
+export type LiveCandle = { s: string; tf: "1m"; c: { t: number; o: string; h: string; l: string; c: string; v: string } };
 
 type Msg =
   | { t: "price"; s: string; p: string; at: string }
+  | ({ t: "candle" } & LiveCandle)
   | { t: "signal"; id: string; instrument_id: number; status: string; at: string }
   | { t: "subscribed"; n: number }
   | { t: "pong" };
 
-export function useLive(symbols: string[], token: string | null, onSignal?: (s: LiveSignal) => void) {
+export function useLive(symbols: string[], token: string | null, onSignal?: (s: LiveSignal) => void, onCandle?: (c: LiveCandle) => void) {
   const [prices, setPrices] = useState<Record<string, { p: string; at: string }>>({});
   const [connected, setConnected] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const symsRef = useRef<string[]>(symbols);
   const onSignalRef = useRef(onSignal);
+  const onCandleRef = useRef(onCandle);
   useEffect(() => {
     onSignalRef.current = onSignal;
-  }, [onSignal]);
+    onCandleRef.current = onCandle;
+  }, [onSignal, onCandle]);
   const key = symbols.slice().sort().join(",");
 
   useEffect(() => {
@@ -64,6 +68,7 @@ export function useLive(symbols: string[], token: string | null, onSignal?: (s: 
         }
         if (m.t === "price") setPrices((prev) => ({ ...prev, [m.s]: { p: m.p, at: m.at } }));
         else if (m.t === "signal") onSignalRef.current?.(m);
+        else if (m.t === "candle") onCandleRef.current?.(m);
       };
       ws.onclose = () => {
         setConnected(false);

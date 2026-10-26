@@ -90,6 +90,10 @@
   padding: var(--gap-4);
 }
 
+.content[data-flush] {
+  padding: 0;
+}
+
 .top {
   display: flex;
   align-items: center;
