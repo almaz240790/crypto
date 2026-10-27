@@ -102,6 +102,8 @@ export type JournalAnalytics = {
   equity: { points: { t: string; r: string }[]; max_drawdown_r: string | null };
   errors: { early_exit: { count: number; of: number }; no_signal: { count: number; of: number }; risk_exceeded: { count: number; of: number; budget_usd: string | null } };
 };
+export type ImportResult = { imported: number; matched: number; open: number; skipped: number; symbols: number; fills: number };
+export const importTrades = (body: { exchange: "binance"; api_key: string; api_secret: string; days: number; symbols?: string[] }) => api<ImportResult>("/v1/journal/import", { method: "POST", json: body });
 export const getJournalAnalytics = () => api<JournalAnalytics>("/v1/journal/analytics");
 export const getJournal = (limit = 200) => api<{ items: JournalEntry[]; summary: JournalSummary }>(`/v1/journal?limit=${limit}`);
 export const createJournal = (body: JournalIn) => api<JournalEntry>("/v1/journal", { method: "POST", json: body });
