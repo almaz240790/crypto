@@ -47,7 +47,7 @@ async function mock(page: Page, calls: string[], state: { watch: string[]; journ
     if (p === "/v1/screener") {
       const want = u.searchParams.get("symbols")?.split(",");
       const all = [SCREEN("BTCUSDT", "0.4"), SCREEN("ETHUSDT", null)];
-      return json(200, { items: want ? all.filter((r) => want.includes(r.symbol)) : all, generated_at: new Date().toISOString() });
+      return json(200, { items: want ? all.filter((r) => want.includes(r.symbol)) : all, generated_at: new Date().toISOString(), sparklines: { "1": ["1", "2", "3", "2"], "2": ["3", "2", "1"] } });
     }
     if (p === "/v1/watchlist") return json(200, { id: 1, name: "Основной", items: state.watch.map((s, i) => ({ symbol: s, instrument_id: i + 1, added_at: "" })) });
     if (p === "/v1/watchlist/items" && req.method() === "POST") {
@@ -172,6 +172,7 @@ test("скринер: таблица, фильтр по зоне, сортиро
   await mock(page, calls, { watch: [], journal: [] });
   await page.goto("/screener");
   await expect(page.getByText("2 из 2")).toBeVisible();
+  await expect(page.locator("tbody tr").first().locator("svg polyline")).toHaveCount(1);
   await page.screenshot({ path: testInfo.outputPath("screener.png"), fullPage: true });
   await page.getByLabel("до зоны").selectOption("1");
   await expect(page.getByText("1 из 2")).toBeVisible();

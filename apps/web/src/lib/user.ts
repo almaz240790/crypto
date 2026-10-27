@@ -77,7 +77,7 @@ export type JournalIn = {
 export type Instrument = { id: number; symbol: string; base: string; quote: string; tick_size: string | null; lot_size: string | null };
 
 export const getScreener = (symbols?: string[]) =>
-  api<{ items: ScreenerRow[]; generated_at: string }>(`/v1/screener${symbols?.length ? `?symbols=${symbols.join(",")}` : ""}`, { auth: false });
+  api<{ items: ScreenerRow[]; generated_at: string; sparklines?: Record<string, string[]> }>(`/v1/screener${symbols?.length ? `?symbols=${symbols.join(",")}` : ""}`, { auth: false });
 
 /** Фильтры скринера (план 3.6 v2): пустая строка — без фильтра. */
 export type ScreenerFilters = { bias: string; near: string; d1: string; w1: string; event: string; atrp: string; funding: string; change: string; zone_kind: string };

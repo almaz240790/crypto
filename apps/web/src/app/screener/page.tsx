@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/components/app/AppShell";
+import { Sparkline } from "@/components/signals/Sparkline";
 import { useAuth } from "@/components/auth/AuthProvider";
 import s from "@/components/tools/tools.module.css";
 import { Badge, Button, EmptyState, Panel, Table, Td, Th } from "@/components/ui";
@@ -54,6 +55,7 @@ function TrendBadge({ t }: { t?: string }) {
 export default function ScreenerPage() {
   const [rows, setRows] = useState<ScreenerRow[] | null>(null);
   const [at, setAt] = useState<string | null>(null);
+  const [sparks, setSparks] = useState<Record<string, string[]>>({});
   const [error, setError] = useState<string | null>(null);
   const [sort, setSort] = useState<{ k: SortKey; d: 1 | -1 }>({ k: "zone", d: 1 });
   const [f, setF] = useState<ScreenerFilters>(EMPTY_FILTERS);
@@ -73,6 +75,7 @@ export default function ScreenerPage() {
       .then((r) => {
         setRows(r.items);
         setAt(r.generated_at);
+        setSparks(r.sparklines ?? {});
       })
       .catch((e: Error) => setError(e.message));
   }, []);
@@ -262,6 +265,7 @@ export default function ScreenerPage() {
                 <tr>
                   <Th>{sortBtn("symbol", "Инструмент")}</Th>
                   <Th num>Цена</Th>
+                  <Th>24 свечи H4</Th>
                   <Th num>{sortBtn("change_24h", "24 ч")}</Th>
                   <Th num>{sortBtn("volume_24h", "Объём 24 ч")}</Th>
                   <Th>D1</Th>
@@ -284,6 +288,9 @@ export default function ScreenerPage() {
                       </Link>
                     </Td>
                     <Td num mobile="right">{formatPrice(r.price ?? null)}</Td>
+                    <Td mobile="hidden">
+                      <Sparkline values={sparks[String(r.instrument_id)] ?? []} up={(n(r.change_24h) ?? 0) >= 0} width={56} height={18} />
+                    </Td>
                     <Td num mobile="right" className={(n(r.change_24h) ?? 0) > 0 ? "up" : (n(r.change_24h) ?? 0) < 0 ? "down" : ""}>
                       {formatPct(n(r.change_24h))}
                     </Td>
