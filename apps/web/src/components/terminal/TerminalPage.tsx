@@ -24,7 +24,7 @@ import { getCandles } from "@/lib/chart";
 import { useTerminalData } from "./useTerminalData";
 
 const TYPE_LABEL: Record<ChartType, string> = { candles: "Свечи", bars: "Бары", line: "Линия", heikin: "Heikin Ashi" };
-const LAYER_LABEL: Record<LayerKey, string> = { structure: "Структура", zones: "Зоны", levels: "Уровни", signals: "Сигналы", patterns: "Паттерны", figures: "Фигуры" };
+const LAYER_LABEL: Record<LayerKey, string> = { structure: "Структура", zones: "Зоны", levels: "Уровни", signals: "Сигналы", patterns: "Паттерны", figures: "Фигуры", volume_profile: "Профиль объёма" };
 const DEFAULT_INDICATORS: ActiveIndicator[] = [{ id: "ema", params: { period: 50 } }];
 const TOOLS: DrawingType[] = ["hline", "hray", "vline", "trend", "ray", "extended", "channel", "rect", "fib", "position-long", "position-short", "note", "ruler"];
 const STORAGE = "pl-terminal";
@@ -32,7 +32,7 @@ const STORAGE = "pl-terminal";
 type Saved = { type: ChartType; indicators: ActiveIndicator[]; layers: Record<LayerKey, boolean>; panels: PanelKey[]; updated_at?: number };
 
 function load(): Saved {
-  const base: Saved = { type: "candles", indicators: DEFAULT_INDICATORS, layers: { structure: true, zones: true, levels: true, signals: true, patterns: true, figures: true }, panels: [] };
+  const base: Saved = { type: "candles", indicators: DEFAULT_INDICATORS, layers: { structure: true, zones: true, levels: true, signals: true, patterns: true, figures: true, volume_profile: false }, panels: [] };
   try {
     const raw = localStorage.getItem(STORAGE);
     if (!raw) return base;

@@ -67,7 +67,7 @@ type Props = {
   found: { count?: number; items: PatternOnChart[]; stats: Record<string, PatternStat>; selected: number | null; onSelect: (id: number | null) => void; tf: string; symbol: string; canExplain: boolean; figures: FigureOnChart[]; figureStats: Record<string, FigureStat>; selectedFigure: number | null; onSelectFigure: (id: number | null) => void };
 };
 
-const LAYER_LABEL: Record<LayerKey, string> = { structure: "Структура", zones: "Зоны", levels: "Уровни", signals: "Сигналы", patterns: "Паттерны", figures: "Фигуры" };
+const LAYER_LABEL: Record<LayerKey, string> = { structure: "Структура", zones: "Зоны", levels: "Уровни", signals: "Сигналы", patterns: "Паттерны", figures: "Фигуры", volume_profile: "Профиль объёма" };
 const PANEL_LABEL: Record<PanelKey, string> = { funding: "Funding", oi: "Open interest", liq: "Ликвидации" };
 
 /** Правая панель объектов (десктоп): рисунки, слои, раскладки и шаблоны. */
