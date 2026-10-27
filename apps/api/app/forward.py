@@ -20,6 +20,7 @@ from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert
@@ -133,6 +134,25 @@ def upsert_candles(
         )
 
 
+def merge_long_short(top: list[dict[str, Any]], glob: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Сливает ряды top/global по времени; если одного ряда нет, берём другой (не 1:1 — так
+    было до этой правки, когда global копировался из top)."""
+    by_time: dict[datetime, dict[str, Any]] = {}
+    for src, key in ((top, "top_traders_ratio"), (glob, "global_ratio")):
+        for r in src:
+            t = datetime.fromtimestamp(int(r["timestamp"]) / 1000, tz=UTC)
+            by_time.setdefault(t, {"time": t})[key] = Decimal(str(r["longShortRatio"]))
+    out = []
+    for t in sorted(by_time):
+        r = by_time[t]
+        if "top_traders_ratio" not in r and "global_ratio" not in r:
+            continue
+        r.setdefault("top_traders_ratio", r.get("global_ratio"))
+        r.setdefault("global_ratio", r.get("top_traders_ratio"))
+        out.append(r)
+    return out
+
+
 def _refresh_derivatives(
     session: Session, history: BinanceHistory, inst: Instrument, now: datetime
 ) -> None:
@@ -175,23 +195,29 @@ def _refresh_derivatives(
                 ]
             )
             session.execute(stmt.on_conflict_do_nothing(index_elements=["instrument_id", "time"]))
-        ls = client.get(
+        # L/S ratio: топ-трейдеры и все аккаунты — два разных ряда Binance (индикаторы v2)
+        top = client.get(
             f"{base}/futures/data/topLongShortAccountRatio",
             params={"symbol": inst.symbol, "period": "1h", "limit": 48},
         ).json()
-        if isinstance(ls, list) and ls:
-            stmt = insert(LongShortRatioRow).values(
-                [
-                    {
-                        "instrument_id": inst.id,
-                        "time": datetime.fromtimestamp(int(r["timestamp"]) / 1000, tz=UTC),
-                        "top_traders_ratio": Decimal(str(r["longShortRatio"])),
-                        "global_ratio": Decimal(str(r["longShortRatio"])),
-                    }
-                    for r in ls
-                ]
+        glob = client.get(
+            f"{base}/futures/data/globalLongShortAccountRatio",
+            params={"symbol": inst.symbol, "period": "1h", "limit": 48},
+        ).json()
+        rows = merge_long_short(
+            top if isinstance(top, list) else [], glob if isinstance(glob, list) else []
+        )
+        if rows:
+            stmt = insert(LongShortRatioRow).values([{"instrument_id": inst.id, **r} for r in rows])
+            session.execute(
+                stmt.on_conflict_do_update(
+                    index_elements=["instrument_id", "time"],
+                    set_={
+                        "top_traders_ratio": stmt.excluded.top_traders_ratio,
+                        "global_ratio": stmt.excluded.global_ratio,
+                    },
+                )
             )
-            session.execute(stmt.on_conflict_do_nothing(index_elements=["instrument_id", "time"]))
     except Exception as exc:
         print(f"{inst.symbol}: деривативы не обновлены: {type(exc).__name__}: {exc}", flush=True)
 

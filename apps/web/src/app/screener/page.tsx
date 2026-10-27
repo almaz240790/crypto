@@ -30,7 +30,7 @@ export function applyFilters(rows: ScreenerRow[], f: ScreenerFilters): ScreenerR
   return out;
 }
 
-type SortKey = "symbol" | "change_24h" | "volume_24h" | "zone" | "atr_percentile" | "funding" | "oi_change_24h" | "beta_btc";
+type SortKey = "symbol" | "change_24h" | "volume_24h" | "zone" | "atr_percentile" | "funding" | "oi_change_24h" | "ls_ratio" | "beta_btc";
 
 function n(x: string | null | undefined): number | null {
   if (x === null || x === undefined) return null;
@@ -275,6 +275,7 @@ export default function ScreenerPage() {
                   <Th num>{sortBtn("atr_percentile", "ATR p")}</Th>
                   <Th num>{sortBtn("funding", "Funding")}</Th>
                   <Th num>{sortBtn("oi_change_24h", "OI 24 ч")}</Th>
+                  <Th num>{sortBtn("ls_ratio", "L/S")}</Th>
                   <Th num>Ликв. L/S</Th>
                   <Th num>{sortBtn("beta_btc", "β BTC")}</Th>
                 </tr>
@@ -325,6 +326,7 @@ export default function ScreenerPage() {
                       {r.funding_pct ? <span className="caption"> p{r.funding_pct}</span> : null}
                     </Td>
                     <Td num mobile="hidden">{formatPct(n(r.oi_change_24h))}</Td>
+                    <Td num mobile="hidden" title={r.ls_top ? `топ-трейдеры ${Number(r.ls_top).toFixed(2)}` : undefined}>{n(r.ls_ratio)?.toFixed(2) ?? "—"}</Td>
                     <Td num mobile="hidden">
                       {fmtUsd(r.liq_long_24h)} / {fmtUsd(r.liq_short_24h)}
                     </Td>

@@ -41,6 +41,9 @@ export type Derivatives = {
   oi: { t: number; v: string }[];
   liquidations: { t: number; long: string; short: string }[];
   liquidations_note: string;
+  /** Соотношение long/short аккаунтов (все / топ-трейдеры), индикаторы v2. */
+  ls_ratio?: { t: number; v: string }[];
+  ls_top?: { t: number; v: string }[];
 };
 export const getDerivatives = (symbol: string, tf: Timeframe) => api<Derivatives>(`/v1/chart/derivatives?symbol=${symbol}&tf=${tf}&limit=500`, { auth: false });
 

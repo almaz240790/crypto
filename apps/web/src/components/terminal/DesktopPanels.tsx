@@ -68,7 +68,7 @@ type Props = {
 };
 
 const LAYER_LABEL: Record<LayerKey, string> = { structure: "Структура", zones: "Зоны", levels: "Уровни", signals: "Сигналы", patterns: "Паттерны", figures: "Фигуры" };
-const PANEL_LABEL: Record<PanelKey, string> = { funding: "Funding", oi: "Open interest", liq: "Ликвидации" };
+const PANEL_LABEL: Record<PanelKey, string> = { funding: "Funding", oi: "Open interest", liq: "Ликвидации", ls: "L/S ratio" };
 
 /** Правая панель объектов (десктоп): рисунки, слои, раскладки и шаблоны. */
 export function ObjectsPanel(p: Props) {

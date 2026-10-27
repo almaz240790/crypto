@@ -10,7 +10,7 @@ import s from "./terminal.module.css";
 
 export type ActiveIndicator = { id: string; params: Record<string, number> };
 export type LayerKey = "structure" | "zones" | "levels" | "signals" | "patterns" | "figures";
-export type PanelKey = "funding" | "oi" | "liq";
+export type PanelKey = "funding" | "oi" | "liq" | "ls";
 export type CrosshairInfo = { candle: Candle; values: { label: string; value: number | null }[] };
 /** Управление видом снаружи (кнопки «+/−», горячие клавиши). */
 export type TerminalControls = { zoom: (factor: number) => void; reset: () => void };
@@ -19,6 +19,7 @@ export const PANELS: { id: PanelKey; title: string }[] = [
   { id: "funding", title: "Funding" },
   { id: "oi", title: "Open interest" },
   { id: "liq", title: "Ликвидации" },
+  { id: "ls", title: "L/S ratio" },
 ];
 
 type Props = {
@@ -431,6 +432,7 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
         const series: ISeriesApi<"Line" | "Histogram">[] = [];
         if (k === "funding") series.push(term.addLine(paneIndex, tokens.warn, 1));
         else if (k === "oi") series.push(term.addLine(paneIndex, tokens.accent, 1));
+        else if (k === "ls") series.push(term.addLine(paneIndex, tokens.accent, 1), term.addLine(paneIndex, tokens.warn, 1));
         else series.push(term.addHistogram(paneIndex, tokens.up), term.addHistogram(paneIndex, tokens.down));
         p = { paneIndex, series };
         cryptoRef.current.set(k, p);
@@ -438,7 +440,10 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
       }
       if (k === "funding") p.series[0]!.setData(asLine(derivatives.funding.map((r) => ({ t: r.t, v: String(Number(r.v) * 100) }))) as never);
       else if (k === "oi") p.series[0]!.setData(asLine(derivatives.oi) as never);
-      else {
+      else if (k === "ls") {
+        p.series[0]!.setData(asLine(derivatives.ls_ratio ?? []) as never);
+        p.series[1]!.setData(asLine(derivatives.ls_top ?? []) as never);
+      } else {
         p.series[0]!.setData(derivatives.liquidations.map((r) => ({ time: r.t as UTCTimestamp, value: Number(r.long), color: tokens.up })) as never);
         p.series[1]!.setData(derivatives.liquidations.map((r) => ({ time: r.t as UTCTimestamp, value: -Number(r.short), color: tokens.down })) as never);
       }

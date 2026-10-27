@@ -12,7 +12,7 @@ const SCREEN = (sym: string, zoneAtr: string | null) => ({
   bias: sym === "BTCUSDT" ? "long" : "neutral", d1_trend: "up", w1_trend: sym === "BTCUSDT" ? "up" : "flat",
   last_event: { type: "bos", direction: "up", time: "2026-10-24T16:00:00Z", level: "64000" },
   zone: zoneAtr === null ? null : { kind: "ob", direction: "up", top: "64500", bottom: "64000", status: "active", distance_atr: zoneAtr, distance_pct: "1" },
-  atr_pct: "1.2", atr_percentile: "48", beta_btc: sym === "BTCUSDT" ? "1" : "1.3", funding: "0.01", funding_pct: "55", oi_change_24h: "2.1", liq_long_24h: "1200000", liq_short_24h: "800000",
+  atr_pct: "1.2", atr_percentile: "48", beta_btc: sym === "BTCUSDT" ? "1" : "1.3", funding: "0.01", funding_pct: "55", oi_change_24h: "2.1", liq_long_24h: "1200000", liq_short_24h: "800000", ls_ratio: sym === "BTCUSDT" ? "1.35" : "0.92", ls_top: "1.8",
 });
 
 async function mock(page: Page, calls: string[], state: { watch: string[]; journal: Record<string, unknown>[]; twoFactor?: boolean; screens?: Record<string, unknown>[]; alerts?: Record<string, unknown>[] }) {
