@@ -5,14 +5,30 @@ import { DrawingController, DrawingsPrimitive, INDICATORS, defaultParams, indica
 import { LineSeries, createSeriesMarkers, type ISeriesApi, type ISeriesMarkersPluginApi, type SeriesMarker, type Time, type UTCTimestamp } from "lightweight-charts";
 import { useEffect, useRef } from "react";
 import { BoxPrimitive } from "@/components/chart/BoxPrimitive";
-import type { Derivatives, LayersResponse } from "@/lib/chart";
+import type { Derivatives, LayersResponse, PatternOnChart } from "@/lib/chart";
 import s from "./terminal.module.css";
 
 export type ActiveIndicator = { id: string; params: Record<string, number> };
-export type LayerKey = "structure" | "zones" | "levels" | "signals";
+export type LayerKey = "structure" | "zones" | "levels" | "signals" | "patterns";
 export type PanelKey = "funding" | "oi" | "liq";
 export type CrosshairInfo = { candle: Candle; values: { label: string; value: number | null }[] };
 const LONG_PRESS_MS = 300;
+/** Короткие подписи маркеров паттернов (план 2A.10.1): без оценочных слов. */
+export const PATTERN_GLYPH: Record<string, string> = {
+  engulfing: "ПГ",
+  pin_bar: "ПБ",
+  doji: "Д",
+  doji_dragonfly: "Д↑",
+  doji_gravestone: "Д↓",
+  star: "ЗВ",
+  three_line: "3",
+  harami: "ХР",
+  inside_bar: "ВБ",
+  inside_bar_breakout: "ВБ›",
+  marubozu: "МБ",
+  tweezer: "ПЦ",
+};
+
 export const PANELS: { id: PanelKey; title: string }[] = [
   { id: "funding", title: "Funding" },
   { id: "oi", title: "Open interest" },
@@ -27,6 +43,9 @@ type Props = {
   indicators: ActiveIndicator[];
   layersOn: Record<LayerKey, boolean>;
   layers: LayersResponse | null;
+  /** Свечные паттерны (план 2A.10.1): маркеры-глифы под/над свечой; ``highlight`` — id выбранного. */
+  patterns?: PatternOnChart[];
+  highlight?: number | null;
   derivatives: Derivatives | null;
   panels: PanelKey[];
   tick: string | null;
@@ -71,7 +90,7 @@ function precisionOf(tick: string | null): { precision: number; minMove: number 
 type Pane = { spec: IndicatorSpec; paneIndex: number | null; series: Record<string, ISeriesApi<"Line" | "Histogram">> };
 
 /** Обёртка React над Terminal из packages/charts: данные, индикаторы, слои, тема. */
-export function TerminalView({ candles, current, tf, type, indicators, layersOn, layers, derivatives, panels, tick, onNeedOlder, drawings, onCrosshair }: Props) {
+export function TerminalView({ candles, current, tf, type, indicators, layersOn, layers, patterns, highlight, derivatives, panels, tick, onNeedOlder, drawings, onCrosshair }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const tfRef = useRef(tf);
@@ -409,11 +428,27 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
         if (open) for (const tp of sg.tp) if (tp) seg(t, null, Number(tp), tokens.up, 1);
       }
     }
+    if (patterns && layersOn.patterns) {
+      // глифы: подтверждённые на закрытии свечи; значимые — акцентом, найденные — приглушённо
+      for (const p of patterns.slice(-150)) {
+        const t = snap(p.t);
+        if (t < first) continue;
+        const hl = p.id === highlight;
+        markers.push({
+          time: t as Time,
+          position: p.direction === "up" ? "belowBar" : "aboveBar",
+          shape: hl ? "circle" : p.direction === "up" ? "arrowUp" : p.direction === "down" ? "arrowDown" : "square",
+          color: hl ? tokens.warn : p.significant ? tokens.accent : alpha(tokens.text3, 0.7),
+          text: PATTERN_GLYPH[p.type] ?? "•",
+          size: hl ? 1 : 0,
+        });
+      }
+    }
     boxRef.current.setBoxes(boxes);
     markers.sort((a, b) => (a.time as number) - (b.time as number));
     if (!markersRef.current) markersRef.current = createSeriesMarkers(main, markers);
     else markersRef.current.setMarkers(markers);
-  }, [layers, layersOn, candles, current, tf, type]);
+  }, [layers, layersOn, candles, current, tf, type, patterns, highlight]);
 
   return (
     <div className={s.chart}>

@@ -184,3 +184,40 @@ export async function getClosedSignals(limit = 5): Promise<SignalRow[]> {
 export function getHealth(): Promise<Health | null> {
   return get<Health>("/health", 30);
 }
+
+export type PatternStatItem = {
+  type: string;
+  title: string;
+  horizon: number;
+  n: number;
+  low_n: boolean;
+  success_rate: string | null;
+  ci_low: string | null;
+  ci_high: string | null;
+  avg_move_atr: string | null;
+  avg_adverse_atr: string | null;
+  period_start: string | null;
+  period_end: string | null;
+};
+export type PatternStats = {
+  scope: string;
+  tf: string;
+  horizon: number;
+  with_context: boolean | null;
+  items: PatternStatItem[];
+  note: string;
+  computed_at: string | null;
+  by_year?: (PatternStatItem & { year: number })[];
+  by_context?: Record<"significant" | "found", PatternStatItem>;
+};
+
+/** Историческая отработка свечных паттернов (план 2A.10.4). */
+export function getPatternStats(q: { tf?: string; scope?: string; horizon?: number; type?: string; with_context?: boolean | null }): Promise<PatternStats | null> {
+  const p = new URLSearchParams();
+  if (q.tf) p.set("tf", q.tf);
+  if (q.scope) p.set("scope", q.scope);
+  if (q.horizon) p.set("horizon", String(q.horizon));
+  if (q.type) p.set("type", q.type);
+  if (q.with_context !== undefined && q.with_context !== null) p.set("with_context", String(q.with_context));
+  return get<PatternStats>(`/v1/stats/patterns?${p.toString()}`, 300);
+}

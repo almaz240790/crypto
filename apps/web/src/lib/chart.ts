@@ -43,3 +43,10 @@ export type Derivatives = {
   liquidations_note: string;
 };
 export const getDerivatives = (symbol: string, tf: Timeframe) => api<Derivatives>(`/v1/chart/derivatives?symbol=${symbol}&tf=${tf}&limit=500`, { auth: false });
+
+export type PatternOnChart = { id: number; type: string; title: string; direction: "up" | "down" | null; status: string; significant: boolean; t: number; start_t: number; confirm_t: number; price: string | null; atr: string | null; context: Record<string, unknown>; source: string; tf: string };
+export type PatternStat = { type: string; title: string; horizon: number; n: number; low_n: boolean; success_rate: string | null; ci_low: string | null; ci_high: string | null; avg_move_atr: string | null; avg_adverse_atr: string | null };
+export type PatternsResponse = { symbol: string; tf: string; items: PatternOnChart[]; stats: Record<string, PatternStat>; horizon: number; note: string };
+/** Свечные паттерны (план 2A.10.1, 2B.12): публично, по закрытым свечам. */
+export const getPatterns = (symbol: string, tf: Timeframe, since?: number, until?: number) =>
+  api<PatternsResponse>(`/v1/chart/patterns?symbol=${symbol}&tf=${tf}${since ? `&since=${since}` : ""}${until ? `&until=${until}` : ""}&limit=500`, { auth: false });

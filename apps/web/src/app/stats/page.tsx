@@ -180,6 +180,7 @@ export default async function StatsPage({ searchParams }: { searchParams: Promis
                 {x.label}
               </Link>
             ))}
+            <Link href="/stats/patterns">Паттерны</Link>
           </nav>
         </div>
 

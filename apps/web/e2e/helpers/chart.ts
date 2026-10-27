@@ -62,6 +62,18 @@ export async function mock(page: Page, calls: string[], authed = false, server: 
     }
     if (p === "/v1/chart/derivatives")
       return json(200, { symbol: "BTCUSDT", tf: "4h", funding: [{ t: T0 + 100 * 14400, v: "0.0001" }, { t: T0 + 200 * 14400, v: "0.00012" }], funding_current: "0.00012", next_funding_t: Math.floor(Date.now() / 1000) + 3600, oi: [{ t: T0 + 100 * 14400, v: "1000000" }], liquidations: [{ t: T0 + 100 * 14400, long: "1000", short: "2000" }], liquidations_note: "" });
+    if (p === "/v1/chart/patterns")
+      return json(200, {
+        symbol: "BTCUSDT", tf: "4h", horizon: 5, note: "",
+        items: [
+          { id: 1, type: "engulfing", title: "Бычье поглощение", direction: "up", status: "outcome_recorded", significant: true, t: T0 + 200 * 14400, start_t: T0 + 199 * 14400, confirm_t: T0 + 201 * 14400, price: "99", atr: "2", context: { prior_run: -4, volume_ratio: "1.6", sweep: true, trend: "down" }, source: "backfill", tf: "4h" },
+          { id: 2, type: "doji", title: "Доджи", direction: null, status: "confirmed", significant: false, t: T0 + 280 * 14400, start_t: T0 + 280 * 14400, confirm_t: T0 + 281 * 14400, price: "101", atr: "2", context: {}, source: "live", tf: "4h" },
+        ],
+        stats: {
+          engulfing: { type: "engulfing", title: "Бычье поглощение / Медвежье поглощение", horizon: 5, n: 120, low_n: false, success_rate: "0.5417", ci_low: "0.45", ci_high: "0.63", avg_move_atr: "1.3", avg_adverse_atr: "0.9" },
+          doji: { type: "doji", title: "Доджи", horizon: 5, n: 7, low_n: true, success_rate: null, ci_low: null, ci_high: null, avg_move_atr: null, avg_adverse_atr: null },
+        },
+      });
     if (p === "/v1/chart/layers")
       return json(200, {
         symbol: "BTCUSDT", tf: "4h",

@@ -114,6 +114,26 @@ def layers(
     }
 
 
+@router.get("/patterns")
+def patterns(
+    symbol: str,
+    tf: str = "4h",
+    since: int | None = Query(None, description="unix-секунды, по закрытию свечи"),
+    until: int | None = None,
+    limit: int = Query(300, ge=1, le=1000),
+    db: Session = Depends(auth.get_db),
+) -> dict[str, Any]:
+    """Свечные паттерны инструмента на таймфрейме (план 2A.10.1, 2B.12): отметки с контекстом
+    и историческая отработка по типам. Доступно всем — это часть открытой статистики."""
+    from app.patterns import chart_patterns
+
+    timeframe = _tf(tf)
+    inst = _instrument(db, symbol)
+    s = datetime.fromtimestamp(since, tz=UTC) if since else None
+    u = datetime.fromtimestamp(until, tz=UTC) if until else None
+    return chart_patterns(db, inst, timeframe, s, u, limit)
+
+
 @router.get("/derivatives")
 def derivatives(
     symbol: str,
