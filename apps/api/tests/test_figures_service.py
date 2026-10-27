@@ -223,3 +223,53 @@ def test_sync_backfill_outcomes_stats_and_immutability() -> None:
             assert cf["stats"]["double_top"]["title"] == "Двойная вершина"
         finally:
             s.rollback()
+
+
+@db_only
+def test_insert_or_existing_survives_concurrent_insert() -> None:
+    """Гонка бэкфилла и live-детектора: такая же фигура уже записана — берём её, не падаем."""
+    from app.db import SessionLocal
+    from app.figures import _insert_or_existing
+    from app.models import Instrument
+
+    with SessionLocal() as s:
+        s.begin()
+        try:
+            inst = Instrument(
+                exchange="binance",
+                symbol="FIGRACEUSDT",
+                base="FR",
+                quote="USDT",
+                market_type="futures",
+                tick_size=Decimal("0.01"),
+                lot_size=Decimal("0.001"),
+            )
+            s.add(inst)
+            s.flush()
+            t0 = datetime(2026, 1, 1, tzinfo=UTC)
+            vals = {
+                "type": "double_bottom",
+                "direction": "up",
+                "status": "forming",
+                "scale": 2,
+                "start_time": t0,
+                "end_time": datetime(2026, 1, 3, tzinfo=UTC),
+                "known_time": datetime(2026, 1, 3, 4, tzinfo=UTC),
+                "confirm_time": None,
+                "invalidated_time": None,
+                "geometry": {},
+                "breakout_level": None,
+                "target": None,
+                "invalidation": None,
+                "quality": Decimal("0.6"),
+                "metrics": {},
+                "rules_version": "figures@1.0.0",
+            }
+            first, ins1 = _insert_or_existing(s, inst, Timeframe.H4, dict(vals), "live")
+            second, ins2 = _insert_or_existing(s, inst, Timeframe.H4, dict(vals), "backfill")
+            assert ins1 and not ins2
+            assert second.id == first.id and second.source == "live"
+            # транзакция жива: можно продолжать писать
+            s.flush()
+        finally:
+            s.rollback()
