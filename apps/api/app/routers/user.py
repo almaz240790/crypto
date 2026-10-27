@@ -23,6 +23,7 @@ from app.models import (
     JournalEntry,
     PushSubscription,
     RiskProfile,
+    SavedScreen,
     Signal,
     SignalResult,
     StrategyVersion,
@@ -298,6 +299,80 @@ def _journal_dict(e: JournalEntry, symbol: str) -> dict[str, Any]:
         "signal_id": e.signal_id,
         "created_at": e.created_at.isoformat() if e.created_at else None,
     }
+
+
+# --- сохранённые скрины скринера (план 3.6 v2) --------------------------------------------------
+
+SCREENS_LIMIT = 20
+SCREEN_FILTER_KEYS = {
+    "bias",
+    "near",
+    "d1",
+    "w1",
+    "event",
+    "atrp",
+    "funding",
+    "change",
+    "zone_kind",
+}
+
+
+class ScreenIn(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+    filters: dict[str, str] = Field(default_factory=dict)
+
+
+def _screen_dict(s: SavedScreen) -> dict[str, Any]:
+    return {"name": s.name, "filters": s.filters, "created_at": s.created_at.isoformat()}
+
+
+@router.get("/screener/screens")
+def screens_list(
+    user: User = Depends(auth.current_user), db: Session = Depends(auth.get_db)
+) -> list[dict[str, Any]]:
+    rows = db.scalars(
+        select(SavedScreen).where(SavedScreen.user_id == user.id).order_by(SavedScreen.name)
+    ).all()
+    return [_screen_dict(s) for s in rows]
+
+
+@router.put("/screener/screens")
+def screens_put(
+    body: ScreenIn, user: User = Depends(auth.current_user), db: Session = Depends(auth.get_db)
+) -> dict[str, Any]:
+    """Создать или заменить скрин по имени; неизвестные ключи фильтров отбрасываются."""
+    filters = {k: v for k, v in body.filters.items() if k in SCREEN_FILTER_KEYS and v}
+    row = db.scalar(
+        select(SavedScreen).where(SavedScreen.user_id == user.id, SavedScreen.name == body.name)
+    )
+    if row is None:
+        n = db.scalar(
+            select(func.count()).select_from(SavedScreen).where(SavedScreen.user_id == user.id)
+        )
+        if (n or 0) >= SCREENS_LIMIT:
+            raise HTTPException(409, f"не больше {SCREENS_LIMIT} сохранённых скринов")
+        row = SavedScreen(user_id=user.id, name=body.name, filters=filters)
+        db.add(row)
+    else:
+        row.filters = filters
+    db.commit()
+    db.refresh(row)
+    return _screen_dict(row)
+
+
+@router.delete("/screener/screens", status_code=204)
+def screens_delete(
+    name: str = Query(max_length=60),
+    user: User = Depends(auth.current_user),
+    db: Session = Depends(auth.get_db),
+) -> Response:
+    row = db.scalar(
+        select(SavedScreen).where(SavedScreen.user_id == user.id, SavedScreen.name == name)
+    )
+    if row is not None:
+        db.delete(row)
+        db.commit()
+    return Response(status_code=204)
 
 
 # --- 2FA (TOTP), план 3.12 v2 -------------------------------------------------------------------

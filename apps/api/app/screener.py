@@ -215,3 +215,53 @@ def screener_cached(session: Session) -> tuple[list[dict[str, Any]], datetime]:
         rows = build_screener(session)
         _cache.update({"at": time.time(), "rows": rows, "when": datetime.now(tz=UTC)})
         return rows, _cache["when"]
+
+
+CSV_COLUMNS = (
+    "symbol",
+    "price",
+    "change_24h",
+    "volume_24h",
+    "bias",
+    "d1_trend",
+    "w1_trend",
+    "last_event_type",
+    "last_event_direction",
+    "last_event_time",
+    "zone_kind",
+    "zone_direction",
+    "zone_top",
+    "zone_bottom",
+    "zone_distance_atr",
+    "atr_pct",
+    "atr_percentile",
+    "funding",
+    "funding_pct",
+    "oi_change_24h",
+    "liq_long_24h",
+    "liq_short_24h",
+    "beta_btc",
+)
+
+
+def csv_rows(rows: list[dict[str, Any]]) -> list[list[str]]:
+    """Плоские строки для экспорта CSV (план 3.6 v2): вложенные событие и зона развёрнуты."""
+    out: list[list[str]] = []
+    for r in rows:
+        if r.get("error"):
+            continue
+        ev = r.get("last_event") or {}
+        z = r.get("zone") or {}
+        flat = {
+            **{k: r.get(k) for k in CSV_COLUMNS},
+            "last_event_type": ev.get("type"),
+            "last_event_direction": ev.get("direction"),
+            "last_event_time": ev.get("time"),
+            "zone_kind": z.get("kind"),
+            "zone_direction": z.get("direction"),
+            "zone_top": z.get("top"),
+            "zone_bottom": z.get("bottom"),
+            "zone_distance_atr": z.get("distance_atr"),
+        }
+        out.append(["" if flat[k] is None else str(flat[k]) for k in CSV_COLUMNS])
+    return out

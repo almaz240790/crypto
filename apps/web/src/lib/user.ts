@@ -79,6 +79,14 @@ export type Instrument = { id: number; symbol: string; base: string; quote: stri
 export const getScreener = (symbols?: string[]) =>
   api<{ items: ScreenerRow[]; generated_at: string }>(`/v1/screener${symbols?.length ? `?symbols=${symbols.join(",")}` : ""}`, { auth: false });
 
+/** Фильтры скринера (план 3.6 v2): пустая строка — без фильтра. */
+export type ScreenerFilters = { bias: string; near: string; d1: string; w1: string; event: string; atrp: string; funding: string; change: string; zone_kind: string };
+export const EMPTY_FILTERS: ScreenerFilters = { bias: "", near: "", d1: "", w1: "", event: "", atrp: "", funding: "", change: "", zone_kind: "" };
+export type SavedScreen = { name: string; filters: Partial<ScreenerFilters>; created_at: string };
+export const getScreens = () => api<SavedScreen[]>("/v1/screener/screens");
+export const putScreen = (name: string, filters: Partial<ScreenerFilters>) => api<SavedScreen>("/v1/screener/screens", { method: "PUT", json: { name, filters } });
+export const deleteScreen = (name: string) => api<void>(`/v1/screener/screens?name=${encodeURIComponent(name)}`, { method: "DELETE" });
+
 export const getInstruments = () => api<Instrument[]>("/v1/instruments", { auth: false });
 
 export const getWatchlist = () => api<{ id: number; name: string; items: { symbol: string; instrument_id: number; added_at: string }[] }>("/v1/watchlist");

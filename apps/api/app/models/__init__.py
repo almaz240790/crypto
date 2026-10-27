@@ -3,7 +3,7 @@
 from app.models.alerts import Alert, AlertTrigger
 from app.models.backtests import BacktestRun
 from app.models.billing import BalanceEntry, Payment, PromoCode, Subscription
-from app.models.chart import ChartLayout, Drawing
+from app.models.chart import ChartLayout, Drawing, SavedScreen
 from app.models.derivatives import (
     FundingRateRow,
     LiquidationRow,
@@ -79,6 +79,7 @@ __all__ = [
     "PushSubscription",
     "RefreshToken",
     "RiskProfile",
+    "SavedScreen",
     "Signal",
     "SignalEvent",
     "SignalResult",
