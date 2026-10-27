@@ -71,8 +71,11 @@ test("алерты: создать по цене и по индикатору, �
   await form.getByLabel("тип алерта").selectOption("price");
   await form.getByLabel("цена").fill("71000");
   await form.getByRole("button", { name: "Создать алерт" }).click();
+  await expect(page.getByRole("status")).toContainText("71000");
   await form.getByLabel("цена").fill("72000");
   await form.getByRole("button", { name: "Создать алерт" }).click();
+  await expect(page.getByRole("status")).toContainText("72000");
+  await expect(page.getByTestId("alert-row")).toHaveCount(4);
   await form.getByLabel("цена").fill("73000");
   await form.getByRole("button", { name: "Создать алерт" }).click();
   await expect(page.getByRole("status")).toContainText("лимит активных алертов: 3");
