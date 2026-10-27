@@ -100,9 +100,10 @@ test("синхронизация рисунков: запись на серве�
   const box = (await term.boundingBox())!;
   await page.mouse.click(box.x + box.width * 0.4, box.y + box.height * 0.5);
   await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 1");
-  await expect(page.getByTestId("drawings-sync")).toHaveText("синхронизировано");
-  expect(server.drawings).toHaveLength(1);
+  // запись уходит с задержкой 600 мс — ждём появления на «сервере», а не мгновенного индикатора
+  await expect.poll(() => server.drawings.length, { timeout: 10000 }).toBe(1);
   expect(server.drawings[0]!.type).toBe("hline");
+  await expect(page.getByTestId("drawings-sync")).toHaveText("синхронизировано");
   // второе устройство: чистый контекст, те же серверные данные
   const ctx2 = await browser.newContext({ viewport: { width: 1600, height: 900 } });
   const page2 = await ctx2.newPage();
