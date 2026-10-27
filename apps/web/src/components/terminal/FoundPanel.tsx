@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { explainPattern, type Explanation, type FigureOnChart, type FigureStat, type PatternOnChart, type PatternStat } from "@/lib/chart";
+import { askChart, explainPattern, type Explanation, type FigureOnChart, type FigureStat, type PatternOnChart, type PatternStat } from "@/lib/chart";
 import type { Timeframe } from "@/lib/timeframes";
 import s from "./terminal.module.css";
 
@@ -135,5 +135,46 @@ export function FiguresList({ items, stats, selected, onSelect }: { items: Figur
         );
       })}
     </ul>
+  );
+}
+
+
+/** Поле вопроса о графике (план 3.17, 4B.7): Premium; остальным — пояснение из ответа сервера. */
+export function AskBox({ symbol, tf }: { symbol: string; tf: string }) {
+  const [q, setQ] = useState("");
+  const [state, setState] = useState<Explanation | "loading" | { error: string } | null>(null);
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const text = q.trim().slice(0, 500);
+    if (!text) return;
+    setState("loading");
+    askChart(symbol, tf as Timeframe, text)
+      .then((r) => setState(r))
+      .catch((err: Error) => setState({ error: err.message }));
+  };
+  return (
+    <form className={s.ask} onSubmit={submit} aria-label="вопрос о графике">
+      <label>
+        Вопрос о графике
+        <textarea aria-label="текст вопроса" maxLength={500} rows={2} placeholder="например: почему зона считается активной?" value={q} onChange={(e) => setQ(e.target.value)} />
+      </label>
+      <div className={s.askRow}>
+        <span className="caption">{q.length}/500 · только по фактам графика, без рекомендаций и прогнозов</span>
+        <button type="submit" className={s.chip} disabled={state === "loading" || !q.trim()}>
+          Спросить
+        </button>
+      </div>
+      {state === "loading" && <p className="caption">составляю ответ по данным графика…</p>}
+      {state !== null && typeof state === "object" && "error" in state && <p className="caption">{state.error}</p>}
+      {state !== null && typeof state === "object" && "text" in state && (
+        <div data-testid="ask-answer">
+          <p>{state.text}</p>
+          <p className="caption">
+            {state.footer}
+            {state.source === "template" ? "" : " Ответ прошёл проверку: все числа — из данных графика."}
+          </p>
+        </div>
+      )}
+    </form>
   );
 }

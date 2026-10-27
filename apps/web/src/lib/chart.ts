@@ -78,3 +78,6 @@ export type FiguresResponse = { symbol: string; tf: string; items: FigureOnChart
 export const getFigures = (symbol: string, tf: Timeframe, since?: number, until?: number) =>
   api<FiguresResponse>(`/v1/chart/figures?symbol=${symbol}&tf=${tf}${since ? `&since=${since}` : ""}${until ? `&until=${until}` : ""}&limit=100`, { auth: false });
 export const FIGURE_TFS: Timeframe[] = ["4h", "1d", "1w"];
+
+/** Вопрос о графике (план 2A.10.3, 4B.7): Premium; текст ≤ 500 символов идёт как данные. */
+export const askChart = (symbol: string, tf: Timeframe, question: string) => api<Explanation>("/v1/chart/ask", { method: "POST", json: { symbol, tf, question } });

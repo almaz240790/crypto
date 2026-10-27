@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     llm_enabled: bool = False
     anthropic_api_key: str | None = None
     llm_model_explain: str = "claude-haiku-5-5"
+    llm_model_question: str = "claude-sonnet-5-5"
     llm_daily_budget_usd: float = 15.0
     llm_prompts_dir: str | None = None
     """Email владельцев через запятую: при входе получают роль owner (до админки 2.14)."""

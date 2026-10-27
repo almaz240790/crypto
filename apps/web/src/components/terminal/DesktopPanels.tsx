@@ -3,7 +3,7 @@
 import { TOOL_TITLES, type Drawing, type DrawingType } from "@platform/charts";
 import { useState } from "react";
 import s from "./terminal.module.css";
-import { FiguresList, FoundList } from "./FoundPanel";
+import { AskBox, FiguresList, FoundList } from "./FoundPanel";
 import { TEMPLATES } from "./templates";
 import type { FigureOnChart, FigureStat, PatternOnChart, PatternStat } from "@/lib/chart";
 import type { LayerKey, PanelKey } from "./TerminalView";
@@ -89,6 +89,7 @@ export function ObjectsPanel(p: Props) {
           <FiguresList items={p.found.figures} stats={p.found.figureStats} selected={p.found.selectedFigure} onSelect={p.found.onSelectFigure} />
           <strong className={s.objHead}>Свечные паттерны</strong>
           <FoundList items={p.found.items} stats={p.found.stats} selected={p.found.selected} onSelect={p.found.onSelect} tf={p.found.tf} symbol={p.found.symbol} canExplain={p.found.canExplain} />
+          {p.found.canExplain && <AskBox symbol={p.found.symbol} tf={p.found.tf} />}
         </>
       )}
       {tab === "drawings" && (

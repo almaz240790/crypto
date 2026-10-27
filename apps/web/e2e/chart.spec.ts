@@ -235,6 +235,13 @@ test("паттерны: вкладка «Найдено», подробност�
   expect(calls.some((c) => c.startsWith("/v1/chart/explain"))).toBe(true);
   await list.getByRole("button", { name: /Доджи/ }).click();
   await expect(list).toContainText("мало данных");
+  // вопрос о графике (4B.7): текст уходит как данные, ответ с подписью
+  const ask = objects.getByRole("form", { name: "вопрос о графике" });
+  await ask.getByLabel("текст вопроса").fill("почему зона активна?");
+  await ask.getByRole("button", { name: "Спросить" }).click();
+  await expect(ask.getByTestId("ask-answer")).toContainText("тренд D1 восходящий");
+  await expect(ask.getByTestId("ask-answer")).toContainText("Ответ прошёл проверку");
+  expect(calls.some((c) => c.startsWith("/v1/chart/ask"))).toBe(true);
   // слой «Паттерны» в списке слоёв
   await objects.getByRole("tab", { name: "Слои" }).click();
   await expect(objects.getByLabel("Паттерны")).toBeChecked();

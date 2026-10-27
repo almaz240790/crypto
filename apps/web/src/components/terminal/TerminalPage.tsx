@@ -13,7 +13,7 @@ import { getInstruments, type Instrument } from "@/lib/user";
 import s from "./terminal.module.css";
 import { BottomSheet } from "./BottomSheet";
 import { DrawToolbar, ObjectsPanel } from "./DesktopPanels";
-import { FiguresList, FoundList } from "./FoundPanel";
+import { AskBox, FiguresList, FoundList } from "./FoundPanel";
 import { download, snapshotPng } from "./snapshot";
 import { TEMPLATES } from "./templates";
 import { PANELS, TerminalView, type ActiveIndicator, type CrosshairInfo, type LayerKey, type PanelKey } from "./TerminalView";
@@ -456,6 +456,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
                 <FiguresList items={data.figures?.items ?? []} stats={data.figures?.stats ?? {}} selected={figureSel} onSelect={setFigureSel} />
                 <strong className={s.objHead}>Свечные паттерны</strong>
                 <FoundList items={data.patterns?.items ?? []} stats={data.patterns?.stats ?? {}} selected={foundSel} onSelect={setFoundSel} tf={tf} symbol={symbol} canExplain={!!user} />
+                {user && <AskBox symbol={symbol} tf={tf} />}
               </>
             )}
             {sheet === "draw" &&

@@ -161,6 +161,32 @@ class ExplainIn(BaseModel):
     pattern_id: int
 
 
+class AskIn(BaseModel):
+    symbol: str = Field(max_length=32)
+    tf: str = Field(pattern="^(15m|1h|4h|1d|1w)$")
+    question: str = Field(min_length=1, max_length=500)
+
+
+@router.post("/ask")
+def ask(
+    body: AskIn,
+    user: User = Depends(auth.current_user),
+    db: Session = Depends(auth.get_db),
+) -> dict[str, Any]:
+    """Вопрос о текущем графике (план 2A.10.3; 4B.7): только Premium, текст пользователя ≤ 500
+    символов передаётся как данные, ответ проходит постпроверку чисел, кэш 1 ч."""
+    from app.llm import ask_chart
+
+    timeframe = _tf(body.tf)
+    inst = _instrument(db, body.symbol)
+    r: Any | None
+    try:
+        r = redis.from_url(settings.redis_url, socket_timeout=2)
+    except Exception:
+        r = None
+    return ask_chart(db, r, user, inst, timeframe, body.question)
+
+
 @router.post("/explain")
 def explain(
     body: ExplainIn,
