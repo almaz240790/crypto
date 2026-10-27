@@ -64,7 +64,7 @@ type Props = {
   onDeleteLayout: (name: string) => void;
   authed: boolean;
   layoutsLimit: number | null;
-  found: { items: PatternOnChart[]; stats: Record<string, PatternStat>; selected: number | null; onSelect: (id: number | null) => void; tf: string; symbol: string; canExplain: boolean; figures: FigureOnChart[]; figureStats: Record<string, FigureStat>; selectedFigure: number | null; onSelectFigure: (id: number | null) => void };
+  found: { count?: number; items: PatternOnChart[]; stats: Record<string, PatternStat>; selected: number | null; onSelect: (id: number | null) => void; tf: string; symbol: string; canExplain: boolean; figures: FigureOnChart[]; figureStats: Record<string, FigureStat>; selectedFigure: number | null; onSelectFigure: (id: number | null) => void };
 };
 
 const LAYER_LABEL: Record<LayerKey, string> = { structure: "Структура", zones: "Зоны", levels: "Уровни", signals: "Сигналы", patterns: "Паттерны", figures: "Фигуры" };
@@ -79,7 +79,7 @@ export function ObjectsPanel(p: Props) {
       <div className={s.objTabs} role="tablist">
         {(["found", "drawings", "layers", "layouts"] as const).map((t) => (
           <button key={t} type="button" role="tab" aria-selected={tab === t} className={s.objTab} onClick={() => setTab(t)}>
-            {t === "found" ? `Найдено (${p.found.items.length + p.found.figures.length})` : t === "drawings" ? `Рисунки (${p.drawings.length})` : t === "layers" ? "Слои" : "Раскладки"}
+            {t === "found" ? `Найдено (${p.found.count ?? p.found.items.length + p.found.figures.length})` : t === "drawings" ? `Рисунки (${p.drawings.length})` : t === "layers" ? "Слои" : "Раскладки"}
           </button>
         ))}
       </div>

@@ -16,7 +16,7 @@ import { DrawToolbar, ObjectsPanel } from "./DesktopPanels";
 import { AskBox, FiguresList, FoundList } from "./FoundPanel";
 import { download, snapshotPng } from "./snapshot";
 import { TEMPLATES } from "./templates";
-import { PANELS, TerminalView, type ActiveIndicator, type CrosshairInfo, type LayerKey, type PanelKey } from "./TerminalView";
+import { PANELS, TerminalView, type ActiveIndicator, type CrosshairInfo, type LayerKey, type PanelKey, type TerminalControls } from "./TerminalView";
 import { useDrawings } from "./useDrawings";
 import { deleteLayout, getLayout, listLayouts, putLayout } from "@/lib/drawings";
 import { createAlert, getAlerts, type Alert } from "@/lib/alerts";
@@ -59,6 +59,8 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
   const [foundSel, setFoundSel] = useState<number | null>(null);
   const [figureSel, setFigureSel] = useState<number | null>(null);
   const [cross, setCross] = useState<CrosshairInfo | null>(null);
+  const controls = useRef<TerminalControls | null>(null);
+  const [visibleFrom, setVisibleFrom] = useState<number | null>(null);
   const [bars, setBars] = useState<"shown" | "hidden">("shown");
   const [objects, setObjects] = useState<"shown" | "hidden">("shown");
   const [layouts, setLayouts] = useState<{ name: string }[]>([]);
@@ -68,6 +70,8 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
   const dr = useDrawings(symbol, !!user);
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
   const data = useTerminalData(symbol, tf, user ? getAccessToken() : null);
+  // «Найдено» — по видимой части графика, а не по всей загруженной истории
+  const foundCount = (data.patterns?.items ?? []).filter((p) => visibleFrom === null || p.t >= visibleFrom).length + (data.figures?.items ?? []).filter((f) => visibleFrom === null || f.end_t >= visibleFrom).length;
 
   useEffect(() => {
     queueMicrotask(() => setSaved(load()));
@@ -91,6 +95,10 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
       } else if (e.altKey && e.key.toLowerCase() === "t") {
         e.preventDefault();
         dr.setTool("trend");
+      } else if (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key === "+" || e.key === "=")) {
+        controls.current?.zoom(1.25);
+      } else if (!e.ctrlKey && !e.metaKey && !e.altKey && e.key === "-") {
+        controls.current?.zoom(0.8);
       } else if (!e.ctrlKey && !e.metaKey && !e.altKey && /^[1-7]$/.test(e.key)) {
         const t = TIMEFRAMES[Number(e.key) - 1];
         if (t) router.push(`/chart/${symbol}/${t}`);
@@ -286,6 +294,15 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
             </Link>
           ))}
         </nav>
+        <button type="button" className={s.chip} onClick={() => controls.current?.zoom(1.25)} aria-label="приблизить" title="Приблизить (клавиша +, колесо мыши)">
+          +
+        </button>
+        <button type="button" className={s.chip} onClick={() => controls.current?.zoom(0.8)} aria-label="отдалить" title="Отдалить (клавиша −)">
+          −
+        </button>
+        <button type="button" className={s.chip} onClick={() => controls.current?.reset()} aria-label="показать последние свечи" title="Последние 150 свечей (двойной клик по графику)">
+          ⟲
+        </button>
         <button type="button" className={s.chip} onClick={snapshot} title="Снимок PNG с водяным знаком">
           Снимок
         </button>
@@ -369,7 +386,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
             Таймфреймы 1m–15m доступны после входа на тарифе Pro. <Link href="/pricing">Тарифы</Link>
           </div>
         ) : (
-          <TerminalView candles={data.candles ?? []} current={data.current} tf={tf} type={st.type} indicators={st.indicators} layersOn={st.layers} layers={data.layers} patterns={data.patterns?.items} highlight={foundSel} figures={data.figures?.items} highlightFigure={figureSel} alertLines={alerts.filter((a) => a.type === "price" && typeof a.condition.price === "string").map((a) => ({ id: a.id, price: Number(a.condition.price), label: a.condition.op === "cross_up" ? "↑" : a.condition.op === "cross_down" ? "↓" : "↔" }))} derivatives={data.derivatives} panels={st.panels} tick={data.tick} onNeedOlder={data.loadOlder} drawings={drawingsProps} onCrosshair={setCross} />
+          <TerminalView candles={data.candles ?? []} current={data.current} tf={tf} type={st.type} indicators={st.indicators} layersOn={st.layers} layers={data.layers} patterns={data.patterns?.items} highlight={foundSel} figures={data.figures?.items} highlightFigure={figureSel} alertLines={alerts.filter((a) => a.type === "price" && typeof a.condition.price === "string").map((a) => ({ id: a.id, price: Number(a.condition.price), label: a.condition.op === "cross_up" ? "↑" : a.condition.op === "cross_down" ? "↓" : "↔" }))} derivatives={data.derivatives} panels={st.panels} tick={data.tick} onNeedOlder={data.loadOlder} drawings={drawingsProps} onCrosshair={setCross} onVisibleFrom={setVisibleFrom} onReady={(c) => { controls.current = c; }} />
         )}
         {sel && (
           <div className={s.card} role="region" aria-label="выбранный рисунок">
@@ -574,7 +591,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
           onDeleteLayout={removeLayout}
           authed={!!user}
           layoutsLimit={user ? null : 0}
-          found={{ items: data.patterns?.items ?? [], stats: data.patterns?.stats ?? {}, selected: foundSel, onSelect: setFoundSel, tf, symbol, canExplain: !!user, figures: data.figures?.items ?? [], figureStats: data.figures?.stats ?? {}, selectedFigure: figureSel, onSelectFigure: setFigureSel }}
+          found={{ count: foundCount, items: data.patterns?.items ?? [], stats: data.patterns?.stats ?? {}, selected: foundSel, onSelect: setFoundSel, tf, symbol, canExplain: !!user, figures: data.figures?.items ?? [], figureStats: data.figures?.stats ?? {}, selectedFigure: figureSel, onSelectFigure: setFigureSel }}
         />
       </div>
       <div className={s.bottom}>
@@ -585,7 +602,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
           Слои
         </button>
         <button type="button" className={`${s.chip} ${s.mobileOnly}`} aria-pressed={sheet === "found"} onClick={() => setSheet(sheet === "found" ? null : "found")}>
-          Найдено ({(data.patterns?.items.length ?? 0) + (data.figures?.items.length ?? 0)})
+          Найдено ({foundCount})
         </button>
         <button type="button" className={s.chip} aria-pressed={sheet === "alert"} onClick={() => (sheet === "alert" ? setSheet(null) : openAlertSheet())}>
           Алерт{alerts.length ? ` (${alerts.length})` : ""}

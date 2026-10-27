@@ -27,8 +27,10 @@ export function chartOptions(t: ThemeTokens): DeepPartial<ChartOptions> {
     },
     rightPriceScale: { borderColor: t.border, scaleMargins: { top: 0.08, bottom: 0.2 } },
     timeScale: { borderColor: t.border, timeVisible: true, secondsVisible: false, rightOffset: 5, barSpacing: 7, minBarSpacing: 2 },
-    handleScale: { axisPressedMouseMove: true, pinch: true, mouseWheel: true },
-    handleScroll: { pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false, mouseWheel: true },
+    // колесо и трекпад обрабатывает Terminal сам (см. onWheel): горизонтальный жест — прокрутка,
+    // вертикальный и pinch — масштаб вокруг курсора; встроенная обработка слишком резкая на трекпаде
+    handleScale: { axisPressedMouseMove: true, pinch: true, mouseWheel: false },
+    handleScroll: { pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false, mouseWheel: false },
     localization: { locale: "ru-RU" },
   };
 }

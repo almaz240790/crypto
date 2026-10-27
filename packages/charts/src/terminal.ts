@@ -24,6 +24,11 @@ export type PaneSeries = ISeriesApi<"Line" | "Histogram">;
  * тема из токенов, слои. Без React — его обёртка живёт в apps/web.
  */
 const MIN_STRETCH = 0.01;
+/** Масштаб колесом: множитель на пиксель deltaY (300 px ≈ ×2.1); с Ctrl/⌘ (pinch) — втрое сильнее. */
+const WHEEL_ZOOM = 0.0025;
+/** Прокрутка горизонтальным жестом: доля «один пиксель — один бар». */
+const WHEEL_SCROLL = 0.6;
+const MIN_VISIBLE_BARS = 10;
 
 export class Terminal {
   readonly chart: IChartApi;
@@ -36,12 +41,15 @@ export class Terminal {
   private readonly opts: TerminalOptions;
   private requesting = false;
   private panes = 1;
+  private readonly container: HTMLElement;
 
   constructor(container: HTMLElement, opts: TerminalOptions) {
     this.opts = opts;
     this.tokens = opts.tokens;
     this.type = opts.type ?? "candles";
     this.chart = createChart(container, { ...chartOptions(opts.tokens), autoSize: true });
+    this.container = container;
+    container.addEventListener("wheel", this.onWheel, { passive: false });
     this.main = this.createMain(this.type);
     this.volume = this.chart.addSeries(HistogramSeries, { priceFormat: { type: "volume" }, priceScaleId: "", lastValueVisible: false, priceLineVisible: false });
     this.volume.priceScale().applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
@@ -164,6 +172,40 @@ export class Terminal {
     this.chart.removeSeries(s);
   }
 
+  /** Масштаб вокруг точки (x в пикселях контейнера; без x — вокруг центра видимой области). */
+  zoom(factor: number, anchorX?: number): void {
+    const ts = this.chart.timeScale();
+    const r = ts.getVisibleLogicalRange();
+    if (!r || factor <= 0) return;
+    const width = r.to - r.from;
+    const mid = (r.from + r.to) / 2;
+    const anchor = anchorX === undefined ? mid : (ts.coordinateToLogical(anchorX) ?? mid);
+    const maxBars = Math.max(MIN_VISIBLE_BARS, this.buffer.candles.length * 2);
+    const next = Math.min(maxBars, Math.max(MIN_VISIBLE_BARS, width / factor));
+    const left = width > 0 ? (anchor - r.from) / width : 0.5;
+    ts.setVisibleLogicalRange({ from: anchor - left * next, to: anchor + (1 - left) * next });
+  }
+
+  /** Прокрутка на n баров (положительное — вправо, к новым свечам). */
+  scrollBars(n: number): void {
+    const ts = this.chart.timeScale();
+    const r = ts.getVisibleLogicalRange();
+    if (!r || n === 0) return;
+    ts.setVisibleLogicalRange({ from: r.from + n, to: r.to + n });
+  }
+
+  private readonly onWheel = (e: WheelEvent): void => {
+    e.preventDefault();
+    if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
+      const spacing = this.chart.timeScale().options().barSpacing || 1;
+      this.scrollBars((e.deltaX / spacing) * WHEEL_SCROLL);
+      return;
+    }
+    const gain = e.ctrlKey || e.metaKey ? WHEEL_ZOOM * 3 : WHEEL_ZOOM;
+    const x = e.clientX - this.container.getBoundingClientRect().left;
+    this.zoom(Math.exp(-e.deltaY * gain), x);
+  };
+
   /** Показать последние n свечей с автомасштабом (двойной тап, план 2A.7). */
   resetView(n = 120): void {
     const len = this.buffer.candles.length;
@@ -172,6 +214,7 @@ export class Terminal {
   }
 
   destroy(): void {
+    this.container.removeEventListener("wheel", this.onWheel);
     this.layers.detachAll();
     this.chart.remove();
   }
