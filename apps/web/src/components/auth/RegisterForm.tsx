@@ -10,10 +10,12 @@ import { countryOptions } from "@/lib/countries";
 import { useAuth } from "./AuthProvider";
 import s from "./AuthCard.module.css";
 import { Social } from "./Social";
+import { useT } from "@/i18n/client";
 
 const MIN = 10;
 
 export function RegisterForm({ next }: { next: string }) {
+  const t = useT();
   const router = useRouter();
   const { reload } = useAuth();
   const countries = useMemo(() => countryOptions("ru"), []);
@@ -55,7 +57,7 @@ export function RegisterForm({ next }: { next: string }) {
       });
       await done();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "не удалось зарегистрироваться");
+      setError(err instanceof Error ? err.message : t("не удалось зарегистрироваться"));
     } finally {
       setBusy(false);
     }
@@ -70,7 +72,7 @@ export function RegisterForm({ next }: { next: string }) {
       )}
       <Input label="Email" type="email" name="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
       <Input
-        label="Пароль"
+        label={t("Пароль")}
         type="password"
         name="password"
         autoComplete="new-password"
@@ -84,9 +86,9 @@ export function RegisterForm({ next }: { next: string }) {
         error={pwError}
         hint={`не короче ${MIN} символов; проверяется по базе утечек`}
       />
-      <Input label="Имя (необязательно)" name="name" autoComplete="name" maxLength={100} value={name} onChange={(e) => setName(e.target.value)} />
-      <Select label="Страна" name="country" value={country} onChange={(e) => setCountry(e.target.value)} hint="нужна для соблюдения ограничений по юрисдикциям">
-        <option value="">— не указывать —</option>
+      <Input label={t("Имя (необязательно)")} name="name" autoComplete="name" maxLength={100} value={name} onChange={(e) => setName(e.target.value)} />
+      <Select label={t("Страна")} name="country" value={country} onChange={(e) => setCountry(e.target.value)} hint={t("нужна для соблюдения ограничений по юрисдикциям")}>
+        <option value="">{t("— не указывать —")}</option>
         {countries.map((c) => (
           <option key={c.code} value={c.code}>
             {c.name}
@@ -101,15 +103,15 @@ export function RegisterForm({ next }: { next: string }) {
       </label>
       <label className={s.check}>
         <input type="checkbox" name="marketing" checked={marketing} onChange={(e) => setMarketing(e.target.checked)} />
-        <span>Получать письма о новых функциях (не чаще раза в месяц)</span>
+        <span>{t("Получать письма о новых функциях (не чаще раза в месяц)")}</span>
       </label>
       <Button type="submit" variant="primary" block disabled={busy || !email || !password || !terms}>
-        {busy ? "Проверяем…" : "Создать аккаунт"}
+        {busy ? t("Проверяем…") : t("Создать аккаунт")}
       </Button>
       <Social next={next} onDone={done} onError={setError} />
       <div className={s.row}>
-        <span className="text-2">Уже есть аккаунт?</span>
-        <Link href={`/login?next=${encodeURIComponent(next)}`}>Войти</Link>
+        <span className="text-2">{t("Уже есть аккаунт?")}</span>
+        <Link href={`/login?next=${encodeURIComponent(next)}`}>{t("Войти")}</Link>
       </div>
     </form>
   );

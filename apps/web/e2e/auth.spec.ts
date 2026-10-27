@@ -133,3 +133,18 @@ test("вход с 2FA: второй шаг с кодом из приложени
   await expect(page).toHaveURL(/\/signals$/);
   expect(calls).toContain("POST /v1/auth/login/2fa");
 });
+
+test("язык: переключатель EN переводит шапку и форму входа, cookie сохраняется", async ({ page }) => {
+  const calls: string[] = [];
+  await mockApi(page, calls);
+  await page.goto("/login");
+  await expect(page.getByRole("button", { name: "Войти", exact: true })).toBeVisible();
+  await page.getByRole("group", { name: "язык" }).getByRole("button", { name: "EN" }).click();
+  await expect(page.getByRole("button", { name: "Sign in", exact: true })).toBeVisible();
+  await expect(page.getByLabel("Password")).toBeVisible();
+  await expect(page.locator("html")).toHaveAttribute("lang", "en");
+  await page.goto("/");
+  await expect(page.getByRole("navigation", { name: "sections" }).getByRole("link", { name: "Pricing" })).toBeVisible();
+  const cookies = await page.context().cookies();
+  expect(cookies.find((c) => c.name === "pl_locale")?.value).toBe("en");
+});

@@ -6,6 +6,7 @@ import type { ReactNode } from "react";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { Button, ThemeToggle } from "@/components/ui";
 import s from "./AppShell.module.css";
+import { LanguageSwitch, useT } from "@/i18n/client";
 
 const NAV: { href: string; label: string }[] = [
   { href: "/signals", label: "Сигналы" },
@@ -23,11 +24,12 @@ const NAV: { href: string; label: string }[] = [
 const SOON: string[] = [];
 
 export function AppShell({ title, actions, children, flush = false }: { title: string; actions?: ReactNode; children: ReactNode; flush?: boolean }) {
+  const t = useT();
   const path = usePathname();
   const router = useRouter();
   const { user, loading, logout } = useAuth();
 
-  const nav = user && (user.role === "admin" || user.role === "owner") ? [...NAV, { href: "/admin", label: "Админка" }] : NAV;
+  const nav = user && (user.role === "admin" || user.role === "owner") ? [...NAV, { href: "/admin", label: t("Админка") }] : NAV;
   const links = nav.map((n) => (
     <Link key={n.href} href={n.href} aria-current={path === n.href || path.startsWith(n.href + "/") ? "page" : undefined}>
       {n.label}
@@ -40,20 +42,21 @@ export function AppShell({ title, actions, children, flush = false }: { title: s
         <Link href="/" className={s.brand}>
           Platform
         </Link>
-        <nav className={s.nav} aria-label="разделы">
+        <nav className={s.nav} aria-label={t("разделы")}>
           {links}
           {SOON.map((l) => (
             <div key={l} className={s.soon}>
               {l}
-              <span>скоро</span>
+              <span>{t("скоро")}</span>
             </div>
           ))}
         </nav>
         <div className={s.user}>
           <span className={s.email} title={user?.email}>
-            {loading ? "…" : (user?.email ?? "не вошли")}
+            {loading ? "…" : (user?.email ?? t("не вошли"))}
           </span>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <LanguageSwitch />
             <ThemeToggle />
             <Button
               size="sm"
@@ -62,9 +65,7 @@ export function AppShell({ title, actions, children, flush = false }: { title: s
                 await logout();
                 router.replace("/login");
               }}
-            >
-              Выйти
-            </Button>
+            >{t("Выйти")}</Button>
           </div>
         </div>
       </aside>
@@ -75,6 +76,7 @@ export function AppShell({ title, actions, children, flush = false }: { title: s
           </Link>
           {links}
           <span style={{ marginLeft: "auto" }}>
+            <LanguageSwitch />
             <ThemeToggle />
           </span>
         </div>

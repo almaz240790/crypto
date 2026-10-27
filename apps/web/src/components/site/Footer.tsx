@@ -1,10 +1,14 @@
+"use client";
+
 import Link from "next/link";
 import s from "./Footer.module.css";
+import { useT } from "@/i18n/client";
 
 export const DISCLAIMER =
   "Информация носит образовательный и информационный характер, не является индивидуальной инвестиционной рекомендацией. Торговля криптовалютами и производными инструментами связана с риском потери всех средств. Прошлые результаты не гарантируют будущих.";
 
 export function Footer({ status }: { status?: string }) {
+  const t = useT();
   return (
     <footer className={s.footer}>
       <div className="container">
@@ -12,33 +16,33 @@ export function Footer({ status }: { status?: string }) {
           <p className={s.disclaimer}>{DISCLAIMER}</p>
           <ul>
             <li>
-              <Link href="/#rules">Правила системы</Link>
+              <Link href="/#rules">{t("Правила системы")}</Link>
             </li>
             <li>
-              <Link href="/stats">Статистика</Link>
+              <Link href="/stats">{t("Статистика")}</Link>
             </li>
             <li>
-              <Link href="/pricing">Тарифы</Link>
+              <Link href="/pricing">{t("Тарифы")}</Link>
             </li>
             <li>
-              <Link href="/#faq">Вопросы и ответы</Link>
+              <Link href="/#faq">{t("Вопросы и ответы")}</Link>
             </li>
             <li>
-              <Link href="/status">Статус системы</Link>
+              <Link href="/status">{t("Статус системы")}</Link>
             </li>
             <li>
-              <Link href="/support">Поддержка</Link>
+              <Link href="/support">{t("Поддержка")}</Link>
             </li>
           </ul>
           <ul>
-            <li>Условия использования — готовятся</li>
-            <li>Политика конфиденциальности — готовится</li>
-            <li>Telegram-бот — после запуска</li>
+            <li>{t("Условия использования — готовятся")}</li>
+            <li>{t("Политика конфиденциальности — готовится")}</li>
+            <li>{t("Telegram-бот — после запуска")}</li>
             <li>18+</li>
           </ul>
         </div>
         <div className={s.meta}>
-          <span>Platform. Данные: Binance (публичные). График: TradingView Lightweight Charts.</span>
+          <span>{t("Platform. Данные: Binance (публичные). График: TradingView Lightweight Charts.")}</span>
           <span>{status ?? ""}</span>
         </div>
       </div>

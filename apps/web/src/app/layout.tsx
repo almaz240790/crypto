@@ -2,6 +2,8 @@ import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
 import { IBM_Plex_Mono, IBM_Plex_Sans } from "next/font/google";
 import { AuthProvider } from "@/components/auth/AuthProvider";
+import { LocaleProvider } from "@/i18n/client";
+import { getLocale } from "@/i18n/server";
 import { RegisterSW } from "@/components/pwa/Register";
 import "./globals.css";
 
@@ -40,14 +42,17 @@ export const viewport: Viewport = {
 // Тема выставляется до первой отрисовки, чтобы не мигала (светлая по умолчанию по системе).
 const themeScript = `(function(){try{var t=localStorage.getItem("theme");if(t==="light"||t==="dark"){document.documentElement.dataset.theme=t}}catch(e){}})();`;
 
-export default function RootLayout({ children }: { children: ReactNode }) {
+export default async function RootLayout({ children }: { children: ReactNode }) {
+  const locale = await getLocale();
   return (
-    <html lang="ru" className={`${sans.variable} ${mono.variable}`} suppressHydrationWarning>
+    <html lang={locale} className={`${sans.variable} ${mono.variable}`} suppressHydrationWarning>
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>
       <body>
-        <AuthProvider>{children}</AuthProvider>
+        <AuthProvider>
+          <LocaleProvider initial={locale}>{children}</LocaleProvider>
+        </AuthProvider>
         <RegisterSW />
       </body>
     </html>

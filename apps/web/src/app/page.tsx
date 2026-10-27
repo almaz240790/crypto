@@ -16,6 +16,7 @@ import {
 import { getClosedSignals, getHealth, getStats, type Metrics } from "@/lib/api";
 import { formatDuration, formatPct, formatR, formatTimeUTC, plural } from "@/lib/format";
 import s from "./page.module.css";
+import { getT } from "@/i18n/server";
 
 // Рендер на каждый запрос (данные fetch кэшируются на 60 с): при сборке образа API недоступен.
 export const dynamic = "force-dynamic";
@@ -50,23 +51,24 @@ function num(v: number | null | undefined, f: (n: number) => string): string {
   return v === null || v === undefined ? "—" : f(v);
 }
 
-function MetricsRow({ m, updated }: { m: Metrics; updated: string }) {
+async function MetricsRow({ m, updated }: { m: Metrics; updated: string }) {
+  const t = await getT();
   return (
     <dl className={s.metrics} aria-label={`live-статистика за 90 дней, обновлено ${updated}`}>
       <div className={s.metric}>
-        <dt>сделок за 90 дней</dt>
+        <dt>{t("сделок за 90 дней")}</dt>
         <dd>{m.closed}</dd>
       </div>
       <div className={s.metric}>
-        <dt>винрейт</dt>
+        <dt>{t("винрейт")}</dt>
         <dd>{num(m.winrate, (n) => formatPct(n * 100, { signed: false }))}</dd>
       </div>
       <div className={s.metric}>
-        <dt>средний R</dt>
+        <dt>{t("средний R")}</dt>
         <dd>{num(m.avg_r, (n) => formatR(n))}</dd>
       </div>
       <div className={s.metric}>
-        <dt>макс. просадка</dt>
+        <dt>{t("макс. просадка")}</dt>
         <dd>{m.closed ? formatR(-m.max_drawdown_r) : "—"}</dd>
       </div>
     </dl>
@@ -74,6 +76,7 @@ function MetricsRow({ m, updated }: { m: Metrics; updated: string }) {
 }
 
 export default async function Home() {
+  const t = await getT();
   const [stats, recent, health] = await Promise.all([getStats(90), getClosedSignals(5), getHealth()]);
   const m = stats?.metrics;
   const hasLive = !!m && m.closed > 0;
@@ -87,17 +90,11 @@ export default async function Home() {
         {/* Первый экран */}
         <section className={s.hero} aria-labelledby="h-title">
           <div className={s.lead}>
-            <h1 id="h-title">Сигналы на H4 с публичной статистикой каждой сделки</h1>
-            <p>
-              Одна система правил для всех инструментов. Сигнал публикуется через 60 секунд после
-              закрытия 4-часовой свечи и не меняется задним числом. Результат каждой сделки, включая
-              убыточные, виден всем.
-            </p>
+            <h1 id="h-title">{t("Сигналы на H4 с публичной статистикой каждой сделки")}</h1>
+            <p>{t("Одна система правил для всех инструментов. Сигнал публикуется через 60 секунд после закрытия 4-часовой свечи и не меняется задним числом. Результат каждой сделки, включая убыточные, виден всем.")}</p>
             <div className={s.cta}>
-              <Button href="/login" variant="primary">
-                Создать аккаунт
-              </Button>
-              <Button href="/stats">Открытая статистика</Button>
+              <Button href="/login" variant="primary">{t("Создать аккаунт")}</Button>
+              <Button href="/stats">{t("Открытая статистика")}</Button>
             </div>
             <p className={s.fine}>{DISCLAIMER}</p>
           </div>
@@ -105,25 +102,25 @@ export default async function Home() {
             {hasLive && m ? (
               <MetricsRow m={m} updated={updated} />
             ) : (
-              <Panel title="Live-статистика за 90 дней">
-                <EmptyState text="Live-сигналов пока нет: текущая версия стратегии проходит форвард-тест на живых данных. Статистика появится с первой закрытой сделкой." />
+              <Panel title={t("Live-статистика за 90 дней")}>
+                <EmptyState text={t("Live-сигналов пока нет: текущая версия стратегии проходит форвард-тест на живых данных. Статистика появится с первой закрытой сделкой.")} />
               </Panel>
             )}
             <Panel
-              title="Последние закрытые сигналы"
-              actions={<span>обновляется раз в минуту</span>}
+              title={t("Последние закрытые сигналы")}
+              actions={<span>{t("обновляется раз в минуту")}</span>}
               flush
             >
               {recent.length === 0 ? (
-                <EmptyState text="Закрытых live-сигналов пока нет." />
+                <EmptyState text={t("Закрытых live-сигналов пока нет.")} />
               ) : (
                 <Table compact>
                   <thead>
                     <tr>
-                      <Th>Время</Th>
-                      <Th>Инструмент</Th>
-                      <Th>Статус</Th>
-                      <Th num>Результат</Th>
+                      <Th>{t("Время")}</Th>
+                      <Th>{t("Инструмент")}</Th>
+                      <Th>{t("Статус")}</Th>
+                      <Th num>{t("Результат")}</Th>
                     </tr>
                   </thead>
                   <tbody>
@@ -157,8 +154,8 @@ export default async function Home() {
         {/* Как это работает */}
         <section id="signals" className={s.section} aria-labelledby="h-how">
           <div className={s.sectionHead}>
-            <h2 id="h-how">Как это работает</h2>
-            <p>Четыре шага от закрытия свечи до строки в статистике. Без ручного вмешательства.</p>
+            <h2 id="h-how">{t("Как это работает")}</h2>
+            <p>{t("Четыре шага от закрытия свечи до строки в статистике. Без ручного вмешательства.")}</p>
           </div>
           <ol className={s.steps} style={{ listStyle: "none", margin: 0, padding: 0 }}>
             {STEPS.map((st, i) => (
@@ -174,63 +171,36 @@ export default async function Home() {
         {/* Правила системы */}
         <section id="rules" className={s.section} aria-labelledby="h-rules">
           <div className={s.sectionHead}>
-            <h2 id="h-rules">Правила системы</h2>
-            <p>
-              Стратегия «тренд → зона → ретест». Все параметры зафиксированы в версии стратегии;
-              изменение любого числа — это новая версия с новым бэктестом и форвард-тестом.
-            </p>
+            <h2 id="h-rules">{t("Правила системы")}</h2>
+            <p>{t("Стратегия «тренд → зона → ретест». Все параметры зафиксированы в версии стратегии; изменение любого числа — это новая версия с новым бэктестом и форвард-тестом.")}</p>
           </div>
           <div className={s.rules}>
-            <Panel title="Что проверяется на каждой свече H4">
+            <Panel title={t("Что проверяется на каждой свече H4")}>
               <dl>
-                <dt>Контекст</dt>
-                <dd>
-                  Направление тренда на D1 и W1 по структуре и EMA50. Сделки только по тренду
-                  старшего таймфрейма; при расхождении D1 и W1 сигнала нет.
-                </dd>
-                <dt>Структура</dt>
-                <dd>
-                  Свинги, слом структуры (BOS) и смена характера (CHoCH) на H4. Вход — только после
-                  подтверждённого слома в сторону тренда.
-                </dd>
-                <dt>Зона</dt>
-                <dd>
-                  Ордер-блок или имбаланс (FVG), образовавшие слом. Вход — на возврате цены в зону, не
-                  на пробое.
-                </dd>
-                <dt>Ликвидность</dt>
-                <dd>
-                  Снятие равных максимумов/минимумов, дневных и недельных уровней до входа повышает
-                  оценку сигнала.
-                </dd>
-                <dt>Фильтры</dt>
-                <dd>
-                  Волатильность (ATR в границах), объём, расстояние до стопа, funding и открытый
-                  интерес, макрособытия, корреляция с BTC. Любой невыполненный фильтр отменяет сигнал.
-                </dd>
+                <dt>{t("Контекст")}</dt>
+                <dd>{t("Направление тренда на D1 и W1 по структуре и EMA50. Сделки только по тренду старшего таймфрейма; при расхождении D1 и W1 сигнала нет.")}</dd>
+                <dt>{t("Структура")}</dt>
+                <dd>{t("Свинги, слом структуры (BOS) и смена характера (CHoCH) на H4. Вход — только после подтверждённого слома в сторону тренда.")}</dd>
+                <dt>{t("Зона")}</dt>
+                <dd>{t("Ордер-блок или имбаланс (FVG), образовавшие слом. Вход — на возврате цены в зону, не на пробое.")}</dd>
+                <dt>{t("Ликвидность")}</dt>
+                <dd>{t("Снятие равных максимумов/минимумов, дневных и недельных уровней до входа повышает оценку сигнала.")}</dd>
+                <dt>{t("Фильтры")}</dt>
+                <dd>{t("Волатильность (ATR в границах), объём, расстояние до стопа, funding и открытый интерес, макрособытия, корреляция с BTC. Любой невыполненный фильтр отменяет сигнал.")}</dd>
               </dl>
             </Panel>
-            <Panel title="Параметры сделки и оценка">
+            <Panel title={t("Параметры сделки и оценка")}>
               <dl>
-                <dt>Вход</dt>
-                <dd>Лимитный ордер в зоне; срок жизни — 6 свечей H4, потом сигнал истекает без сделки.</dd>
-                <dt>Стоп</dt>
-                <dd>За границей зоны с запасом по ATR. Стоп не двигается против позиции.</dd>
-                <dt>Цели</dt>
-                <dd>
-                  TP1 — ближайшая ликвидность, TP2 — не менее 2.5 R, TP3 — следующий структурный
-                  уровень. После TP1 стоп переносится в безубыток.
-                </dd>
-                <dt>Оценка</dt>
-                <dd>
-                  0–100 баллов по восьми компонентам; градации A (≥ 75), B (60–74), C (45–59).
-                  Градация — это не «сила» сигнала, а статистическая группа с собственным винрейтом.
-                </dd>
-                <dt>Без перерисовки</dt>
-                <dd>
-                  Только закрытые свечи, запись сигнала неизменяема, каждый сигнал воспроизводим по
-                  хэшу входных данных.
-                </dd>
+                <dt>{t("Вход")}</dt>
+                <dd>{t("Лимитный ордер в зоне; срок жизни — 6 свечей H4, потом сигнал истекает без сделки.")}</dd>
+                <dt>{t("Стоп")}</dt>
+                <dd>{t("За границей зоны с запасом по ATR. Стоп не двигается против позиции.")}</dd>
+                <dt>{t("Цели")}</dt>
+                <dd>{t("TP1 — ближайшая ликвидность, TP2 — не менее 2.5 R, TP3 — следующий структурный уровень. После TP1 стоп переносится в безубыток.")}</dd>
+                <dt>{t("Оценка")}</dt>
+                <dd>{t("0–100 баллов по восьми компонентам; градации A (≥ 75), B (60–74), C (45–59). Градация — это не «сила» сигнала, а статистическая группа с собственным винрейтом.")}</dd>
+                <dt>{t("Без перерисовки")}</dt>
+                <dd>{t("Только закрытые свечи, запись сигнала неизменяема, каждый сигнал воспроизводим по хэшу входных данных.")}</dd>
               </dl>
             </Panel>
           </div>
@@ -239,7 +209,7 @@ export default async function Home() {
         {/* Статистика */}
         <section id="stats" className={s.section} aria-labelledby="h-stats">
           <div className={s.sectionHead}>
-            <h2 id="h-stats">Статистика</h2>
+            <h2 id="h-stats">{t("Статистика")}</h2>
             <p>
               Считается автоматически по закрытым live-сигналам тем же кодом, что бэктест. Ручного
               ввода нет. Период: 90 дней, обновлено {updated}.
@@ -248,10 +218,10 @@ export default async function Home() {
           {hasLive && stats && m ? (
             <div className={s.statsGrid}>
               <Panel
-                title="Накопленный результат, R"
+                title={t("Накопленный результат, R")}
                 actions={
                   <span>
-                    {m.closed} {plural(m.closed, "сделка", "сделки", "сделок")}, итог {formatR(m.sum_r)}
+                    {m.closed} {plural(m.closed, t("сделка"), t("сделки"), t("сделок"))}, итог {formatR(m.sum_r)}
                   </span>
                 }
               >
@@ -263,14 +233,14 @@ export default async function Home() {
                     ` Худшая просадка ${formatR(-stats.worst_drawdowns[0].depth_r)} с ${formatTimeUTC(stats.worst_drawdowns[0].start)}.`}
                 </p>
               </Panel>
-              <Panel title="По месяцам" flush>
+              <Panel title={t("По месяцам")} flush>
                 <Table compact stack={false}>
                   <thead>
                     <tr>
-                      <Th>Месяц</Th>
-                      <Th num>Сделок</Th>
-                      <Th num>Винрейт</Th>
-                      <Th num>Итог, R</Th>
+                      <Th>{t("Месяц")}</Th>
+                      <Th num>{t("Сделок")}</Th>
+                      <Th num>{t("Винрейт")}</Th>
+                      <Th num>{t("Итог, R")}</Th>
                     </tr>
                   </thead>
                   <tbody>
@@ -289,10 +259,10 @@ export default async function Home() {
               </Panel>
             </div>
           ) : (
-            <Panel title="Статистика live-сигналов" actions={<Link href="/stats">вся статистика</Link>}>
+            <Panel title={t("Статистика live-сигналов")} actions={<Link href="/stats">{t("вся статистика")}</Link>}>
               <EmptyState
-                text="Live-сигналов пока нет. Результаты форвард-теста и бэктеста открыты на странице статистики с явной пометкой типа данных — мы не выдаём их за реальный результат."
-                action={<Button href="/stats?scope=forward" size="sm">Форвард и бэктест</Button>}
+                text={t("Live-сигналов пока нет. Результаты форвард-теста и бэктеста открыты на странице статистики с явной пометкой типа данных — мы не выдаём их за реальный результат.")}
+                action={<Button href="/stats?scope=forward" size="sm">{t("Форвард и бэктест")}</Button>}
               />
             </Panel>
           )}
@@ -301,11 +271,8 @@ export default async function Home() {
         {/* Тарифы */}
         <section id="pricing" className={s.section} aria-labelledby="h-pricing">
           <div className={s.sectionHead}>
-            <h2 id="h-pricing">Тарифы</h2>
-            <p>
-              Логика сигналов одинакова на всех тарифах. Различаются скорость доступа, набор
-              инструментов и глубина инструментов. Оплата только криптовалютой, без автопродления.
-            </p>
+            <h2 id="h-pricing">{t("Тарифы")}</h2>
+            <p>{t("Логика сигналов одинакова на всех тарифах. Различаются скорость доступа, набор инструментов и глубина инструментов. Оплата только криптовалютой, без автопродления.")}</p>
           </div>
           <Panel flush className={s.pricing}>
             <table>
@@ -319,55 +286,53 @@ export default async function Home() {
               </thead>
               <tbody>
                 <tr>
-                  <th scope="row">Цена</th>
+                  <th scope="row">{t("Цена")}</th>
                   <td>
                     <span className={s.price}>0</span>
                   </td>
                   <td>
-                    <span className={s.price}>29 USD</span> / мес
-                    <br />
-                    <span className="caption">249 USD / год</span>
+                    <span className={s.price}>29 USD</span>{" "}{t("/ мес")}<br />
+                    <span className="caption">{t("249 USD / год")}</span>
                   </td>
                   <td>
-                    <span className={s.price}>79 USD</span> / мес
-                    <br />
-                    <span className="caption">690 USD / год</span>
+                    <span className={s.price}>79 USD</span>{" "}{t("/ мес")}<br />
+                    <span className="caption">{t("690 USD / год")}</span>
                   </td>
                 </tr>
                 <tr>
-                  <th scope="row">Сигналы</th>
-                  <td>Градация A, с задержкой 12 часов</td>
-                  <td>Все градации, сразу</td>
-                  <td>Все + экспериментальные стратегии (форвард)</td>
+                  <th scope="row">{t("Сигналы")}</th>
+                  <td>{t("Градация A, с задержкой 12 часов")}</td>
+                  <td>{t("Все градации, сразу")}</td>
+                  <td>{t("Все + экспериментальные стратегии (форвард)")}</td>
                 </tr>
                 <tr>
-                  <th scope="row">Инструменты</th>
-                  <td>BTC, ETH + 3 на выбор</td>
-                  <td>Все</td>
-                  <td>Все + расширенный список</td>
+                  <th scope="row">{t("Инструменты")}</th>
+                  <td>{t("BTC, ETH + 3 на выбор")}</td>
+                  <td>{t("Все")}</td>
+                  <td>{t("Все + расширенный список")}</td>
                 </tr>
                 <tr>
-                  <th scope="row">Уведомления</th>
-                  <td>Email-дайджест раз в день</td>
-                  <td>Telegram, push, email — сразу</td>
-                  <td>То же + вебхуки</td>
+                  <th scope="row">{t("Уведомления")}</th>
+                  <td>{t("Email-дайджест раз в день")}</td>
+                  <td>{t("Telegram, push, email — сразу")}</td>
+                  <td>{t("То же + вебхуки")}</td>
                 </tr>
                 <tr>
-                  <th scope="row">Статистика</th>
-                  <td>Публичная</td>
-                  <td>Полная история, CSV</td>
-                  <td>То же + API-ключ</td>
+                  <th scope="row">{t("Статистика")}</th>
+                  <td>{t("Публичная")}</td>
+                  <td>{t("Полная история, CSV")}</td>
+                  <td>{t("То же + API-ключ")}</td>
                 </tr>
                 <tr>
-                  <th scope="row">Журнал, вотчлист</th>
-                  <td>20 записей, 5 инструментов</td>
-                  <td>Без ограничений, 50 инструментов</td>
-                  <td>Без ограничений</td>
+                  <th scope="row">{t("Журнал, вотчлист")}</th>
+                  <td>{t("20 записей, 5 инструментов")}</td>
+                  <td>{t("Без ограничений, 50 инструментов")}</td>
+                  <td>{t("Без ограничений")}</td>
                 </tr>
                 <tr>
-                  <th scope="row">Пробный период</th>
+                  <th scope="row">{t("Пробный период")}</th>
                   <td>—</td>
-                  <td>7 дней без оплаты</td>
+                  <td>{t("7 дней без оплаты")}</td>
                   <td>—</td>
                 </tr>
               </tbody>
@@ -376,14 +341,14 @@ export default async function Home() {
           <p className="caption">
             Оплата появится после запуска: USDT, USDC, BTC, ETH, TON. До этого все
             зарегистрированные пользователи получают доступ уровня Pro. Подробнее — на{" "}
-            <Link href="/pricing">странице тарифов</Link>.
+            <Link href="/pricing">{t("странице тарифов")}</Link>.
           </p>
         </section>
 
         {/* FAQ */}
         <section id="faq" className={s.section} aria-labelledby="h-faq">
           <div className={s.sectionHead}>
-            <h2 id="h-faq">Вопросы и ответы</h2>
+            <h2 id="h-faq">{t("Вопросы и ответы")}</h2>
           </div>
           <div className={s.faq}>
             {FAQ.map((f) => (
@@ -398,8 +363,8 @@ export default async function Home() {
       <Footer
         status={
           health
-            ? `Движок: ${health.status === "ok" ? "работает" : "сбой"}, свечей в базе: ${Number(health.candles).toLocaleString("ru-RU")}`
-            : "Движок: нет связи с API"
+            ? `Движок: ${health.status === "ok" ? t("работает") : t("сбой")}, свечей в базе: ${Number(health.candles).toLocaleString("ru-RU")}`
+            : t("Движок: нет связи с API")
         }
       />
     </>
