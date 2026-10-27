@@ -138,7 +138,8 @@ class Notifier:
                     log.exception("цикл подписок")
             now = datetime.now(tz=UTC)
             done = await self.redis.get(KEY_DIGEST + "date")
-            if digest_due(now, done.decode() if done else None):
+            done_date = done.decode() if isinstance(done, bytes) else done
+            if digest_due(now, done_date):
                 await self.redis.set(KEY_DIGEST + "date", now.strftime("%Y-%m-%d"), ex=3 * 86400)
                 try:
                     log.info("дайджесты: %s", await asyncio.to_thread(digests_once, now))
