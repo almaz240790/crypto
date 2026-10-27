@@ -100,6 +100,12 @@ export const createJournal = (body: JournalIn) => api<JournalEntry>("/v1/journal
 export const updateJournal = (id: number, body: JournalIn) => api<JournalEntry>(`/v1/journal/${id}`, { method: "PUT", json: body });
 export const deleteJournal = (id: number) => api(`/v1/journal/${id}`, { method: "DELETE" });
 
+export type TwoFactorStatus = { enabled: boolean; backup_codes_left: number };
+export const getTwoFactor = () => api<TwoFactorStatus>("/v1/me/2fa");
+export const setupTwoFactor = () => api<{ secret: string; otpauth_url: string }>("/v1/me/2fa/setup", { method: "POST" });
+export const enableTwoFactor = (code: string) => api<{ enabled: boolean; backup_codes: string[] }>("/v1/me/2fa/enable", { method: "POST", json: { code } });
+export const disableTwoFactor = (code: string) => api<void>("/v1/me/2fa/disable", { method: "POST", json: { code } });
+
 export const getIdentities = () => api<{ provider: string; label: string; connected_at: string | null }[]>("/v1/me/identities");
 export const changePassword = (current_password: string | null, new_password: string) =>
   api("/v1/me/password", { method: "POST", json: { current_password, new_password } });

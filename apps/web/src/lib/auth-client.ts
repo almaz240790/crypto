@@ -120,15 +120,51 @@ export async function api<T>(
   return (await res.json()) as T;
 }
 
-type TokenOut = { access_token: string };
+type TokenOut = { access_token?: string; two_factor?: boolean; ticket?: string | null };
+
+const TICKET_KEY = "pl-2fa-ticket";
+
+/** Вход прошёл, но включена 2FA: билет сохранён, нужен код из приложения (страница /login). */
+export class TwoFactorRequired extends Error {
+  constructor() {
+    super("нужен код двухфакторной защиты");
+    this.name = "TwoFactorRequired";
+  }
+}
+
+export function pendingTwoFactorTicket(): string | null {
+  try {
+    return sessionStorage.getItem(TICKET_KEY);
+  } catch {
+    return null;
+  }
+}
 
 function accept(t: TokenOut) {
-  accessToken = t.access_token;
+  if (t.two_factor) {
+    try {
+      sessionStorage.setItem(TICKET_KEY, t.ticket ?? "");
+    } catch {
+      /* приватный режим */
+    }
+    throw new TwoFactorRequired();
+  }
+  accessToken = t.access_token ?? null;
   setHint(true);
 }
 
 export async function login(email: string, password: string): Promise<void> {
   accept(await api<TokenOut>("/v1/auth/login", { method: "POST", json: { email, password }, auth: false }));
+}
+
+export async function loginTwoFactor(code: string): Promise<void> {
+  const ticket = pendingTwoFactorTicket() ?? "";
+  accept(await api<TokenOut>("/v1/auth/login/2fa", { method: "POST", json: { ticket, code }, auth: false }));
+  try {
+    sessionStorage.removeItem(TICKET_KEY);
+  } catch {
+    /* приватный режим */
+  }
 }
 
 export async function register(body: {

@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui";
-import { consumeMagic, verifyEmail } from "@/lib/auth-client";
+import { TwoFactorRequired, consumeMagic, verifyEmail } from "@/lib/auth-client";
 import { useAuth } from "./AuthProvider";
 import s from "./AuthCard.module.css";
 
@@ -31,6 +31,10 @@ export function TokenAction({ kind, token }: { kind: "verify" | "magic"; token: 
           router.replace("/signals");
         }
       } catch (e) {
+        if (e instanceof TwoFactorRequired) {
+          router.replace("/login");
+          return;
+        }
         setState("error");
         setMsg(e instanceof Error ? e.message : "ссылка недействительна");
       }

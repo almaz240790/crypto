@@ -25,7 +25,12 @@ async function mockApi(page: Page, calls: string[]) {
     const p = url.pathname;
     if (p === "/v1/auth/login") {
       const b = req.postDataJSON() as { email: string; password: string };
+      if (b.email === "2fa@example.com") return json(200, { access_token: "", two_factor: true, ticket: "ticket-1" });
       return b.password === "correct-horse-battery" ? json(200, TOKEN) : json(401, { detail: "неверный email или пароль" });
+    }
+    if (p === "/v1/auth/login/2fa") {
+      const b = req.postDataJSON() as { ticket: string; code: string };
+      return b.ticket === "ticket-1" && b.code === "123456" ? json(200, TOKEN) : json(401, { detail: "неверный код" });
     }
     if (p === "/v1/auth/register") return json(201, TOKEN);
     if (p === "/v1/auth/magic/consume") {
@@ -109,4 +114,22 @@ test("регистрация и онбординг", async ({ page }) => {
   await page.getByRole("button", { name: "Перейти к сигналам" }).click();
   await expect(page).toHaveURL(/\/signals$/);
   expect(calls.filter((c) => c === "PATCH /v1/me/risk")).toHaveLength(2);
+});
+
+test("вход с 2FA: второй шаг с кодом из приложения", async ({ page }) => {
+  const calls: string[] = [];
+  await mockApi(page, calls);
+  await page.goto("/login");
+  await page.getByLabel("Email").fill("2fa@example.com");
+  await page.getByLabel("Пароль").fill("correct-horse-battery");
+  await page.getByRole("button", { name: "Войти", exact: true }).click();
+  const form = page.getByRole("form", { name: "код двухфакторной защиты" });
+  await expect(form).toBeVisible();
+  await form.getByLabel("Код из приложения").fill("000000");
+  await form.getByRole("button", { name: "Подтвердить" }).click();
+  await expect(form.getByRole("alert")).toContainText("неверный код");
+  await form.getByLabel("Код из приложения").fill("123456");
+  await form.getByRole("button", { name: "Подтвердить" }).click();
+  await expect(page).toHaveURL(/\/signals$/);
+  expect(calls).toContain("POST /v1/auth/login/2fa");
 });

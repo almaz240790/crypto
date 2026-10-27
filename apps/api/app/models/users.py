@@ -68,6 +68,19 @@ class RiskProfile(Base):
     experience: Mapped[str | None] = mapped_column(String(16))  # novice / experienced / systematic
 
 
+class TwoFactor(Base):
+    """2FA (TOTP, план 3.12 v2): секрет создаётся при настройке, включается после первого кода.
+    Резервные коды хранятся хэшами (sha256) и сгорают после использования."""
+
+    __tablename__ = "two_factor_secrets"
+
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    secret: Mapped[str] = mapped_column(String(64))
+    enabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    backup_codes: Mapped[list[Any]] = mapped_column(JSONB, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class EmailToken(Base):
     """Одноразовые токены: подтверждение email, magic link, сброс пароля."""
 
