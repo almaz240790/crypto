@@ -51,6 +51,10 @@ export function useDrawings(symbol: string, authed: boolean) {
   const [limitHit, setLimitHit] = useState(false);
   const loaded = useRef<string | null>(null);
   const prevItems = useRef<Drawing[]>([]);
+  const stateRef = useRef(state);
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
 
   const flush = useCallback(async () => {
     if (!authed) return;
@@ -154,8 +158,31 @@ export function useDrawings(symbol: string, authed: boolean) {
       hide: (v: boolean) => setState((s) => setHidden(s, v)),
       undo: () => setState((s) => undo(s)),
       redo: () => setState((s) => redo(s)),
+      /** Копия на другой инструмент (план 2A.5): время как есть, цены умножаются на ratio. */
+      copyTo: (id: string, target: string, ratio: number): Drawing | null => {
+        const src = stateRef.current.items.find((d) => d.id === id && !d.deleted_at);
+        if (!src || target === symbol) return null;
+        const copy: Drawing = {
+          ...src,
+          id: `d_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`,
+          points: src.points.map((pt) => ({ ...pt, price: pt.price * ratio })),
+          locked: false,
+          updated_at: Date.now(),
+          deleted_at: null,
+        };
+        try {
+          localStorage.setItem(KEY(target), JSON.stringify([...load(target), copy]));
+        } catch {
+          /* приватный режим */
+        }
+        if (authed) {
+          queueAdd([toWire(copy, target)]);
+          void flush();
+        }
+        return copy;
+      },
     }),
-    [limit],
+    [limit, symbol, authed, flush],
   );
 
   const selected = state.items.find((d) => d.id === state.selectedId && !d.deleted_at) ?? null;

@@ -303,3 +303,25 @@ test("панели индикаторов: заголовок 24 px, свора�
   await page.getByRole("button", { name: "Готово" }).click();
   await expect(head).toHaveCount(0);
 });
+
+test("рисунок копируется на другой инструмент", async ({ page }) => {
+  const calls: string[] = [];
+  await mock(page, calls);
+  await page.goto("/chart/BTCUSDT/4h");
+  const term = page.getByTestId("terminal");
+  await expect(term.locator("canvas").first()).toBeVisible();
+  await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 0");
+  await page.keyboard.press("Alt+h");
+  await expect(page.getByRole("button", { name: /Рисую: Горизонтальная линия/ })).toBeVisible();
+  const box = (await term.boundingBox())!;
+  await page.mouse.click(box.x + box.width * 0.4, box.y + box.height * 0.55);
+  await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 1");
+  await page.getByLabel("скопировать на инструмент").selectOption("ETHUSDT");
+  await expect(page.getByRole("status")).toContainText("Рисунок скопирован на ETHUSDT");
+  expect(calls.some((c) => c.startsWith("/v1/chart/candles?symbol=ETHUSDT"))).toBe(true);
+  // исходный инструмент не изменился, у цели появился рисунок
+  await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 1");
+  await page.goto("/chart/ETHUSDT/4h");
+  await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 1");
+  await expect(page.getByRole("button", { name: "Объекты" })).toBeVisible();
+});
