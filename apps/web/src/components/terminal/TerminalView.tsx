@@ -5,11 +5,11 @@ import { DrawingController, DrawingsPrimitive, INDICATORS, defaultParams, indica
 import { LineSeries, createSeriesMarkers, type ISeriesApi, type ISeriesMarkersPluginApi, type SeriesMarker, type Time, type UTCTimestamp } from "lightweight-charts";
 import { useEffect, useRef } from "react";
 import { BoxPrimitive } from "@/components/chart/BoxPrimitive";
-import { PATTERN_GLYPH, type Derivatives, type LayersResponse, type PatternOnChart } from "@/lib/chart";
+import { PATTERN_GLYPH, type Derivatives, type FigureOnChart, type LayersResponse, type PatternOnChart } from "@/lib/chart";
 import s from "./terminal.module.css";
 
 export type ActiveIndicator = { id: string; params: Record<string, number> };
-export type LayerKey = "structure" | "zones" | "levels" | "signals" | "patterns";
+export type LayerKey = "structure" | "zones" | "levels" | "signals" | "patterns" | "figures";
 export type PanelKey = "funding" | "oi" | "liq";
 export type CrosshairInfo = { candle: Candle; values: { label: string; value: number | null }[] };
 const LONG_PRESS_MS = 300;
@@ -30,6 +30,9 @@ type Props = {
   /** Свечные паттерны (план 2A.10.1): маркеры-глифы под/над свечой; ``highlight`` — id выбранного. */
   patterns?: PatternOnChart[];
   highlight?: number | null;
+  /** Графические фигуры (план 2A.10.2): линии, «формируется» — пунктиром, цель — точками. */
+  figures?: FigureOnChart[];
+  highlightFigure?: number | null;
   /** Активные ценовые алерты: линия с подписью (план 2A.6). */
   alertLines?: { id: number; price: number; label: string }[];
   derivatives: Derivatives | null;
@@ -76,7 +79,7 @@ function precisionOf(tick: string | null): { precision: number; minMove: number 
 type Pane = { spec: IndicatorSpec; paneIndex: number | null; series: Record<string, ISeriesApi<"Line" | "Histogram">> };
 
 /** Обёртка React над Terminal из packages/charts: данные, индикаторы, слои, тема. */
-export function TerminalView({ candles, current, tf, type, indicators, layersOn, layers, patterns, highlight, alertLines, derivatives, panels, tick, onNeedOlder, drawings, onCrosshair }: Props) {
+export function TerminalView({ candles, current, tf, type, indicators, layersOn, layers, patterns, highlight, figures, highlightFigure, alertLines, derivatives, panels, tick, onNeedOlder, drawings, onCrosshair }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const tfRef = useRef(tf);
@@ -430,6 +433,30 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
         });
       }
     }
+    if (figures && layersOn.figures) {
+      // последние 8 фигур: подтверждённые — сплошные, формирующиеся — пунктир, отменённые — бледно
+      for (const f of figures.slice(-8)) {
+        const hl = f.id === highlightFigure;
+        const color = f.status === "confirmed" ? (hl ? tokens.warn : tokens.accent) : f.status === "forming" ? (hl ? tokens.warn : tokens.text2) : alpha(tokens.text3, 0.5);
+        const style = f.status === "forming" ? 2 : 0;
+        for (const ln of f.lines) {
+          const a = snap(ln.a[0]);
+          const b = Math.max(snap(ln.b[0]), a + step);
+          if (b < first) continue;
+          const ls = term.chart.addSeries(LineSeries, { color, lineWidth: hl ? 2 : 1, lineStyle: style, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
+          ls.setData([{ time: Math.max(a, first) as UTCTimestamp, value: Number(ln.a[1]) + ((Number(ln.b[1]) - Number(ln.a[1])) * (Math.max(a, first) - a)) / Math.max(1, b - a) }, { time: Math.min(b, last + step) as UTCTimestamp, value: Number(ln.b[1]) }]);
+          auxRef.current.push(ls);
+        }
+        if (f.status === "confirmed" && f.target && f.confirm_t) seg(f.confirm_t, null, Number(f.target), tokens.up, 1, 1);
+        if (f.status === "confirmed" && f.invalidation && f.confirm_t) seg(f.confirm_t, null, Number(f.invalidation), tokens.down, 1, 1);
+        for (const [t, p] of f.points) {
+          const pt = snap(t);
+          if (pt < first) continue;
+          markers.push({ time: pt as Time, position: "inBar", shape: "circle", color, text: "", size: 0 });
+          void p;
+        }
+      }
+    }
     for (const al of alertLines ?? []) {
       seg(first, null, al.price, tokens.warn, 3, 1);
       markers.push({ time: last as Time, position: "inBar", shape: "circle", color: tokens.warn, text: `алерт ${al.label}`, size: 0 });
@@ -438,7 +465,7 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
     markers.sort((a, b) => (a.time as number) - (b.time as number));
     if (!markersRef.current) markersRef.current = createSeriesMarkers(main, markers);
     else markersRef.current.setMarkers(markers);
-  }, [layers, layersOn, candles, current, tf, type, patterns, highlight, alertLines]);
+  }, [layers, layersOn, candles, current, tf, type, patterns, highlight, figures, highlightFigure, alertLines]);
 
   return (
     <div className={s.chart}>

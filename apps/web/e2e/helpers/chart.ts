@@ -74,6 +74,15 @@ export async function mock(page: Page, calls: string[], authed = false, server: 
       const b = route.request().postDataJSON() as { pattern_id: number };
       return json(200, { text: `Бычье поглощение на BTCUSDT H4: значимый, подтверждён на закрытии свечи. Историческая отработка: 54 % случаев (n=120).`, source: b.pattern_id === 1 ? "template" : "llm", footer: "Текст составлен по данным графика на 12:00 UTC, не является рекомендацией.", generated_at: "", facts_hash: "abc", prompt_version: "explain_pattern.v1" });
     }
+    if (p === "/v1/chart/figures")
+      return json(200, {
+        symbol: "BTCUSDT", tf: "4h", note: "",
+        items: [
+          { id: 5, type: "double_top", title: "Двойная вершина", direction: "down", status: "confirmed", scale: 2, start_t: T0 + 150 * 14400, end_t: T0 + 180 * 14400, known_t: T0 + 182 * 14400, confirm_t: T0 + 190 * 14400, invalidated_t: null, points: [[T0 + 150 * 14400, "104"], [T0 + 165 * 14400, "99"], [T0 + 180 * 14400, "104.2"]], lines: [{ name: "neck", a: [T0 + 165 * 14400, "99"], b: [T0 + 210 * 14400, "99"] }], breakout_level: "99", target: "94", invalidation: "104.2", quality: 0.81, metrics: {}, source: "backfill", tf: "4h" },
+          { id: 6, type: "channel_up", title: "Восходящий канал", direction: null, status: "forming", scale: 3, start_t: T0 + 250 * 14400, end_t: T0 + 290 * 14400, known_t: T0 + 293 * 14400, confirm_t: null, invalidated_t: null, points: [[T0 + 250 * 14400, "100"], [T0 + 290 * 14400, "105"]], lines: [{ name: "upper", a: [T0 + 250 * 14400, "102"], b: [T0 + 300 * 14400, "108"] }, { name: "lower", a: [T0 + 250 * 14400, "98"], b: [T0 + 300 * 14400, "104"] }], breakout_level: null, target: null, invalidation: null, quality: 0.72, metrics: {}, source: "live", tf: "4h" },
+        ],
+        stats: { double_top: { type: "double_top", title: "Двойная вершина", n: 48, low_n: false, success_rate: "0.4583", ci_low: "0.33", ci_high: "0.59", avg_move_atr: "2.1", avg_adverse_atr: "1.4", avg_bars_to_target: "7.5" } },
+      });
     if (p === "/v1/chart/patterns")
       return json(200, {
         symbol: "BTCUSDT", tf: "4h", horizon: 5, note: "",

@@ -3,9 +3,9 @@
 import { TOOL_TITLES, type Drawing, type DrawingType } from "@platform/charts";
 import { useState } from "react";
 import s from "./terminal.module.css";
-import { FoundList } from "./FoundPanel";
+import { FiguresList, FoundList } from "./FoundPanel";
 import { TEMPLATES } from "./templates";
-import type { PatternOnChart, PatternStat } from "@/lib/chart";
+import type { FigureOnChart, FigureStat, PatternOnChart, PatternStat } from "@/lib/chart";
 import type { LayerKey, PanelKey } from "./TerminalView";
 
 const TOOLS: { t: DrawingType; k: string; key?: string }[] = [
@@ -64,10 +64,10 @@ type Props = {
   onDeleteLayout: (name: string) => void;
   authed: boolean;
   layoutsLimit: number | null;
-  found: { items: PatternOnChart[]; stats: Record<string, PatternStat>; selected: number | null; onSelect: (id: number | null) => void; tf: string; symbol: string; canExplain: boolean };
+  found: { items: PatternOnChart[]; stats: Record<string, PatternStat>; selected: number | null; onSelect: (id: number | null) => void; tf: string; symbol: string; canExplain: boolean; figures: FigureOnChart[]; figureStats: Record<string, FigureStat>; selectedFigure: number | null; onSelectFigure: (id: number | null) => void };
 };
 
-const LAYER_LABEL: Record<LayerKey, string> = { structure: "Структура", zones: "Зоны", levels: "Уровни", signals: "Сигналы", patterns: "Паттерны" };
+const LAYER_LABEL: Record<LayerKey, string> = { structure: "Структура", zones: "Зоны", levels: "Уровни", signals: "Сигналы", patterns: "Паттерны", figures: "Фигуры" };
 const PANEL_LABEL: Record<PanelKey, string> = { funding: "Funding", oi: "Open interest", liq: "Ликвидации" };
 
 /** Правая панель объектов (десктоп): рисунки, слои, раскладки и шаблоны. */
@@ -79,11 +79,18 @@ export function ObjectsPanel(p: Props) {
       <div className={s.objTabs} role="tablist">
         {(["found", "drawings", "layers", "layouts"] as const).map((t) => (
           <button key={t} type="button" role="tab" aria-selected={tab === t} className={s.objTab} onClick={() => setTab(t)}>
-            {t === "found" ? `Найдено (${p.found.items.length})` : t === "drawings" ? `Рисунки (${p.drawings.length})` : t === "layers" ? "Слои" : "Раскладки"}
+            {t === "found" ? `Найдено (${p.found.items.length + p.found.figures.length})` : t === "drawings" ? `Рисунки (${p.drawings.length})` : t === "layers" ? "Слои" : "Раскладки"}
           </button>
         ))}
       </div>
-      {tab === "found" && <FoundList items={p.found.items} stats={p.found.stats} selected={p.found.selected} onSelect={p.found.onSelect} tf={p.found.tf} symbol={p.found.symbol} canExplain={p.found.canExplain} />}
+      {tab === "found" && (
+        <>
+          <strong className={s.objHead}>Фигуры</strong>
+          <FiguresList items={p.found.figures} stats={p.found.figureStats} selected={p.found.selectedFigure} onSelect={p.found.onSelectFigure} />
+          <strong className={s.objHead}>Свечные паттерны</strong>
+          <FoundList items={p.found.items} stats={p.found.stats} selected={p.found.selected} onSelect={p.found.onSelect} tf={p.found.tf} symbol={p.found.symbol} canExplain={p.found.canExplain} />
+        </>
+      )}
       {tab === "drawings" && (
         <ul className={s.objList}>
           {p.drawings.length === 0 && <li className="caption">Рисунков нет. Alt+H — линия, Alt+T — трендовая.</li>}

@@ -204,7 +204,18 @@ test("паттерны: вкладка «Найдено», подробност�
   await expect(page.getByTestId("terminal").locator("canvas").first()).toBeVisible();
   await expect.poll(() => calls.some((c) => c.startsWith("/v1/chart/patterns?symbol=BTCUSDT&tf=4h"))).toBe(true);
   const objects = page.getByRole("complementary", { name: "панель объектов" });
-  await expect(objects.getByRole("tab", { name: "Найдено (2)" })).toHaveAttribute("aria-selected", "true");
+  await expect(objects.getByRole("tab", { name: "Найдено (4)" })).toHaveAttribute("aria-selected", "true");
+  // фигуры (4B.6): подтверждённая с целью и отработкой, формирующаяся без цели
+  const figs = objects.getByRole("list", { name: "найденные фигуры" });
+  await expect(figs).toContainText("Восходящий канал");
+  await expect(figs).toContainText("формируется");
+  await figs.getByRole("button", { name: /Двойная вершина/ }).click();
+  await expect(figs).toContainText("подтверждена закрытием свечи за линией");
+  await expect(figs).toContainText("расчётная цель 94, инвалидация 104.2");
+  await expect(figs).toContainText("историческая отработка 46 % (n=48, до цели за 20 свечей)");
+  await figs.getByRole("button", { name: /Восходящий канал/ }).click();
+  await expect(figs).toContainText("геометрия без подтверждения");
+  expect(calls.some((c) => c.startsWith("/v1/chart/figures?symbol=BTCUSDT&tf=4h"))).toBe(true);
   const list = objects.getByRole("list", { name: "найденные паттерны" });
   await expect(list).toContainText("Доджи");
   await expect(list).toContainText("Бычье поглощение");

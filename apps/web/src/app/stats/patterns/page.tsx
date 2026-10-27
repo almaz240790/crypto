@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { DISCLAIMER, Footer, Header } from "@/components/site";
 import { EmptyState, Panel, Table, Td, Th } from "@/components/ui";
-import { getPatternStats, type PatternStatItem } from "@/lib/api";
+import { getFigureStats, getPatternStats, type PatternStatItem } from "@/lib/api";
 import { formatTimeUTC } from "@/lib/format";
 import s from "../page.module.css";
 
@@ -44,6 +44,8 @@ export default async function PatternStatsPage({ searchParams }: { searchParams:
   const horizon = HORIZONS.includes(Number(one(sp.horizon))) ? Number(one(sp.horizon)) : 5;
   const type = one(sp.type) || undefined;
   const data = await getPatternStats({ tf, scope, horizon, type });
+  const figures = ["4h", "1d", "1w"].includes(tf) ? await getFigureStats({ tf, scope }) : null;
+  const figItems = figures?.items ?? [];
   const link = (patch: Partial<{ tf: string; scope: string; horizon: number; type: string | undefined }>) => {
     const q = { tf, scope, horizon, type, ...patch };
     const p = new URLSearchParams({ tf: q.tf, scope: q.scope, horizon: String(q.horizon) });
@@ -164,6 +166,45 @@ export default async function PatternStatsPage({ searchParams }: { searchParams:
                 ))}
               </tbody>
             </Table>
+          </Panel>
+        )}
+        {!type && (
+          <Panel>
+            <h2>Графические фигуры</h2>
+            <p className="caption">
+              Доля подтверждённых фигур, у которых цена дошла до расчётной цели раньше инвалидации за 20 свечей. Только H4, D1 и W1. Фигуры не являются сигналами.
+              {figures?.computed_at ? ` Обновлено ${formatTimeUTC(figures.computed_at)}.` : ""}
+            </p>
+            {!figItems.some((i) => i.n > 0) ? (
+              <EmptyState text="Пока нет данных по фигурам: статистика появится после бэкфилла детектора." />
+            ) : (
+              <Table>
+                <thead>
+                  <tr>
+                    <Th>Фигура</Th>
+                    <Th num>n</Th>
+                    <Th num>до цели</Th>
+                    <Th num>95 % интервал</Th>
+                    <Th num>ход за, ATR</Th>
+                    <Th num>ход против, ATR</Th>
+                    <Th num>свечей до цели</Th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {figItems.map((it) => (
+                    <tr key={it.type} data-testid="figure-stat-row">
+                      <Td>{it.title}</Td>
+                      <Td num>{it.n}</Td>
+                      <Td num>{it.low_n ? <span className="caption">мало данных</span> : pct(it.success_rate)}</Td>
+                      <Td num>{it.low_n ? "—" : `${pct(it.ci_low)} – ${pct(it.ci_high)}`}</Td>
+                      <Td num>{it.low_n || !it.avg_move_atr ? "—" : Number(it.avg_move_atr).toFixed(2)}</Td>
+                      <Td num>{it.low_n || !it.avg_adverse_atr ? "—" : Number(it.avg_adverse_atr).toFixed(2)}</Td>
+                      <Td num>{it.low_n || !it.avg_bars_to_target ? "—" : Number(it.avg_bars_to_target).toFixed(1)}</Td>
+                    </tr>
+                  ))}
+                </tbody>
+              </Table>
+            )}
           </Panel>
         )}
         <p className="caption">{DISCLAIMER}</p>

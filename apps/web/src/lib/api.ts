@@ -221,3 +221,26 @@ export function getPatternStats(q: { tf?: string; scope?: string; horizon?: numb
   if (q.with_context !== undefined && q.with_context !== null) p.set("with_context", String(q.with_context));
   return get<PatternStats>(`/v1/stats/patterns?${p.toString()}`, 300);
 }
+
+export type FigureStatItem = {
+  type: string;
+  title: string;
+  n: number;
+  low_n: boolean;
+  success_rate: string | null;
+  ci_low: string | null;
+  ci_high: string | null;
+  avg_move_atr: string | null;
+  avg_adverse_atr: string | null;
+  avg_bars_to_target: string | null;
+};
+export type FigureStats = { scope: string; tf: string; horizon: number; items: FigureStatItem[]; note: string; computed_at: string | null; by_year?: (FigureStatItem & { year: number })[] };
+
+/** Историческая отработка графических фигур (план 2A.10.4, 4B.6). */
+export function getFigureStats(q: { tf?: string; scope?: string; type?: string }): Promise<FigureStats | null> {
+  const p = new URLSearchParams();
+  if (q.tf) p.set("tf", q.tf);
+  if (q.scope) p.set("scope", q.scope);
+  if (q.type) p.set("type", q.type);
+  return get<FigureStats>(`/v1/stats/figures?${p.toString()}`, 300);
+}

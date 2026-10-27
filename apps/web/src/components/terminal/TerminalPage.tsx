@@ -13,7 +13,7 @@ import { getInstruments, type Instrument } from "@/lib/user";
 import s from "./terminal.module.css";
 import { BottomSheet } from "./BottomSheet";
 import { DrawToolbar, ObjectsPanel } from "./DesktopPanels";
-import { FoundList } from "./FoundPanel";
+import { FiguresList, FoundList } from "./FoundPanel";
 import { download, snapshotPng } from "./snapshot";
 import { TEMPLATES } from "./templates";
 import { PANELS, TerminalView, type ActiveIndicator, type CrosshairInfo, type LayerKey, type PanelKey } from "./TerminalView";
@@ -23,7 +23,7 @@ import { createAlert, getAlerts, type Alert } from "@/lib/alerts";
 import { useTerminalData } from "./useTerminalData";
 
 const TYPE_LABEL: Record<ChartType, string> = { candles: "Свечи", bars: "Бары", line: "Линия", heikin: "Heikin Ashi" };
-const LAYER_LABEL: Record<LayerKey, string> = { structure: "Структура", zones: "Зоны", levels: "Уровни", signals: "Сигналы", patterns: "Паттерны" };
+const LAYER_LABEL: Record<LayerKey, string> = { structure: "Структура", zones: "Зоны", levels: "Уровни", signals: "Сигналы", patterns: "Паттерны", figures: "Фигуры" };
 const DEFAULT_INDICATORS: ActiveIndicator[] = [{ id: "ema", params: { period: 50 } }];
 const TOOLS: DrawingType[] = ["hline", "hray", "vline", "trend", "ray", "extended", "channel", "rect", "fib", "position-long", "position-short", "note", "ruler"];
 const STORAGE = "pl-terminal";
@@ -31,7 +31,7 @@ const STORAGE = "pl-terminal";
 type Saved = { type: ChartType; indicators: ActiveIndicator[]; layers: Record<LayerKey, boolean>; panels: PanelKey[]; updated_at?: number };
 
 function load(): Saved {
-  const base: Saved = { type: "candles", indicators: DEFAULT_INDICATORS, layers: { structure: true, zones: true, levels: true, signals: true, patterns: true }, panels: [] };
+  const base: Saved = { type: "candles", indicators: DEFAULT_INDICATORS, layers: { structure: true, zones: true, levels: true, signals: true, patterns: true, figures: true }, panels: [] };
   try {
     const raw = localStorage.getItem(STORAGE);
     if (!raw) return base;
@@ -56,6 +56,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [alertDraft, setAlertDraft] = useState<{ price: string; op: "cross_up" | "cross_down" | "enter_range"; price2: string; frequency: "once" | "every" | "once_per_bar" }>({ price: "", op: "cross_up", price2: "", frequency: "once" });
   const [foundSel, setFoundSel] = useState<number | null>(null);
+  const [figureSel, setFigureSel] = useState<number | null>(null);
   const [cross, setCross] = useState<CrosshairInfo | null>(null);
   const [bars, setBars] = useState<"shown" | "hidden">("shown");
   const [objects, setObjects] = useState<"shown" | "hidden">("shown");
@@ -350,7 +351,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
             Таймфреймы 1m–15m доступны после входа на тарифе Pro. <Link href="/pricing">Тарифы</Link>
           </div>
         ) : (
-          <TerminalView candles={data.candles ?? []} current={data.current} tf={tf} type={st.type} indicators={st.indicators} layersOn={st.layers} layers={data.layers} patterns={data.patterns?.items} highlight={foundSel} alertLines={alerts.filter((a) => a.type === "price" && typeof a.condition.price === "string").map((a) => ({ id: a.id, price: Number(a.condition.price), label: a.condition.op === "cross_up" ? "↑" : a.condition.op === "cross_down" ? "↓" : "↔" }))} derivatives={data.derivatives} panels={st.panels} tick={data.tick} onNeedOlder={data.loadOlder} drawings={drawingsProps} onCrosshair={setCross} />
+          <TerminalView candles={data.candles ?? []} current={data.current} tf={tf} type={st.type} indicators={st.indicators} layersOn={st.layers} layers={data.layers} patterns={data.patterns?.items} highlight={foundSel} figures={data.figures?.items} highlightFigure={figureSel} alertLines={alerts.filter((a) => a.type === "price" && typeof a.condition.price === "string").map((a) => ({ id: a.id, price: Number(a.condition.price), label: a.condition.op === "cross_up" ? "↑" : a.condition.op === "cross_down" ? "↓" : "↔" }))} derivatives={data.derivatives} panels={st.panels} tick={data.tick} onNeedOlder={data.loadOlder} drawings={drawingsProps} onCrosshair={setCross} />
         )}
         {sel && (
           <div className={s.card} role="region" aria-label="выбранный рисунок">
@@ -449,7 +450,14 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
                 </p>
               </form>
             )}
-            {sheet === "found" && <FoundList items={data.patterns?.items ?? []} stats={data.patterns?.stats ?? {}} selected={foundSel} onSelect={setFoundSel} tf={tf} symbol={symbol} canExplain={!!user} />}
+            {sheet === "found" && (
+              <>
+                <strong className={s.objHead}>Фигуры</strong>
+                <FiguresList items={data.figures?.items ?? []} stats={data.figures?.stats ?? {}} selected={figureSel} onSelect={setFigureSel} />
+                <strong className={s.objHead}>Свечные паттерны</strong>
+                <FoundList items={data.patterns?.items ?? []} stats={data.patterns?.stats ?? {}} selected={foundSel} onSelect={setFoundSel} tf={tf} symbol={symbol} canExplain={!!user} />
+              </>
+            )}
             {sheet === "draw" &&
               TOOLS.map((t) => (
                 <button
@@ -527,7 +535,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
           onDeleteLayout={removeLayout}
           authed={!!user}
           layoutsLimit={user ? null : 0}
-          found={{ items: data.patterns?.items ?? [], stats: data.patterns?.stats ?? {}, selected: foundSel, onSelect: setFoundSel, tf, symbol, canExplain: !!user }}
+          found={{ items: data.patterns?.items ?? [], stats: data.patterns?.stats ?? {}, selected: foundSel, onSelect: setFoundSel, tf, symbol, canExplain: !!user, figures: data.figures?.items ?? [], figureStats: data.figures?.stats ?? {}, selectedFigure: figureSel, onSelectFigure: setFigureSel }}
         />
       </div>
       <div className={s.bottom}>
@@ -538,7 +546,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
           Слои
         </button>
         <button type="button" className={`${s.chip} ${s.mobileOnly}`} aria-pressed={sheet === "found"} onClick={() => setSheet(sheet === "found" ? null : "found")}>
-          Найдено ({data.patterns?.items.length ?? 0})
+          Найдено ({(data.patterns?.items.length ?? 0) + (data.figures?.items.length ?? 0)})
         </button>
         <button type="button" className={s.chip} aria-pressed={sheet === "alert"} onClick={() => (sheet === "alert" ? setSheet(null) : openAlertSheet())}>
           Алерт{alerts.length ? ` (${alerts.length})` : ""}

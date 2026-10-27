@@ -135,6 +135,26 @@ def patterns(
     return chart_patterns(db, inst, timeframe, s, u, limit)
 
 
+@router.get("/figures")
+def figures(
+    symbol: str,
+    tf: str = "4h",
+    since: int | None = None,
+    until: int | None = None,
+    limit: int = Query(100, ge=1, le=500),
+    db: Session = Depends(auth.get_db),
+) -> dict[str, Any]:
+    """Графические фигуры инструмента (план 2A.10.2, 4B.6): формируется / подтверждена /
+    отменена, с линиями, целью и исторической отработкой типа. Доступно всем."""
+    from app.figures import chart_figures
+
+    timeframe = _tf(tf)
+    inst = _instrument(db, symbol)
+    s = datetime.fromtimestamp(since, tz=UTC) if since else None
+    u = datetime.fromtimestamp(until, tz=UTC) if until else None
+    return chart_figures(db, inst, timeframe, s, u, limit)
+
+
 class ExplainIn(BaseModel):
     symbol: str = Field(max_length=32)
     tf: str = Field(pattern="^(15m|1h|4h|1d|1w)$")
