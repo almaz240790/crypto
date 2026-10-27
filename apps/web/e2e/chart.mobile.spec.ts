@@ -117,3 +117,12 @@ test("телефон: не больше трёх раскрытых панеле
   await expect(head.getByRole("button", { name: "развернуть панель Funding" })).toBeVisible();
   await expect(collapsed).toHaveCount(2);
 });
+
+test("телефон: мультичарт недоступен, есть ссылка в терминал", async ({ page }) => {
+  const calls: string[] = [];
+  await mock(page, calls, true);
+  await page.goto("/multichart");
+  await expect(page.getByText("Мультичарт доступен на десктопе")).toBeVisible();
+  await expect(page.getByRole("link", { name: "Открыть терминал" })).toHaveAttribute("href", "/chart/BTCUSDT/4h");
+  expect(calls.some((c) => c.startsWith("/v1/chart/candles"))).toBe(false);
+});
