@@ -1,6 +1,7 @@
 "use client";
 
 import { TOOL_TITLES, type Drawing, type DrawingType } from "@platform/charts";
+import type React from "react";
 import { useState } from "react";
 import s from "./terminal.module.css";
 import { AskBox, FiguresList, FoundList } from "./FoundPanel";
@@ -64,6 +65,8 @@ type Props = {
   onDeleteLayout: (name: string) => void;
   authed: boolean;
   layoutsLimit: number | null;
+  /** Перетаскивание левого края панели (ширина хранится в TerminalPage). */
+  onResize?: { start: (e: React.PointerEvent<HTMLElement>) => void; step: (delta: number) => void; active: boolean };
   found: { count?: number; items: PatternOnChart[]; stats: Record<string, PatternStat>; selected: number | null; onSelect: (id: number | null) => void; tf: string; symbol: string; canExplain: boolean; figures: FigureOnChart[]; figureStats: Record<string, FigureStat>; selectedFigure: number | null; onSelectFigure: (id: number | null) => void };
 };
 
@@ -76,6 +79,24 @@ export function ObjectsPanel(p: Props) {
   const [name, setName] = useState("");
   return (
     <aside className={s.objects} aria-label="панель объектов">
+      {p.onResize && (
+        <button
+          type="button"
+          className={s.splitter}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="ширина панели объектов"
+          title="Тяните, чтобы изменить ширину; ← → с клавиатуры"
+          data-active={p.onResize.active || undefined}
+          onPointerDown={p.onResize.start}
+          onKeyDown={(e) => {
+            if (e.key === "ArrowLeft") p.onResize!.step(20);
+            else if (e.key === "ArrowRight") p.onResize!.step(-20);
+            else return;
+            e.preventDefault();
+          }}
+        />
+      )}
       <div className={s.objTabs} role="tablist">
         {(["found", "drawings", "layers", "layouts"] as const).map((t) => (
           <button key={t} type="button" role="tab" aria-selected={tab === t} className={s.objTab} onClick={() => setTab(t)}>
