@@ -1,5 +1,6 @@
 "use client";
 
+import type React from "react";
 import { CHART_TYPES, INDICATORS, TOOL_TITLES, defaultParams, positionStats, secondsToClose, tokensFromElement, type ChartType, type DrawingType, type Timeframe } from "@platform/charts";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -24,15 +25,20 @@ import { getCandles } from "@/lib/chart";
 import { useTerminalData } from "./useTerminalData";
 
 const TYPE_LABEL: Record<ChartType, string> = { candles: "Свечи", bars: "Бары", line: "Линия", heikin: "Heikin Ashi" };
-const LAYER_LABEL: Record<LayerKey, string> = { structure: "Структура", zones: "Зоны", levels: "Уровни", signals: "Сигналы", patterns: "Паттерны", figures: "Фигуры" };
+const LAYER_LABEL: Record<LayerKey, string> = { structure: "Структура", zones: "Зоны", levels: "Уровни", signals: "Сигналы", patterns: "Паттерны", figures: "Фигуры", volume_profile: "Профиль объёма" };
 const DEFAULT_INDICATORS: ActiveIndicator[] = [{ id: "ema", params: { period: 50 } }];
 const TOOLS: DrawingType[] = ["hline", "hray", "vline", "trend", "ray", "extended", "channel", "rect", "fib", "position-long", "position-short", "note", "ruler"];
 const STORAGE = "pl-terminal";
+const OBJECTS_W_KEY = "pl-objects-w";
+const OBJECTS_W_DEFAULT = 300;
+const OBJECTS_W_MIN = 240;
+const OBJECTS_W_MAX = 600;
+const clampW = (w: number) => Math.round(Math.min(OBJECTS_W_MAX, Math.max(OBJECTS_W_MIN, w)));
 
 type Saved = { type: ChartType; indicators: ActiveIndicator[]; layers: Record<LayerKey, boolean>; panels: PanelKey[]; updated_at?: number };
 
 function load(): Saved {
-  const base: Saved = { type: "candles", indicators: DEFAULT_INDICATORS, layers: { structure: true, zones: true, levels: true, signals: true, patterns: true, figures: true }, panels: [] };
+  const base: Saved = { type: "candles", indicators: DEFAULT_INDICATORS, layers: { structure: true, zones: true, levels: true, signals: true, patterns: true, figures: true, volume_profile: false }, panels: [] };
   try {
     const raw = localStorage.getItem(STORAGE);
     if (!raw) return base;
@@ -63,6 +69,44 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
   const [visibleFrom, setVisibleFrom] = useState<number | null>(null);
   const [bars, setBars] = useState<"shown" | "hidden">("shown");
   const [objects, setObjects] = useState<"shown" | "hidden">("shown");
+  // ширина панели объектов (десктоп): 240–600 px, хранится локально
+  const [objW, setObjW] = useState(OBJECTS_W_DEFAULT);
+  const [objDrag, setObjDrag] = useState(false);
+  useEffect(() => {
+    try {
+      const v = Number(localStorage.getItem(OBJECTS_W_KEY));
+      if (v) queueMicrotask(() => setObjW(clampW(v)));
+    } catch {
+      /* приватный режим */
+    }
+  }, []);
+  const setObjWidth = useCallback((w: number) => {
+    const v = clampW(w);
+    setObjW(v);
+    try {
+      localStorage.setItem(OBJECTS_W_KEY, String(v));
+    } catch {
+      /* приватный режим */
+    }
+  }, []);
+  const objResize = {
+    active: objDrag,
+    step: (delta: number) => setObjWidth(objW + delta),
+    start: (e: React.PointerEvent<HTMLElement>) => {
+      e.preventDefault();
+      const startX = e.clientX;
+      const startW = objW;
+      setObjDrag(true);
+      const move = (ev: PointerEvent) => setObjWidth(startW + (startX - ev.clientX));
+      const up = () => {
+        setObjDrag(false);
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", up);
+      };
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", up);
+    },
+  };
   const [layouts, setLayouts] = useState<{ name: string }[]>([]);
   const [toast, setToast] = useState<string | null>(null);
   const areaRef = useRef<HTMLDivElement>(null);
@@ -348,7 +392,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
           {toast}
         </p>
       )}
-      <div className={s.area} ref={areaRef} data-objects={objects}>
+      <div className={s.area} ref={areaRef} data-objects={objects} style={{ "--objects-w": `${objW}px` } as React.CSSProperties}>
         <DrawToolbar tool={dr.tool} onTool={(t) => dr.setTool(t)} magnet={dr.magnet} onMagnet={dr.setMagnet} canUndo={dr.canUndo} canRedo={dr.canRedo} onUndo={dr.actions.undo} onRedo={dr.actions.redo} />
         <div className={s.chartCol}>
       {cross && (
@@ -575,6 +619,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
         )}
         </div>
         <ObjectsPanel
+          onResize={objResize}
           drawings={dr.items}
           selectedId={dr.state.selectedId}
           onSelect={dr.actions.select}

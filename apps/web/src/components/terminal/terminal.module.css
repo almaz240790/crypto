@@ -82,7 +82,34 @@
 
 @media (min-width: 900px) {
   .area {
-    grid-template-columns: 40px minmax(0, 1fr) 240px;
+    /* ширина панели объектов задаётся переменной (перетаскивание разделителя, план 2A.8) */
+    grid-template-columns: 40px minmax(0, 1fr) var(--objects-w, 300px);
+  }
+
+  .objects {
+    position: relative;
+  }
+
+  .splitter {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: -4px;
+    width: 8px;
+    cursor: col-resize;
+    background: transparent;
+    border: 0;
+    padding: 0;
+    z-index: 2;
+    touch-action: none;
+  }
+
+  .splitter:hover,
+  .splitter:focus-visible,
+  .splitter[data-active] {
+    background: var(--accent);
+    opacity: 0.35;
+    outline: none;
   }
 
   .area[data-objects="hidden"] {

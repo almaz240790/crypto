@@ -28,6 +28,7 @@ test("график: загрузка, строка состояния, смен�
   await expect(strip).toContainText("funding 0.0120 %");
   await page.getByRole("button", { name: "Слои" }).click();
   await page.getByRole("dialog", { name: "Слои" }).getByLabel("Зоны").uncheck();
+  await page.getByRole("dialog", { name: "Слои" }).getByLabel("Профиль объёма").check();
   await page.getByRole("button", { name: "Готово" }).click();
   // тип графика
   await page.getByLabel("тип графика").selectOption("heikin");
@@ -35,6 +36,8 @@ test("график: загрузка, строка состояния, смен�
   // настройки сохраняются между загрузками
   await page.reload();
   await expect(page.getByRole("button", { name: "Индикаторы (3)" })).toBeVisible();
+  await page.getByRole("button", { name: "Слои" }).click();
+  await expect(page.getByRole("dialog", { name: "Слои" }).getByLabel("Профиль объёма")).toBeChecked();
 });
 
 test("график: смена инструмента и сигналы по инструменту", async ({ page }) => {
@@ -384,4 +387,27 @@ test("масштаб: кнопки «+/−», клавиши, колесо и т
   expect(Math.abs((await width()) - w2)).toBeLessThan(0.5);
   await page.getByRole("button", { name: "показать последние свечи" }).click();
   await expect.poll(width).toBeGreaterThan(w0 * 0.95);
+});
+
+test("десктоп: ширина панели объектов меняется перетаскиванием и сохраняется", async ({ page }) => {
+  const calls: string[] = [];
+  await mock(page, calls);
+  await page.goto("/chart/BTCUSDT/4h");
+  await expect(page.getByTestId("terminal").locator("canvas").first()).toBeVisible();
+  const aside = page.getByRole("complementary", { name: "панель объектов" });
+  const w0 = (await aside.boundingBox())!.width;
+  expect(Math.round(w0)).toBe(300);
+  const sep = aside.getByRole("separator", { name: "ширина панели объектов" });
+  const box = (await sep.boundingBox())!;
+  await page.mouse.move(box.x + box.width / 2, box.y + 200);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2 - 120, box.y + 200, { steps: 6 });
+  await page.mouse.up();
+  await expect.poll(async () => Math.round((await aside.boundingBox())!.width)).toBe(420);
+  await sep.focus();
+  await page.keyboard.press("ArrowRight");
+  await expect.poll(async () => Math.round((await aside.boundingBox())!.width)).toBe(400);
+  await page.reload();
+  await expect(page.getByTestId("terminal").locator("canvas").first()).toBeVisible();
+  await expect.poll(async () => Math.round((await page.getByRole("complementary", { name: "панель объектов" }).boundingBox())!.width)).toBe(400);
 });
