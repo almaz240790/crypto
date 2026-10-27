@@ -145,7 +145,8 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
       if (!e) return;
       if (collapsed) collapsedRef.current.add(key);
       else collapsedRef.current.delete(key);
-      e.series.forEach((sr) => sr.applyOptions({ visible: !collapsed }));
+      // в свёрнутой панели прячем и метки последнего значения на шкале (иначе «0.0» и огромные числа OI)
+      e.series.forEach((sr) => sr.applyOptions({ visible: !collapsed, lastValueVisible: !collapsed && sr.seriesType() === "Line" }));
       termRef.current?.setPaneHeight(e.series[0]!.getPane(), collapsed ? PANE_COLLAPSED_PX : e.height);
       requestAnimationFrame(relayout);
     },
