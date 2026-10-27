@@ -300,6 +300,6 @@ test("журнал: импорт сделок с биржи", async ({ page }) =
   await form.getByRole("button", { name: "Импортировать" }).click();
   await expect(page.getByRole("status")).toContainText("Импортировано 1 сделок");
   await expect(page.getByRole("cell", { name: "BTCUSDT short" })).toBeVisible();
-  await expect(page.getByText("импорт", { exact: true })).toBeVisible();
+  await expect(page.getByRole("cell", { name: "binance:1 импорт" })).toBeVisible();
   expect(calls).toContain("POST /v1/journal/import");
 });
