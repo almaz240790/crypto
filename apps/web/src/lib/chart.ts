@@ -54,3 +54,19 @@ export const getPatterns = (symbol: string, tf: Timeframe, since?: number, until
 export type Explanation = { text: string; source: "llm" | "cache" | "template"; reason?: string; footer: string; generated_at: string; facts_hash: string; prompt_version: string; used?: number; limit?: number | null };
 /** Объяснение паттерна по фактам (план 2A.10.3): Free — шаблон, Pro+ — текст модели с постпроверкой. */
 export const explainPattern = (symbol: string, tf: Timeframe, pattern_id: number) => api<Explanation>("/v1/chart/explain", { method: "POST", json: { symbol, tf, pattern_id } });
+
+/** Короткие подписи маркеров паттернов (план 2A.10.1): без оценочных слов. */
+export const PATTERN_GLYPH: Record<string, string> = {
+  engulfing: "ПГ",
+  pin_bar: "ПБ",
+  doji: "Д",
+  doji_dragonfly: "Д↑",
+  doji_gravestone: "Д↓",
+  star: "ЗВ",
+  three_line: "3",
+  harami: "ХР",
+  inside_bar: "ВБ",
+  inside_bar_breakout: "ВБ›",
+  marubozu: "МБ",
+  tweezer: "ПЦ",
+};
