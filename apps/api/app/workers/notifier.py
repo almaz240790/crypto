@@ -15,6 +15,7 @@ import contextlib
 import logging
 import signal as os_signal
 import time
+from datetime import UTC, datetime
 from typing import Any
 
 import redis
@@ -26,7 +27,7 @@ from app.config import settings
 from app.db import SessionLocal
 from app.models import Signal, SignalEvent
 from app.monitor import run_monitor
-from app.notify import notify_event, notify_new_signal
+from app.notify import notify_event, notify_new_signal, run_digest, run_journal_reports
 from app.snapshots import recompute
 from app.subscriptions import run_hourly
 
@@ -37,6 +38,9 @@ POLL = 30
 MONITOR_EVERY = 60
 STATS_EVERY = 600
 BILLING_EVERY = 3600
+# дайджесты и отчёт по журналу — раз в сутки после этого часа UTC (понедельник: + недельные)
+DIGEST_HOUR_UTC = 6
+KEY_DIGEST = "notifier:digest:"
 HEARTBEAT_KEY = "notifier:heartbeat"
 KEY_SIGNAL = "notifier:last_signal_id"
 KEY_EVENT = "notifier:last_event_id"
@@ -88,6 +92,22 @@ def billing_once() -> dict[str, Any]:
         return run_hourly(db)
 
 
+def digest_due(now: datetime, done_date: str | None) -> bool:
+    """Пора ли слать дайджесты: час настал и за эту дату ещё не слали."""
+    return now.hour >= DIGEST_HOUR_UTC and done_date != now.strftime("%Y-%m-%d")
+
+
+def digests_once(now: datetime) -> dict[str, int]:
+    """Синхронно: ежедневный дайджест; по понедельникам — недельный и отчёт по журналу."""
+    out: dict[str, int] = {}
+    with SessionLocal() as db:
+        out["daily"] = run_digest(db, "daily", now)
+        if now.weekday() == 0:
+            out["weekly"] = run_digest(db, "weekly", now)
+            out["journal"] = run_journal_reports(db, now)
+    return out
+
+
 def monitor_once() -> str:
     """Синхронно: один прогон монитора. Возвращает общий статус."""
     r = redis.from_url(settings.redis_url, socket_timeout=5)
@@ -116,6 +136,14 @@ class Notifier:
                     await asyncio.to_thread(billing_once)
                 except Exception:
                     log.exception("цикл подписок")
+            now = datetime.now(tz=UTC)
+            done = await self.redis.get(KEY_DIGEST + "date")
+            if digest_due(now, done.decode() if done else None):
+                await self.redis.set(KEY_DIGEST + "date", now.strftime("%Y-%m-%d"), ex=3 * 86400)
+                try:
+                    log.info("дайджесты: %s", await asyncio.to_thread(digests_once, now))
+                except Exception:
+                    log.exception("дайджесты: ошибка")
             if time.monotonic() >= next_monitor:
                 next_monitor = time.monotonic() + MONITOR_EVERY
                 try:

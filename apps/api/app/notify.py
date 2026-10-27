@@ -16,14 +16,16 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.journal_analytics import TradeRow, analytics
 from app.mail import send_mail
 from app.models import (
     Instrument,
+    JournalEntry,
     NotificationLog,
     NotificationSettings,
     RiskProfile,
@@ -356,6 +358,121 @@ def run_digest(db: Session, period: str = "daily", now: datetime | None = None) 
         sent += 1
     db.commit()
     log.info("дайджест %s: отправлено %d из %d", period, sent, len(rows))
+    return sent
+
+
+# --- еженедельный отчёт по журналу (план 3.8 v2) -----------------------------------------------
+
+WEEKDAYS_RU = ("пн", "вт", "ср", "чт", "пт", "сб", "вс")
+GRADE_TITLES = {"A": "A", "B": "B", "C": "C", "none": "без сигнала"}
+
+
+def _bucket_line(title: str, b: dict[str, Any]) -> str:
+    wr = f"{b['winrate'] * 100:.0f} %" if b["winrate"] is not None else "—"
+    total = _fmt_r(Decimal(b["sum_r"]))
+    return f"  {title:<14} сделок {b['closed']}/{b['trades']}  итог {total}  винрейт {wr}"
+
+
+def journal_report_lines(a: dict[str, Any], now: datetime) -> list[str]:
+    """Текст отчёта по готовой аналитике (чистая функция, тестируется без БД)."""
+    t = a["total"]
+    wr = f"{t['winrate'] * 100:.0f} %" if t["winrate"] is not None else "—"
+    avg = _fmt_r(Decimal(t["avg_r"])) if t["avg_r"] is not None else "—"
+    lines = [
+        f"Platform — отчёт по журналу за неделю, {now.strftime('%d.%m.%Y')}",
+        "",
+        f"Сделок: {t['trades']}, закрыто {t['closed']}, итог {_fmt_r(Decimal(t['sum_r']))}, "
+        f"средний R {avg}, винрейт {wr}.",
+    ]
+    dd = a["equity"]["max_drawdown_r"]
+    if dd is not None:
+        lines.append(f"Максимальная просадка за неделю: {_fmt_r(-Decimal(dd))}.")
+    lines += ["", "По инструментам:"]
+    lines += [_bucket_line(str(b["key"]), b) for b in a["by_symbol"][:8]]
+    lines += ["", "По градациям сигналов:"]
+    lines += [
+        _bucket_line(GRADE_TITLES.get(str(b["key"]), str(b["key"])), b) for b in a["by_grade"]
+    ]
+    lines += ["", "По дням недели:"]
+    lines += [_bucket_line(WEEKDAYS_RU[int(b["key"])], b) for b in a["by_weekday"]]
+    e = a["errors"]
+    lines += [
+        "",
+        "Типовые ошибки:",
+        f"  ранний выход: {e['early_exit']['count']} из {e['early_exit']['of']} сделок по сигналу",
+        f"  вход без сигнала: {e['no_signal']['count']} из {e['no_signal']['of']}",
+    ]
+    if e["risk_exceeded"]["budget_usd"] is None:
+        lines.append("  превышение риска: не оценивается — задайте депозит в настройках")
+    else:
+        lines.append(
+            f"  превышение риска: {e['risk_exceeded']['count']} из {e['risk_exceeded']['of']} "
+            f"(бюджет {e['risk_exceeded']['budget_usd']} USDT)"
+        )
+    lines += ["", f"Журнал: {settings.frontend_url}/journal", "", DISCLAIMER]
+    return lines
+
+
+def journal_report_text(db: Session, user: User, now: datetime) -> str | None:
+    """Отчёт за 7 дней; None, если за неделю нет закрытых сделок."""
+    since = now - timedelta(days=7)
+    rows = db.execute(
+        select(JournalEntry, Instrument.symbol, Signal.grade, SignalResult.realized_r)
+        .join(Instrument, Instrument.id == JournalEntry.instrument_id)
+        .outerjoin(Signal, Signal.id == JournalEntry.signal_id)
+        .outerjoin(SignalResult, SignalResult.signal_id == JournalEntry.signal_id)
+        .where(
+            JournalEntry.user_id == user.id,
+            or_(JournalEntry.exit_at >= since, JournalEntry.entry_at >= since),
+        )
+    ).all()
+    trades = [
+        TradeRow(
+            symbol=sym,
+            direction=e.direction,
+            entry_at=e.entry_at,
+            exit_at=e.exit_at,
+            entry_price=e.entry_price,
+            stop_loss=e.stop_loss,
+            size=e.size,
+            realized_r=e.realized_r,
+            signal_id=e.signal_id,
+            grade=grade,
+            system_r=sys_r,
+        )
+        for e, sym, grade, sys_r in rows
+    ]
+    if not any(t.realized_r is not None for t in trades):
+        return None
+    risk = db.get(RiskProfile, user.id)
+    a = analytics(trades, risk.deposit if risk else None, risk.risk_pct if risk else None)
+    return "\n".join(journal_report_lines(a, now))
+
+
+def run_journal_reports(db: Session, now: datetime | None = None) -> int:
+    """Еженедельно (по понедельникам, вместе с дайджестом): всем, у кого письма не выключены
+    и за неделю есть закрытые сделки. Одна отправка на дату."""
+    now = now or datetime.now(tz=UTC)
+    ref = f"journal:{now.strftime('%Y-%m-%d')}"
+    rows = db.execute(
+        select(User, NotificationSettings)
+        .join(NotificationSettings, NotificationSettings.user_id == User.id)
+        .where(User.deleted_at.is_(None), User.email_verified_at.is_not(None))
+        .where(NotificationSettings.email_digest != "off")
+    ).all()
+    sent = 0
+    for user, ns in rows:
+        text = journal_report_text(db, user, now)
+        if text is None or not _record(db, user.id, "journal", ref):
+            continue
+        send_mail(
+            user.email,
+            f"Platform: отчёт по журналу {now.strftime('%d.%m')}",
+            text + unsubscribe_footer(ns),
+        )
+        sent += 1
+    db.commit()
+    log.info("отчёт по журналу: отправлено %d из %d", sent, len(rows))
     return sent
 
 
