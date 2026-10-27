@@ -20,6 +20,7 @@ dependencies = [
     "python-multipart>=0.0.12",
     "pywebpush>=2.0",
     "sentry-sdk[fastapi]>=2.0",
+    "anthropic>=1.0",
 ]
 
 [tool.uv.sources]
