@@ -108,9 +108,9 @@ export default function AlertsPage() {
           </p>
           <form onSubmit={submit} className={s.form} aria-label={t("новый алерт")}>
             <label>{t("тип")}<select aria-label={t("тип алерта")} value={d.type} onChange={(e) => onType(e.target.value as AlertType)}>
-                {(Object.keys(TYPE_LABEL) as AlertType[]).map((t) => (
-                  <option key={t} value={t}>
-                    {TYPE_LABEL[t]}
+                {(Object.keys(TYPE_LABEL) as AlertType[]).map((k) => (
+                  <option key={k} value={k}>
+                    {t(TYPE_LABEL[k])}
                   </option>
                 ))}
               </select>
@@ -226,7 +226,7 @@ export default function AlertsPage() {
             <label>{t("срабатывание")}<select aria-label={t("частота")} value={d.frequency} onChange={(e) => set("frequency", e.target.value as AlertFrequency)}>
                 {(Object.keys(FREQ_LABEL) as AlertFrequency[]).map((f) => (
                   <option key={f} value={f}>
-                    {FREQ_LABEL[f]}
+                    {t(FREQ_LABEL[f])}
                   </option>
                 ))}
               </select>
@@ -262,9 +262,9 @@ export default function AlertsPage() {
                       {a.symbol ? <Link href={`/chart/${a.symbol}/${a.timeframe ?? "4h"}`}>{a.text}</Link> : a.text}
                       {a.note && <div className="caption">{a.note}</div>}
                     </Td>
-                    <Td mobile="hidden">{FREQ_LABEL[a.frequency]}</Td>
+                    <Td mobile="hidden">{t(FREQ_LABEL[a.frequency])}</Td>
                     <Td>
-                      <Badge tone={tone(a.status)}>{STATUS_LABEL[a.status]}</Badge>
+                      <Badge tone={tone(a.status)}>{t(STATUS_LABEL[a.status])}</Badge>
                     </Td>
                     <Td mobile="hidden">{a.last_triggered_at ? `${formatTimeUTC(a.last_triggered_at)} (${a.triggers_count})` : "—"}</Td>
                     <Td mobile="right">

@@ -158,8 +158,8 @@ export function NotificationsPanel({ userId, onMessage }: { userId: number; onMe
                   <Button type="button" size="sm" variant={pushState === "on" ? "default" : "primary"} onClick={async () => {
                     try {
                       const msg = pushState === "on" ? await unsubscribePush() : await subscribePush();
-                      setPushState(pushState === "on" ? "off" : msg === t("подписка включена") ? "on" : "off");
-                      onMessage(msg, msg === t("подписка включена") || msg === t("подписка выключена") ? "ok" : "error");
+                      setPushState(pushState === "on" ? "off" : msg === "подписка включена" ? "on" : "off");
+                      onMessage(t(msg), msg === "подписка включена" || msg === "подписка выключена" ? "ok" : "error");
                     } catch (err) {
                       onMessage(err instanceof Error ? err.message : t("ошибка"), "error");
                     }

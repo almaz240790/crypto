@@ -78,7 +78,7 @@ export function formatTimeUTC(
 }
 
 /** Длительность в часах → "2 ч 14 мин", "3 д 5 ч", "40 мин". */
-export function formatDuration(hours: number | string | null | undefined): string {
+export function formatDuration(hours: number | string | null | undefined, t: (s: string, vars?: Record<string, string | number>) => string = (s, v) => s.replace(/\{(\w+)\}/g, (_, k: string) => String(v?.[k] ?? ""))): string {
   if (hours === null || hours === undefined || hours === "") return "—";
   const h = typeof hours === "number" ? hours : Number(hours);
   if (!Number.isFinite(h) || h < 0) return "—";
@@ -86,9 +86,9 @@ export function formatDuration(hours: number | string | null | undefined): strin
   const days = Math.floor(totalMin / 1440);
   const hrs = Math.floor((totalMin % 1440) / 60);
   const min = totalMin % 60;
-  if (days > 0) return `${days}${NBSP}д ${hrs}${NBSP}ч`;
-  if (hrs > 0) return `${hrs}${NBSP}ч ${min}${NBSP}мин`;
-  return `${min}${NBSP}мин`;
+  if (days > 0) return t("{d} д {h} ч", { d: days, h: hrs });
+  if (hrs > 0) return t("{h} ч {m} мин", { h: hrs, m: min });
+  return t("{m} мин", { m: min });
 }
 
 /** Склонение: 1 сигнал, 2 сигнала, 5 сигналов. */

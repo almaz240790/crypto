@@ -228,7 +228,7 @@ export default async function Home() {
                 <EquityChart points={stats.equity} />
                 <p className="caption" style={{ marginTop: 8 }}>
                   Профит-фактор {num(m.profit_factor, (n) => n.toFixed(2))}, серия убытков до{" "}
-                  {m.max_losing_streak}, средняя длительность {formatDuration(m.avg_duration_hours)}.
+                  {m.max_losing_streak}, средняя длительность {formatDuration(m.avg_duration_hours, t)}.
                   {stats.worst_drawdowns[0] &&
                     ` Худшая просадка ${formatR(-stats.worst_drawdowns[0].depth_r)} с ${formatTimeUTC(stats.worst_drawdowns[0].start)}.`}
                 </p>
@@ -353,8 +353,8 @@ export default async function Home() {
           <div className={s.faq}>
             {FAQ.map((f) => (
               <details key={f.q}>
-                <summary>{f.q}</summary>
-                <div className={s.a}>{f.a}</div>
+                <summary>{t(f.q)}</summary>
+                <div className={s.a}>{t(f.a)}</div>
               </details>
             ))}
           </div>

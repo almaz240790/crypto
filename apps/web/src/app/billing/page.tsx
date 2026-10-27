@@ -34,7 +34,7 @@ function Inner() {
   async function check(id: string) {
     try {
       const p = await refreshPayment(id);
-      setToast(p.status === "paid" ? tr("Оплата подтверждена") : `Статус: ${PAYMENT_STATUS[p.status]}`);
+      setToast(p.status === "paid" ? tr("Оплата подтверждена") : tr("Статус: {s}", { s: tr(PAYMENT_STATUS[p.status]) }));
       await load();
     } catch (e) {
       setToast(e instanceof Error ? e.message : tr("ошибка"));
@@ -109,7 +109,7 @@ function Inner() {
                     {Number(p.discount_usd) > 0 && <span className="caption"> (−{p.discount_usd})</span>}
                   </Td>
                   <Td>
-                    <Badge tone={TONE[p.status]}>{PAYMENT_STATUS[p.status]}</Badge>
+                    <Badge tone={TONE[p.status]}>{tr(PAYMENT_STATUS[p.status])}</Badge>
                   </Td>
                   <Td mobile="hidden" className="text-2">
                     {p.actually_paid ? `${p.actually_paid} ${p.pay_currency ?? ""}` : p.provider === "balance" ? tr("с баланса") : "—"}
