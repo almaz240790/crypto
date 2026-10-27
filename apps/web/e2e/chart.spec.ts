@@ -253,7 +253,7 @@ test("алерты на графике: из горизонтальной лин
   await expect(term.locator("canvas").first()).toBeVisible();
   await page.keyboard.press("Alt+h");
   const box = (await term.boundingBox())!;
-  await page.mouse.click(box.x + box.width * 0.4, box.y + box.height * 0.3);
+  await page.mouse.click(box.x + box.width * 0.4, box.y + box.height * 0.55);
   await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 1");
   await page.getByRole("button", { name: "алерт на уровне" }).click();
   await expect(page.getByRole("status")).toContainText("Алерт создан: BTCUSDT: цена пересекла");
