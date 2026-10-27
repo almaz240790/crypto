@@ -61,3 +61,16 @@ class ChartLayout(Base):
     data: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     updated_at: Mapped[int] = mapped_column(BigInteger)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class SavedScreen(Base):
+    """Сохранённый набор фильтров скринера (план 3.6, v2)."""
+
+    __tablename__ = "saved_screens"
+    __table_args__ = (UniqueConstraint("user_id", "name", name="uq_saved_screens_user_name"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    name: Mapped[str] = mapped_column(String(60))
+    filters: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

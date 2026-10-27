@@ -37,7 +37,7 @@ from app.models import (
     StrategyVersion,
     User,
 )
-from app.screener import screener_cached
+from app.screener import CSV_COLUMNS, csv_rows, screener_cached
 from app.snapshots import find as find_snapshot
 from app.stats import filter_trades, load_trades, stats_payload, trade_rows, trades_from_run
 from engine.backtest import BacktestTrade
@@ -723,6 +723,34 @@ def screener(
         wanted = {s.strip().upper() for s in symbols.split(",") if s.strip()}
         rows = [r for r in rows if r["symbol"] in wanted]
     return {"items": rows, "generated_at": when.isoformat()}
+
+
+@router.get("/screener/export.csv")
+def screener_export(
+    symbols: str | None = Query(None, description="через запятую — только эти инструменты"),
+    user: User = Depends(auth.current_user),
+    db: Session = Depends(auth.get_db),
+) -> StreamingResponse:
+    """Экспорт скринера в CSV (план 3.6 v2) — Pro и выше, как и остальной CSV."""
+    ent = entitlements_for(db, user)
+    if not ent.csv_export:
+        raise HTTPException(403, "экспорт CSV доступен на тарифе Pro")
+    rows, when = screener_cached(db)
+    if symbols:
+        wanted = {s.strip().upper() for s in symbols.split(",") if s.strip()}
+        rows = [r for r in rows if r["symbol"] in wanted]
+
+    def gen() -> Iterator[str]:
+        yield ",".join(CSV_COLUMNS) + "\n"
+        for row in csv_rows(rows):
+            yield ",".join(row) + "\n"
+
+    name = f"platform-screener-{when.strftime('%Y%m%d-%H%M')}.csv"
+    return StreamingResponse(
+        gen(),
+        media_type="text/csv; charset=utf-8",
+        headers={"content-disposition": f"attachment; filename={name}"},
+    )
 
 
 @router.get("/strategies")

@@ -15,7 +15,9 @@ const SCREEN = (sym: string, zoneAtr: string | null) => ({
   atr_pct: "1.2", atr_percentile: "48", beta_btc: sym === "BTCUSDT" ? "1" : "1.3", funding: "0.01", funding_pct: "55", oi_change_24h: "2.1", liq_long_24h: "1200000", liq_short_24h: "800000",
 });
 
-async function mock(page: Page, calls: string[], state: { watch: string[]; journal: Record<string, unknown>[]; twoFactor?: boolean }) {
+async function mock(page: Page, calls: string[], state: { watch: string[]; journal: Record<string, unknown>[]; twoFactor?: boolean; screens?: Record<string, unknown>[]; alerts?: Record<string, unknown>[] }) {
+  state.screens ??= [];
+  state.alerts ??= [];
   await page.context().addCookies([{ name: "pl_auth", value: "1", url: "http://localhost:3101" }]);
   await page.route("**/v1/**", (route) => {
     const req = route.request();
@@ -26,6 +28,22 @@ async function mock(page: Page, calls: string[], state: { watch: string[]; journ
     if (p === "/v1/auth/refresh") return json(200, { access_token: "t" });
     if (p === "/v1/auth/me") return json(200, ME);
     if (p === "/v1/instruments") return json(200, INSTR);
+    if (p === "/v1/screener/screens" && req.method() === "GET") return json(200, state.screens);
+    if (p === "/v1/screener/screens" && req.method() === "PUT") {
+      const b = req.postDataJSON() as { name: string; filters: Record<string, string> };
+      state.screens = [...state.screens!.filter((x) => x.name !== b.name), { name: b.name, filters: b.filters, created_at: "" }];
+      return json(200, state.screens[state.screens.length - 1]);
+    }
+    if (p === "/v1/screener/screens" && req.method() === "DELETE") {
+      state.screens = state.screens!.filter((x) => x.name !== u.searchParams.get("name"));
+      return route.fulfill({ status: 204 });
+    }
+    if (p === "/v1/screener/export.csv") return route.fulfill({ status: 200, contentType: "text/csv", headers: { "content-disposition": "attachment; filename=platform-screener.csv" }, body: "symbol,price\nBTCUSDT,65000\n" });
+    if (p === "/v1/alerts" && req.method() === "POST") {
+      const b = req.postDataJSON() as Record<string, unknown>;
+      state.alerts!.push(b);
+      return json(201, { id: state.alerts!.length, ...b, status: "active", text: "", triggers_count: 0 });
+    }
     if (p === "/v1/screener") {
       const want = u.searchParams.get("symbols")?.split(",");
       const all = [SCREEN("BTCUSDT", "0.4"), SCREEN("ETHUSDT", null)];
@@ -225,4 +243,38 @@ test("настройки: включить и отключить 2FA", async ({ 
   await tf.getByRole("button", { name: "Отключить 2FA" }).click();
   await expect(tf).toContainText("Выключена");
   expect(calls).toContain("POST /v1/me/2fa/disable");
+});
+
+test("скринер v2: фильтры, сохранённый скрин, CSV, алерт на возврат в зону", async ({ page }) => {
+  const calls: string[] = [];
+  const state = { watch: [] as string[], journal: [] as Record<string, unknown>[], screens: [] as Record<string, unknown>[], alerts: [] as Record<string, unknown>[] };
+  await mock(page, calls, state);
+  await page.goto("/screener");
+  await expect(page.getByText("2 из 2")).toBeVisible();
+  // W1 up — только BTCUSDT; «падение от 3 %» — никого
+  await page.getByLabel("тренд W1").selectOption("up");
+  await expect(page.getByText("1 из 2")).toBeVisible();
+  await page.getByLabel("изменение за 24 ч").selectOption("down3");
+  await expect(page.getByText("По фильтрам ничего нет.")).toBeVisible();
+  await page.getByLabel("изменение за 24 ч").selectOption("");
+  // сохранить скрин, сбросить, применить
+  await page.getByLabel("имя скрина").fill("лонги W1");
+  await page.getByRole("button", { name: "Сохранить скрин" }).click();
+  await expect(page.getByRole("status")).toContainText("Скрин «лонги W1» сохранён");
+  expect(state.screens[0]).toMatchObject({ name: "лонги W1", filters: { w1: "up" } });
+  await page.getByRole("button", { name: "сбросить" }).click();
+  await expect(page.getByText("2 из 2")).toBeVisible();
+  await page.getByLabel("сохранённый скрин").selectOption("лонги W1");
+  await expect(page.getByText("1 из 2")).toBeVisible();
+  // CSV — только отфильтрованные символы
+  const dl = page.waitForEvent("download");
+  await page.getByRole("button", { name: "CSV" }).click();
+  expect((await dl).suggestedFilename()).toBe("platform-screener.csv");
+  expect(calls).toContain("GET /v1/screener/export.csv");
+  // алерт на возврат в зону из строки BTCUSDT
+  await page.getByRole("button", { name: "алерт: BTCUSDT вернётся в зону" }).click();
+  await expect(page.getByRole("status")).toContainText("Алерт создан: BTCUSDT — возврат в зону OB");
+  expect(state.alerts[0]).toMatchObject({ symbol: "BTCUSDT", type: "zone", condition: { kind: "ob", dir: "up" } });
+  await page.getByRole("button", { name: "удалить скрин лонги W1" }).click();
+  await expect(page.getByLabel("сохранённый скрин")).toContainText("сохранённых скринов нет");
 });

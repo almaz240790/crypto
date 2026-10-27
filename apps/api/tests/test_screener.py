@@ -45,3 +45,31 @@ def test_nearest_zone_distance() -> None:
     assert inside and inside["distance_atr"] == "0"
     assert nearest_zone([], Decimal(100), Decimal(2)) is None
     _ = t0
+
+
+def test_csv_rows_flatten_and_skip_errors() -> None:
+    from app.screener import CSV_COLUMNS, csv_rows
+
+    rows = [
+        {
+            "symbol": "BTCUSDT",
+            "price": "65000",
+            "change_24h": "1.5",
+            "bias": "long",
+            "last_event": {"type": "bos", "direction": "up", "time": "2026-10-24T16:00:00Z"},
+            "zone": {
+                "kind": "ob",
+                "direction": "up",
+                "top": "64500",
+                "bottom": "64000",
+                "distance_atr": "0.4",
+            },
+            "funding": None,
+        },
+        {"symbol": "BADUSDT", "error": "нет свечей"},
+    ]
+    out = csv_rows(rows)
+    assert len(out) == 1 and len(out[0]) == len(CSV_COLUMNS)
+    row = dict(zip(CSV_COLUMNS, out[0], strict=True))
+    assert row["symbol"] == "BTCUSDT" and row["last_event_type"] == "bos"
+    assert row["zone_distance_atr"] == "0.4" and row["funding"] == "" and row["w1_trend"] == ""
