@@ -1,7 +1,7 @@
 "use client";
 
 import { createTerminal, tokensFromElement, type Candle, type ChartType, type Terminal, type Timeframe } from "@platform/charts";
-import { INDICATORS, defaultParams, indicatorById, type IndicatorSpec } from "@platform/charts";
+import { DrawingController, DrawingsPrimitive, INDICATORS, defaultParams, indicatorById, visibleOn, type Drawing, type DrawingType, type DrawingsState, type IndicatorSpec, type Layer, type LayerContext, type Point, TF_SECONDS } from "@platform/charts";
 import { LineSeries, createSeriesMarkers, type ISeriesApi, type ISeriesMarkersPluginApi, type SeriesMarker, type Time, type UTCTimestamp } from "lightweight-charts";
 import { useEffect, useRef } from "react";
 import { BoxPrimitive } from "@/components/chart/BoxPrimitive";
@@ -29,7 +29,33 @@ type Props = {
   panels: PanelKey[];
   tick: string | null;
   onNeedOlder: (before: number) => Promise<{ candles: Candle[]; hasOlder: boolean } | null>;
+  drawings?: {
+    state: DrawingsState;
+    tool: DrawingType | null;
+    magnet: boolean;
+    draft: Drawing | null;
+    onCreate: (d: Drawing) => void;
+    onMove: (id: string, points: Point[], final: boolean) => void;
+    onSelect: (id: string | null) => void;
+    onDraft: (d: Drawing | null) => void;
+    onToolDone: () => void;
+  };
 };
+
+/** Слой-обёртка над примитивом: менеджер слоёв терминала сам переподключает его при смене типа графика. */
+class PrimitiveLayer implements Layer {
+  private main: LayerContext["main"] | null = null;
+  constructor(readonly id: string, private readonly primitive: { attached?: unknown } & object) {}
+  attach(ctx: LayerContext): void {
+    this.main = ctx.main;
+    ctx.main.attachPrimitive(this.primitive as never);
+  }
+  detach(): void {
+    this.main?.detachPrimitive(this.primitive as never);
+    this.main = null;
+  }
+  setVisible(): void {}
+}
 
 function precisionOf(tick: string | null): { precision: number; minMove: number } {
   if (!tick) return { precision: 2, minMove: 0.01 };
@@ -41,18 +67,25 @@ function precisionOf(tick: string | null): { precision: number; minMove: number 
 type Pane = { spec: IndicatorSpec; paneIndex: number | null; series: Record<string, ISeriesApi<"Line" | "Histogram">> };
 
 /** Обёртка React над Terminal из packages/charts: данные, индикаторы, слои, тема. */
-export function TerminalView({ candles, current, tf, type, indicators, layersOn, layers, derivatives, panels, tick, onNeedOlder }: Props) {
+export function TerminalView({ candles, current, tf, type, indicators, layersOn, layers, derivatives, panels, tick, onNeedOlder, drawings }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
+  const tfRef = useRef(tf);
   const panesRef = useRef<Map<string, Pane>>(new Map());
   const cryptoRef = useRef<Map<PanelKey, { paneIndex: number; series: ISeriesApi<"Line" | "Histogram">[] }>>(new Map());
   const auxRef = useRef<ISeriesApi<"Line">[]>([]);
   const boxRef = useRef<BoxPrimitive | null>(null);
   const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
+  const drawPrimRef = useRef<DrawingsPrimitive | null>(null);
+  const ctrlRef = useRef<DrawingController | null>(null);
+  const drawingsRef = useRef(drawings);
+  const candlesRef = useRef<Candle[]>([]);
   const needOlderRef = useRef(onNeedOlder);
   useEffect(() => {
     needOlderRef.current = onNeedOlder;
-  }, [onNeedOlder]);
+    drawingsRef.current = drawings;
+    tfRef.current = tf;
+  }, [onNeedOlder, drawings, tf]);
 
   // создание терминала
   useEffect(() => {
@@ -69,7 +102,41 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
       },
     });
     termRef.current = term;
-    const obs = new MutationObserver(() => term.setTheme(tokensFromElement(el)));
+    const box = new BoxPrimitive();
+    boxRef.current = box;
+    term.layers.add(new PrimitiveLayer("zones", box));
+    const prim = new DrawingsPrimitive(tokensFromElement(el));
+    prim.touch = typeof window !== "undefined" && window.matchMedia("(pointer: coarse)").matches;
+    drawPrimRef.current = prim;
+    term.layers.add(new PrimitiveLayer("drawings", prim));
+    const ctrl = new DrawingController(
+      el,
+      prim.projector!,
+      {
+        getDrawings: () => {
+          const d = drawingsRef.current;
+          return d ? visibleOn(d.state, tfRef.current) : [];
+        },
+        getCandles: () => candlesRef.current,
+        tfSeconds: TF_SECONDS[tfRef.current],
+        timeframe: null,
+        touch: prim.touch,
+        magnet: true,
+        newId: () => `d_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`,
+      },
+      {
+        onCreate: (d) => drawingsRef.current?.onCreate(d),
+        onMove: (id, pts, final) => drawingsRef.current?.onMove(id, pts, final),
+        onSelect: (id) => drawingsRef.current?.onSelect(id),
+        onDraft: (d) => drawingsRef.current?.onDraft(d),
+        onDone: () => drawingsRef.current?.onToolDone(),
+      },
+    );
+    ctrlRef.current = ctrl;
+    const obs = new MutationObserver(() => {
+      term.setTheme(tokensFromElement(el));
+      prim.update({ tokens: tokensFromElement(el) });
+    });
     obs.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
     const onMq = () => term.setTheme(tokensFromElement(el));
@@ -85,6 +152,9 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
       auxRef.current = [];
       boxRef.current = null;
       markersRef.current = null;
+      ctrl.destroy();
+      ctrlRef.current = null;
+      drawPrimRef.current = null;
       term.destroy();
       termRef.current = null;
     };
@@ -99,6 +169,9 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
     const all = current ? [...candles, current] : candles;
     term.setCandles(all, true);
     term.resetView(150);
+    candlesRef.current = all;
+    drawPrimRef.current?.projector?.setBars(all.map((c) => c.time), TF_SECONDS[tf]);
+    drawPrimRef.current?.update({});
     const { precision, minMove } = precisionOf(tick);
     term.chart.applyOptions({ localization: { priceFormatter: (p: number) => p.toFixed(precision) } });
     void minMove;
@@ -108,10 +181,27 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
   useEffect(() => {
     const term = termRef.current;
     if (term && current) term.update(current);
-  }, [current]);
+    if (current) {
+      const all = [...candles, current];
+      candlesRef.current = all;
+      drawPrimRef.current?.projector?.setBars(all.map((c) => c.time), TF_SECONDS[tf]);
+    }
+  }, [current, candles, tf]);
+
+  // рисунки: синхронизируем примитив и контроллер с внешним состоянием
+  useEffect(() => {
+    const prim = drawPrimRef.current;
+    const ctrl = ctrlRef.current;
+    if (!prim || !ctrl) return;
+    prim.update({ drawings: drawings ? visibleOn(drawings.state, tf) : [], draft: drawings?.draft ?? null, selectedId: drawings?.state.selectedId ?? null });
+    if (ctrl.tool !== (drawings?.tool ?? null)) ctrl.setTool(drawings?.tool ?? null);
+    ctrl.setMagnet(drawings?.magnet ?? true);
+  }, [drawings, tf]);
 
   useEffect(() => {
     termRef.current?.setType(type);
+    // маркеры привязаны к старой серии — пересоздать при следующем расчёте слоёв
+    markersRef.current = null;
   }, [type]);
 
   // индикаторы: по активному списку создаём панели/серии, считаем на всех свечах
@@ -199,10 +289,7 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
     const main = term.mainSeries;
     auxRef.current.forEach((sr) => term.chart.removeSeries(sr));
     auxRef.current = [];
-    if (!boxRef.current) {
-      boxRef.current = new BoxPrimitive();
-      main.attachPrimitive(boxRef.current);
-    }
+    if (!boxRef.current) return;
     const first = candles[0]!.time;
     const last = (current ?? candles[candles.length - 1]!).time;
     const step = (candles[1]?.time ?? first + 1) - first;
@@ -258,7 +345,7 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
     markers.sort((a, b) => (a.time as number) - (b.time as number));
     if (!markersRef.current) markersRef.current = createSeriesMarkers(main, markers);
     else markersRef.current.setMarkers(markers);
-  }, [layers, layersOn, candles, current, tf]);
+  }, [layers, layersOn, candles, current, tf, type]);
 
   return (
     <div className={s.chart}>

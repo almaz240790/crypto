@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useSearchParams } from "next/navigation";
+import { Suspense, useCallback, useEffect, useState, type FormEvent } from "react";
 import { AppShell } from "@/components/app/AppShell";
 import s from "@/components/tools/tools.module.css";
 import { Button, EmptyState, Input, Panel, Select, Table, Td, Th } from "@/components/ui";
@@ -17,7 +18,8 @@ function toLocalInput(iso: string | null): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
-export default function JournalPage() {
+function JournalInner() {
+  const sp = useSearchParams();
   const [items, setItems] = useState<JournalEntry[] | null>(null);
   const [summary, setSummary] = useState<JournalSummary | null>(null);
   const [instruments, setInstruments] = useState<Instrument[]>([]);
@@ -37,6 +39,22 @@ export default function JournalPage() {
       .then((r) => setInstruments(r))
       .catch(() => {});
   }, [load]);
+  // префилл из терминала (позиция на графике): /journal?symbol&direction&entry&stop&tp
+  useEffect(() => {
+    const entry = sp.get("entry");
+    if (!entry) return;
+    queueMicrotask(() =>
+      setForm({
+        ...EMPTY,
+        symbol: sp.get("symbol") ?? "",
+        direction: sp.get("direction") === "short" ? "short" : "long",
+        entry_at: toLocalInput(new Date().toISOString()),
+        entry_price: entry,
+        stop_loss: sp.get("stop") ?? "",
+        tp: sp.get("tp") ?? "",
+      }),
+    );
+  }, [sp]);
 
   const startEdit = (e: JournalEntry) => {
     setEditId(e.id);
@@ -251,5 +269,13 @@ export default function JournalPage() {
         </Panel>
       </div>
     </AppShell>
+  );
+}
+
+export default function JournalPage() {
+  return (
+    <Suspense fallback={null}>
+      <JournalInner />
+    </Suspense>
   );
 }

@@ -46,3 +46,44 @@ test("график: смена инструмента и сигналы по и�
   await expect(page).toHaveURL(/\/chart\/ETHUSDT\/4h$/);
   await expect(page.getByRole("link", { name: "1M" })).not.toHaveAttribute("aria-disabled", "true");
 });
+
+test("рисование: трендовая линия двумя кликами, отмена, удаление клавишей, позиция в журнал", async ({ page }) => {
+  const calls: string[] = [];
+  await mock(page, calls, true);
+  await page.goto("/chart/BTCUSDT/4h");
+  const term = page.getByTestId("terminal");
+  await expect(term.locator("canvas").first()).toBeVisible();
+  const count = page.getByTestId("drawings-count");
+  await expect(count).toHaveText("рисунков: 0");
+  await page.getByRole("button", { name: "Рисовать" }).click();
+  await page.getByRole("dialog", { name: "Рисование" }).getByRole("button", { name: "Трендовая линия" }).click();
+  await expect(page.getByRole("button", { name: /Рисую: Трендовая линия/ })).toBeVisible();
+  const box = (await term.boundingBox())!;
+  await page.mouse.click(box.x + box.width * 0.3, box.y + box.height * 0.4);
+  await page.mouse.click(box.x + box.width * 0.6, box.y + box.height * 0.3);
+  await expect(count).toHaveText("рисунков: 1");
+  await expect(page.getByRole("region", { name: "выбранный рисунок" })).toContainText("Трендовая линия");
+  await page.getByRole("button", { name: "закончить рисование" }).click();
+  await page.getByRole("button", { name: "отменить" }).click();
+  await expect(count).toHaveText("рисунков: 0");
+  await page.getByRole("button", { name: "повторить" }).click();
+  await expect(count).toHaveText("рисунков: 1");
+  // выбор кликом по телу и удаление клавишей
+  await page.mouse.click(box.x + box.width * 0.45, box.y + box.height * 0.35);
+  await expect(page.getByRole("region", { name: "выбранный рисунок" })).toBeVisible();
+  await page.keyboard.press("Delete");
+  await expect(count).toHaveText("рисунков: 0");
+  // позиция long: вход, стоп, цель → карточка с R:R и ссылкой в журнал
+  await page.getByRole("button", { name: "Рисовать" }).click();
+  await page.getByRole("dialog", { name: "Рисование" }).getByRole("button", { name: "Позиция Long" }).click();
+  await page.mouse.click(box.x + box.width * 0.5, box.y + box.height * 0.5);
+  await page.mouse.click(box.x + box.width * 0.5, box.y + box.height * 0.6);
+  await page.mouse.click(box.x + box.width * 0.5, box.y + box.height * 0.3);
+  await expect(count).toHaveText("рисунков: 1");
+  const card = page.getByRole("region", { name: "выбранный рисунок" });
+  await expect(card).toContainText("R:R");
+  await expect(card.getByRole("link", { name: "в журнал" })).toHaveAttribute("href", /\/journal\?symbol=BTCUSDT&direction=long&entry=/);
+  // сохраняется между загрузками
+  await page.reload();
+  await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 1");
+});

@@ -1,6 +1,6 @@
 "use client";
 
-import { CHART_TYPES, INDICATORS, defaultParams, secondsToClose, type ChartType, type Timeframe } from "@platform/charts";
+import { CHART_TYPES, INDICATORS, TOOL_TITLES, defaultParams, positionStats, secondsToClose, type ChartType, type DrawingType, type Timeframe } from "@platform/charts";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
@@ -12,11 +12,13 @@ import { formatPct, formatPrice } from "@/lib/format";
 import { getInstruments, type Instrument } from "@/lib/user";
 import s from "./terminal.module.css";
 import { PANELS, TerminalView, type ActiveIndicator, type LayerKey, type PanelKey } from "./TerminalView";
+import { DRAWINGS_LIMIT, useDrawings } from "./useDrawings";
 import { useTerminalData } from "./useTerminalData";
 
 const TYPE_LABEL: Record<ChartType, string> = { candles: "Свечи", bars: "Бары", line: "Линия", heikin: "Heikin Ashi" };
 const LAYER_LABEL: Record<LayerKey, string> = { structure: "Структура", zones: "Зоны", levels: "Уровни", signals: "Сигналы" };
 const DEFAULT_INDICATORS: ActiveIndicator[] = [{ id: "ema", params: { period: 50 } }];
+const TOOLS: DrawingType[] = ["hline", "hray", "vline", "trend", "ray", "extended", "channel", "rect", "fib", "position-long", "position-short", "note", "ruler"];
 const STORAGE = "pl-terminal";
 
 type Saved = { type: ChartType; indicators: ActiveIndicator[]; layers: Record<LayerKey, boolean>; panels: PanelKey[] };
@@ -41,7 +43,8 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
   const { user } = useAuth();
   const [saved, setSaved] = useState<Saved | null>(null);
   const [instruments, setInstruments] = useState<Instrument[]>([]);
-  const [sheet, setSheet] = useState<"indicators" | "layers" | null>(null);
+  const [sheet, setSheet] = useState<"indicators" | "layers" | "draw" | null>(null);
+  const dr = useDrawings(symbol);
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
   const data = useTerminalData(symbol, tf, user ? getAccessToken() : null);
 
@@ -53,6 +56,21 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
     const t = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 1000);
     return () => clearInterval(t);
   }, []);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      if (e.key === "Escape") {
+        dr.setTool(null);
+        dr.setDraft(null);
+        dr.actions.select(null);
+      } else if ((e.key === "Delete" || e.key === "Backspace") && dr.selected && !dr.selected.locked) dr.actions.remove(dr.selected.id);
+      else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && !e.shiftKey) dr.actions.undo();
+      else if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === "y" || (e.key.toLowerCase() === "z" && e.shiftKey))) dr.actions.redo();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [dr]);
   useEffect(() => {
     if (saved) {
       try {
@@ -87,6 +105,29 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
     });
   const toggleLayer = (k: LayerKey) => setSaved((p) => ({ ...(p ?? load()), layers: { ...(p ?? load()).layers, [k]: !(p ?? load()).layers[k] } }));
   const indicatorIds = useMemo(() => new Set(st.indicators.map((i) => i.id)), [st.indicators]);
+  const sel = dr.selected;
+  const pos = useMemo(() => {
+    if (!sel || !sel.type.startsWith("position") || sel.points.length < 3) return null;
+    const risk = user?.risk;
+    const profile = risk?.deposit ? { deposit: Number(risk.deposit), riskPct: Number(risk.risk_pct) } : null;
+    return positionStats(sel.type === "position-long" ? "long" : "short", sel.points[0]!.price, sel.points[1]!.price, sel.points[2]!.price, profile);
+  }, [sel, user]);
+  const drawingsProps = useMemo(
+    () => ({
+      state: dr.state,
+      tool: dr.tool,
+      magnet: dr.magnet,
+      draft: dr.draft,
+      onCreate: dr.actions.create,
+      onMove: dr.actions.move,
+      onSelect: dr.actions.select,
+      onDraft: dr.setDraft,
+      onToolDone: () => {
+        /* инструмент остаётся выбранным для серии рисунков; Esc — выход */
+      },
+    }),
+    [dr.state, dr.tool, dr.magnet, dr.draft, dr.actions, dr.setDraft],
+  );
 
   return (
     <div className={s.page}>
@@ -146,10 +187,86 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
             Таймфреймы 1m–15m доступны после входа на тарифе Pro. <Link href="/pricing">Тарифы</Link>
           </div>
         ) : (
-          <TerminalView candles={data.candles ?? []} current={data.current} tf={tf} type={st.type} indicators={st.indicators} layersOn={st.layers} layers={data.layers} derivatives={data.derivatives} panels={st.panels} tick={data.tick} onNeedOlder={data.loadOlder} />
+          <TerminalView candles={data.candles ?? []} current={data.current} tf={tf} type={st.type} indicators={st.indicators} layersOn={st.layers} layers={data.layers} derivatives={data.derivatives} panels={st.panels} tick={data.tick} onNeedOlder={data.loadOlder} drawings={drawingsProps} />
+        )}
+        {sel && (
+          <div className={s.card} role="region" aria-label="выбранный рисунок">
+            <strong>{TOOL_TITLES[sel.type]}</strong>
+            {(sel.type === "note" || sel.type === "rect" || sel.type === "trend") && (
+              <input aria-label="текст рисунка" placeholder="подпись (до 140 символов)" maxLength={140} value={sel.text ?? ""} onChange={(e) => dr.actions.patch(sel.id, { text: e.target.value })} />
+            )}
+            {pos && (
+              <span className={s.posStats}>
+                R:R <strong>{pos.rr.toFixed(2)}</strong> · риск {pos.riskPct.toFixed(2)} %
+                {pos.riskUsd != null && pos.size != null && (
+                  <>
+                    {" "}· риск <strong>{pos.riskUsd.toFixed(0)} USDT</strong> · размер <strong>{pos.size.toPrecision(4)}</strong>
+                  </>
+                )}
+                {pos.riskUsd == null && <span className="caption"> · задайте депозит и риск в настройках</span>}
+                <Link href={`/journal?symbol=${symbol}&direction=${pos.direction}&entry=${pos.entry}&stop=${pos.stop}&tp=${pos.target}`}>в журнал</Link>
+                <Link href={`/calculator?symbol=${symbol}&direction=${pos.direction}&entry=${pos.entry}&stop=${pos.stop}&tp=${pos.target}`}>в калькулятор</Link>
+              </span>
+            )}
+            <label className={s.inline}>
+              <input type="checkbox" checked={sel.timeframe === null} onChange={(e) => dr.actions.patch(sel.id, { timeframe: e.target.checked ? null : tf })} /> на всех таймфреймах
+            </label>
+            <button type="button" className={s.chip} onClick={() => dr.actions.lock(sel.id)} aria-pressed={sel.locked}>
+              {sel.locked ? "разблокировать" : "заблокировать"}
+            </button>
+            <button type="button" className={s.chip} onClick={() => dr.actions.remove(sel.id)} disabled={sel.locked}>
+              удалить
+            </button>
+            <button type="button" className={s.chip} onClick={() => dr.actions.select(null)} aria-label="снять выделение">
+              ✕
+            </button>
+          </div>
+        )}
+        {dr.limitHit && (
+          <p className={s.card} role="alert">
+            Лимит рисунков на инструмент: {DRAWINGS_LIMIT}. Удалите лишние или дождитесь синхронизации с тарифными лимитами.{" "}
+            <button type="button" className={s.chip} onClick={dr.dismissLimit}>
+              понятно
+            </button>
+          </p>
         )}
         {sheet && (
-          <div className={s.sheet} role="dialog" aria-label={sheet === "indicators" ? "Индикаторы" : "Слои"}>
+          <div className={s.sheet} role="dialog" aria-label={sheet === "indicators" ? "Индикаторы" : sheet === "layers" ? "Слои" : "Рисование"}>
+            {sheet === "draw" &&
+              TOOLS.map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  className={s.chip}
+                  aria-pressed={dr.tool === t}
+                  onClick={() => {
+                    dr.setTool(dr.tool === t ? null : t);
+                    setSheet(null);
+                  }}
+                >
+                  {TOOL_TITLES[t]}
+                </button>
+              ))}
+            {sheet === "draw" && (
+              <>
+                <label>
+                  <input type="checkbox" checked={dr.magnet} onChange={(e) => dr.setMagnet(e.target.checked)} /> магнит к OHLC
+                </label>
+                <label>
+                  <input type="checkbox" checked={dr.state.hidden} onChange={(e) => dr.actions.hide(e.target.checked)} /> скрыть все рисунки
+                </label>
+                <button
+                  type="button"
+                  className={s.chip}
+                  disabled={dr.state.items.length === 0}
+                  onClick={() => {
+                    if (confirm(`Удалить все рисунки по ${symbol} (${dr.state.items.length})?`)) dr.actions.clear();
+                  }}
+                >
+                  удалить все
+                </button>
+              </>
+            )}
             {sheet === "indicators"
               ? [
                   ...INDICATORS.map((i) => (
@@ -183,7 +300,23 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
         <button type="button" className={s.chip} aria-pressed={sheet === "layers"} onClick={() => setSheet(sheet === "layers" ? null : "layers")}>
           Слои
         </button>
-        <span className="caption">двойной клик — сброс масштаба</span>
+        <button type="button" className={s.chip} aria-pressed={sheet === "draw" || dr.tool !== null} onClick={() => setSheet(sheet === "draw" ? null : "draw")}>
+          {dr.tool ? `Рисую: ${TOOL_TITLES[dr.tool]}` : "Рисовать"}
+        </button>
+        {dr.tool && (
+          <button type="button" className={s.chip} onClick={() => { dr.setTool(null); dr.setDraft(null); }} aria-label="закончить рисование">
+            Готово
+          </button>
+        )}
+        <button type="button" className={s.chip} onClick={dr.actions.undo} disabled={!dr.canUndo} aria-label="отменить">
+          ↶
+        </button>
+        <button type="button" className={s.chip} onClick={dr.actions.redo} disabled={!dr.canRedo} aria-label="повторить">
+          ↷
+        </button>
+        <span className="caption" data-testid="drawings-count">
+          рисунков: {dr.state.items.length}
+        </span>
         {data.layers?.signals.length ? (
           <Link className="caption" href={`/signals?symbol=${symbol}&tab=all`}>
             сигналов по инструменту: {data.layers.signals.length}
