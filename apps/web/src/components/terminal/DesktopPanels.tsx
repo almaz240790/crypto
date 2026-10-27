@@ -8,6 +8,7 @@ import { AskBox, FiguresList, FoundList } from "./FoundPanel";
 import { TEMPLATES } from "./templates";
 import type { FigureOnChart, FigureStat, PatternOnChart, PatternStat } from "@/lib/chart";
 import type { LayerKey, PanelKey } from "./TerminalView";
+import { useT } from "@/i18n/client";
 
 const TOOLS: { t: DrawingType; k: string; key?: string }[] = [
   { t: "hline", k: "—", key: "Alt+H" },
@@ -27,21 +28,22 @@ const TOOLS: { t: DrawingType; k: string; key?: string }[] = [
 
 /** Левая панель инструментов (десктоп, план 3.17 / 2A.8). */
 export function DrawToolbar({ tool, onTool, magnet, onMagnet, canUndo, canRedo, onUndo, onRedo }: { tool: DrawingType | null; onTool: (t: DrawingType | null) => void; magnet: boolean; onMagnet: (v: boolean) => void; canUndo: boolean; canRedo: boolean; onUndo: () => void; onRedo: () => void }) {
+  const t = useT();
   return (
-    <div className={s.toolbar} role="toolbar" aria-label="панель рисования">
+    <div className={s.toolbar} role="toolbar" aria-label={t("панель рисования")}>
       {TOOLS.map((x) => (
         <button key={x.t} type="button" className={s.tool} aria-pressed={tool === x.t} title={`${TOOL_TITLES[x.t]}${x.key ? ` (${x.key})` : ""}`} aria-label={TOOL_TITLES[x.t]} onClick={() => onTool(tool === x.t ? null : x.t)}>
           {x.k}
         </button>
       ))}
       <span className={s.toolSep} />
-      <button type="button" className={s.tool} aria-pressed={magnet} title="Магнит к OHLC" aria-label="магнит" onClick={() => onMagnet(!magnet)}>
+      <button type="button" className={s.tool} aria-pressed={magnet} title={t("Магнит к OHLC")} aria-label={t("магнит")} onClick={() => onMagnet(!magnet)}>
         ◎
       </button>
-      <button type="button" className={s.tool} disabled={!canUndo} title="Отменить (Ctrl+Z)" aria-label="отменить" onClick={onUndo}>
+      <button type="button" className={s.tool} disabled={!canUndo} title={t("Отменить (Ctrl+Z)")} aria-label={t("отменить")} onClick={onUndo}>
         ↶
       </button>
-      <button type="button" className={s.tool} disabled={!canRedo} title="Повторить (Ctrl+Y)" aria-label="повторить" onClick={onRedo}>
+      <button type="button" className={s.tool} disabled={!canRedo} title={t("Повторить (Ctrl+Y)")} aria-label={t("повторить")} onClick={onRedo}>
         ↷
       </button>
     </div>
@@ -75,18 +77,19 @@ const PANEL_LABEL: Record<PanelKey, string> = { funding: "Funding", oi: "Open in
 
 /** Правая панель объектов (десктоп): рисунки, слои, раскладки и шаблоны. */
 export function ObjectsPanel(p: Props) {
+  const t = useT();
   const [tab, setTab] = useState<"found" | "drawings" | "layers" | "layouts">("found");
   const [name, setName] = useState("");
   return (
-    <aside className={s.objects} aria-label="панель объектов">
+    <aside className={s.objects} aria-label={t("панель объектов")}>
       {p.onResize && (
         <button
           type="button"
           className={s.splitter}
           role="separator"
           aria-orientation="vertical"
-          aria-label="ширина панели объектов"
-          title="Тяните, чтобы изменить ширину; ← → с клавиатуры"
+          aria-label={t("ширина панели объектов")}
+          title={t("Тяните, чтобы изменить ширину; ← → с клавиатуры")}
           data-active={p.onResize.active || undefined}
           onPointerDown={p.onResize.start}
           onKeyDown={(e) => {
@@ -98,35 +101,35 @@ export function ObjectsPanel(p: Props) {
         />
       )}
       <div className={s.objTabs} role="tablist">
-        {(["found", "drawings", "layers", "layouts"] as const).map((t) => (
-          <button key={t} type="button" role="tab" aria-selected={tab === t} className={s.objTab} onClick={() => setTab(t)}>
-            {t === "found" ? `Найдено (${p.found.count ?? p.found.items.length + p.found.figures.length})` : t === "drawings" ? `Рисунки (${p.drawings.length})` : t === "layers" ? "Слои" : "Раскладки"}
+        {(["found", "drawings", "layers", "layouts"] as const).map((k) => (
+          <button key={k} type="button" role="tab" aria-selected={tab === k} className={s.objTab} onClick={() => setTab(k)}>
+            {k === "found" ? t("Найдено ({n})", { n: p.found.count ?? p.found.items.length + p.found.figures.length }) : k === "drawings" ? t("Рисунки ({n})", { n: p.drawings.length }) : k === "layers" ? t("Слои") : t("Раскладки")}
           </button>
         ))}
       </div>
       {tab === "found" && (
         <>
-          <strong className={s.objHead}>Фигуры</strong>
+          <strong className={s.objHead}>{t("Фигуры")}</strong>
           <FiguresList items={p.found.figures} stats={p.found.figureStats} selected={p.found.selectedFigure} onSelect={p.found.onSelectFigure} />
-          <strong className={s.objHead}>Свечные паттерны</strong>
+          <strong className={s.objHead}>{t("Свечные паттерны")}</strong>
           <FoundList items={p.found.items} stats={p.found.stats} selected={p.found.selected} onSelect={p.found.onSelect} tf={p.found.tf} symbol={p.found.symbol} canExplain={p.found.canExplain} />
           {p.found.canExplain && <AskBox symbol={p.found.symbol} tf={p.found.tf} />}
         </>
       )}
       {tab === "drawings" && (
         <ul className={s.objList}>
-          {p.drawings.length === 0 && <li className="caption">Рисунков нет. Alt+H — линия, Alt+T — трендовая.</li>}
+          {p.drawings.length === 0 && <li className="caption">{t("Рисунков нет. Alt+H — линия, Alt+T — трендовая.")}</li>}
           {p.drawings.map((d) => (
             <li key={d.id} className={s.objRow} data-selected={d.id === p.selectedId || undefined}>
               <button type="button" className={s.objName} onClick={() => p.onSelect(d.id)}>
                 {TOOL_TITLES[d.type]}
                 {d.text ? ` · ${d.text}` : ""}
-                <span className="caption"> {d.timeframe ?? "все TF"}</span>
+                <span className="caption"> {d.timeframe ?? t("все TF")}</span>
               </button>
-              <button type="button" className={s.tool} aria-label={`${d.locked ? "разблокировать" : "заблокировать"} ${TOOL_TITLES[d.type]}`} title={d.locked ? "Разблокировать" : "Заблокировать"} onClick={() => p.onLock(d.id)}>
+              <button type="button" className={s.tool} aria-label={`${d.locked ? t("разблокировать") : t("заблокировать")} ${TOOL_TITLES[d.type]}`} title={d.locked ? t("Разблокировать") : t("Заблокировать")} onClick={() => p.onLock(d.id)}>
                 {d.locked ? "🔒" : "🔓"}
               </button>
-              <button type="button" className={s.tool} aria-label={`удалить ${TOOL_TITLES[d.type]}`} title="Удалить" disabled={d.locked} onClick={() => p.onRemove(d.id)}>
+              <button type="button" className={s.tool} aria-label={`удалить ${TOOL_TITLES[d.type]}`} title={t("Удалить")} disabled={d.locked} onClick={() => p.onRemove(d.id)}>
                 ✕
               </button>
             </li>
@@ -138,14 +141,14 @@ export function ObjectsPanel(p: Props) {
           {(Object.keys(LAYER_LABEL) as LayerKey[]).map((k) => (
             <li key={k}>
               <label>
-                <input type="checkbox" checked={p.layers[k]} onChange={() => p.onLayer(k)} /> {LAYER_LABEL[k]}
+                <input type="checkbox" checked={p.layers[k]} onChange={() => p.onLayer(k)} /> {t(LAYER_LABEL[k])}
               </label>
             </li>
           ))}
           {(Object.keys(PANEL_LABEL) as PanelKey[]).map((k) => (
             <li key={k}>
               <label>
-                <input type="checkbox" checked={p.panels.includes(k)} onChange={() => p.onPanel(k)} /> {PANEL_LABEL[k]}
+                <input type="checkbox" checked={p.panels.includes(k)} onChange={() => p.onPanel(k)} /> {t(PANEL_LABEL[k])}
               </label>
             </li>
           ))}
@@ -153,20 +156,20 @@ export function ObjectsPanel(p: Props) {
       )}
       {tab === "layouts" && (
         <div className={s.objList}>
-          <strong>Шаблоны индикаторов</strong>
+          <strong>{t("Шаблоны индикаторов")}</strong>
           {TEMPLATES.map((t) => (
             <button key={t.id} type="button" className={s.chip} onClick={() => p.onTemplate(t.id)}>
               {t.title}
             </button>
           ))}
-          <strong>Мои раскладки</strong>
-          {!p.authed && <span className="caption">Войдите, чтобы сохранять раскладки.</span>}
+          <strong>{t("Мои раскладки")}</strong>
+          {!p.authed && <span className="caption">{t("Войдите, чтобы сохранять раскладки.")}</span>}
           {p.layouts.map((l) => (
             <span key={l.name} className={s.objRow}>
               <button type="button" className={s.objName} onClick={() => p.onLoadLayout(l.name)}>
                 {l.name}
               </button>
-              <button type="button" className={s.tool} aria-label={`удалить раскладку ${l.name}`} onClick={() => p.onDeleteLayout(l.name)}>
+              <button type="button" className={s.tool} aria-label={t("удалить раскладку {name}", { name: l.name })} onClick={() => p.onDeleteLayout(l.name)}>
                 ✕
               </button>
             </span>
@@ -182,10 +185,8 @@ export function ObjectsPanel(p: Props) {
                 }
               }}
             >
-              <input aria-label="имя раскладки" placeholder="имя раскладки" maxLength={60} value={name} onChange={(e) => setName(e.target.value)} />
-              <button type="submit" className={s.chip} disabled={!name.trim() || (p.layoutsLimit !== null && p.layouts.length >= p.layoutsLimit)}>
-                Сохранить
-              </button>
+              <input aria-label={t("имя раскладки")} placeholder={t("имя раскладки")} maxLength={60} value={name} onChange={(e) => setName(e.target.value)} />
+              <button type="submit" className={s.chip} disabled={!name.trim() || (p.layoutsLimit !== null && p.layouts.length >= p.layoutsLimit)}>{t("Сохранить")}</button>
             </form>
           )}
           {p.layoutsLimit !== null && <span className="caption">лимит тарифа: {p.layoutsLimit}</span>}

@@ -12,6 +12,7 @@ import { useEffect, useRef, useState } from "react";
 import { PATTERN_GLYPH, type PatternOnChart } from "@/lib/chart";
 import { BoxPrimitive } from "./BoxPrimitive";
 import s from "./SignalChart.module.css";
+import { useT } from "@/i18n/client";
 
 export type ChartCandle = { t: number; o: string; h: string; l: string; c: string; v: string };
 
@@ -108,6 +109,7 @@ function precisionOf(tick: string | null): { precision: number; minMove: number 
 }
 
 export function SignalChart({ candles, tf, signal, analysis, events, patterns = [], highlight, tick, lastPrice, height = 380 }: Props) {
+  const t = useT();
   const ref = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const linesRef = useRef<Map<string, IPriceLine[]>>(new Map());
@@ -175,7 +177,7 @@ export function SignalChart({ candles, tf, signal, analysis, events, patterns = 
     };
     const D = 2, S = 0, O = 1; // LineStyle: Solid / Dotted / Dashed
     // параметры сделки
-    if (signal.entry) addLine("entry", Number(signal.entry), c.accent, S, "вход", 1);
+    if (signal.entry) addLine("entry", Number(signal.entry), c.accent, S, t("вход"), 1);
     if (signal.stop_loss) addLine("sl", Number(signal.stop_loss), c.down, D, "SL");
     (["tp1", "tp2", "tp3"] as const).forEach((k) => {
       const v = signal[k];
@@ -198,7 +200,7 @@ export function SignalChart({ candles, tf, signal, analysis, events, patterns = 
     if (signal.zone) {
       const z = analysis?.zones.find((x) => x.top === signal.zone?.top && x.bottom === signal.zone?.bottom);
       const from = z ? snap(ts(z.from_time), step) : sigTime;
-      box.setBoxes([{ id: "zone", from: Math.max(from, firstTime) as Time, to: null, top: Number(signal.zone.top), bottom: Number(signal.zone.bottom), fill: alpha(c.accent, 0.12), stroke: c.accent, label: signal.zone.kind ? signal.zone.kind.toUpperCase() : "зона" }]);
+      box.setBoxes([{ id: "zone", from: Math.max(from, firstTime) as Time, to: null, top: Number(signal.zone.top), bottom: Number(signal.zone.bottom), fill: alpha(c.accent, 0.12), stroke: c.accent, label: signal.zone.kind ? signal.zone.kind.toUpperCase() : t("зона") }]);
     }
     // маркеры: свинги, снятия, паттерны, события трекера, сигнальная свеча
     const markers: SeriesMarker<Time>[] = [];
@@ -217,7 +219,7 @@ export function SignalChart({ candles, tf, signal, analysis, events, patterns = 
       if (!inRange(t)) return;
       markers.push({ time: t, position: p.direction === "up" ? "belowBar" : "aboveBar", shape: p.direction === "up" ? "arrowUp" : p.direction === "down" ? "arrowDown" : "square", color: p.significant ? c.accent : alpha(c.text3, 0.7), text: PATTERN_GLYPH[p.type] ?? "•", size: 0 });
     });
-    markers.push({ time: sigTime, position: signal.direction === "long" ? "belowBar" : "aboveBar", shape: signal.direction === "long" ? "arrowUp" : "arrowDown", color: c.accent, text: "сигнал", size: 1 });
+    markers.push({ time: sigTime, position: signal.direction === "long" ? "belowBar" : "aboveBar", shape: signal.direction === "long" ? "arrowUp" : "arrowDown", color: c.accent, text: t("сигнал"), size: 1 });
     events
       .filter((e) => e.type !== "created")
       .forEach((e) => {
@@ -240,7 +242,7 @@ export function SignalChart({ candles, tf, signal, analysis, events, patterns = 
       term.destroy();
       setReady(false);
     };
-  }, [candles, tf, signal, analysis, events, patterns, tick, height, themeKey]);
+  }, [candles, tf, signal, analysis, events, patterns, tick, height, themeKey, t]);
 
   // подсветка слоя из обоснования
   useEffect(() => {
@@ -272,7 +274,7 @@ export function SignalChart({ candles, tf, signal, analysis, events, patterns = 
   return (
     <div className={s.wrap}>
       <div ref={ref} className={s.chart} style={{ height }} data-testid="signal-chart" />
-      {candles.length === 0 && <div className={s.empty}>Нет свечей для графика.</div>}
+      {candles.length === 0 && <div className={s.empty}>{t("Нет свечей для графика.")}</div>}
     </div>
   );
 }

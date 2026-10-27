@@ -23,6 +23,7 @@ import { deleteLayout, getLayout, listLayouts, putLayout } from "@/lib/drawings"
 import { createAlert, getAlerts, type Alert } from "@/lib/alerts";
 import { getCandles, toCandle } from "@/lib/chart";
 import { useTerminalData } from "./useTerminalData";
+import { useT } from "@/i18n/client";
 
 const TYPE_LABEL: Record<ChartType, string> = { candles: "Свечи", bars: "Бары", line: "Линия", heikin: "Heikin Ashi" };
 const LAYER_LABEL: Record<LayerKey, string> = { structure: "Структура", zones: "Зоны", levels: "Уровни", signals: "Сигналы", patterns: "Паттерны", figures: "Фигуры", volume_profile: "Профиль объёма" };
@@ -56,6 +57,7 @@ function fmtCountdown(sec: number): string {
 }
 
 export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) {
+  const t = useT();
   const router = useRouter();
   const { user } = useAuth();
   const [saved, setSaved] = useState<Saved | null>(null);
@@ -174,10 +176,10 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
     loadAlerts();
   }, [loadAlerts]);
   const addPriceAlert = (price: string, op: "cross_up" | "cross_down" | "enter_range", price2?: string, drawingId?: string, frequency: "once" | "every" | "once_per_bar" = "once") => {
-    if (!user) return say("Алерты доступны после входа");
+    if (!user) return say(t("Алерты доступны после входа"));
     createAlert({ symbol, type: "price", condition: { op, price, ...(price2 ? { price2 } : {}) }, frequency, drawing_client_id: drawingId ?? null })
       .then((a) => {
-        say(`Алерт создан: ${a.text}`);
+        say(t("Алерт создан: {text}", { text: a.text }));
         loadAlerts();
         setSheet(null);
       })
@@ -197,7 +199,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
     putLayout({ type: cur.type, indicators: cur.indicators, layers: cur.layers, panels: cur.panels, symbol, tf }, Date.now(), name)
       .then(() => {
         setLayouts((l) => (l.some((x) => x.name === name) ? l : [...l, { name }]));
-        say(`Раскладка «${name}» сохранена`);
+        say(t("Раскладка «{name}» сохранена", { name }));
       })
       .catch((e: Error) => say(e.message));
   };
@@ -208,7 +210,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
         const d = r.data as Partial<Saved> & { symbol?: string; tf?: string };
         setSaved({ ...(saved ?? load()), ...d, updated_at: Date.now() });
         if (d.symbol && d.tf && (d.symbol !== symbol || d.tf !== tf)) router.push(`/chart/${d.symbol}/${d.tf}`);
-        say(`Раскладка «${name}» применена`);
+        say(t("Раскладка «{name}» применена", { name }));
       })
       .catch((e: Error) => say(e.message));
   };
@@ -220,9 +222,9 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
   const snapshot = () => {
     const canvasHost = areaRef.current?.querySelector('[data-testid="terminal"]') as HTMLElement | null;
     const chart = (canvasHost as (HTMLElement & { __chart?: import("lightweight-charts").IChartApi }) | null)?.__chart;
-    if (!chart) return say("график ещё не готов");
-    const t = tokensFromElement(canvasHost!);
-    const url = snapshotPng(chart, `${symbol} · ${tf === "4h" ? "H4" : tf.toUpperCase()} · ${new Date().toISOString().slice(0, 16).replace("T", " ")} UTC`, window.location.href, { surface: t.surface, text2: t.text2, fontMono: t.fontMono });
+    if (!chart) return say(t("график ещё не готов"));
+    const tk = tokensFromElement(canvasHost!);
+    const url = snapshotPng(chart, `${symbol} · ${tf === "4h" ? "H4" : tf.toUpperCase()} · ${new Date().toISOString().slice(0, 16).replace("T", " ")} UTC`, window.location.href, { surface: tk.surface, text2: tk.text2, fontMono: tk.fontMono });
     download(url, `platform-${symbol}-${tf}-${Date.now()}.png`);
   };
   useEffect(() => {
@@ -285,14 +287,14 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
       const lastClose = Number((r.current ?? r.candles[r.candles.length - 1])?.c);
       if (price && lastClose > 0) ratio = lastClose / price;
     } catch {
-      say(`Не удалось получить цену ${target}`);
+      say(t("Не удалось получить цену {symbol}", { symbol: target }));
       return;
     }
     const copy = dr.actions.copyTo(id, target, ratio);
-    if (copy) say(`Рисунок скопирован на ${target}${ratio !== 1 ? " (цены пропорционально)" : ""}`);
+    if (copy) say(`Рисунок скопирован на ${target}${ratio !== 1 ? t(" (цены пропорционально)") : ""}`);
   };
   const countdown = last ? secondsToClose(tf, last.time, now) : null;
-  const intradayLocked = !user || (data.error ?? "").includes("тарифе");
+  const intradayLocked = !user || (data.error ?? "").includes(t("тарифе"));
   const bias = data.layers?.structure?.bias;
 
   const toggleIndicator = (id: string) =>
@@ -337,58 +339,52 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
   const fmtV = (v: number | null) => (v == null ? "—" : Math.abs(v) >= 1000 ? v.toFixed(1) : Math.abs(v) >= 1 ? v.toFixed(2) : v.toPrecision(3));
   return (
     <div className={s.page} data-bars={bars}>
-      <button type="button" className={`${s.chip} ${s.fsBtn}`} onClick={() => setBars(bars === "shown" ? "hidden" : "shown")} aria-label={bars === "shown" ? "скрыть панели" : "показать панели"}>
+      <button type="button" className={`${s.chip} ${s.fsBtn}`} onClick={() => setBars(bars === "shown" ? "hidden" : "shown")} aria-label={bars === "shown" ? t("скрыть панели") : t("показать панели")}>
         {bars === "shown" ? "⤢" : "⤡"}
       </button>
       <div className={s.top}>
-        <select aria-label="инструмент" value={symbol} onChange={(e) => router.push(`/chart/${e.target.value}/${tf}`)}>
+        <select aria-label={t("инструмент")} value={symbol} onChange={(e) => router.push(`/chart/${e.target.value}/${tf}`)}>
           {(instruments.length ? instruments : [{ symbol } as Instrument]).map((i) => (
             <option key={i.symbol} value={i.symbol}>
               {i.symbol}
             </option>
           ))}
         </select>
-        <nav className={s.tfs} aria-label="таймфрейм">
-          {TIMEFRAMES.map((t) => (
-            <Link key={t} href={`/chart/${symbol}/${t}`} aria-current={t === tf ? "page" : undefined} data-primary={t === "4h"} aria-disabled={INTRADAY.includes(t) && !user ? "true" : undefined} title={INTRADAY.includes(t) && !user ? "после входа, тариф Pro" : undefined}>
-              {t === "4h" ? "H4" : t.toUpperCase()}
+        <nav className={s.tfs} aria-label={t("таймфрейм")}>
+          {TIMEFRAMES.map((x) => (
+            <Link key={x} href={`/chart/${symbol}/${x}`} aria-current={x === tf ? "page" : undefined} data-primary={x === "4h"} aria-disabled={INTRADAY.includes(x) && !user ? "true" : undefined} title={INTRADAY.includes(x) && !user ? t("после входа, тариф Pro") : undefined}>
+              {x === "4h" ? "H4" : x.toUpperCase()}
             </Link>
           ))}
         </nav>
-        <button type="button" className={s.chip} onClick={() => controls.current?.zoom(1.25)} aria-label="приблизить" title="Приблизить (клавиша +, колесо мыши)">
+        <button type="button" className={s.chip} onClick={() => controls.current?.zoom(1.25)} aria-label={t("приблизить")} title={t("Приблизить (клавиша +, колесо мыши)")}>
           +
         </button>
-        <button type="button" className={s.chip} onClick={() => controls.current?.zoom(0.8)} aria-label="отдалить" title="Отдалить (клавиша −)">
+        <button type="button" className={s.chip} onClick={() => controls.current?.zoom(0.8)} aria-label={t("отдалить")} title={t("Отдалить (клавиша −)")}>
           −
         </button>
-        <button type="button" className={s.chip} onClick={() => controls.current?.reset()} aria-label="показать последние свечи" title="Последние 150 свечей (двойной клик по графику)">
+        <button type="button" className={s.chip} onClick={() => controls.current?.reset()} aria-label={t("показать последние свечи")} title={t("Последние 150 свечей (двойной клик по графику)")}>
           ⟲
         </button>
-        <button type="button" className={s.chip} onClick={snapshot} title="Снимок PNG с водяным знаком">
-          Снимок
-        </button>
-        <button type="button" className={`${s.chip} ${s.desktopOnly}`} aria-pressed={objects === "shown"} onClick={() => setObjects(objects === "shown" ? "hidden" : "shown")}>
-          Объекты
-        </button>
-        <Link href="/multichart" className={`${s.chip} ${s.desktopOnly}`} style={{ display: "inline-flex", alignItems: "center" }}>
-          Мультичарт
-        </Link>
-        <select aria-label="тип графика" value={st.type} onChange={(e) => setSaved({ ...st, type: e.target.value as ChartType, updated_at: Date.now() })}>
-          {CHART_TYPES.map((t) => (
-            <option key={t} value={t}>
-              {TYPE_LABEL[t]}
+        <button type="button" className={s.chip} onClick={snapshot} title={t("Снимок PNG с водяным знаком")}>{t("Снимок")}</button>
+        <button type="button" className={`${s.chip} ${s.desktopOnly}`} aria-pressed={objects === "shown"} onClick={() => setObjects(objects === "shown" ? "hidden" : "shown")}>{t("Объекты")}</button>
+        <Link href="/multichart" className={`${s.chip} ${s.desktopOnly}`} style={{ display: "inline-flex", alignItems: "center" }}>{t("Мультичарт")}</Link>
+        <select aria-label={t("тип графика")} value={st.type} onChange={(e) => setSaved({ ...st, type: e.target.value as ChartType, updated_at: Date.now() })}>
+          {CHART_TYPES.map((x) => (
+            <option key={x} value={x}>
+              {t(TYPE_LABEL[x])}
             </option>
           ))}
         </select>
-        <select aria-label="шкала" value={st.scale} onChange={(e) => setSaved({ ...st, scale: e.target.value as ScaleMode, updated_at: Date.now() })} title="Ценовая шкала">
+        <select aria-label={t("шкала")} value={st.scale} onChange={(e) => setSaved({ ...st, scale: e.target.value as ScaleMode, updated_at: Date.now() })} title={t("Ценовая шкала")}>
           {(Object.keys(SCALE_LABEL) as ScaleMode[]).map((m) => (
             <option key={m} value={m}>
-              {SCALE_LABEL[m]}
+              {t(SCALE_LABEL[m])}
             </option>
           ))}
         </select>
-        <select aria-label="наложение" className={s.desktopOnly} value={st.overlay ?? ""} onChange={(e) => setSaved({ ...st, overlay: e.target.value || null, scale: e.target.value && st.scale === "linear" ? "percent" : st.scale, updated_at: Date.now() })} title="Наложить второй инструмент (линия закрытий)">
-          <option value="">без наложения</option>
+        <select aria-label={t("наложение")} className={s.desktopOnly} value={st.overlay ?? ""} onChange={(e) => setSaved({ ...st, overlay: e.target.value || null, scale: e.target.value && st.scale === "linear" ? "percent" : st.scale, updated_at: Date.now() })} title={t("Наложить второй инструмент (линия закрытий)")}>
+          <option value="">{t("без наложения")}</option>
           {instruments
             .filter((i) => i.symbol !== symbol)
             .map((i) => (
@@ -398,13 +394,11 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
             ))}
         </select>
       </div>
-      <div className={s.strip} aria-label="состояние">
-        <span>
-          цена <strong>{formatPrice(price == null ? null : String(price))}</strong>
+      <div className={s.strip} aria-label={t("состояние")}>
+        <span>{t("цена")}{" "}<strong>{formatPrice(price == null ? null : String(price))}</strong>
         </span>
         <span className={change == null ? "" : change >= 0 ? "up" : "down"}>{formatPct(change)}</span>
-        <span>
-          до закрытия <strong>{countdown == null ? "—" : fmtCountdown(countdown)}</strong>
+        <span>{t("до закрытия")}{" "}<strong>{countdown == null ? "—" : fmtCountdown(countdown)}</strong>
         </span>
         {bias && (
           <span>
@@ -418,8 +412,8 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
             {data.derivatives.next_funding_t && <> через {fmtCountdown(Math.max(0, data.derivatives.next_funding_t - now))}</>}
           </span>
         )}
-        <span className="caption">{data.connected ? "live" : "без связи"}</span>
-        {st.type === "heikin" && <span className="caption">Heikin Ashi: паттерны и сигналы считаются по обычным свечам</span>}
+        <span className="caption">{data.connected ? "live" : t("без связи")}</span>
+        {st.type === "heikin" && <span className="caption">{t("Heikin Ashi: паттерны и сигналы считаются по обычным свечам")}</span>}
       </div>
       {toast && (
         <p role="status" className="caption" style={{ margin: 0, padding: "2px 12px" }}>
@@ -452,7 +446,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
               {v.label} <strong>{fmtV(v.value)}</strong>
             </span>
           ))}
-          {cross.candle.open_ && <span className="caption">свеча не закрыта</span>}
+          {cross.candle.open_ && <span className="caption">{t("свеча не закрыта")}</span>}
         </div>
       )}
         {data.error && !intradayLocked ? (
@@ -460,34 +454,32 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
             {data.error}
           </div>
         ) : intradayLocked && data.error ? (
-          <div className={s.empty}>
-            Таймфреймы 1m–15m доступны после входа на тарифе Pro. <Link href="/pricing">Тарифы</Link>
+          <div className={s.empty}>{t("Таймфреймы 1m–15m доступны после входа на тарифе Pro.")}{" "}<Link href="/pricing">{t("Тарифы")}</Link>
           </div>
         ) : (
           <TerminalView candles={data.candles ?? []} current={data.current} tf={tf} type={st.type} indicators={st.indicators} layersOn={st.layers} layers={data.layers} patterns={data.patterns?.items} highlight={foundSel} figures={data.figures?.items} highlightFigure={figureSel} alertLines={alerts.filter((a) => a.type === "price" && typeof a.condition.price === "string").map((a) => ({ id: a.id, price: Number(a.condition.price), label: a.condition.op === "cross_up" ? "↑" : a.condition.op === "cross_down" ? "↓" : "↔" }))} derivatives={data.derivatives} panels={st.panels} tick={data.tick} onNeedOlder={data.loadOlder} drawings={drawingsProps} onCrosshair={setCross} onVisibleFrom={setVisibleFrom} onReady={(c) => { controls.current = c; }} scale={st.scale} overlay={overlayCandles} />
         )}
         {sel && (
-          <div className={s.card} role="region" aria-label="выбранный рисунок">
+          <div className={s.card} role="region" aria-label={t("выбранный рисунок")}>
             <strong>{TOOL_TITLES[sel.type]}</strong>
             {(sel.type === "note" || sel.type === "rect" || sel.type === "trend") && (
-              <input aria-label="текст рисунка" placeholder="подпись (до 140 символов)" maxLength={140} value={sel.text ?? ""} onChange={(e) => dr.actions.patch(sel.id, { text: e.target.value })} />
+              <input aria-label={t("текст рисунка")} placeholder={t("подпись (до 140 символов)")} maxLength={140} value={sel.text ?? ""} onChange={(e) => dr.actions.patch(sel.id, { text: e.target.value })} />
             )}
             {pos && (
               <span className={s.posStats}>
                 R:R <strong>{pos.rr.toFixed(2)}</strong> · риск {pos.riskPct.toFixed(2)} %
                 {pos.riskUsd != null && pos.size != null && (
                   <>
-                    {" "}· риск <strong>{pos.riskUsd.toFixed(0)} USDT</strong> · размер <strong>{pos.size.toPrecision(4)}</strong>
+                    {" "}· риск <strong>{pos.riskUsd.toFixed(0)} USDT</strong>{" "}{t("· размер")}{" "}<strong>{pos.size.toPrecision(4)}</strong>
                   </>
                 )}
-                {pos.riskUsd == null && <span className="caption"> · задайте депозит и риск в настройках</span>}
-                <Link href={`/journal?symbol=${symbol}&direction=${pos.direction}&entry=${pos.entry}&stop=${pos.stop}&tp=${pos.target}`}>в журнал</Link>
-                <Link href={`/calculator?symbol=${symbol}&direction=${pos.direction}&entry=${pos.entry}&stop=${pos.stop}&tp=${pos.target}`}>в калькулятор</Link>
+                {pos.riskUsd == null && <span className="caption">{" "}{t("· задайте депозит и риск в настройках")}</span>}
+                <Link href={`/journal?symbol=${symbol}&direction=${pos.direction}&entry=${pos.entry}&stop=${pos.stop}&tp=${pos.target}`}>{t("в журнал")}</Link>
+                <Link href={`/calculator?symbol=${symbol}&direction=${pos.direction}&entry=${pos.entry}&stop=${pos.stop}&tp=${pos.target}`}>{t("в калькулятор")}</Link>
               </span>
             )}
             <label className={s.inline}>
-              <input type="checkbox" checked={sel.timeframe === null} onChange={(e) => dr.actions.patch(sel.id, { timeframe: e.target.checked ? null : tf })} /> на всех таймфреймах
-            </label>
+              <input type="checkbox" checked={sel.timeframe === null} onChange={(e) => dr.actions.patch(sel.id, { timeframe: e.target.checked ? null : tf })} />{" "}{t("на всех таймфреймах")}</label>
             {(sel.type === "hline" || sel.type === "hray") && sel.points[0] && (
               <button
                 type="button"
@@ -496,21 +488,19 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
                   const p = sel.points[0]!.price;
                   addPriceAlert(String(p), price != null && price < p ? "cross_up" : "cross_down", undefined, sel.id);
                 }}
-              >
-                алерт на уровне
-              </button>
+              >{t("алерт на уровне")}</button>
             )}
             {instruments.length > 1 && (
               <select
                 className={s.chip}
-                aria-label="скопировать на инструмент"
+                aria-label={t("скопировать на инструмент")}
                 value=""
                 onChange={(e) => {
                   const target = e.target.value;
                   if (target) void copyDrawing(sel.id, target);
                 }}
               >
-                <option value="">скопировать на…</option>
+                <option value="">{t("скопировать на…")}</option>
                 {instruments
                   .filter((i) => i.symbol !== symbol)
                   .map((i) => (
@@ -521,73 +511,59 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
               </select>
             )}
             <button type="button" className={s.chip} onClick={() => dr.actions.lock(sel.id)} aria-pressed={sel.locked}>
-              {sel.locked ? "разблокировать" : "заблокировать"}
+              {sel.locked ? t("разблокировать") : t("заблокировать")}
             </button>
-            <button type="button" className={s.chip} onClick={() => dr.actions.remove(sel.id)} disabled={sel.locked}>
-              удалить
-            </button>
-            <button type="button" className={s.chip} onClick={() => dr.actions.select(null)} aria-label="снять выделение">
+            <button type="button" className={s.chip} onClick={() => dr.actions.remove(sel.id)} disabled={sel.locked}>{t("удалить")}</button>
+            <button type="button" className={s.chip} onClick={() => dr.actions.select(null)} aria-label={t("снять выделение")}>
               ✕
             </button>
           </div>
         )}
         {dr.limitHit && (
           <p className={s.card} role="alert">
-            Лимит рисунков на инструмент: {dr.limit}. Удалите лишние{!user ? " или войдите" : " или перейдите на тариф выше"}.{" "}
-            <button type="button" className={s.chip} onClick={dr.dismissLimit}>
-              понятно
-            </button>
+            Лимит рисунков на инструмент: {dr.limit}. Удалите лишние{!user ? t(" или войдите") : t(" или перейдите на тариф выше")}.{" "}
+            <button type="button" className={s.chip} onClick={dr.dismissLimit}>{t("понятно")}</button>
           </p>
         )}
         {sheet && (
-          <BottomSheet title={sheet === "indicators" ? "Индикаторы" : sheet === "layers" ? "Слои" : sheet === "found" ? "Найдено на графике" : sheet === "alert" ? "Алерт по цене" : "Рисование"} onClose={closeSheet}>
+          <BottomSheet title={sheet === "indicators" ? t("Индикаторы") : sheet === "layers" ? t("Слои") : sheet === "found" ? t("Найдено на графике") : sheet === "alert" ? t("Алерт по цене") : t("Рисование")} onClose={closeSheet}>
             {sheet === "alert" && (
               <form
-                aria-label="новый алерт по цене"
+                aria-label={t("новый алерт по цене")}
                 onSubmit={(e) => {
                   e.preventDefault();
                   addPriceAlert(alertDraft.price, alertDraft.op, alertDraft.op === "enter_range" ? alertDraft.price2 : undefined, undefined, alertDraft.frequency);
                 }}
               >
-                <label>
-                  условие
-                  <select aria-label="условие цены" value={alertDraft.op} onChange={(e) => setAlertDraft({ ...alertDraft, op: e.target.value as typeof alertDraft.op })}>
-                    <option value="cross_up">пересечение вверх</option>
-                    <option value="cross_down">пересечение вниз</option>
-                    <option value="enter_range">вход в диапазон</option>
+                <label>{t("условие")}<select aria-label={t("условие цены")} value={alertDraft.op} onChange={(e) => setAlertDraft({ ...alertDraft, op: e.target.value as typeof alertDraft.op })}>
+                    <option value="cross_up">{t("пересечение вверх")}</option>
+                    <option value="cross_down">{t("пересечение вниз")}</option>
+                    <option value="enter_range">{t("вход в диапазон")}</option>
                   </select>
                 </label>
-                <label>
-                  цена
-                  <input aria-label="цена алерта" inputMode="decimal" required value={alertDraft.price} onChange={(e) => setAlertDraft({ ...alertDraft, price: e.target.value })} />
+                <label>{t("цена")}<input aria-label={t("цена алерта")} inputMode="decimal" required value={alertDraft.price} onChange={(e) => setAlertDraft({ ...alertDraft, price: e.target.value })} />
                 </label>
                 {alertDraft.op === "enter_range" && (
-                  <label>
-                    вторая граница
-                    <input aria-label="вторая граница" inputMode="decimal" required value={alertDraft.price2} onChange={(e) => setAlertDraft({ ...alertDraft, price2: e.target.value })} />
+                  <label>{t("вторая граница")}<input aria-label={t("вторая граница")} inputMode="decimal" required value={alertDraft.price2} onChange={(e) => setAlertDraft({ ...alertDraft, price2: e.target.value })} />
                   </label>
                 )}
-                <label>
-                  срабатывание
-                  <select aria-label="частота" value={alertDraft.frequency} onChange={(e) => setAlertDraft({ ...alertDraft, frequency: e.target.value as typeof alertDraft.frequency })}>
-                    <option value="once">один раз</option>
-                    <option value="every">каждый раз</option>
-                    <option value="once_per_bar">раз в свечу</option>
+                <label>{t("срабатывание")}<select aria-label={t("частота")} value={alertDraft.frequency} onChange={(e) => setAlertDraft({ ...alertDraft, frequency: e.target.value as typeof alertDraft.frequency })}>
+                    <option value="once">{t("один раз")}</option>
+                    <option value="every">{t("каждый раз")}</option>
+                    <option value="once_per_bar">{t("раз в свечу")}</option>
                   </select>
                 </label>
-                <button type="submit" className={s.chip}>
-                  Создать алерт
-                </button>
+                <button type="submit" className={s.chip}>{t("Создать алерт")}</button>
                 <p className="caption">
-                  Проверка по минутным свечам, до 60 с. Активных по инструменту: {alerts.length}. <Link href="/alerts">Все алерты</Link>
+                  Проверка по минутным свечам, до 60 с. Активных по инструменту: {alerts.length}. <Link href="/alerts">{t("Все алерты")}</Link>
                 </p>
               </form>
             )}
             {sheet === "found" && (
               <>
-                <strong className={s.objHead}>Фигуры</strong>
+                <strong className={s.objHead}>{t("Фигуры")}</strong>
                 <FiguresList items={data.figures?.items ?? []} stats={data.figures?.stats ?? {}} selected={figureSel} onSelect={setFigureSel} />
-                <strong className={s.objHead}>Свечные паттерны</strong>
+                <strong className={s.objHead}>{t("Свечные паттерны")}</strong>
                 <FoundList items={data.patterns?.items ?? []} stats={data.patterns?.stats ?? {}} selected={foundSel} onSelect={setFoundSel} tf={tf} symbol={symbol} canExplain={!!user} />
                 {user && <AskBox symbol={symbol} tf={tf} />}
               </>
@@ -610,21 +586,17 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
             {sheet === "draw" && (
               <>
                 <label>
-                  <input type="checkbox" checked={dr.magnet} onChange={(e) => dr.setMagnet(e.target.checked)} /> магнит к OHLC
-                </label>
+                  <input type="checkbox" checked={dr.magnet} onChange={(e) => dr.setMagnet(e.target.checked)} />{" "}{t("магнит к OHLC")}</label>
                 <label>
-                  <input type="checkbox" checked={dr.state.hidden} onChange={(e) => dr.actions.hide(e.target.checked)} /> скрыть все рисунки
-                </label>
+                  <input type="checkbox" checked={dr.state.hidden} onChange={(e) => dr.actions.hide(e.target.checked)} />{" "}{t("скрыть все рисунки")}</label>
                 <button
                   type="button"
                   className={s.chip}
                   disabled={dr.items.length === 0}
                   onClick={() => {
-                    if (confirm(`Удалить все рисунки по ${symbol} (${dr.items.length})?`)) dr.actions.clear();
+                    if (confirm(t("Удалить все рисунки по {symbol} ({n})?", { symbol, n: dr.items.length }))) dr.actions.clear();
                   }}
-                >
-                  удалить все
-                </button>
+                >{t("удалить все")}</button>
               </>
             )}
             {sheet === "found" || sheet === "alert"
@@ -634,19 +606,19 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
                   ...INDICATORS.map((i) => (
                     <label key={i.id}>
                       <input type="checkbox" checked={indicatorIds.has(i.id)} onChange={() => toggleIndicator(i.id)} /> {i.title}
-                      <span className="caption">{i.pane === "overlay" ? "на графике" : "панель"}</span>
+                      <span className="caption">{i.pane === "overlay" ? t("на графике") : t("панель")}</span>
                     </label>
                   )),
                   ...PANELS.map((pn) => (
                     <label key={pn.id}>
                       <input type="checkbox" checked={st.panels.includes(pn.id)} onChange={() => togglePanel(pn.id)} /> {pn.title}
-                      <span className="caption">{pn.id === "liq" ? "панель · данные публичного потока, не полный объём" : "панель · деривативы"}</span>
+                      <span className="caption">{pn.id === "liq" ? t("панель · данные публичного потока, не полный объём") : t("панель · деривативы")}</span>
                     </label>
                   )),
                 ]
               : (Object.keys(LAYER_LABEL) as LayerKey[]).map((k) => (
                   <label key={k}>
-                    <input type="checkbox" checked={st.layers[k]} onChange={() => toggleLayer(k)} /> {LAYER_LABEL[k]}
+                    <input type="checkbox" checked={st.layers[k]} onChange={() => toggleLayer(k)} /> {t(LAYER_LABEL[k])}
                   </label>
                 ))}
           </BottomSheet>
@@ -677,9 +649,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
         <button type="button" className={s.chip} aria-pressed={sheet === "indicators"} onClick={() => setSheet(sheet === "indicators" ? null : "indicators")}>
           Индикаторы ({st.indicators.length + st.panels.length})
         </button>
-        <button type="button" className={s.chip} aria-pressed={sheet === "layers"} onClick={() => setSheet(sheet === "layers" ? null : "layers")}>
-          Слои
-        </button>
+        <button type="button" className={s.chip} aria-pressed={sheet === "layers"} onClick={() => setSheet(sheet === "layers" ? null : "layers")}>{t("Слои")}</button>
         <button type="button" className={`${s.chip} ${s.mobileOnly}`} aria-pressed={sheet === "found"} onClick={() => setSheet(sheet === "found" ? null : "found")}>
           Найдено ({foundCount})
         </button>
@@ -687,17 +657,15 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
           Алерт{alerts.length ? ` (${alerts.length})` : ""}
         </button>
         <button type="button" className={s.chip} aria-pressed={sheet === "draw" || dr.tool !== null} onClick={() => setSheet(sheet === "draw" ? null : "draw")}>
-          {dr.tool ? `Рисую: ${TOOL_TITLES[dr.tool]}` : "Рисовать"}
+          {dr.tool ? `Рисую: ${TOOL_TITLES[dr.tool]}` : t("Рисовать")}
         </button>
         {dr.tool && (
-          <button type="button" className={s.chip} onClick={() => { dr.setTool(null); dr.setDraft(null); }} aria-label="закончить рисование">
-            Готово
-          </button>
+          <button type="button" className={s.chip} onClick={() => { dr.setTool(null); dr.setDraft(null); }} aria-label={t("закончить рисование")}>{t("Готово")}</button>
         )}
-        <button type="button" className={`${s.chip} ${s.mobileOnly}`} onClick={dr.actions.undo} disabled={!dr.canUndo} aria-label="отменить">
+        <button type="button" className={`${s.chip} ${s.mobileOnly}`} onClick={dr.actions.undo} disabled={!dr.canUndo} aria-label={t("отменить")}>
           ↶
         </button>
-        <button type="button" className={`${s.chip} ${s.mobileOnly}`} onClick={dr.actions.redo} disabled={!dr.canRedo} aria-label="повторить">
+        <button type="button" className={`${s.chip} ${s.mobileOnly}`} onClick={dr.actions.redo} disabled={!dr.canRedo} aria-label={t("повторить")}>
           ↷
         </button>
         <span className="caption" data-testid="drawings-count">
@@ -705,7 +673,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
         </span>
         {user && dr.sync !== "off" && (
           <span className="caption" data-testid="drawings-sync">
-            {dr.sync === "ok" ? "синхронизировано" : dr.sync === "queued" ? "в очереди" : "ошибка синхронизации"}
+            {dr.sync === "ok" ? t("синхронизировано") : dr.sync === "queued" ? t("в очереди") : t("ошибка синхронизации")}
           </span>
         )}
         {data.layers?.signals.length ? (

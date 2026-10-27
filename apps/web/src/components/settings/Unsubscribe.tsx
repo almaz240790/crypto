@@ -5,18 +5,18 @@ import { useState } from "react";
 import s from "@/components/auth/AuthCard.module.css";
 import { Button } from "@/components/ui";
 import { api } from "@/lib/auth-client";
+import { useT } from "@/i18n/client";
 
 /** Отписка по ссылке из письма: без входа, одним нажатием (приёмка 2.13). */
 export function Unsubscribe({ token }: { token: string | null }) {
+  const t = useT();
   const [state, setState] = useState<"idle" | "busy" | "ok" | "error">(token ? "idle" : "error");
-  const [msg, setMsg] = useState(token ? "" : "в ссылке нет токена");
+  const [msg, setMsg] = useState(token ? "" : t("в ссылке нет токена"));
   if (state === "ok") {
     return (
       <div className={s.form}>
-        <div className={s.ok} role="status">
-          Вы отписаны от писем: дайджест и уведомления о сигналах выключены. Включить обратно можно в настройках.
-        </div>
-        <Link href="/settings">Настройки уведомлений</Link>
+        <div className={s.ok} role="status">{t("Вы отписаны от писем: дайджест и уведомления о сигналах выключены. Включить обратно можно в настройках.")}</div>
+        <Link href="/settings">{t("Настройки уведомлений")}</Link>
       </div>
     );
   }
@@ -27,7 +27,7 @@ export function Unsubscribe({ token }: { token: string | null }) {
           {msg}
         </div>
       )}
-      <p className="text-2">Отписаться от всех писем Platform? Письма о входе и восстановлении пароля продолжат приходить.</p>
+      <p className="text-2">{t("Отписаться от всех писем Platform? Письма о входе и восстановлении пароля продолжат приходить.")}</p>
       <Button
         variant="primary"
         block
@@ -39,12 +39,10 @@ export function Unsubscribe({ token }: { token: string | null }) {
             setState("ok");
           } catch (e) {
             setState("error");
-            setMsg(e instanceof Error ? e.message : "не удалось отписаться");
+            setMsg(e instanceof Error ? e.message : t("не удалось отписаться"));
           }
         }}
-      >
-        Отписаться
-      </Button>
+      >{t("Отписаться")}</Button>
     </div>
   );
 }
