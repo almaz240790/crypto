@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { Footer, Header } from "@/components/site";
 import { Panel, Table, Td, Th } from "@/components/ui";
+import { getT } from "@/i18n/server";
 
 export const metadata: Metadata = {
   title: "API для чтения",
@@ -33,35 +34,32 @@ const ENDPOINTS: { path: string; what: string; params: string }[] = [
   { path: "/v1/alerts", what: "Ваши алерты", params: "symbol, status" },
 ];
 
-export default function ApiDocsPage() {
+export default async function ApiDocsPage() {
+  const t = await getT();
   return (
     <>
       <Header />
       <main className="container" style={{ padding: "24px 0", display: "grid", gap: 16, maxWidth: 960 }}>
         <div>
-          <h1>API для чтения</h1>
-          <p className="text-2">
-            Те же данные, что на сайте, для ваших скриптов и таблиц. Доступно на тарифе Premium: ключ создаётся в <Link href="/settings">настройках</Link>, передаётся в заголовке <code>X-API-Key</code> и даёт только чтение (запросы GET). Лимит — 600 запросов в минуту на ключ, не больше 5 активных ключей.
-          </p>
+          <h1>{t("API для чтения")}</h1>
+          <p className="text-2">{t("Те же данные, что на сайте, для ваших скриптов и таблиц. Доступно на тарифе Premium: ключ создаётся в")}{" "}<Link href="/settings">{t("настройках")}</Link>{t(", передаётся в заголовке")}{" "}<code>X-API-Key</code>{" "}{t("и даёт только чтение (запросы GET). Лимит — 600 запросов в минуту на ключ, не больше 5 активных ключей.")}</p>
         </div>
-        <Panel title="Пример">
+        <Panel title={t("Пример")}>
           <pre style={{ margin: 0, whiteSpace: "pre-wrap", fontSize: 13 }}>{`curl -H "X-API-Key: pk_ваш_ключ" "${BASE}/v1/signals?status=closed&limit=50"
 
 # Python
 import requests
-r = requests.get("${BASE}/v1/stats", params={"scope": "live"}, headers={"X-API-Key": "pk_ваш_ключ"})
+r = requests.get("${BASE}/v1/stats", params={"scope": "live"}, headers={"X-API-Key": t("pk_ваш_ключ")})
 print(r.json()["metrics"])`}</pre>
-          <p className="caption" style={{ margin: "8px 0 0" }}>
-            Ответы — JSON, цены и объёмы — строками (без потери точности), время — ISO 8601 в UTC или unix-секунды в полях <code>t</code>. Ошибки: 401 — ключ неверный или отозван, 403 — тариф без API или запрос не на чтение, 429 — превышен лимит.
-          </p>
+          <p className="caption" style={{ margin: "8px 0 0" }}>{t("Ответы — JSON, цены и объёмы — строками (без потери точности), время — ISO 8601 в UTC или unix-секунды в полях")}{" "}<code>t</code>{t(". Ошибки: 401 — ключ неверный или отозван, 403 — тариф без API или запрос не на чтение, 429 — превышен лимит.")}</p>
         </Panel>
-        <Panel title="Эндпоинты" flush>
+        <Panel title={t("Эндпоинты")} flush>
           <Table compact>
             <thead>
               <tr>
-                <Th>Путь</Th>
-                <Th>Что возвращает</Th>
-                <Th>Параметры</Th>
+                <Th>{t("Путь")}</Th>
+                <Th>{t("Что возвращает")}</Th>
+                <Th>{t("Параметры")}</Th>
               </tr>
             </thead>
             <tbody>
@@ -77,9 +75,7 @@ print(r.json()["metrics"])`}</pre>
             </tbody>
           </Table>
         </Panel>
-        <p className="caption">
-          Полная схема всех эндпоинтов с типами полей — в OpenAPI: <a href={`${BASE}/docs`}>{BASE}/docs</a>. Данные носят информационный характер и не являются инвестиционной рекомендацией.
-        </p>
+        <p className="caption">{t("Полная схема всех эндпоинтов с типами полей — в OpenAPI:")}{" "}<a href={`${BASE}/docs`}>{BASE}/docs</a>{t(". Данные носят информационный характер и не являются инвестиционной рекомендацией.")}</p>
       </main>
       <Footer />
     </>

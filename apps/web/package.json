@@ -6,13 +6,14 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint && npm run lint:colors && npm run lint:texts",
+    "lint": "eslint && npm run lint:colors && npm run lint:texts && npm run lint:i18n",
     "lint:colors": "node scripts/check-colors.mjs",
     "lint:texts": "node scripts/check-texts.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "check": "npm run lint && npm run typecheck && npm run test",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "lint:i18n": "node scripts/check-i18n.mjs"
   },
   "dependencies": {
     "@platform/charts": "file:../../packages/charts",

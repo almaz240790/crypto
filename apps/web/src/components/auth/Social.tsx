@@ -4,6 +4,7 @@ import { useEffect, useRef } from "react";
 import { Button } from "@/components/ui";
 import { loginTelegram, type TelegramUser } from "@/lib/auth-client";
 import s from "./AuthCard.module.css";
+import { useT } from "@/i18n/client";
 
 const GOOGLE_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
 const TG_BOT = process.env.NEXT_PUBLIC_TELEGRAM_BOT;
@@ -29,6 +30,7 @@ declare global {
 
 /** Кнопки входа через Google и Telegram. Показываются только если провайдер настроен. */
 export function Social({ next, onDone, onError }: { next: string; onDone: () => void; onError: (m: string) => void }) {
+  const t = useT();
   const tgRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -38,7 +40,7 @@ export function Social({ next, onDone, onError }: { next: string; onDone: () => 
         await loginTelegram(u);
         onDone();
       } catch (e) {
-        onError(e instanceof Error ? e.message : "ошибка входа через Telegram");
+        onError(e instanceof Error ? e.message : t("ошибка входа через Telegram"));
       }
     };
     const sc = document.createElement("script");
@@ -50,17 +52,16 @@ export function Social({ next, onDone, onError }: { next: string; onDone: () => 
     sc.setAttribute("data-onauth", "onTelegramAuth(user)");
     sc.setAttribute("data-request-access", "write");
     tgRef.current.appendChild(sc);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- t меняется только с языком, вход повторять нельзя
   }, [onDone, onError]);
 
   if (!GOOGLE_ID && !TG_BOT) return null;
   return (
     <>
-      <div className={s.sep}>или</div>
+      <div className={s.sep}>{t("или")}</div>
       <div className={s.social}>
         {GOOGLE_ID && (
-          <Button block onClick={() => (window.location.href = googleAuthUrl(next))}>
-            Войти через Google
-          </Button>
+          <Button block onClick={() => (window.location.href = googleAuthUrl(next))}>{t("Войти через Google")}</Button>
         )}
         {TG_BOT && <div ref={tgRef} />}
       </div>

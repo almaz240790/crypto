@@ -6,6 +6,7 @@ import { useAuth } from "@/components/auth/AuthProvider";
 import s from "@/components/billing/billing.module.css";
 import { Badge, Button, Input, Panel } from "@/components/ui";
 import { checkout, getBillingMe, getPlans, getQuote, PLAN_TITLE, type BillingMe, type Months, type PlanInfo, type Quote } from "@/lib/billing";
+import { useT } from "@/i18n/client";
 
 const FEATURES: Record<string, string[]> = {
   pro: ["Все градации сигналов, сразу", "Все инструменты", "Telegram, push, email — мгновенно", "Полная история и CSV", "Журнал без ограничений, вотчлист 50"],
@@ -15,6 +16,7 @@ const FEATURES: Record<string, string[]> = {
 const PERIOD_LABEL: Record<Months, string> = { 1: "1 месяц", 3: "3 месяца", 12: "12 месяцев" };
 
 export function Pricing() {
+  const t = useT();
   const router = useRouter();
   const { user } = useAuth();
   const [plans, setPlans] = useState<PlanInfo[] | null>(null);
@@ -50,7 +52,7 @@ export function Pricing() {
     try {
       setQuote(await getQuote(plan, months, promo));
     } catch (e) {
-      setMsg({ text: e instanceof Error ? e.message : "ошибка", kind: "error" });
+      setMsg({ text: e instanceof Error ? e.message : t("ошибка"), kind: "error" });
     }
   }
 
@@ -61,13 +63,13 @@ export function Pricing() {
     try {
       const r = await checkout(chosen, months, promo);
       if (r.paid_from_balance) {
-        setMsg({ text: "Оплачено с баланса, тариф активирован", kind: "ok" });
+        setMsg({ text: t("Оплачено с баланса, тариф активирован"), kind: "ok" });
         router.push("/billing");
       } else if (r.payment.invoice_url) {
         window.location.href = r.payment.invoice_url;
       }
     } catch (e) {
-      setMsg({ text: e instanceof Error ? e.message : "ошибка", kind: "error" });
+      setMsg({ text: e instanceof Error ? e.message : t("ошибка"), kind: "error" });
     } finally {
       setBusy(false);
     }
@@ -77,7 +79,7 @@ export function Pricing() {
 
   return (
     <div className={s.wrap}>
-      <div className={s.toggle} role="group" aria-label="срок подписки">
+      <div className={s.toggle} role="group" aria-label={t("срок подписки")}>
         {([1, 3, 12] as Months[]).map((m) => (
           <button
             key={m}
@@ -96,20 +98,20 @@ export function Pricing() {
         ))}
       </div>
       {plans === null ? (
-        <p className="text-2">Загрузка…</p>
+        <p className="text-2">{t("Загрузка…")}</p>
       ) : (
         <div className={s.cards}>
           <div className={s.card} data-current={me?.plan === "free"}>
             <h3>Free</h3>
             <div className={s.amount}>0</div>
             <ul>
-              <li>Сигналы градации A с задержкой 12 часов</li>
-              <li>BTC, ETH + 3 инструмента на выбор</li>
-              <li>Email-дайджест раз в день</li>
-              <li>Публичная статистика</li>
-              <li>Журнал 20 записей, вотчлист 5</li>
+              <li>{t("Сигналы градации A с задержкой 12 часов")}</li>
+              <li>{t("BTC, ETH + 3 инструмента на выбор")}</li>
+              <li>{t("Email-дайджест раз в день")}</li>
+              <li>{t("Публичная статистика")}</li>
+              <li>{t("Журнал 20 записей, вотчлист 5")}</li>
             </ul>
-            {me?.plan === "free" && <Badge tone="muted">ваш тариф</Badge>}
+            {me?.plan === "free" && <Badge tone="muted">{t("ваш тариф")}</Badge>}
           </div>
           {plans.map((p) => (
             <div key={p.code} className={s.card} data-current={me?.plan === p.code}>
@@ -128,41 +130,34 @@ export function Pricing() {
                 <Badge tone="up">ваш тариф{me.subscription ? ` до ${new Date(me.subscription.current_period_end).toLocaleDateString("ru-RU")}` : ""}</Badge>
               ) : null}
               <Button variant={p.code === "pro" ? "primary" : "default"} onClick={() => pick(p.code)} disabled={!enabled && !!user}>
-                {user ? (me?.plan === p.code ? "Продлить" : `Выбрать ${p.title}`) : "Зарегистрироваться"}
+                {user ? (me?.plan === p.code ? t("Продлить") : `Выбрать ${p.title}`) : t("Зарегистрироваться")}
               </Button>
             </div>
           ))}
         </div>
       )}
       {!enabled && (
-        <p className="caption">Оплата пока не включена: до запуска все зарегистрированные пользователи получают уровень Pro. Первые 7 дней Pro — бесплатно при регистрации.</p>
+        <p className="caption">{t("Оплата пока не включена: до запуска все зарегистрированные пользователи получают уровень Pro. Первые 7 дней Pro — бесплатно при регистрации.")}</p>
       )}
       {user && chosen && (
         <Panel title={`Заказ: ${PLAN_TITLE[chosen]} на ${PERIOD_LABEL[months]}`}>
           <div className={s.promo}>
-            <Input label="Промокод" value={promo} onChange={(e) => setPromo(e.target.value.toUpperCase())} style={{ textTransform: "uppercase", width: 180 }} />
-            <Button size="sm" onClick={() => pick(chosen)}>
-              Применить
-            </Button>
+            <Input label={t("Промокод")} value={promo} onChange={(e) => setPromo(e.target.value.toUpperCase())} style={{ textTransform: "uppercase", width: 180 }} />
+            <Button size="sm" onClick={() => pick(chosen)}>{t("Применить")}</Button>
           </div>
           {quote && (
             <div className={s.summary} style={{ marginTop: 12 }}>
-              <span>
-                Цена <strong>{quote.price} USD</strong>
+              <span>{t("Цена")}{" "}<strong>{quote.price} USD</strong>
               </span>
               {Number(quote.discount) > 0 && (
-                <span>
-                  Скидка по промокоду <strong>−{quote.discount} USD</strong>
+                <span>{t("Скидка по промокоду")}{" "}<strong>−{quote.discount} USD</strong>
                 </span>
               )}
               {Number(quote.balance_applied) > 0 && (
-                <span>
-                  С баланса <strong>−{quote.balance_applied} USD</strong>
+                <span>{t("С баланса")}{" "}<strong>−{quote.balance_applied} USD</strong>
                 </span>
               )}
-              <span>
-                К оплате <strong>{quote.amount_due} USD</strong> в USDT, USDC, BTC, ETH или TON — монету выберете на странице оплаты
-              </span>
+              <span>{t("К оплате")}{" "}<strong>{quote.amount_due} USD</strong>{" "}{t("в USDT, USDC, BTC, ETH или TON — монету выберете на странице оплаты")}</span>
             </div>
           )}
           {msg && (
@@ -172,9 +167,9 @@ export function Pricing() {
           )}
           <div style={{ marginTop: 12, display: "flex", gap: 8, alignItems: "center" }}>
             <Button variant="primary" onClick={pay} disabled={!quote || busy || !enabled}>
-              {Number(quote?.amount_due ?? 1) === 0 ? "Оплатить с баланса" : "Перейти к оплате"}
+              {Number(quote?.amount_due ?? 1) === 0 ? t("Оплатить с баланса") : t("Перейти к оплате")}
             </Button>
-            <span className="caption">Инвойс действует 30 минут. Подписка без автопродления, оплата продлевает текущий срок.</span>
+            <span className="caption">{t("Инвойс действует 30 минут. Подписка без автопродления, оплата продлевает текущий срок.")}</span>
           </div>
         </Panel>
       )}

@@ -7,10 +7,12 @@ import s from "@/components/tools/tools.module.css";
 import { Button, Input, Panel } from "@/components/ui";
 import { createTicket, getMyTickets, type Ticket } from "@/lib/support";
 import { formatTimeUTC } from "@/lib/format";
+import { useT } from "@/i18n/client";
 
 const STATUS: Record<Ticket["status"], string> = { open: "открыто", answered: "есть ответ", closed: "закрыто" };
 
 function Inner() {
+  const t = useT();
   const { user } = useAuth();
   const params = useSearchParams();
   const [email, setEmail] = useState("");
@@ -49,7 +51,7 @@ function Inner() {
       setSubject("");
       setMessage("");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "ошибка");
+      setError(err instanceof Error ? err.message : t("ошибка"));
     } finally {
       setBusy(false);
     }
@@ -57,13 +59,11 @@ function Inner() {
 
   return (
     <>
-      <Panel title="Написать в поддержку">
+      <Panel title={t("Написать в поддержку")}>
         {done ? (
           <p role="status">
             Обращение #{done.id} принято. Ответ придёт на {done.email}, обычно в течение суток.{" "}
-            <button type="button" className={s.small} onClick={() => setDone(null)}>
-              написать ещё
-            </button>
+            <button type="button" className={s.small} onClick={() => setDone(null)}>{t("написать ещё")}</button>
           </p>
         ) : (
           <form className={s.form} onSubmit={submit}>
@@ -72,23 +72,21 @@ function Inner() {
                 {error}
               </p>
             )}
-            {!user && <Input label="Email для ответа" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoComplete="email" />}
-            <Input label="Тема" value={subject} onChange={(e) => setSubject(e.target.value)} required minLength={3} maxLength={200} />
+            {!user && <Input label={t("Email для ответа")} type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoComplete="email" />}
+            <Input label={t("Тема")} value={subject} onChange={(e) => setSubject(e.target.value)} required minLength={3} maxLength={200} />
             <label style={{ display: "grid", gap: 4 }}>
-              <span className="caption">Сообщение</span>
-              <textarea value={message} onChange={(e) => setMessage(e.target.value)} required minLength={10} maxLength={5000} rows={6} aria-label="Сообщение" style={{ font: "inherit", padding: 8, border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg)", color: "var(--text)" }} />
+              <span className="caption">{t("Сообщение")}</span>
+              <textarea value={message} onChange={(e) => setMessage(e.target.value)} required minLength={10} maxLength={5000} rows={6} aria-label={t("Сообщение")} style={{ font: "inherit", padding: 8, border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg)", color: "var(--text)" }} />
             </label>
-            <Input label="Страница (прикрепляется сама)" value={page} onChange={(e) => setPage(e.target.value)} maxLength={300} hint={`версия ${process.env.NEXT_PUBLIC_APP_VERSION ?? "—"}${user ? ", тариф прикрепится автоматически" : ""}`} />
+            <Input label={t("Страница (прикрепляется сама)")} value={page} onChange={(e) => setPage(e.target.value)} maxLength={300} hint={`версия ${process.env.NEXT_PUBLIC_APP_VERSION ?? "—"}${user ? t(", тариф прикрепится автоматически") : ""}`} />
             <div className={s.actions}>
-              <Button type="submit" variant="primary" size="sm" disabled={busy}>
-                Отправить
-              </Button>
+              <Button type="submit" variant="primary" size="sm" disabled={busy}>{t("Отправить")}</Button>
             </div>
           </form>
         )}
       </Panel>
       {user && mine && mine.length > 0 && (
-        <Panel title="Мои обращения" flush>
+        <Panel title={t("Мои обращения")} flush>
           <ul style={{ margin: 0, padding: "8px 16px", listStyle: "none", display: "grid", gap: 8 }}>
             {mine.map((t) => (
               <li key={t.id} style={{ borderBottom: "1px solid var(--border)", padding: "6px 0" }}>

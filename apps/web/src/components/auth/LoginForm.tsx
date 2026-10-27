@@ -8,8 +8,10 @@ import { TwoFactorRequired, login, loginTwoFactor, pendingTwoFactorTicket, reque
 import { useAuth } from "./AuthProvider";
 import s from "./AuthCard.module.css";
 import { Social } from "./Social";
+import { useT } from "@/i18n/client";
 
 export function LoginForm({ next }: { next: string }) {
+  const t = useT();
   const router = useRouter();
   const { reload } = useAuth();
   const [mode, setMode] = useState<"password" | "magic">("password");
@@ -44,7 +46,7 @@ export function LoginForm({ next }: { next: string }) {
       }
     } catch (err) {
       if (err instanceof TwoFactorRequired) setTwoFactor(true);
-      else setError(err instanceof Error ? err.message : "не удалось войти");
+      else setError(err instanceof Error ? err.message : t("не удалось войти"));
     } finally {
       setBusy(false);
     }
@@ -58,7 +60,7 @@ export function LoginForm({ next }: { next: string }) {
       await loginTwoFactor(code);
       await done();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "неверный код");
+      setError(err instanceof Error ? err.message : t("неверный код"));
     } finally {
       setBusy(false);
     }
@@ -66,19 +68,15 @@ export function LoginForm({ next }: { next: string }) {
 
   if (twoFactor) {
     return (
-      <form className={s.form} onSubmit={submitCode} noValidate aria-label="код двухфакторной защиты">
+      <form className={s.form} onSubmit={submitCode} noValidate aria-label={t("код двухфакторной защиты")}>
         {error && (
           <div className={s.error} role="alert">
             {error}
           </div>
         )}
-        <Input label="Код из приложения" name="code" autoComplete="one-time-code" inputMode="numeric" required value={code} onChange={(e) => setCode(e.target.value)} hint="6 цифр из приложения-аутентификатора или один из резервных кодов" />
-        <Button type="submit" variant="primary" block disabled={busy || code.length < 6}>
-          Подтвердить
-        </Button>
-        <button type="button" className={s.linkBtn} onClick={() => { setTwoFactor(false); setCode(""); }}>
-          Назад
-        </button>
+        <Input label={t("Код из приложения")} name="code" autoComplete="one-time-code" inputMode="numeric" required value={code} onChange={(e) => setCode(e.target.value)} hint={t("6 цифр из приложения-аутентификатора или один из резервных кодов")} />
+        <Button type="submit" variant="primary" block disabled={busy || code.length < 6}>{t("Подтвердить")}</Button>
+        <button type="button" className={s.linkBtn} onClick={() => { setTwoFactor(false); setCode(""); }}>{t("Назад")}</button>
       </form>
     );
   }
@@ -87,9 +85,7 @@ export function LoginForm({ next }: { next: string }) {
     return (
       <div className={s.form}>
         <div className={s.ok}>Если адрес {email} зарегистрирован, письмо со ссылкой для входа уже отправлено. Ссылка действует 15 минут.</div>
-        <Button variant="ghost" onClick={() => setSent(false)}>
-          Назад
-        </Button>
+        <Button variant="ghost" onClick={() => setSent(false)}>{t("Назад")}</Button>
       </div>
     );
   }
@@ -112,7 +108,7 @@ export function LoginForm({ next }: { next: string }) {
       />
       {mode === "password" && (
         <Input
-          label="Пароль"
+          label={t("Пароль")}
           type="password"
           name="password"
           autoComplete="current-password"
@@ -122,18 +118,18 @@ export function LoginForm({ next }: { next: string }) {
         />
       )}
       <Button type="submit" variant="primary" block disabled={busy || !email || (mode === "password" && !password)}>
-        {mode === "password" ? "Войти" : "Прислать ссылку для входа"}
+        {mode === "password" ? t("Войти") : t("Прислать ссылку для входа")}
       </Button>
       <div className={s.row}>
         <button type="button" className={s.linkBtn} onClick={() => setMode(mode === "password" ? "magic" : "password")}>
-          {mode === "password" ? "Войти по ссылке из письма" : "Войти по паролю"}
+          {mode === "password" ? t("Войти по ссылке из письма") : t("Войти по паролю")}
         </button>
-        <Link href="/reset">Забыли пароль?</Link>
+        <Link href="/reset">{t("Забыли пароль?")}</Link>
       </div>
       <Social next={next} onDone={done} onError={(m) => (pendingTwoFactorTicket() ? setTwoFactor(true) : setError(m))} />
       <div className={s.row}>
-        <span className="text-2">Нет аккаунта?</span>
-        <Link href={`/register?next=${encodeURIComponent(next)}`}>Зарегистрироваться</Link>
+        <span className="text-2">{t("Нет аккаунта?")}</span>
+        <Link href={`/register?next=${encodeURIComponent(next)}`}>{t("Зарегистрироваться")}</Link>
       </div>
     </form>
   );
