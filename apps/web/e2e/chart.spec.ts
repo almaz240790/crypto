@@ -325,3 +325,26 @@ test("рисунок копируется на другой инструмент
   await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 1");
   await expect(page.getByRole("button", { name: "Объекты" })).toBeVisible();
 });
+
+test("мультичарт: 2 и 4 графика, смена инструмента и таймфрейма, ссылка в терминал", async ({ page }) => {
+  const calls: string[] = [];
+  await mock(page, calls);
+  await page.goto("/multichart");
+  const cells = page.getByRole("region", { name: /^график / });
+  await expect(cells).toHaveCount(2);
+  await expect(cells.first().locator("canvas").first()).toBeVisible();
+  expect(calls.some((c) => c.startsWith("/v1/chart/candles?symbol=ETHUSDT&tf=4h"))).toBe(true);
+  await page.getByRole("button", { name: "4", exact: true }).click();
+  await expect(cells).toHaveCount(4);
+  await expect(cells.nth(3)).toHaveAttribute("aria-label", "график BNBUSDT 1d");
+  // смена инструмента и таймфрейма в первой ячейке
+  await cells.first().getByLabel("инструмент").selectOption("ETHUSDT");
+  await cells.first().getByLabel("таймфрейм").selectOption("1d");
+  await expect(cells.first()).toHaveAttribute("aria-label", "график ETHUSDT 1d");
+  await expect.poll(() => calls.some((c) => c.startsWith("/v1/chart/candles?symbol=ETHUSDT&tf=1d"))).toBe(true);
+  await expect(cells.first().getByRole("link", { name: "открыть в терминале" })).toHaveAttribute("href", "/chart/ETHUSDT/1d");
+  // раскладка сохраняется
+  await page.reload();
+  await expect(page.getByRole("region", { name: /^график / })).toHaveCount(4);
+  await expect(page.getByRole("region", { name: /^график / }).first()).toHaveAttribute("aria-label", "график ETHUSDT 1d");
+});
