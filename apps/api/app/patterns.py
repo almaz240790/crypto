@@ -641,3 +641,44 @@ def pattern_dict(p: Pattern) -> dict[str, Any]:
         "source": p.source,
         "tf": p.timeframe,
     }
+
+
+def chart_patterns(
+    db: Session,
+    inst: Instrument,
+    tf: Timeframe,
+    since: datetime | None,
+    until: datetime | None,
+    limit: int = 300,
+) -> dict[str, Any]:
+    """Отметки для слоя графика и панели «Найдено» (2B.12) плюс историческая отработка по типам."""
+    q = select(Pattern).where(Pattern.instrument_id == inst.id, Pattern.timeframe == tf.value)
+    if since is not None:
+        q = q.where(Pattern.candle_close_time >= since)
+    if until is not None:
+        q = q.where(Pattern.candle_close_time <= until)
+    rows = db.scalars(q.order_by(Pattern.candle_close_time.desc()).limit(limit)).all()
+    items = [pattern_dict(p) for p in reversed(rows)]
+    types = sorted({p.type for p in rows})
+    snaps = {
+        s.type: s
+        for s in db.scalars(
+            select(PatternStatsSnapshot).where(
+                PatternStatsSnapshot.timeframe == tf.value,
+                PatternStatsSnapshot.scope == "backfill",
+                PatternStatsSnapshot.horizon_bars == STATS_HORIZON,
+                PatternStatsSnapshot.instrument_id.is_(None),
+                PatternStatsSnapshot.with_context.is_(None),
+                PatternStatsSnapshot.year.is_(None),
+                PatternStatsSnapshot.type.in_(types),
+            )
+        ).all()
+    }
+    return {
+        "symbol": inst.symbol,
+        "tf": tf.value,
+        "items": items,
+        "stats": {t: snapshot_dict(snaps.get(t), t, STATS_HORIZON) for t in types},
+        "horizon": STATS_HORIZON,
+        "note": "Паттерны считаются по закрытым свечам и не являются сигналами.",
+    }

@@ -157,7 +157,7 @@ test("десктоп: тулбар и горячие клавиши, панел�
   await page.keyboard.press("Escape");
   await expect(toolbar.getByRole("button", { name: "Горизонтальная линия" })).toHaveAttribute("aria-pressed", "false");
   // панель объектов: список, блокировка запрещает удаление, разблокировка и удаление
-  await expect(objects.getByRole("tab", { name: "Рисунки (1)" })).toBeVisible();
+  await objects.getByRole("tab", { name: "Рисунки (1)" }).click();
   await expect(objects).toContainText("Горизонтальная линия");
   await objects.getByRole("button", { name: "заблокировать Горизонтальная линия" }).click();
   await expect(objects.getByRole("button", { name: "удалить Горизонтальная линия" })).toBeDisabled();
@@ -195,4 +195,33 @@ test("десктоп: тулбар и горячие клавиши, панел�
   const dl = page.waitForEvent("download");
   await page.getByRole("button", { name: "Снимок" }).click();
   expect((await dl).suggestedFilename()).toMatch(/^platform-BTCUSDT-1d-\d+\.png$/);
+});
+
+test("паттерны: вкладка «Найдено», подробности с контекстом и отработкой, слой включается и выключается", async ({ page }) => {
+  const calls: string[] = [];
+  await mock(page, calls, true);
+  await page.goto("/chart/BTCUSDT/4h");
+  await expect(page.getByTestId("terminal").locator("canvas").first()).toBeVisible();
+  await expect.poll(() => calls.some((c) => c.startsWith("/v1/chart/patterns?symbol=BTCUSDT&tf=4h"))).toBe(true);
+  const objects = page.getByRole("complementary", { name: "панель объектов" });
+  await expect(objects.getByRole("tab", { name: "Найдено (2)" })).toHaveAttribute("aria-selected", "true");
+  const list = objects.getByRole("list", { name: "найденные паттерны" });
+  await expect(list).toContainText("Доджи");
+  await expect(list).toContainText("Бычье поглощение");
+  await expect(list).toContainText("значимый");
+  await list.getByRole("button", { name: /Бычье поглощение/ }).click();
+  await expect(list).toContainText("подтверждено на закрытии свечи");
+  await expect(list).toContainText("после 4 свечей снижения");
+  await expect(list).toContainText("снята ликвидность");
+  await expect(list).toContainText("историческая отработка 54 % (n=120, 5 свечей)");
+  await expect(list).toContainText("не является сигналом");
+  await list.getByRole("button", { name: /Доджи/ }).click();
+  await expect(list).toContainText("мало данных");
+  // слой «Паттерны» в списке слоёв
+  await objects.getByRole("tab", { name: "Слои" }).click();
+  await expect(objects.getByLabel("Паттерны")).toBeChecked();
+  await objects.getByLabel("Паттерны").uncheck();
+  await page.reload();
+  await page.getByRole("complementary", { name: "панель объектов" }).getByRole("tab", { name: "Слои" }).click();
+  await expect(page.getByRole("complementary", { name: "панель объектов" }).getByLabel("Паттерны")).not.toBeChecked();
 });

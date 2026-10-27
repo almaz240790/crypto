@@ -466,3 +466,23 @@
     display: none;
   }
 }
+
+.found {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.found[data-selected] {
+  background: var(--bg-2);
+}
+
+.foundDetails {
+  padding: 4px 8px 6px;
+  font-size: 12px;
+  color: var(--text-2);
+  display: grid;
+  gap: 2px;
+}

@@ -307,5 +307,11 @@ def test_backfill_outcomes_stats_and_live_idempotent() -> None:
                 and item["success_rate"] is None
             )
             assert "by_year" in payload and "by_context" in payload
+            from app.patterns import chart_patterns
+
+            cp = chart_patterns(s, inst, tf, None, None)
+            assert [x["type"] for x in cp["items"]] == ["marubozu"]
+            assert cp["items"][0]["title"] == "Бычья марубозу" and cp["items"][0]["t"] > 0
+            assert cp["stats"]["marubozu"]["low_n"] is True
         finally:
             s.rollback()

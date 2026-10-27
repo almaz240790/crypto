@@ -2,7 +2,7 @@
 
 import { foldMinute, type Candle, type Timeframe } from "@platform/charts";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getCandles, getDerivatives, getLayers, toCandle, type Derivatives, type LayersResponse } from "@/lib/chart";
+import { getCandles, getDerivatives, getLayers, getPatterns, toCandle, type Derivatives, type LayersResponse, type PatternsResponse } from "@/lib/chart";
 import { useLive, type LiveCandle } from "@/lib/useLive";
 
 /** Свечи инструмента/таймфрейма: первая порция, подгрузка влево, текущая свеча из минутных по WebSocket. */
@@ -12,6 +12,7 @@ export function useTerminalData(symbol: string, tf: Timeframe, token: string | n
   const [current, setCurrent] = useState<Candle | null>(null);
   const [layers, setLayers] = useState<LayersResponse | null>(null);
   const [derivatives, setDerivatives] = useState<Derivatives | null>(null);
+  const [patterns, setPatterns] = useState<PatternsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tick, setTick] = useState<string | null>(null);
   const loadingOlder = useRef(false);
@@ -26,6 +27,7 @@ export function useTerminalData(symbol: string, tf: Timeframe, token: string | n
       setCurrent(null);
       setLayers(null);
       setDerivatives(null);
+      setPatterns(null);
       setError(null);
     });
     getCandles(symbol, tf)
@@ -39,6 +41,9 @@ export function useTerminalData(symbol: string, tf: Timeframe, token: string | n
         const cur = open ? toCandle(open) : null;
         currentRef.current = cur;
         setCurrent(cur);
+        getPatterns(symbol, tf, closed[0]?.time)
+          .then((pr) => !dead && setPatterns(pr))
+          .catch(() => {});
       })
       .catch((e: Error) => !dead && setError(e.message));
     getLayers(symbol, tf)
@@ -59,7 +64,12 @@ export function useTerminalData(symbol: string, tf: Timeframe, token: string | n
       try {
         const r = await getCandles(symbol, tf, before);
         setHasOlder(r.has_older);
-        return { candles: r.candles.filter((c) => !c.open).map(toCandle), hasOlder: r.has_older };
+        const older = r.candles.filter((c) => !c.open).map(toCandle);
+        if (older.length)
+          getPatterns(symbol, tf, older[0]!.time, before)
+            .then((pr) => setPatterns((prev) => (prev ? { ...prev, items: [...pr.items.filter((x) => !prev.items.some((y) => y.id === x.id)), ...prev.items], stats: { ...pr.stats, ...prev.stats } } : pr)))
+            .catch(() => {});
+        return { candles: older, hasOlder: r.has_older };
       } finally {
         loadingOlder.current = false;
       }
@@ -84,5 +94,5 @@ export function useTerminalData(symbol: string, tf: Timeframe, token: string | n
   );
 
   const { prices, connected } = useLive([symbol], token, undefined, onCandle);
-  return { candles, current, hasOlder, layers, derivatives, error, tick, loadOlder, price: prices[symbol]?.p ?? null, connected };
+  return { candles, current, hasOlder, layers, derivatives, patterns, error, tick, loadOlder, price: prices[symbol]?.p ?? null, connected };
 }

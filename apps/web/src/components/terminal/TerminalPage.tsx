@@ -13,6 +13,7 @@ import { getInstruments, type Instrument } from "@/lib/user";
 import s from "./terminal.module.css";
 import { BottomSheet } from "./BottomSheet";
 import { DrawToolbar, ObjectsPanel } from "./DesktopPanels";
+import { FoundList } from "./FoundPanel";
 import { download, snapshotPng } from "./snapshot";
 import { TEMPLATES } from "./templates";
 import { PANELS, TerminalView, type ActiveIndicator, type CrosshairInfo, type LayerKey, type PanelKey } from "./TerminalView";
@@ -21,7 +22,7 @@ import { deleteLayout, getLayout, listLayouts, putLayout } from "@/lib/drawings"
 import { useTerminalData } from "./useTerminalData";
 
 const TYPE_LABEL: Record<ChartType, string> = { candles: "Свечи", bars: "Бары", line: "Линия", heikin: "Heikin Ashi" };
-const LAYER_LABEL: Record<LayerKey, string> = { structure: "Структура", zones: "Зоны", levels: "Уровни", signals: "Сигналы" };
+const LAYER_LABEL: Record<LayerKey, string> = { structure: "Структура", zones: "Зоны", levels: "Уровни", signals: "Сигналы", patterns: "Паттерны" };
 const DEFAULT_INDICATORS: ActiveIndicator[] = [{ id: "ema", params: { period: 50 } }];
 const TOOLS: DrawingType[] = ["hline", "hray", "vline", "trend", "ray", "extended", "channel", "rect", "fib", "position-long", "position-short", "note", "ruler"];
 const STORAGE = "pl-terminal";
@@ -29,10 +30,12 @@ const STORAGE = "pl-terminal";
 type Saved = { type: ChartType; indicators: ActiveIndicator[]; layers: Record<LayerKey, boolean>; panels: PanelKey[]; updated_at?: number };
 
 function load(): Saved {
-  const base: Saved = { type: "candles", indicators: DEFAULT_INDICATORS, layers: { structure: true, zones: true, levels: true, signals: true }, panels: [] };
+  const base: Saved = { type: "candles", indicators: DEFAULT_INDICATORS, layers: { structure: true, zones: true, levels: true, signals: true, patterns: true }, panels: [] };
   try {
     const raw = localStorage.getItem(STORAGE);
-    return raw ? { ...base, ...(JSON.parse(raw) as Partial<Saved>) } : base;
+    if (!raw) return base;
+    const parsed = JSON.parse(raw) as Partial<Saved>;
+    return { ...base, ...parsed, layers: { ...base.layers, ...(parsed.layers ?? {}) } };
   } catch {
     return base;
   }
@@ -48,7 +51,8 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
   const { user } = useAuth();
   const [saved, setSaved] = useState<Saved | null>(null);
   const [instruments, setInstruments] = useState<Instrument[]>([]);
-  const [sheet, setSheet] = useState<"indicators" | "layers" | "draw" | null>(null);
+  const [sheet, setSheet] = useState<"indicators" | "layers" | "draw" | "found" | null>(null);
+  const [foundSel, setFoundSel] = useState<number | null>(null);
   const [cross, setCross] = useState<CrosshairInfo | null>(null);
   const [bars, setBars] = useState<"shown" | "hidden">("shown");
   const [objects, setObjects] = useState<"shown" | "hidden">("shown");
@@ -319,7 +323,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
             Таймфреймы 1m–15m доступны после входа на тарифе Pro. <Link href="/pricing">Тарифы</Link>
           </div>
         ) : (
-          <TerminalView candles={data.candles ?? []} current={data.current} tf={tf} type={st.type} indicators={st.indicators} layersOn={st.layers} layers={data.layers} derivatives={data.derivatives} panels={st.panels} tick={data.tick} onNeedOlder={data.loadOlder} drawings={drawingsProps} onCrosshair={setCross} />
+          <TerminalView candles={data.candles ?? []} current={data.current} tf={tf} type={st.type} indicators={st.indicators} layersOn={st.layers} layers={data.layers} patterns={data.patterns?.items} highlight={foundSel} derivatives={data.derivatives} panels={st.panels} tick={data.tick} onNeedOlder={data.loadOlder} drawings={drawingsProps} onCrosshair={setCross} />
         )}
         {sel && (
           <div className={s.card} role="region" aria-label="выбранный рисунок">
@@ -363,7 +367,8 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
           </p>
         )}
         {sheet && (
-          <BottomSheet title={sheet === "indicators" ? "Индикаторы" : sheet === "layers" ? "Слои" : "Рисование"} onClose={closeSheet}>
+          <BottomSheet title={sheet === "indicators" ? "Индикаторы" : sheet === "layers" ? "Слои" : sheet === "found" ? "Найдено на графике" : "Рисование"} onClose={closeSheet}>
+            {sheet === "found" && <FoundList items={data.patterns?.items ?? []} stats={data.patterns?.stats ?? {}} selected={foundSel} onSelect={setFoundSel} tf={tf} />}
             {sheet === "draw" &&
               TOOLS.map((t) => (
                 <button
@@ -399,7 +404,9 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
                 </button>
               </>
             )}
-            {sheet === "indicators"
+            {sheet === "found"
+              ? null
+              : sheet === "indicators"
               ? [
                   ...INDICATORS.map((i) => (
                     <label key={i.id}>
@@ -439,6 +446,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
           onDeleteLayout={removeLayout}
           authed={!!user}
           layoutsLimit={user ? null : 0}
+          found={{ items: data.patterns?.items ?? [], stats: data.patterns?.stats ?? {}, selected: foundSel, onSelect: setFoundSel, tf }}
         />
       </div>
       <div className={s.bottom}>
@@ -447,6 +455,9 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
         </button>
         <button type="button" className={s.chip} aria-pressed={sheet === "layers"} onClick={() => setSheet(sheet === "layers" ? null : "layers")}>
           Слои
+        </button>
+        <button type="button" className={`${s.chip} ${s.mobileOnly}`} aria-pressed={sheet === "found"} onClick={() => setSheet(sheet === "found" ? null : "found")}>
+          Найдено ({data.patterns?.items.length ?? 0})
         </button>
         <button type="button" className={s.chip} aria-pressed={sheet === "draw" || dr.tool !== null} onClick={() => setSheet(sheet === "draw" ? null : "draw")}>
           {dr.tool ? `Рисую: ${TOOL_TITLES[dr.tool]}` : "Рисовать"}
