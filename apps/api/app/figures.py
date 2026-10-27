@@ -105,7 +105,8 @@ def _insert_or_existing(
             db.flush()
         return row, True
     except IntegrityError:
-        db.expunge(row)
+        if row in db:  # после отката savepoint объект обычно уже вне сессии
+            db.expunge(row)
         found = db.scalars(
             select(FigureRow).where(
                 FigureRow.instrument_id == inst.id,
