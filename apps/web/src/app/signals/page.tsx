@@ -6,8 +6,10 @@ import { useAuth } from "@/components/auth/AuthProvider";
 import { Feed } from "@/components/signals/Feed";
 import { EmptyState, Panel } from "@/components/ui";
 import { api } from "@/lib/auth-client";
+import { useT } from "@/i18n/client";
 
 export default function SignalsPage() {
+  const t = useT();
   const { user } = useAuth();
   const [instruments, setInstruments] = useState<{ symbol: string; tick_size: string | null }[]>([]);
   useEffect(() => {
@@ -16,15 +18,15 @@ export default function SignalsPage() {
       .catch(() => {});
   }, []);
   return (
-    <AppShell title="Сигналы">
+    <AppShell title={t("Сигналы")}>
       {user && !user.email_verified && (
         <div style={{ marginBottom: 12 }}>
-          <Panel title="Подтвердите email">
-            <EmptyState text={`Письмо отправлено на ${user.email}. Без подтверждения не будут приходить уведомления.`} />
+          <Panel title={t("Подтвердите email")}>
+            <EmptyState text={t("Письмо отправлено на {email}. Без подтверждения не будут приходить уведомления.", { email: user.email })} />
           </Panel>
         </div>
       )}
-      <Suspense fallback={<EmptyState text="Загрузка…" />}>
+      <Suspense fallback={<EmptyState text={t("Загрузка…")} />}>
         <Feed instruments={instruments} />
       </Suspense>
     </AppShell>

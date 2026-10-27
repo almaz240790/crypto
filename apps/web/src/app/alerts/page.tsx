@@ -8,6 +8,7 @@ import { Badge, Button, EmptyState, Panel, Table, Td, Th } from "@/components/ui
 import { FREQ_LABEL, STATUS_LABEL, TYPE_LABEL, createAlert, deleteAlert, getAlertTriggers, getAlerts, patchAlert, type Alert, type AlertFrequency, type AlertTrigger, type AlertType, type AlertsList } from "@/lib/alerts";
 import { formatTimeUTC } from "@/lib/format";
 import { getInstruments, type Instrument } from "@/lib/user";
+import { useT } from "@/i18n/client";
 
 const PATTERNS = [
   ["engulfing", "поглощение"], ["pin_bar", "пин-бар"], ["doji", "доджи"], ["star", "звезда"], ["three_line", "три солдата / вороны"],
@@ -40,6 +41,7 @@ function toBody(d: Draft) {
 }
 
 export default function AlertsPage() {
+  const t = useT();
   const [list, setList] = useState<AlertsList | null>(null);
   const [triggers, setTriggers] = useState<(AlertTrigger & { alert: Alert })[]>([]);
   const [instruments, setInstruments] = useState<Instrument[]>([]);
@@ -68,7 +70,7 @@ export default function AlertsPage() {
     setBusy(true);
     try {
       const a = await createAlert(toBody(d));
-      say(`Алерт создан: ${a.text}`);
+      say(t("Алерт создан: {text}", { text: a.text }));
       setD((p) => ({ ...p, price: "", price2: "", value: "", note: "" }));
       await load();
     } catch (err) {
@@ -86,13 +88,13 @@ export default function AlertsPage() {
     }
   };
   const remove = async (a: Alert) => {
-    if (!confirm(`Удалить алерт «${a.text}»?`)) return;
+    if (!confirm(t("Удалить алерт «{text}»?", { text: a.text }))) return;
     await deleteAlert(a.id);
     await load();
   };
   const tone = (st: Alert["status"]) => (st === "active" ? "up" : st === "triggered" ? "accent" : "muted");
   return (
-    <AppShell title="Алерты">
+    <AppShell title={t("Алерты")}>
       {toast && (
         <p role="status" className="caption">
           {toast}
@@ -100,15 +102,12 @@ export default function AlertsPage() {
       )}
       <div className={s.grid}>
         <Panel>
-          <h2>Новый алерт</h2>
-          <p className="caption">
-            Цена проверяется по минутным свечам (до 60 с), индикаторы, зоны и структура — на закрытии свечи таймфрейма, паттерны — после подтверждения на закрытии свечи. Доставка — push и письмо по <Link href="/settings">настройкам уведомлений</Link>.
-            {list?.limit != null && ` Активных: ${list.active} из ${list.limit}.`}
+          <h2>{t("Новый алерт")}</h2>
+          <p className="caption">{t("Цена проверяется по минутным свечам (до 60 с), индикаторы, зоны и структура — на закрытии свечи таймфрейма, паттерны — после подтверждения на закрытии свечи. Доставка — push и письмо по")}{" "}<Link href="/settings">{t("настройкам уведомлений")}</Link>.
+            {list?.limit != null && ` ${t("Активных: {a} из {b}.", { a: list.active, b: list.limit })}`}
           </p>
-          <form onSubmit={submit} className={s.form} aria-label="новый алерт">
-            <label>
-              тип
-              <select aria-label="тип алерта" value={d.type} onChange={(e) => onType(e.target.value as AlertType)}>
+          <form onSubmit={submit} className={s.form} aria-label={t("новый алерт")}>
+            <label>{t("тип")}<select aria-label={t("тип алерта")} value={d.type} onChange={(e) => onType(e.target.value as AlertType)}>
                 {(Object.keys(TYPE_LABEL) as AlertType[]).map((t) => (
                   <option key={t} value={t}>
                     {TYPE_LABEL[t]}
@@ -116,10 +115,8 @@ export default function AlertsPage() {
                 ))}
               </select>
             </label>
-            <label>
-              инструмент
-              <select aria-label="инструмент алерта" value={d.symbol} onChange={(e) => set("symbol", e.target.value)}>
-                {(d.type === "pattern" || d.type === "figure") && <option value="">вотчлист</option>}
+            <label>{t("инструмент")}<select aria-label={t("инструмент алерта")} value={d.symbol} onChange={(e) => set("symbol", e.target.value)}>
+                {(d.type === "pattern" || d.type === "figure") && <option value="">{t("вотчлист")}</option>}
                 {(instruments.length ? instruments.map((i) => i.symbol) : ["BTCUSDT", "ETHUSDT"]).map((sym) => (
                   <option key={sym} value={sym}>
                     {sym}
@@ -128,10 +125,8 @@ export default function AlertsPage() {
               </select>
             </label>
             {d.type !== "price" && (
-              <label>
-                таймфрейм
-                <select aria-label="таймфрейм алерта" value={d.timeframe} onChange={(e) => set("timeframe", e.target.value)}>
-                  {(d.type === "pattern" || d.type === "figure") && <option value="any">любой</option>}
+              <label>{t("таймфрейм")}<select aria-label={t("таймфрейм алерта")} value={d.timeframe} onChange={(e) => set("timeframe", e.target.value)}>
+                  {(d.type === "pattern" || d.type === "figure") && <option value="any">{t("любой")}</option>}
                   {(d.type === "zone" || d.type === "structure" ? ["4h", "1d"] : d.type === "figure" ? ["4h", "1d", "1w"] : TFS).map((t) => (
                     <option key={t} value={t}>
                       {t === "4h" ? "H4" : t.toUpperCase()}
@@ -142,64 +137,48 @@ export default function AlertsPage() {
             )}
             {d.type === "price" && (
               <>
-                <label>
-                  условие
-                  <select aria-label="условие цены" value={d.op} onChange={(e) => set("op", e.target.value)}>
-                    <option value="cross_up">пересечение вверх</option>
-                    <option value="cross_down">пересечение вниз</option>
-                    <option value="enter_range">вход в диапазон</option>
+                <label>{t("условие")}<select aria-label={t("условие цены")} value={d.op} onChange={(e) => set("op", e.target.value)}>
+                    <option value="cross_up">{t("пересечение вверх")}</option>
+                    <option value="cross_down">{t("пересечение вниз")}</option>
+                    <option value="enter_range">{t("вход в диапазон")}</option>
                   </select>
                 </label>
-                <label>
-                  цена
-                  <input aria-label="цена" inputMode="decimal" required value={d.price} onChange={(e) => set("price", e.target.value)} />
+                <label>{t("цена")}<input aria-label={t("цена")} inputMode="decimal" required value={d.price} onChange={(e) => set("price", e.target.value)} />
                 </label>
                 {d.op === "enter_range" && (
-                  <label>
-                    вторая граница
-                    <input aria-label="вторая граница" inputMode="decimal" required value={d.price2} onChange={(e) => set("price2", e.target.value)} />
+                  <label>{t("вторая граница")}<input aria-label={t("вторая граница")} inputMode="decimal" required value={d.price2} onChange={(e) => set("price2", e.target.value)} />
                   </label>
                 )}
               </>
             )}
             {d.type === "indicator" && (
               <>
-                <label>
-                  индикатор
-                  <select aria-label="индикатор" value={d.indicator} onChange={(e) => { set("indicator", e.target.value); if (e.target.value !== "ema" && d.op.startsWith("price_")) set("op", "above"); }}>
+                <label>{t("индикатор")}<select aria-label={t("индикатор")} value={d.indicator} onChange={(e) => { set("indicator", e.target.value); if (e.target.value !== "ema" && d.op.startsWith("price_")) set("op", "above"); }}>
                     <option value="rsi">RSI</option>
                     <option value="ema">EMA</option>
                     <option value="atr">ATR</option>
                   </select>
                 </label>
-                <label>
-                  период
-                  <input aria-label="период" inputMode="numeric" placeholder={d.indicator === "ema" ? "50" : "14"} value={d.period} onChange={(e) => set("period", e.target.value)} />
+                <label>{t("период")}<input aria-label={t("период")} inputMode="numeric" placeholder={d.indicator === "ema" ? "50" : "14"} value={d.period} onChange={(e) => set("period", e.target.value)} />
                 </label>
-                <label>
-                  условие
-                  <select aria-label="условие индикатора" value={d.op} onChange={(e) => set("op", e.target.value)}>
-                    <option value="above">выше порога</option>
-                    <option value="below">ниже порога</option>
-                    <option value="cross_up">пересёк порог вверх</option>
-                    <option value="cross_down">пересёк порог вниз</option>
-                    {d.indicator === "ema" && <option value="price_cross_up">цена пересекла EMA вверх</option>}
-                    {d.indicator === "ema" && <option value="price_cross_down">цена пересекла EMA вниз</option>}
+                <label>{t("условие")}<select aria-label={t("условие индикатора")} value={d.op} onChange={(e) => set("op", e.target.value)}>
+                    <option value="above">{t("выше порога")}</option>
+                    <option value="below">{t("ниже порога")}</option>
+                    <option value="cross_up">{t("пересёк порог вверх")}</option>
+                    <option value="cross_down">{t("пересёк порог вниз")}</option>
+                    {d.indicator === "ema" && <option value="price_cross_up">{t("цена пересекла EMA вверх")}</option>}
+                    {d.indicator === "ema" && <option value="price_cross_down">{t("цена пересекла EMA вниз")}</option>}
                   </select>
                 </label>
                 {!d.op.startsWith("price_") && (
-                  <label>
-                    порог
-                    <input aria-label="порог" inputMode="decimal" required value={d.value} onChange={(e) => set("value", e.target.value)} />
+                  <label>{t("порог")}<input aria-label={t("порог")} inputMode="decimal" required value={d.value} onChange={(e) => set("value", e.target.value)} />
                   </label>
                 )}
               </>
             )}
             {d.type === "zone" && (
-              <label>
-                зона
-                <select aria-label="вид зоны" value={d.kind} onChange={(e) => set("kind", e.target.value)}>
-                  <option value="any">любая</option>
+              <label>{t("зона")}<select aria-label={t("вид зоны")} value={d.kind} onChange={(e) => set("kind", e.target.value)}>
+                  <option value="any">{t("любая")}</option>
                   <option value="ob">OB</option>
                   <option value="sd">S/D</option>
                   <option value="fvg">FVG</option>
@@ -207,10 +186,8 @@ export default function AlertsPage() {
               </label>
             )}
             {d.type === "structure" && (
-              <label>
-                событие
-                <select aria-label="событие структуры" value={d.event} onChange={(e) => set("event", e.target.value)}>
-                  <option value="any">BOS или CHoCH</option>
+              <label>{t("событие")}<select aria-label={t("событие структуры")} value={d.event} onChange={(e) => set("event", e.target.value)}>
+                  <option value="any">{t("BOS или CHoCH")}</option>
                   <option value="bos">BOS</option>
                   <option value="choch">CHoCH</option>
                 </select>
@@ -218,40 +195,35 @@ export default function AlertsPage() {
             )}
             {d.type === "pattern" && (
               <fieldset className={s.fieldset}>
-                <legend>паттерны (пусто — любые)</legend>
+                <legend>{t("паттерны (пусто — любые)")}</legend>
                 {PATTERNS.map(([id, label]) => (
                   <label key={id} className={s.inline}>
-                    <input type="checkbox" checked={d.types.includes(id)} onChange={(e) => set("types", e.target.checked ? [...d.types, id] : d.types.filter((x) => x !== id))} /> {label}
+                    <input type="checkbox" checked={d.types.includes(id)} onChange={(e) => set("types", e.target.checked ? [...d.types, id] : d.types.filter((x) => x !== id))} /> {t(label)}
                   </label>
                 ))}
                 <label className={s.inline}>
-                  <input type="checkbox" checked={d.significant_only} onChange={(e) => set("significant_only", e.target.checked)} /> только значимые
-                </label>
+                  <input type="checkbox" checked={d.significant_only} onChange={(e) => set("significant_only", e.target.checked)} />{" "}{t("только значимые")}</label>
               </fieldset>
             )}
             {d.type === "figure" && (
               <fieldset className={s.fieldset}>
-                <legend>фигуры (пусто — любые)</legend>
+                <legend>{t("фигуры (пусто — любые)")}</legend>
                 {FIGURES.map(([id, label]) => (
                   <label key={id} className={s.inline}>
-                    <input type="checkbox" checked={d.types.includes(id)} onChange={(e) => set("types", e.target.checked ? [...d.types, id] : d.types.filter((x) => x !== id))} /> {label}
+                    <input type="checkbox" checked={d.types.includes(id)} onChange={(e) => set("types", e.target.checked ? [...d.types, id] : d.types.filter((x) => x !== id))} /> {t(label)}
                   </label>
                 ))}
               </fieldset>
             )}
             {d.type !== "price" && d.type !== "indicator" && (
-              <label>
-                направление
-                <select aria-label="направление" value={d.dir} onChange={(e) => set("dir", e.target.value)}>
-                  <option value="any">любое</option>
-                  <option value="up">вверх / бычье</option>
-                  <option value="down">вниз / медвежье</option>
+              <label>{t("направление")}<select aria-label={t("направление")} value={d.dir} onChange={(e) => set("dir", e.target.value)}>
+                  <option value="any">{t("любое")}</option>
+                  <option value="up">{t("вверх / бычье")}</option>
+                  <option value="down">{t("вниз / медвежье")}</option>
                 </select>
               </label>
             )}
-            <label>
-              срабатывание
-              <select aria-label="частота" value={d.frequency} onChange={(e) => set("frequency", e.target.value as AlertFrequency)}>
+            <label>{t("срабатывание")}<select aria-label={t("частота")} value={d.frequency} onChange={(e) => set("frequency", e.target.value as AlertFrequency)}>
                 {(Object.keys(FREQ_LABEL) as AlertFrequency[]).map((f) => (
                   <option key={f} value={f}>
                     {FREQ_LABEL[f]}
@@ -259,33 +231,27 @@ export default function AlertsPage() {
                 ))}
               </select>
             </label>
-            <label>
-              срок, дней
-              <input aria-label="срок в днях" inputMode="numeric" value={String(d.expires_in_days)} onChange={(e) => set("expires_in_days", Math.max(1, Math.min(365, Number(e.target.value) || 30)))} />
+            <label>{t("срок, дней")}<input aria-label={t("срок в днях")} inputMode="numeric" value={String(d.expires_in_days)} onChange={(e) => set("expires_in_days", Math.max(1, Math.min(365, Number(e.target.value) || 30)))} />
             </label>
-            <label>
-              заметка
-              <input aria-label="заметка" maxLength={140} value={d.note} onChange={(e) => set("note", e.target.value)} />
+            <label>{t("заметка")}<input aria-label={t("заметка")} maxLength={140} value={d.note} onChange={(e) => set("note", e.target.value)} />
             </label>
-            <Button type="submit" disabled={busy}>
-              Создать алерт
-            </Button>
+            <Button type="submit" disabled={busy}>{t("Создать алерт")}</Button>
           </form>
         </Panel>
         <Panel>
-          <h2>Мои алерты</h2>
+          <h2>{t("Мои алерты")}</h2>
           {list === null ? (
-            <p className="caption">загрузка…</p>
+            <p className="caption">{t("загрузка…")}</p>
           ) : list.items.length === 0 ? (
-            <EmptyState text="Алертов пока нет. Создайте первый слева или перетащите линию на графике." />
+            <EmptyState text={t("Алертов пока нет. Создайте первый слева или перетащите линию на графике.")} />
           ) : (
             <Table>
               <thead>
                 <tr>
-                  <Th>условие</Th>
-                  <Th>срабатывание</Th>
-                  <Th>статус</Th>
-                  <Th>последнее</Th>
+                  <Th>{t("условие")}</Th>
+                  <Th>{t("срабатывание")}</Th>
+                  <Th>{t("статус")}</Th>
+                  <Th>{t("последнее")}</Th>
                   <Th />
                 </tr>
               </thead>
@@ -303,13 +269,11 @@ export default function AlertsPage() {
                     <Td mobile="hidden">{a.last_triggered_at ? `${formatTimeUTC(a.last_triggered_at)} (${a.triggers_count})` : "—"}</Td>
                     <Td mobile="right">
                       {(a.status === "active" || a.status === "paused" || a.status === "triggered") && (
-                        <button type="button" className={s.linkBtn} onClick={() => toggle(a)} aria-label={`${a.status === "active" ? "пауза" : "включить"} ${a.text}`}>
-                          {a.status === "active" ? "пауза" : "включить"}
+                        <button type="button" className={s.linkBtn} onClick={() => toggle(a)} aria-label={`${a.status === "active" ? t("пауза") : t("включить")} ${a.text}`}>
+                          {a.status === "active" ? t("пауза") : t("включить")}
                         </button>
                       )}{" "}
-                      <button type="button" className={s.linkBtn} onClick={() => remove(a)} aria-label={`удалить ${a.text}`}>
-                        удалить
-                      </button>
+                      <button type="button" className={s.linkBtn} onClick={() => remove(a)} aria-label={`удалить ${a.text}`}>{t("удалить")}</button>
                     </Td>
                   </tr>
                 ))}
@@ -319,29 +283,29 @@ export default function AlertsPage() {
         </Panel>
       </div>
       <Panel>
-        <h2>Журнал срабатываний</h2>
+        <h2>{t("Журнал срабатываний")}</h2>
         {triggers.length === 0 ? (
-          <EmptyState text="Срабатываний пока не было." />
+          <EmptyState text={t("Срабатываний пока не было.")} />
         ) : (
           <Table>
             <thead>
               <tr>
-                <Th>время (UTC)</Th>
-                <Th>условие</Th>
-                <Th num>цена</Th>
-                <Th>доставка</Th>
+                <Th>{t("время (UTC)")}</Th>
+                <Th>{t("условие")}</Th>
+                <Th num>{t("цена")}</Th>
+                <Th>{t("доставка")}</Th>
               </tr>
             </thead>
             <tbody>
-              {triggers.map((t) => (
-                <tr key={t.id}>
-                  <Td>{formatTimeUTC(t.triggered_at, { withYear: true })}</Td>
+              {triggers.map((tr) => (
+                <tr key={tr.id}>
+                  <Td>{formatTimeUTC(tr.triggered_at, { withYear: true })}</Td>
                   <Td>
-                    {t.alert.text}
-                    {typeof t.details.title === "string" ? ` — ${t.details.title}` : ""}
+                    {tr.alert.text}
+                    {typeof tr.details.title === "string" ? ` — ${tr.details.title}` : ""}
                   </Td>
-                  <Td num>{t.price ?? "—"}</Td>
-                  <Td mobile="hidden">{t.notified ? "отправлено" : "без уведомления"}</Td>
+                  <Td num>{tr.price ?? "—"}</Td>
+                  <Td mobile="hidden">{tr.notified ? t("отправлено") : t("без уведомления")}</Td>
                 </tr>
               ))}
             </tbody>

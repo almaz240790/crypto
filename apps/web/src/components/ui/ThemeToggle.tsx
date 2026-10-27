@@ -2,6 +2,7 @@
 
 import { useSyncExternalStore } from "react";
 import { Button } from "./Button";
+import { useT } from "@/i18n/client";
 
 type Theme = "system" | "light" | "dark";
 const ORDER: Theme[] = ["system", "light", "dark"];
@@ -49,10 +50,11 @@ export function useTheme(): Theme {
 }
 
 export function ThemeToggle({ size = "sm" }: { size?: "sm" | "md" }) {
+  const t = useT();
   const theme = useTheme();
   const next = ORDER[(ORDER.indexOf(theme) + 1) % ORDER.length];
   return (
-    <Button size={size} variant="ghost" onClick={() => applyTheme(next)} title="переключить тему">
+    <Button size={size} variant="ghost" onClick={() => applyTheme(next)} title={t("переключить тему")}>
       {LABEL[theme]}
     </Button>
   );

@@ -8,6 +8,7 @@ import { BoxPrimitive } from "@/components/chart/BoxPrimitive";
 import { VolumeProfilePrimitive, type VpTokens } from "@/components/chart/VolumeProfilePrimitive";
 import { PATTERN_GLYPH, type Derivatives, type FigureOnChart, type LayersResponse, type PatternOnChart } from "@/lib/chart";
 import s from "./terminal.module.css";
+import { useT } from "@/i18n/client";
 
 export type ActiveIndicator = { id: string; params: Record<string, number> };
 export type LayerKey = "structure" | "zones" | "levels" | "signals" | "patterns" | "figures" | "volume_profile";
@@ -110,6 +111,7 @@ const SWIPE_PX = 24;
 
 /** Обёртка React над Terminal из packages/charts: данные, индикаторы, слои, тема. */
 export function TerminalView({ candles, current, tf, type, indicators, layersOn, layers, patterns, highlight, figures, highlightFigure, alertLines, derivatives, panels, tick, onNeedOlder, drawings, onCrosshair, onVisibleFrom, onReady, scale = "linear", overlay = null }: Props) {
+  const t = useT();
   const ref = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const tfRef = useRef(tf);
@@ -141,9 +143,9 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
     for (const [id, p] of panesRef.current) {
       if (p.paneIndex !== null) out.push({ key: id, title: p.spec.title, series: Object.values(p.series), height: PANE_INDICATOR_PX });
     }
-    for (const [k, p] of cryptoRef.current) out.push({ key: k, title: PANELS.find((x) => x.id === k)?.title ?? k, series: p.series, height: PANE_CRYPTO_PX });
+    for (const [k, p] of cryptoRef.current) out.push({ key: k, title: t(PANELS.find((x) => x.id === k)?.title ?? k), series: p.series, height: PANE_CRYPTO_PX });
     return out.filter((e) => e.series.length > 0).sort((a, b) => a.series[0]!.getPane().paneIndex() - b.series[0]!.getPane().paneIndex());
-  }, []);
+  }, [t]);
 
   const relayout = useCallback(() => {
     const el = ref.current;
@@ -625,12 +627,12 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
           }}
         >
           <span className={s.paneTitle}>{h.title}</span>
-          <button type="button" className={s.paneToggle} aria-expanded={!h.collapsed} aria-label={`${h.collapsed ? "развернуть" : "свернуть"} панель ${h.title}`} onClick={() => togglePane(h.key)}>
+          <button type="button" className={s.paneToggle} aria-expanded={!h.collapsed} aria-label={`${h.collapsed ? t("развернуть") : t("свернуть")} панель ${h.title}`} onClick={() => togglePane(h.key)}>
             {h.collapsed ? "▴" : "▾"}
           </button>
         </div>
       ))}
-      {candles.length === 0 && <div className={s.empty}>Нет свечей.</div>}
+      {candles.length === 0 && <div className={s.empty}>{t("Нет свечей.")}</div>}
     </div>
   );
 }
