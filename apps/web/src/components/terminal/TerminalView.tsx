@@ -1,12 +1,13 @@
 "use client";
 
-import { createTerminal, tokensFromElement, type Candle, type ChartType, type ScaleMode, type Terminal, type Timeframe } from "@platform/charts";
+import { createTerminal, formatPriceLabel, formatTicks, tokensFromElement, type Candle, type ChartType, type ScaleMode, type Terminal, type Timeframe } from "@platform/charts";
 import { DrawingController, DrawingsPrimitive, INDICATORS, defaultParams, indicatorById, visibleOn, type Drawing, type DrawingType, type DrawingsState, type IndicatorSpec, type Layer, type LayerContext, type Point, TF_SECONDS } from "@platform/charts";
 import { LineSeries, createSeriesMarkers, type ISeriesApi, type ISeriesMarkersPluginApi, type SeriesMarker, type Time, type UTCTimestamp } from "lightweight-charts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { BoxPrimitive } from "@/components/chart/BoxPrimitive";
 import { VolumeProfilePrimitive, type VpTokens } from "@/components/chart/VolumeProfilePrimitive";
-import { PATTERN_GLYPH, type Derivatives, type FigureOnChart, type LayersResponse, type PatternOnChart } from "@/lib/chart";
+import { STATUS_LABEL } from "@/components/ui/Badge";
+import { PATTERN_LABEL, type Derivatives, type FigureOnChart, type LayersResponse, type PatternOnChart } from "@/lib/chart";
 import s from "./terminal.module.css";
 import { useT } from "@/i18n/client";
 
@@ -102,6 +103,14 @@ function precisionOf(tick: string | null): { precision: number; minMove: number 
 type Pane = { spec: IndicatorSpec; paneIndex: number | null; series: Record<string, ISeriesApi<"Line" | "Histogram">> };
 /** Заголовок панели под графиком (план 2A.7): панели сворачиваются до 24 px, на телефоне раскрыто не больше трёх. */
 type PaneHead = { key: string; title: string; top: number; collapsed: boolean };
+/** Чистый график по умолчанию: сколько объектов каждого слоя рисуем поверх свечей. */
+const ZONES_MAX = 2;
+const STRUCTURE_EVENTS_MAX = 4;
+const SWEEPS_MAX = 2;
+const EQUAL_LEVELS_MAX = 3;
+/** Паттерны: только значимые и только на последних N свечах (выбранный в списке — всегда). */
+const PATTERN_RECENT_BARS = 60;
+const CLOSED = ["closed_sl", "closed_be", "closed_tp3", "closed_time", "expired", "cancelled"];
 const PANE_COLLAPSED_PX = 24;
 const PANE_INDICATOR_PX = 90;
 const PANE_CRYPTO_PX = 80;
@@ -361,7 +370,7 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
     drawPrimRef.current?.projector?.setBars(all.map((c) => c.time), TF_SECONDS[tf]);
     drawPrimRef.current?.update({});
     const { precision, minMove } = precisionOf(tick);
-    term.chart.applyOptions({ localization: { priceFormatter: (p: number) => p.toFixed(precision) } });
+    term.chart.applyOptions({ localization: { priceFormatter: (p: number) => formatPriceLabel(p, precision), tickmarksPriceFormatter: (ps: number[]) => formatTicks(ps) } });
     void minMove;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [candles, tick]);
@@ -519,23 +528,23 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
     const boxes = [];
     const markers: SeriesMarker<Time>[] = [];
     if (st && layersOn.zones) {
-      // активные зоны — с заливкой и подписью; отработанные — только последние 8, контуром без подписи
-      const active = st.zones.filter((z) => z.status === "active");
-      const inactive = st.zones.filter((z) => z.status !== "active").slice(-8);
-      for (const z of [...inactive, ...active]) {
-        const isActive = z.status === "active";
-        boxes.push({ id: `${z.kind}-${z.from_t}`, from: Math.max(snap(z.from_t), first) as Time, to: null, top: Number(z.top), bottom: Number(z.bottom), fill: alpha(tokens.accent, isActive ? 0.12 : 0), stroke: isActive ? tokens.accent : alpha(tokens.text3, 0.5), label: isActive ? z.kind.toUpperCase() : undefined });
+      // только активные зоны, ближайшие к текущей цене; отработанные не рисуем
+      const price = (current ?? candles[candles.length - 1]!).close;
+      const dist = (z: { top: string; bottom: string }) => Math.max(0, Number(z.bottom) - price, price - Number(z.top));
+      const nearest = st.zones.filter((z) => z.status === "active").sort((a, b) => dist(a) - dist(b)).slice(0, ZONES_MAX);
+      for (const z of nearest) {
+        boxes.push({ id: `${z.kind}-${z.from_t}`, from: Math.max(snap(z.from_t), first) as Time, to: null, top: Number(z.top), bottom: Number(z.bottom), fill: alpha(tokens.accent, 0.1), stroke: alpha(tokens.accent, 0.6), label: z.kind.toUpperCase() });
       }
     }
     if (st && layersOn.structure) {
-      for (const e of st.events.slice(-12)) seg(e.from_t, e.t, Number(e.level), e.type === "bos" ? tokens.accent : tokens.warn, 1);
+      for (const e of st.events.slice(-STRUCTURE_EVENTS_MAX)) seg(e.from_t, e.t, Number(e.level), e.type === "bos" ? tokens.accent : tokens.warn, 1);
       // свинги маркерами не рисуем: на телефоне LWC делает их крупными кружками и они перекрывают свечи
-      for (const sw of st.sweeps.slice(-4)) {
-        const t = snap(sw.t);
-        if (t < first) continue;
-        markers.push({ time: t as Time, position: sw.kind === "low" ? "belowBar" : "aboveBar", shape: "square", color: tokens.warn, text: "sweep", size: 0 });
+      for (const sw of st.sweeps.slice(-SWEEPS_MAX)) {
+        const at = snap(sw.t);
+        if (at < first) continue;
+        markers.push({ time: at as Time, position: sw.kind === "low" ? "belowBar" : "aboveBar", shape: "square", color: tokens.warn, text: t("снятие"), size: 0 });
       }
-      for (const e of st.equal_levels.slice(-6)) seg(e.from_t, e.to_t, Number(e.p), tokens.text3, 2);
+      for (const e of st.equal_levels.filter((x) => !x.swept).slice(-EQUAL_LEVELS_MAX)) seg(e.from_t, e.to_t, Number(e.p), tokens.text3, 2);
     }
     if (st && layersOn.levels) {
       for (const k of ["pdh", "pdl", "pwh", "pwl"]) {
@@ -545,34 +554,39 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
     }
     if (layers && layersOn.signals) {
       for (const sg of layers.signals.slice(0, 20)) {
-        const t = snap(sg.t - 1);
-        if (t < first) continue;
-        const open = !["closed_sl", "closed_be", "closed_tp3", "closed_time", "expired", "cancelled"].includes(sg.status);
-        markers.push({ time: t as Time, position: sg.dir === "long" ? "belowBar" : "aboveBar", shape: sg.dir === "long" ? "arrowUp" : "arrowDown", color: open ? tokens.accent : tokens.text3, text: `${sg.grade}${open ? "" : " · " + sg.status}`, size: 1 });
-        if (open && sg.entry) seg(t, null, Number(sg.entry), tokens.accent, 0, 1);
-        if (open && sg.sl) seg(t, null, Number(sg.sl), tokens.down, 1);
-        if (open) for (const tp of sg.tp) if (tp) seg(t, null, Number(tp), tokens.up, 1);
+        const at = snap(sg.t - 1);
+        if (at < first) continue;
+        const open = !CLOSED.includes(sg.status);
+        const label = STATUS_LABEL[sg.status]?.text;
+        markers.push({ time: at as Time, position: sg.dir === "long" ? "belowBar" : "aboveBar", shape: sg.dir === "long" ? "arrowUp" : "arrowDown", color: open ? tokens.accent : tokens.text3, text: `${sg.dir === "long" ? t("лонг") : t("шорт")} ${sg.grade}${open || !label ? "" : " · " + t(label)}`, size: 1 });
+        if (open && sg.entry) seg(at, null, Number(sg.entry), tokens.accent, 0, 1);
+        if (open && sg.sl) seg(at, null, Number(sg.sl), tokens.down, 1);
+        if (open) for (const tp of sg.tp) if (tp) seg(at, null, Number(tp), tokens.up, 1);
       }
     }
     if (patterns && layersOn.patterns) {
-      // глифы: подтверждённые на закрытии свечи; значимые — акцентом, найденные — приглушённо
-      for (const p of patterns.slice(-150)) {
-        const t = snap(p.t);
-        if (t < first) continue;
+      // только значимые паттерны на последних свечах; выбранный в списке «Найдено» — всегда
+      const recentFrom = last - PATTERN_RECENT_BARS * step;
+      for (const p of patterns) {
         const hl = p.id === highlight;
+        if (!hl && (!p.significant || p.t < recentFrom)) continue;
+        const pt = snap(p.t);
+        if (pt < first) continue;
         markers.push({
-          time: t as Time,
+          time: pt as Time,
           position: p.direction === "up" ? "belowBar" : "aboveBar",
           shape: hl ? "circle" : p.direction === "up" ? "arrowUp" : p.direction === "down" ? "arrowDown" : "square",
-          color: hl ? tokens.warn : p.significant ? tokens.accent : alpha(tokens.text3, 0.7),
-          text: PATTERN_GLYPH[p.type] ?? "•",
+          color: hl ? tokens.warn : tokens.accent,
+          text: t(PATTERN_LABEL[p.type] ?? p.title),
           size: hl ? 1 : 0,
         });
       }
     }
     if (figures && layersOn.figures) {
-      // последние 8 фигур: подтверждённые — сплошные, формирующиеся — пунктир, отменённые — бледно
-      for (const f of figures.slice(-8)) {
+      // одна последняя подтверждённая фигура и выбранная в списке; отменённые не рисуем
+      const latest = figures.filter((f) => f.status === "confirmed").sort((a, b) => (a.confirm_t ?? a.known_t) - (b.confirm_t ?? b.known_t)).at(-1);
+      const shown = figures.filter((f) => f.id === highlightFigure || f === latest);
+      for (const f of shown) {
         const hl = f.id === highlightFigure;
         const color = f.status === "confirmed" ? (hl ? tokens.warn : tokens.accent) : f.status === "forming" ? (hl ? tokens.warn : tokens.text2) : alpha(tokens.text3, 0.5);
         const style = f.status === "forming" ? 2 : 0;
@@ -586,23 +600,22 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
         }
         if (f.status === "confirmed" && f.target && f.confirm_t) seg(f.confirm_t, null, Number(f.target), tokens.up, 1, 1);
         if (f.status === "confirmed" && f.invalidation && f.confirm_t) seg(f.confirm_t, null, Number(f.invalidation), tokens.down, 1, 1);
-        for (const [t, p] of f.points) {
-          const pt = snap(t);
-          if (pt < first) continue;
-          markers.push({ time: pt as Time, position: "inBar", shape: "circle", color, text: "", size: 0 });
-          void p;
-        }
+        if (hl)
+          for (const [pt0] of f.points) {
+            const pt = snap(pt0);
+            if (pt >= first) markers.push({ time: pt as Time, position: "inBar", shape: "circle", color, text: "", size: 0 });
+          }
       }
     }
     for (const al of alertLines ?? []) {
       seg(first, null, al.price, tokens.warn, 3, 1);
-      markers.push({ time: last as Time, position: "inBar", shape: "circle", color: tokens.warn, text: `алерт ${al.label}`, size: 0 });
+      markers.push({ time: last as Time, position: "inBar", shape: "circle", color: tokens.warn, text: `${t("алерт")} ${al.label}`, size: 0 });
     }
     boxRef.current.setBoxes(boxes);
     markers.sort((a, b) => (a.time as number) - (b.time as number));
     if (!markersRef.current) markersRef.current = createSeriesMarkers(main, markers);
     else markersRef.current.setMarkers(markers);
-  }, [layers, layersOn, candles, current, tf, type, patterns, highlight, figures, highlightFigure, alertLines]);
+  }, [layers, layersOn, candles, current, tf, type, patterns, highlight, figures, highlightFigure, alertLines, t]);
 
   return (
     <div className={s.chart}>

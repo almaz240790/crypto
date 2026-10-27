@@ -6,7 +6,6 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "@/components/auth/AuthProvider";
-import { Badge } from "@/components/ui";
 import { getAccessToken } from "@/lib/auth-client";
 import { INTRADAY, TIMEFRAMES } from "@/lib/timeframes";
 import { formatPct, formatPrice } from "@/lib/format";
@@ -36,20 +35,33 @@ const OBJECTS_W_MIN = 240;
 const OBJECTS_W_MAX = 600;
 const clampW = (w: number) => Math.round(Math.min(OBJECTS_W_MAX, Math.max(OBJECTS_W_MIN, w)));
 
-type Saved = { type: ChartType; indicators: ActiveIndicator[]; layers: Record<LayerKey, boolean>; panels: PanelKey[]; scale: ScaleMode; overlay: string | null; updated_at?: number };
+type Saved = { type: ChartType; indicators: ActiveIndicator[]; layers: Record<LayerKey, boolean>; layers_v?: number; panels: PanelKey[]; scale: ScaleMode; overlay: string | null; updated_at?: number };
+/** Версия набора слоёв по умолчанию: при смене старые сохранённые слои сбрасываются на чистый график. */
+const LAYERS_VERSION = 2;
+const DEFAULT_LAYERS: Record<LayerKey, boolean> = { structure: false, zones: true, levels: true, signals: true, patterns: false, figures: true, volume_profile: false };
+
+/** Слои из сохранённого состояния: старую версию заменяем чистым набором. */
+function migrate(p: Partial<Saved>): Partial<Saved> {
+  if (p.layers_v === LAYERS_VERSION) return p;
+  return { ...p, layers: DEFAULT_LAYERS, layers_v: LAYERS_VERSION };
+}
 const SCALE_LABEL: Record<ScaleMode, string> = { linear: "линейная", log: "логарифмическая", percent: "проценты" };
 
 function load(): Saved {
-  const base: Saved = { type: "candles", indicators: DEFAULT_INDICATORS, layers: { structure: true, zones: true, levels: true, signals: true, patterns: true, figures: true, volume_profile: false }, panels: [], scale: "linear", overlay: null };
+  const base: Saved = { type: "candles", indicators: DEFAULT_INDICATORS, layers: DEFAULT_LAYERS, layers_v: LAYERS_VERSION, panels: [], scale: "linear", overlay: null };
   try {
     const raw = localStorage.getItem(STORAGE);
     if (!raw) return base;
-    const parsed = JSON.parse(raw) as Partial<Saved>;
+    const parsed = migrate(JSON.parse(raw) as Partial<Saved>);
     return { ...base, ...parsed, layers: { ...base.layers, ...(parsed.layers ?? {}) } };
   } catch {
     return base;
   }
 }
+
+/** Тренд старшего таймфрейма простыми словами. */
+const TREND_WORD: Record<string, string> = { up: "вверх", down: "вниз", flat: "боковик" };
+const TREND_TONE: Record<string, string> = { up: "up", down: "down" };
 
 function fmtCountdown(sec: number): string {
   const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), ss = sec % 60;
@@ -118,7 +130,8 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
   const data = useTerminalData(symbol, tf, user ? getAccessToken() : null);
   // «Найдено» — по видимой части графика, а не по всей загруженной истории
-  const foundCount = (data.patterns?.items ?? []).filter((p) => visibleFrom === null || p.t >= visibleFrom).length + (data.figures?.items ?? []).filter((f) => visibleFrom === null || f.end_t >= visibleFrom).length;
+  // «Найдено»: значимые паттерны и неотменённые фигуры на видимом участке
+  const foundCount = (data.patterns?.items ?? []).filter((p) => p.significant && (visibleFrom === null || p.t >= visibleFrom)).length + (data.figures?.items ?? []).filter((f) => f.status !== "invalidated" && (visibleFrom === null || f.end_t >= visibleFrom)).length;
 
   useEffect(() => {
     queueMicrotask(() => setSaved(load()));
@@ -245,7 +258,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
       .then((r) => {
         if (!r.data) return;
         const local = load();
-        if (r.updated_at > (local.updated_at ?? 0)) setSaved({ ...local, ...(r.data as Partial<Saved>), updated_at: r.updated_at });
+        if (r.updated_at > (local.updated_at ?? 0)) setSaved({ ...local, ...migrate(r.data as Partial<Saved>), updated_at: r.updated_at });
       })
       .catch(() => {});
   }, [user]);
@@ -366,9 +379,6 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
         <button type="button" className={s.chip} onClick={() => controls.current?.reset()} aria-label={t("показать последние свечи")} title={t("Последние 150 свечей (двойной клик по графику)")}>
           ⟲
         </button>
-        <button type="button" className={s.chip} onClick={snapshot} title={t("Снимок PNG с водяным знаком")}>{t("Снимок")}</button>
-        <button type="button" className={`${s.chip} ${s.desktopOnly}`} aria-pressed={objects === "shown"} onClick={() => setObjects(objects === "shown" ? "hidden" : "shown")}>{t("Объекты")}</button>
-        <Link href="/multichart" className={`${s.chip} ${s.desktopOnly}`} style={{ display: "inline-flex", alignItems: "center" }}>{t("Мультичарт")}</Link>
         <select aria-label={t("тип графика")} value={st.type} onChange={(e) => setSaved({ ...st, type: e.target.value as ChartType, updated_at: Date.now() })}>
           {CHART_TYPES.map((x) => (
             <option key={x} value={x}>
@@ -393,6 +403,10 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
               </option>
             ))}
         </select>
+        <span className={s.topSpacer} />
+        <button type="button" className={s.chip} onClick={snapshot} title={t("Снимок PNG с водяным знаком")}>{t("Снимок")}</button>
+        <Link href="/multichart" className={`${s.chip} ${s.desktopOnly}`} style={{ display: "inline-flex", alignItems: "center" }}>{t("Мультичарт")}</Link>
+        <button type="button" className={`${s.chip} ${s.desktopOnly}`} aria-pressed={objects === "shown"} onClick={() => setObjects(objects === "shown" ? "hidden" : "shown")}>{t("Объекты")}</button>
       </div>
       <div className={s.strip} aria-label={t("состояние")}>
         <span>{t("цена")}{" "}<strong>{formatPrice(price == null ? null : String(price))}</strong>
@@ -401,18 +415,18 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
         <span>{t("до закрытия")}{" "}<strong>{countdown == null ? "—" : fmtCountdown(countdown)}</strong>
         </span>
         {bias && (
-          <span>
-            bias <Badge tone={bias.bias === "long" ? "up" : bias.bias === "short" ? "down" : "muted"}>{bias.bias}</Badge> D1 {bias.d1_trend} · W1 {bias.w1_trend}
+          <span title={t("Направление старших таймфреймов, с которым система ищет входы: день (D1) и неделя (W1).")}>
+            {t("Тренд")}: {t("день")} <strong className={TREND_TONE[bias.d1_trend] ?? ""}>{t(TREND_WORD[bias.d1_trend] ?? bias.d1_trend)}</strong> · {t("неделя")} <strong className={TREND_TONE[bias.w1_trend] ?? ""}>{t(TREND_WORD[bias.w1_trend] ?? bias.w1_trend)}</strong>
           </span>
         )}
-        {data.layers?.structure?.atr && <span>ATR {formatPrice(data.layers.structure.atr)}</span>}
+        {data.layers?.structure?.atr && <span className={s.desktopOnly} title={t("Средний размах одной свечи (ATR 14): насколько обычно ходит цена за свечу.")}>{t("Ход за свечу")} <strong>{formatPrice(data.layers.structure.atr)}</strong></span>}
         {data.derivatives?.funding_current && (
-          <span>
-            funding <strong>{(Number(data.derivatives.funding_current) * 100).toFixed(4)} %</strong>
-            {data.derivatives.next_funding_t && <> через {fmtCountdown(Math.max(0, data.derivatives.next_funding_t - now))}</>}
+          <span className={s.desktopOnly} title={t("Ставка финансирования фьючерса: плюс — лонги платят шортам, минус — наоборот.")}>
+            {t("Фандинг")} <strong>{(Number(data.derivatives.funding_current) * 100).toFixed(4)} %</strong>
+            {data.derivatives.next_funding_t && <> · {t("через")} {fmtCountdown(Math.max(0, data.derivatives.next_funding_t - now))}</>}
           </span>
         )}
-        <span className="caption">{data.connected ? "live" : t("без связи")}</span>
+        <span className={`caption ${s.live}`} data-on={data.connected || undefined}>{data.connected ? t("онлайн") : t("без связи")}</span>
         {st.type === "heikin" && <span className="caption">{t("Heikin Ashi: паттерны и сигналы считаются по обычным свечам")}</span>}
       </div>
       {toast && (
@@ -647,14 +661,14 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
       </div>
       <div className={s.bottom}>
         <button type="button" className={s.chip} aria-pressed={sheet === "indicators"} onClick={() => setSheet(sheet === "indicators" ? null : "indicators")}>
-          Индикаторы ({st.indicators.length + st.panels.length})
+          {t("Индикаторы ({n})", { n: st.indicators.length + st.panels.length })}
         </button>
         <button type="button" className={s.chip} aria-pressed={sheet === "layers"} onClick={() => setSheet(sheet === "layers" ? null : "layers")}>{t("Слои")}</button>
         <button type="button" className={`${s.chip} ${s.mobileOnly}`} aria-pressed={sheet === "found"} onClick={() => setSheet(sheet === "found" ? null : "found")}>
-          Найдено ({foundCount})
+          {t("Найдено ({n})", { n: foundCount })}
         </button>
         <button type="button" className={s.chip} aria-pressed={sheet === "alert"} onClick={() => (sheet === "alert" ? setSheet(null) : openAlertSheet())}>
-          Алерт{alerts.length ? ` (${alerts.length})` : ""}
+          {t("Алерт")}{alerts.length ? ` (${alerts.length})` : ""}
         </button>
         <button type="button" className={s.chip} aria-pressed={sheet === "draw" || dr.tool !== null} onClick={() => setSheet(sheet === "draw" ? null : "draw")}>
           {dr.tool ? `Рисую: ${TOOL_TITLES[dr.tool]}` : t("Рисовать")}

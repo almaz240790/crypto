@@ -34,6 +34,8 @@ const WHEEL_ZOOM = 0.0025;
 /** Прокрутка горизонтальным жестом: доля «один пиксель — один бар». */
 const WHEEL_SCROLL = 0.6;
 const MIN_VISIBLE_BARS = 10;
+/** Объём занимает нижние 14 % основной панели и не налезает на свечи. */
+const VOLUME_TOP = 0.86;
 
 export class Terminal {
   readonly chart: IChartApi;
@@ -59,7 +61,7 @@ export class Terminal {
     container.addEventListener("wheel", this.onWheel, { passive: false });
     this.main = this.createMain(this.type);
     this.volume = this.chart.addSeries(HistogramSeries, { priceFormat: { type: "volume" }, priceScaleId: "", lastValueVisible: false, priceLineVisible: false });
-    this.volume.priceScale().applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
+    this.volume.priceScale().applyOptions({ scaleMargins: { top: VOLUME_TOP, bottom: 0 } });
     this.layers.attach({ chart: this.chart, main: this.main });
     this.chart.timeScale().subscribeVisibleLogicalRangeChange((r) => this.onRange(r));
   }

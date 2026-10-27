@@ -10,8 +10,8 @@ test("график: загрузка, строка состояния, смен�
   await expect(page.getByTestId("terminal").locator("canvas").first()).toBeVisible();
   const strip = page.getByLabel("состояние");
   await expect(strip).toContainText("цена");
-  await expect(strip).toContainText("bias");
-  await expect(strip).toContainText("ATR");
+  await expect(strip).toContainText("Тренд: день вверх");
+  await expect(strip).toContainText("Ход за свечу");
   expect(calls.some((c) => c.startsWith("/v1/chart/candles?symbol=BTCUSDT&tf=4h"))).toBe(true);
   // таймфрейм H4 выделен, 1m без входа недоступен
   await expect(page.getByRole("link", { name: "H4" })).toHaveAttribute("aria-current", "page");
@@ -25,7 +25,7 @@ test("график: загрузка, строка состояния, смен�
   await page.getByRole("dialog", { name: "Индикаторы" }).getByLabel(/Funding/).check();
   await page.getByRole("button", { name: "Готово" }).click();
   await expect(page.getByRole("button", { name: "Индикаторы (3)" })).toBeVisible();
-  await expect(strip).toContainText("funding 0.0120 %");
+  await expect(strip).toContainText("Фандинг 0.0120 %");
   await page.getByRole("button", { name: "Слои" }).click();
   await page.getByRole("dialog", { name: "Слои" }).getByLabel("Зоны").uncheck();
   await page.getByRole("dialog", { name: "Слои" }).getByLabel("Профиль объёма").check();
@@ -207,7 +207,7 @@ test("паттерны: вкладка «Найдено», подробност�
   await expect(page.getByTestId("terminal").locator("canvas").first()).toBeVisible();
   await expect.poll(() => calls.some((c) => c.startsWith("/v1/chart/patterns?symbol=BTCUSDT&tf=4h"))).toBe(true);
   const objects = page.getByRole("complementary", { name: "панель объектов" });
-  await expect(objects.getByRole("tab", { name: "Найдено (4)" })).toHaveAttribute("aria-selected", "true");
+  await expect(objects.getByRole("tab", { name: "Найдено (3)" })).toHaveAttribute("aria-selected", "true");
   // фигуры (4B.6): подтверждённая с целью и отработкой, формирующаяся без цели
   const figs = objects.getByRole("list", { name: "найденные фигуры" });
   await expect(figs).toContainText("Восходящий канал");
@@ -220,6 +220,9 @@ test("паттерны: вкладка «Найдено», подробност�
   await expect(figs).toContainText("геометрия без подтверждения");
   expect(calls.some((c) => c.startsWith("/v1/chart/figures?symbol=BTCUSDT&tf=4h"))).toBe(true);
   const list = objects.getByRole("list", { name: "найденные паттерны" });
+  // по умолчанию только значимые; незначимый доджи — по кнопке «Показать все»
+  await expect(list).not.toContainText("Доджи");
+  await objects.getByRole("button", { name: "Показать все (2)" }).click();
   await expect(list).toContainText("Доджи");
   await expect(list).toContainText("Бычье поглощение");
   await expect(list).toContainText("значимый");
@@ -247,11 +250,12 @@ test("паттерны: вкладка «Найдено», подробност�
   expect(calls.some((c) => c.startsWith("/v1/chart/ask"))).toBe(true);
   // слой «Паттерны» в списке слоёв
   await objects.getByRole("tab", { name: "Слои" }).click();
-  await expect(objects.getByLabel("Паттерны")).toBeChecked();
-  await objects.getByLabel("Паттерны").uncheck();
+  // чистый график: слой паттернов выключен по умолчанию, включение запоминается
+  await expect(objects.getByLabel("Паттерны")).not.toBeChecked();
+  await objects.getByLabel("Паттерны").check();
   await page.reload();
   await page.getByRole("complementary", { name: "панель объектов" }).getByRole("tab", { name: "Слои" }).click();
-  await expect(page.getByRole("complementary", { name: "панель объектов" }).getByLabel("Паттерны")).not.toBeChecked();
+  await expect(page.getByRole("complementary", { name: "панель объектов" }).getByLabel("Паттерны")).toBeChecked();
 });
 
 test("алерты на графике: из горизонтальной линии и из листа «Алерт», линия алерта на графике", async ({ page }) => {
