@@ -85,6 +85,16 @@ export const getWatchlist = () => api<{ id: number; name: string; items: { symbo
 export const addWatch = (symbol: string) => api("/v1/watchlist/items", { method: "POST", json: { symbol } });
 export const removeWatch = (symbol: string) => api(`/v1/watchlist/items/${symbol}`, { method: "DELETE" });
 
+export type AnalyticsBucket = { key: string | number; trades: number; closed: number; sum_r: string; avg_r: string | null; winrate: number | null };
+export type JournalAnalytics = {
+  total: Omit<AnalyticsBucket, "key">;
+  by_weekday: AnalyticsBucket[];
+  by_symbol: AnalyticsBucket[];
+  by_grade: AnalyticsBucket[];
+  equity: { points: { t: string; r: string }[]; max_drawdown_r: string | null };
+  errors: { early_exit: { count: number; of: number }; no_signal: { count: number; of: number }; risk_exceeded: { count: number; of: number; budget_usd: string | null } };
+};
+export const getJournalAnalytics = () => api<JournalAnalytics>("/v1/journal/analytics");
 export const getJournal = (limit = 200) => api<{ items: JournalEntry[]; summary: JournalSummary }>(`/v1/journal?limit=${limit}`);
 export const createJournal = (body: JournalIn) => api<JournalEntry>("/v1/journal", { method: "POST", json: body });
 export const updateJournal = (id: number, body: JournalIn) => api<JournalEntry>(`/v1/journal/${id}`, { method: "PUT", json: body });
