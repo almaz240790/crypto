@@ -42,13 +42,15 @@ class Entitlements:
     """Синхронизация рисунков между устройствами (Free — нет)."""
     layouts_limit: int | None = None
     """Именованных раскладок (раздел 4: 0 / 5 / 20)."""
+    alerts_limit: int | None = None
+    """Активных алертов (план 2A.6, лимит по тарифу: 3 / 50 / без лимита — на утверждение)."""
 
 
 ENTITLEMENTS: dict[str, Entitlements] = {
-    FREE: Entitlements(FREE, ("A",), 12, False, False, False, False, 20, 5, False, 10, False, 0),
-    PRO: Entitlements(PRO, None, 0, True, True, True, False, None, 50, True, 100, True, 5),
+    FREE: Entitlements(FREE, ("A",), 12, False, False, False, False, 20, 5, False, 10, False, 0, 3),
+    PRO: Entitlements(PRO, None, 0, True, True, True, False, None, 50, True, 100, True, 5, 50),
     PREMIUM: Entitlements(
-        PREMIUM, None, 0, True, True, True, True, None, None, True, None, True, 20
+        PREMIUM, None, 0, True, True, True, True, None, None, True, None, True, 20, None
     ),
 }
 
@@ -112,4 +114,5 @@ def restrictions_dict(ent: Entitlements) -> dict[str, object]:
         "drawings_limit": ent.drawings_limit,
         "drawings_sync": ent.drawings_sync,
         "layouts_limit": ent.layouts_limit,
+        "alerts_limit": ent.alerts_limit,
     }

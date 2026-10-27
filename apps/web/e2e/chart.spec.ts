@@ -225,3 +225,30 @@ test("паттерны: вкладка «Найдено», подробност�
   await page.getByRole("complementary", { name: "панель объектов" }).getByRole("tab", { name: "Слои" }).click();
   await expect(page.getByRole("complementary", { name: "панель объектов" }).getByLabel("Паттерны")).not.toBeChecked();
 });
+
+test("алерты на графике: из горизонтальной линии и из листа «Алерт», линия алерта на графике", async ({ page }) => {
+  const server = { drawings: [] as Record<string, unknown>[], layout: null as Record<string, unknown> | null, alerts: [] as Record<string, unknown>[] };
+  const calls: string[] = [];
+  await mock(page, calls, true, server);
+  await page.goto("/chart/BTCUSDT/4h");
+  const term = page.getByTestId("terminal");
+  await expect(term.locator("canvas").first()).toBeVisible();
+  await page.keyboard.press("Alt+h");
+  const box = (await term.boundingBox())!;
+  await page.mouse.click(box.x + box.width * 0.4, box.y + box.height * 0.3);
+  await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 1");
+  await page.getByRole("button", { name: "алерт на уровне" }).click();
+  await expect(page.getByRole("status")).toContainText("Алерт создан: BTCUSDT: цена пересекла");
+  expect(server.alerts).toHaveLength(1);
+  expect(server.alerts[0]!.drawing_client_id).toBeTruthy();
+  await expect(page.getByRole("button", { name: "Алерт (1)" })).toBeVisible();
+  // лист: цена подставлена, создаём второй
+  await page.getByRole("button", { name: "Алерт (1)" }).click();
+  const form = page.getByRole("form", { name: "новый алерт по цене" });
+  await expect(form.getByLabel("цена алерта")).not.toHaveValue("");
+  await form.getByLabel("цена алерта").fill("120");
+  await form.getByLabel("условие цены").selectOption("cross_up");
+  await form.getByRole("button", { name: "Создать алерт" }).click();
+  await expect(page.getByRole("button", { name: "Алерт (2)" })).toBeVisible();
+  expect(server.alerts[1]!.condition).toEqual({ op: "cross_up", price: "120" });
+});

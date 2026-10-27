@@ -19,6 +19,7 @@ import { TEMPLATES } from "./templates";
 import { PANELS, TerminalView, type ActiveIndicator, type CrosshairInfo, type LayerKey, type PanelKey } from "./TerminalView";
 import { useDrawings } from "./useDrawings";
 import { deleteLayout, getLayout, listLayouts, putLayout } from "@/lib/drawings";
+import { createAlert, getAlerts, type Alert } from "@/lib/alerts";
 import { useTerminalData } from "./useTerminalData";
 
 const TYPE_LABEL: Record<ChartType, string> = { candles: "Свечи", bars: "Бары", line: "Линия", heikin: "Heikin Ashi" };
@@ -51,7 +52,9 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
   const { user } = useAuth();
   const [saved, setSaved] = useState<Saved | null>(null);
   const [instruments, setInstruments] = useState<Instrument[]>([]);
-  const [sheet, setSheet] = useState<"indicators" | "layers" | "draw" | "found" | null>(null);
+  const [sheet, setSheet] = useState<"indicators" | "layers" | "draw" | "found" | "alert" | null>(null);
+  const [alerts, setAlerts] = useState<Alert[]>([]);
+  const [alertDraft, setAlertDraft] = useState<{ price: string; op: "cross_up" | "cross_down" | "enter_range"; price2: string; frequency: "once" | "every" | "once_per_bar" }>({ price: "", op: "cross_up", price2: "", frequency: "once" });
   const [foundSel, setFoundSel] = useState<number | null>(null);
   const [cross, setCross] = useState<CrosshairInfo | null>(null);
   const [bars, setBars] = useState<"shown" | "hidden">("shown");
@@ -105,6 +108,30 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
   const say = (t: string) => {
     setToast(t);
     setTimeout(() => setToast(null), 2500);
+  };
+  const loadAlerts = useCallback(() => {
+    if (!user) return;
+    getAlerts({ symbol, status: "active" })
+      .then((r) => setAlerts(r.items))
+      .catch(() => {});
+  }, [user, symbol]);
+  useEffect(() => {
+    loadAlerts();
+  }, [loadAlerts]);
+  const addPriceAlert = (price: string, op: "cross_up" | "cross_down" | "enter_range", price2?: string, drawingId?: string, frequency: "once" | "every" | "once_per_bar" = "once") => {
+    if (!user) return say("Алерты доступны после входа");
+    createAlert({ symbol, type: "price", condition: { op, price, ...(price2 ? { price2 } : {}) }, frequency, drawing_client_id: drawingId ?? null })
+      .then((a) => {
+        say(`Алерт создан: ${a.text}`);
+        loadAlerts();
+        setSheet(null);
+      })
+      .catch((e: Error) => say(e.message));
+  };
+  const openAlertSheet = () => {
+    const p = price == null ? "" : String(price);
+    setAlertDraft({ price: p, op: "cross_up", price2: "", frequency: "once" });
+    setSheet("alert");
   };
   const applyTemplate = (id: string) => {
     const t = TEMPLATES.find((x) => x.id === id);
@@ -323,7 +350,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
             Таймфреймы 1m–15m доступны после входа на тарифе Pro. <Link href="/pricing">Тарифы</Link>
           </div>
         ) : (
-          <TerminalView candles={data.candles ?? []} current={data.current} tf={tf} type={st.type} indicators={st.indicators} layersOn={st.layers} layers={data.layers} patterns={data.patterns?.items} highlight={foundSel} derivatives={data.derivatives} panels={st.panels} tick={data.tick} onNeedOlder={data.loadOlder} drawings={drawingsProps} onCrosshair={setCross} />
+          <TerminalView candles={data.candles ?? []} current={data.current} tf={tf} type={st.type} indicators={st.indicators} layersOn={st.layers} layers={data.layers} patterns={data.patterns?.items} highlight={foundSel} alertLines={alerts.filter((a) => a.type === "price" && typeof a.condition.price === "string").map((a) => ({ id: a.id, price: Number(a.condition.price), label: a.condition.op === "cross_up" ? "↑" : a.condition.op === "cross_down" ? "↓" : "↔" }))} derivatives={data.derivatives} panels={st.panels} tick={data.tick} onNeedOlder={data.loadOlder} drawings={drawingsProps} onCrosshair={setCross} />
         )}
         {sel && (
           <div className={s.card} role="region" aria-label="выбранный рисунок">
@@ -347,6 +374,18 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
             <label className={s.inline}>
               <input type="checkbox" checked={sel.timeframe === null} onChange={(e) => dr.actions.patch(sel.id, { timeframe: e.target.checked ? null : tf })} /> на всех таймфреймах
             </label>
+            {(sel.type === "hline" || sel.type === "hray") && sel.points[0] && (
+              <button
+                type="button"
+                className={s.chip}
+                onClick={() => {
+                  const p = sel.points[0]!.price;
+                  addPriceAlert(String(p), price != null && price < p ? "cross_up" : "cross_down", undefined, sel.id);
+                }}
+              >
+                алерт на уровне
+              </button>
+            )}
             <button type="button" className={s.chip} onClick={() => dr.actions.lock(sel.id)} aria-pressed={sel.locked}>
               {sel.locked ? "разблокировать" : "заблокировать"}
             </button>
@@ -367,7 +406,49 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
           </p>
         )}
         {sheet && (
-          <BottomSheet title={sheet === "indicators" ? "Индикаторы" : sheet === "layers" ? "Слои" : sheet === "found" ? "Найдено на графике" : "Рисование"} onClose={closeSheet}>
+          <BottomSheet title={sheet === "indicators" ? "Индикаторы" : sheet === "layers" ? "Слои" : sheet === "found" ? "Найдено на графике" : sheet === "alert" ? "Алерт по цене" : "Рисование"} onClose={closeSheet}>
+            {sheet === "alert" && (
+              <form
+                aria-label="новый алерт по цене"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  addPriceAlert(alertDraft.price, alertDraft.op, alertDraft.op === "enter_range" ? alertDraft.price2 : undefined, undefined, alertDraft.frequency);
+                }}
+              >
+                <label>
+                  условие
+                  <select aria-label="условие цены" value={alertDraft.op} onChange={(e) => setAlertDraft({ ...alertDraft, op: e.target.value as typeof alertDraft.op })}>
+                    <option value="cross_up">пересечение вверх</option>
+                    <option value="cross_down">пересечение вниз</option>
+                    <option value="enter_range">вход в диапазон</option>
+                  </select>
+                </label>
+                <label>
+                  цена
+                  <input aria-label="цена алерта" inputMode="decimal" required value={alertDraft.price} onChange={(e) => setAlertDraft({ ...alertDraft, price: e.target.value })} />
+                </label>
+                {alertDraft.op === "enter_range" && (
+                  <label>
+                    вторая граница
+                    <input aria-label="вторая граница" inputMode="decimal" required value={alertDraft.price2} onChange={(e) => setAlertDraft({ ...alertDraft, price2: e.target.value })} />
+                  </label>
+                )}
+                <label>
+                  срабатывание
+                  <select aria-label="частота" value={alertDraft.frequency} onChange={(e) => setAlertDraft({ ...alertDraft, frequency: e.target.value as typeof alertDraft.frequency })}>
+                    <option value="once">один раз</option>
+                    <option value="every">каждый раз</option>
+                    <option value="once_per_bar">раз в свечу</option>
+                  </select>
+                </label>
+                <button type="submit" className={s.chip}>
+                  Создать алерт
+                </button>
+                <p className="caption">
+                  Проверка по минутным свечам, до 60 с. Активных по инструменту: {alerts.length}. <Link href="/alerts">Все алерты</Link>
+                </p>
+              </form>
+            )}
             {sheet === "found" && <FoundList items={data.patterns?.items ?? []} stats={data.patterns?.stats ?? {}} selected={foundSel} onSelect={setFoundSel} tf={tf} />}
             {sheet === "draw" &&
               TOOLS.map((t) => (
@@ -404,7 +485,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
                 </button>
               </>
             )}
-            {sheet === "found"
+            {sheet === "found" || sheet === "alert"
               ? null
               : sheet === "indicators"
               ? [
@@ -458,6 +539,9 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
         </button>
         <button type="button" className={`${s.chip} ${s.mobileOnly}`} aria-pressed={sheet === "found"} onClick={() => setSheet(sheet === "found" ? null : "found")}>
           Найдено ({data.patterns?.items.length ?? 0})
+        </button>
+        <button type="button" className={s.chip} aria-pressed={sheet === "alert"} onClick={() => (sheet === "alert" ? setSheet(null) : openAlertSheet())}>
+          Алерт{alerts.length ? ` (${alerts.length})` : ""}
         </button>
         <button type="button" className={s.chip} aria-pressed={sheet === "draw" || dr.tool !== null} onClick={() => setSheet(sheet === "draw" ? null : "draw")}>
           {dr.tool ? `Рисую: ${TOOL_TITLES[dr.tool]}` : "Рисовать"}

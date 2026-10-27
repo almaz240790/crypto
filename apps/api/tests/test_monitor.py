@@ -17,6 +17,7 @@ def _snap(**kw: object) -> Snapshot:
             "tracker": 30,
             "notifier": 10,
             "pattern_detector": 20,
+            "alerts": 15,
         },
         m1_age_sec=30,
         h4_stale=0,
@@ -64,6 +65,7 @@ def test_engine_not_run_and_stream_silent() -> None:
                     "tracker": 30,
                     "notifier": 10,
                     "pattern_detector": 20,
+                    "alerts": 15,
                 }
             )
         )

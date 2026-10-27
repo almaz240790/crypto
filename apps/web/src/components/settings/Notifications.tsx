@@ -17,6 +17,8 @@ export type NotificationSettings = {
   daily_limit: number;
   push_signals: boolean;
   push_events: boolean;
+  email_alerts: boolean;
+  push_alerts: boolean;
   telegram_linked: boolean;
 };
 
@@ -135,6 +137,14 @@ export function NotificationsPanel({ userId, onMessage }: { userId: number; onMe
             <option value="off">нет</option>
           </Select>
           <Select label="Push о событиях" value={v("push_events") ? "on" : "off"} onChange={(e) => set("push_events", e.target.value === "on")}>
+            <option value="on">да</option>
+            <option value="off">нет</option>
+          </Select>
+          <Select label="Push по алертам" value={v("push_alerts") ? "on" : "off"} onChange={(e) => set("push_alerts", e.target.value === "on")}>
+            <option value="on">да</option>
+            <option value="off">нет</option>
+          </Select>
+          <Select label="Письма по алертам" value={v("email_alerts") ? "on" : "off"} onChange={(e) => set("email_alerts", e.target.value === "on")}>
             <option value="on">да</option>
             <option value="off">нет</option>
           </Select>

@@ -8,10 +8,11 @@ const candle = (i: number) => {
   return { t: T0 + i * 14400, o: o.toFixed(2), h: (Math.max(o, c) + 1).toFixed(2), l: (Math.min(o, c) - 1).toFixed(2), c: c.toFixed(2), v: "1000", open: false };
 };
 
-export type MockServer = { drawings: Record<string, unknown>[]; layout: Record<string, unknown> | null; layouts?: Record<string, Record<string, unknown>> };
+export type MockServer = { drawings: Record<string, unknown>[]; layout: Record<string, unknown> | null; layouts?: Record<string, Record<string, unknown>>; alerts?: Record<string, unknown>[] };
 
 export async function mock(page: Page, calls: string[], authed = false, server: MockServer = { drawings: [], layout: null }) {
   server.layouts ??= {};
+  server.alerts ??= [];
   if (authed) await page.context().addCookies([{ name: "pl_auth", value: "1", url: "http://localhost:3101" }]);
   await page.route("**/v1/**", (route) => {
     const u = new URL(route.request().url());
@@ -62,6 +63,13 @@ export async function mock(page: Page, calls: string[], authed = false, server: 
     }
     if (p === "/v1/chart/derivatives")
       return json(200, { symbol: "BTCUSDT", tf: "4h", funding: [{ t: T0 + 100 * 14400, v: "0.0001" }, { t: T0 + 200 * 14400, v: "0.00012" }], funding_current: "0.00012", next_funding_t: Math.floor(Date.now() / 1000) + 3600, oi: [{ t: T0 + 100 * 14400, v: "1000000" }], liquidations: [{ t: T0 + 100 * 14400, long: "1000", short: "2000" }], liquidations_note: "" });
+    if (p === "/v1/alerts" && route.request().method() === "GET") return json(200, { items: server.alerts, active: server.alerts!.length, limit: 50, types: [], frequencies: [] });
+    if (p === "/v1/alerts" && route.request().method() === "POST") {
+      const b = route.request().postDataJSON() as { symbol: string; type: string; condition: { op: string; price: string }; frequency: string; drawing_client_id: string | null };
+      const a = { id: server.alerts!.length + 1, symbol: b.symbol, timeframe: null, type: b.type, condition: b.condition, text: `${b.symbol}: цена пересекла ${b.condition.price} ${b.condition.op === "cross_up" ? "вверх" : "вниз"}`, frequency: b.frequency, expires_at: null, status: "active", drawing_client_id: b.drawing_client_id, note: null, last_triggered_at: null, triggers_count: 0, created_at: null, last_trigger: null };
+      server.alerts!.push(a);
+      return json(201, a);
+    }
     if (p === "/v1/chart/patterns")
       return json(200, {
         symbol: "BTCUSDT", tf: "4h", horizon: 5, note: "",

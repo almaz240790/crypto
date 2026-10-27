@@ -12,6 +12,7 @@ const NAV: { href: string; label: string }[] = [
   { href: "/chart", label: "График" },
   { href: "/screener", label: "Скринер" },
   { href: "/watchlist", label: "Вотчлист" },
+  { href: "/alerts", label: "Алерты" },
   { href: "/journal", label: "Журнал" },
   { href: "/calculator", label: "Калькулятор" },
   { href: "/stats", label: "Статистика" },
