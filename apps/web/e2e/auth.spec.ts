@@ -46,7 +46,7 @@ test("защищённая страница без входа ведёт на /l
   await page.goto("/signals");
   await expect(page).toHaveURL(/\/login\?next=%2Fsignals/);
   // каждый защищённый раздел: список PROTECTED и matcher в src/proxy.ts должны совпадать
-  for (const path of ["/billing", "/admin", "/journal", "/watchlist", "/screener", "/calculator", "/settings"]) {
+  for (const path of ["/billing", "/admin", "/journal", "/watchlist", "/alerts", "/screener", "/calculator", "/settings"]) {
     await page.goto(path);
     await expect(page).toHaveURL(new RegExp(`/login\\?next=${encodeURIComponent(path).replace(/\//g, "%2F")}`));
   }

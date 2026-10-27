@@ -46,6 +46,8 @@ type Props = {
   /** Свечные паттерны (план 2A.10.1): маркеры-глифы под/над свечой; ``highlight`` — id выбранного. */
   patterns?: PatternOnChart[];
   highlight?: number | null;
+  /** Активные ценовые алерты: линия с подписью (план 2A.6). */
+  alertLines?: { id: number; price: number; label: string }[];
   derivatives: Derivatives | null;
   panels: PanelKey[];
   tick: string | null;
@@ -90,7 +92,7 @@ function precisionOf(tick: string | null): { precision: number; minMove: number 
 type Pane = { spec: IndicatorSpec; paneIndex: number | null; series: Record<string, ISeriesApi<"Line" | "Histogram">> };
 
 /** Обёртка React над Terminal из packages/charts: данные, индикаторы, слои, тема. */
-export function TerminalView({ candles, current, tf, type, indicators, layersOn, layers, patterns, highlight, derivatives, panels, tick, onNeedOlder, drawings, onCrosshair }: Props) {
+export function TerminalView({ candles, current, tf, type, indicators, layersOn, layers, patterns, highlight, alertLines, derivatives, panels, tick, onNeedOlder, drawings, onCrosshair }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const tfRef = useRef(tf);
@@ -444,11 +446,15 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
         });
       }
     }
+    for (const al of alertLines ?? []) {
+      seg(first, null, al.price, tokens.warn, 3, 1);
+      markers.push({ time: last as Time, position: "inBar", shape: "circle", color: tokens.warn, text: `алерт ${al.label}`, size: 0 });
+    }
     boxRef.current.setBoxes(boxes);
     markers.sort((a, b) => (a.time as number) - (b.time as number));
     if (!markersRef.current) markersRef.current = createSeriesMarkers(main, markers);
     else markersRef.current.setMarkers(markers);
-  }, [layers, layersOn, candles, current, tf, type, patterns, highlight]);
+  }, [layers, layersOn, candles, current, tf, type, patterns, highlight, alertLines]);
 
   return (
     <div className={s.chart}>

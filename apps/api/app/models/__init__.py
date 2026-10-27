@@ -1,5 +1,6 @@
 """Модели БД. Соответствуют разделу 7 плана; на этапе 0 — только движок и сигналы."""
 
+from app.models.alerts import Alert, AlertTrigger
 from app.models.backtests import BacktestRun
 from app.models.billing import BalanceEntry, Payment, PromoCode, Subscription
 from app.models.chart import ChartLayout, Drawing
@@ -40,6 +41,8 @@ from app.models.users import (
 
 __all__ = [
     "AdminAudit",
+    "Alert",
+    "AlertTrigger",
     "AuthIdentity",
     "BacktestRun",
     "BalanceEntry",

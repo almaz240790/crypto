@@ -151,6 +151,8 @@ class NotificationSettings(Base):
     """Письма о событиях: вход, TP, безубыток, стоп, истечение."""
     push_signals: Mapped[bool] = mapped_column(Boolean, default=True)
     push_events: Mapped[bool] = mapped_column(Boolean, default=True)
+    email_alerts: Mapped[bool] = mapped_column(Boolean, default=False)
+    push_alerts: Mapped[bool] = mapped_column(Boolean, default=True)
     grades: Mapped[list[Any]] = mapped_column(JSONB, default=lambda: ["A", "B", "C"])
     scope: Mapped[str] = mapped_column(String(10), default="all")  # all / watchlist
     quiet_from: Mapped[int | None] = mapped_column(Integer)  # час UTC, начало тихих часов

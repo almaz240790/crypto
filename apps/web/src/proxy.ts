@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 
 /** Редиректы по cookie-подсказке (без секретов). Настоящая проверка — на API по токену. */
-const PROTECTED = ["/signals", "/onboarding", "/settings", "/watchlist", "/journal", "/calculator", "/screener", "/billing", "/admin"];
+const PROTECTED = ["/signals", "/onboarding", "/settings", "/watchlist", "/alerts", "/journal", "/calculator", "/screener", "/billing", "/admin"];
 const GUEST_ONLY = ["/login", "/register"];
 
 export function proxy(req: NextRequest) {
@@ -24,5 +24,5 @@ export function proxy(req: NextRequest) {
 
 export const config = {
   // Список должен совпадать с PROTECTED и GUEST_ONLY: путь вне matcher прокси не видит.
-  matcher: ["/signals/:path*", "/onboarding", "/settings/:path*", "/watchlist", "/journal", "/calculator", "/screener", "/billing", "/admin", "/login", "/register"],
+  matcher: ["/signals/:path*", "/onboarding", "/settings/:path*", "/watchlist", "/alerts", "/journal", "/calculator", "/screener", "/billing", "/admin", "/login", "/register"],
 };

@@ -399,5 +399,7 @@ def settings_dict(ns: NotificationSettings) -> dict[str, Any]:
         "daily_limit": ns.daily_limit,
         "push_signals": ns.push_signals,
         "push_events": ns.push_events,
+        "email_alerts": ns.email_alerts,
+        "push_alerts": ns.push_alerts,
         "telegram_linked": ns.telegram_chat_id is not None,
     }

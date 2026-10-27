@@ -501,6 +501,8 @@ class NotificationsIn(BaseModel):
     daily_limit: int | None = Field(default=None, ge=1, le=200)
     push_signals: bool | None = None
     push_events: bool | None = None
+    email_alerts: bool | None = None
+    push_alerts: bool | None = None
     clear_quiet: bool = False
 
 
