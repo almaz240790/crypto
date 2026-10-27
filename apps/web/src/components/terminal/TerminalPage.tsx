@@ -1,7 +1,7 @@
 "use client";
 
 import type React from "react";
-import { CHART_TYPES, INDICATORS, TOOL_TITLES, defaultParams, positionStats, secondsToClose, tokensFromElement, type ChartType, type DrawingType, type Timeframe } from "@platform/charts";
+import { CHART_TYPES, INDICATORS, TOOL_TITLES, defaultParams, positionStats, secondsToClose, tokensFromElement, type Candle, type ChartType, type DrawingType, type ScaleMode, type Timeframe } from "@platform/charts";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -21,7 +21,7 @@ import { PANELS, TerminalView, type ActiveIndicator, type CrosshairInfo, type La
 import { useDrawings } from "./useDrawings";
 import { deleteLayout, getLayout, listLayouts, putLayout } from "@/lib/drawings";
 import { createAlert, getAlerts, type Alert } from "@/lib/alerts";
-import { getCandles } from "@/lib/chart";
+import { getCandles, toCandle } from "@/lib/chart";
 import { useTerminalData } from "./useTerminalData";
 
 const TYPE_LABEL: Record<ChartType, string> = { candles: "Свечи", bars: "Бары", line: "Линия", heikin: "Heikin Ashi" };
@@ -35,10 +35,11 @@ const OBJECTS_W_MIN = 240;
 const OBJECTS_W_MAX = 600;
 const clampW = (w: number) => Math.round(Math.min(OBJECTS_W_MAX, Math.max(OBJECTS_W_MIN, w)));
 
-type Saved = { type: ChartType; indicators: ActiveIndicator[]; layers: Record<LayerKey, boolean>; panels: PanelKey[]; updated_at?: number };
+type Saved = { type: ChartType; indicators: ActiveIndicator[]; layers: Record<LayerKey, boolean>; panels: PanelKey[]; scale: ScaleMode; overlay: string | null; updated_at?: number };
+const SCALE_LABEL: Record<ScaleMode, string> = { linear: "линейная", log: "логарифмическая", percent: "проценты" };
 
 function load(): Saved {
-  const base: Saved = { type: "candles", indicators: DEFAULT_INDICATORS, layers: { structure: true, zones: true, levels: true, signals: true, patterns: true, figures: true, volume_profile: false }, panels: [] };
+  const base: Saved = { type: "candles", indicators: DEFAULT_INDICATORS, layers: { structure: true, zones: true, levels: true, signals: true, patterns: true, figures: true, volume_profile: false }, panels: [], scale: "linear", overlay: null };
   try {
     const raw = localStorage.getItem(STORAGE);
     if (!raw) return base;
@@ -256,6 +257,22 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
   }, [saved, user]);
 
   const st = saved ?? load();
+  // наложенный инструмент (план 2A.3 v2): закрытые свечи цели на том же таймфрейме
+  const [overlayCandles, setOverlayCandles] = useState<Candle[] | null>(null);
+  const overlaySymbol = st.overlay && st.overlay !== symbol ? st.overlay : null;
+  useEffect(() => {
+    if (!overlaySymbol) {
+      queueMicrotask(() => setOverlayCandles(null));
+      return;
+    }
+    let dead = false;
+    getCandles(overlaySymbol, tf)
+      .then((r) => !dead && setOverlayCandles(r.candles.filter((c) => !c.open).map(toCandle)))
+      .catch(() => !dead && setOverlayCandles(null));
+    return () => {
+      dead = true;
+    };
+  }, [overlaySymbol, tf]);
   const last = data.current ?? data.candles?.[data.candles.length - 1] ?? null;
   const prevClose = data.candles && data.candles.length > 1 ? data.candles[data.candles.length - (data.current ? 1 : 2)]!.close : null;
   const price = data.price ? Number(data.price) : last?.close ?? null;
@@ -363,6 +380,23 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
             </option>
           ))}
         </select>
+        <select aria-label="шкала" value={st.scale} onChange={(e) => setSaved({ ...st, scale: e.target.value as ScaleMode, updated_at: Date.now() })} title="Ценовая шкала">
+          {(Object.keys(SCALE_LABEL) as ScaleMode[]).map((m) => (
+            <option key={m} value={m}>
+              {SCALE_LABEL[m]}
+            </option>
+          ))}
+        </select>
+        <select aria-label="наложение" className={s.desktopOnly} value={st.overlay ?? ""} onChange={(e) => setSaved({ ...st, overlay: e.target.value || null, scale: e.target.value && st.scale === "linear" ? "percent" : st.scale, updated_at: Date.now() })} title="Наложить второй инструмент (линия закрытий)">
+          <option value="">без наложения</option>
+          {instruments
+            .filter((i) => i.symbol !== symbol)
+            .map((i) => (
+              <option key={i.symbol} value={i.symbol}>
+                + {i.symbol}
+              </option>
+            ))}
+        </select>
       </div>
       <div className={s.strip} aria-label="состояние">
         <span>
@@ -430,7 +464,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
             Таймфреймы 1m–15m доступны после входа на тарифе Pro. <Link href="/pricing">Тарифы</Link>
           </div>
         ) : (
-          <TerminalView candles={data.candles ?? []} current={data.current} tf={tf} type={st.type} indicators={st.indicators} layersOn={st.layers} layers={data.layers} patterns={data.patterns?.items} highlight={foundSel} figures={data.figures?.items} highlightFigure={figureSel} alertLines={alerts.filter((a) => a.type === "price" && typeof a.condition.price === "string").map((a) => ({ id: a.id, price: Number(a.condition.price), label: a.condition.op === "cross_up" ? "↑" : a.condition.op === "cross_down" ? "↓" : "↔" }))} derivatives={data.derivatives} panels={st.panels} tick={data.tick} onNeedOlder={data.loadOlder} drawings={drawingsProps} onCrosshair={setCross} onVisibleFrom={setVisibleFrom} onReady={(c) => { controls.current = c; }} />
+          <TerminalView candles={data.candles ?? []} current={data.current} tf={tf} type={st.type} indicators={st.indicators} layersOn={st.layers} layers={data.layers} patterns={data.patterns?.items} highlight={foundSel} figures={data.figures?.items} highlightFigure={figureSel} alertLines={alerts.filter((a) => a.type === "price" && typeof a.condition.price === "string").map((a) => ({ id: a.id, price: Number(a.condition.price), label: a.condition.op === "cross_up" ? "↑" : a.condition.op === "cross_down" ? "↓" : "↔" }))} derivatives={data.derivatives} panels={st.panels} tick={data.tick} onNeedOlder={data.loadOlder} drawings={drawingsProps} onCrosshair={setCross} onVisibleFrom={setVisibleFrom} onReady={(c) => { controls.current = c; }} scale={st.scale} overlay={overlayCandles} />
         )}
         {sel && (
           <div className={s.card} role="region" aria-label="выбранный рисунок">
