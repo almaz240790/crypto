@@ -160,3 +160,11 @@
   cursor: pointer;
   text-decoration: underline;
 }
+
+/* аналитика журнала (план 3.8 v2): кривая капитала и три таблицы */
+.analytics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px;
+  align-items: start;
+}

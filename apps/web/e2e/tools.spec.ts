@@ -42,6 +42,17 @@ async function mock(page: Page, calls: string[], state: { watch: string[]; journ
       return route.fulfill({ status: 204 });
     }
     if (p === "/v1/signals") return json(200, { items: [], sparklines: {}, prices: {}, total: 0, scope: "live", limit: 50, offset: 0 });
+    if (p === "/v1/journal/analytics") {
+      const b = { trades: state.journal.length, closed: state.journal.length, sum_r: "2", avg_r: "2", winrate: 1 };
+      return json(200, {
+        total: b,
+        by_weekday: [{ key: 0, ...b }],
+        by_symbol: [{ key: "BTCUSDT", ...b }],
+        by_grade: [{ key: "none", ...b }],
+        equity: { points: [{ t: "2026-01-05T20:00:00+00:00", r: "2" }], max_drawdown_r: "0" },
+        errors: { early_exit: { count: 0, of: 0 }, no_signal: { count: 1, of: 1 }, risk_exceeded: { count: 0, of: 0, budget_usd: null } },
+      });
+    }
     if (p === "/v1/journal" && req.method() === "GET") {
       const closed = state.journal.filter((e) => e.realized_r != null);
       return json(200, { items: state.journal, summary: { trades: state.journal.length, closed: closed.length, sum_r: "1.5", avg_r: "0.75", winrate: 0.5, linked: 0, executed_share: null, system_avg_r: null } });
@@ -106,8 +117,14 @@ test("журнал: добавить запись, итоги, удалить", 
   await page.getByLabel("Выход, цена").fill("104");
   await page.getByRole("button", { name: "Добавить", exact: true }).click();
   await expect(page.getByRole("status")).toContainText("Запись добавлена");
-  await expect(page.getByRole("cell", { name: /\+2\.00.R/ })).toBeVisible();
+  await expect(page.getByRole("cell", { name: /\+2\.00.R/ }).last()).toBeVisible();
   await expect(page.getByLabel("итоги")).toContainText("сделок 1");
+  // аналитика (план 3.8 v2): кривая капитала, ошибки, таблицы
+  const an = page.getByTestId("journal-analytics");
+  await expect(an.getByRole("img", { name: /кривая капитала/ })).toBeVisible();
+  await expect(an.getByLabel("типовые ошибки")).toContainText("вход без сигнала 1 из 1");
+  await expect(an.getByRole("cell", { name: "без сигнала" })).toBeVisible();
+  await expect(an.getByRole("cell", { name: "Пн" })).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath("journal.png"), fullPage: true });
   page.once("dialog", (d) => d.accept());
   await page.getByRole("button", { name: "удалить" }).click();

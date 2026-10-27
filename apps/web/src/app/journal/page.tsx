@@ -7,7 +7,78 @@ import s from "@/components/tools/tools.module.css";
 import { Button, EmptyState, Input, Panel, Select, Table, Td, Th } from "@/components/ui";
 import { getAccessToken } from "@/lib/auth-client";
 import { formatPct, formatR, formatTimeUTC } from "@/lib/format";
-import { createJournal, deleteJournal, getInstruments, getJournal, updateJournal, type Instrument, type JournalEntry, type JournalIn, type JournalSummary } from "@/lib/user";
+import { createJournal, deleteJournal, getInstruments, getJournal, getJournalAnalytics, updateJournal, type AnalyticsBucket, type Instrument, type JournalAnalytics, type JournalEntry, type JournalIn, type JournalSummary } from "@/lib/user";
+
+const WEEKDAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
+const GRADES: Record<string, string> = { A: "A", B: "B", C: "C", none: "без сигнала" };
+
+/** Кривая капитала в R: одна линия, нулевая отметка пунктиром; цвета — токены. */
+function EquityCurve({ points }: { points: { t: string; r: string }[] }) {
+  const w = 320, h = 72;
+  const vals = [0, ...points.map((p) => Number(p.r))];
+  if (vals.length < 2) return <span className="caption">закрытых сделок пока нет</span>;
+  const min = Math.min(...vals), max = Math.max(...vals), span = max - min || 1;
+  const x = (i: number) => (i / (vals.length - 1)) * (w - 2) + 1;
+  const y = (v: number) => (1 - (v - min) / span) * (h - 2) + 1;
+  const last = vals[vals.length - 1]!;
+  return (
+    <svg width="100%" viewBox={`0 0 ${w} ${h}`} role="img" aria-label={`кривая капитала, итог ${formatR(last)}`} style={{ display: "block", maxWidth: w }}>
+      <line x1={1} x2={w - 1} y1={y(0)} y2={y(0)} stroke="var(--border)" strokeDasharray="3 3" />
+      <polyline points={vals.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ")} fill="none" stroke={last >= 0 ? "var(--up)" : "var(--down)"} strokeWidth="1.5" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function BucketTable({ title, rows, label }: { title: string; rows: AnalyticsBucket[]; label: (k: string | number) => string }) {
+  return (
+    <Table compact>
+      <thead>
+        <tr>
+          <Th>{title}</Th>
+          <Th num>Сделок</Th>
+          <Th num>Итог R</Th>
+          <Th num>Винрейт</Th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((b) => {
+          const r = Number(b.sum_r);
+          return (
+            <tr key={String(b.key)}>
+              <Td>{label(b.key)}</Td>
+              <Td num>{b.closed}/{b.trades}</Td>
+              <Td num className={r > 0 ? "up" : r < 0 ? "down" : ""}>{b.closed ? formatR(b.sum_r) : "—"}</Td>
+              <Td num>{b.winrate == null ? "—" : formatPct(b.winrate * 100, { signed: false })}</Td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </Table>
+  );
+}
+
+function Analytics({ a }: { a: JournalAnalytics }) {
+  const e = a.errors;
+  return (
+    <Panel title="Аналитика" footer="Ранний выход — сделка по сигналу закрыта хуже результата сигнала более чем на 0.5 R. Превышение риска — риск сделки больше бюджета из риск-профиля на 10 % и более.">
+      <div className={s.analytics} data-testid="journal-analytics">
+        <div>
+          <p className="caption" style={{ margin: "0 0 4px" }}>
+            Кривая капитала, R{a.equity.max_drawdown_r != null && <> · макс. просадка {formatR(a.equity.max_drawdown_r)}</>}
+          </p>
+          <EquityCurve points={a.equity.points} />
+          <p className="caption" style={{ margin: "8px 0 0" }} aria-label="типовые ошибки">
+            Типовые ошибки: ранний выход <strong>{e.early_exit.count}</strong> из {e.early_exit.of} по сигналу · вход без сигнала <strong>{e.no_signal.count}</strong> из {e.no_signal.of} ·
+            превышение риска {e.risk_exceeded.budget_usd == null ? <span>— задайте депозит в настройках</span> : <><strong>{e.risk_exceeded.count}</strong> из {e.risk_exceeded.of} (бюджет {e.risk_exceeded.budget_usd} USDT)</>}
+          </p>
+        </div>
+        <BucketTable title="День недели" rows={a.by_weekday} label={(k) => WEEKDAYS[Number(k)] ?? String(k)} />
+        <BucketTable title="Инструмент" rows={a.by_symbol.slice(0, 12)} label={(k) => String(k)} />
+        <BucketTable title="Градация" rows={a.by_grade} label={(k) => GRADES[String(k)] ?? String(k)} />
+      </div>
+    </Panel>
+  );
+}
 
 const EMPTY: Record<string, string> = { symbol: "", direction: "long", entry_at: "", entry_price: "", stop_loss: "", tp: "", size: "", exit_at: "", exit_price: "", fees: "", tags: "", note: "" };
 
@@ -22,6 +93,7 @@ function JournalInner() {
   const sp = useSearchParams();
   const [items, setItems] = useState<JournalEntry[] | null>(null);
   const [summary, setSummary] = useState<JournalSummary | null>(null);
+  const [analytics, setAnalytics] = useState<JournalAnalytics | null>(null);
   const [instruments, setInstruments] = useState<Instrument[]>([]);
   const [form, setForm] = useState<Record<string, string> | null>(null);
   const [editId, setEditId] = useState<number | null>(null);
@@ -32,6 +104,7 @@ function JournalInner() {
     const r = await getJournal();
     setItems(r.items);
     setSummary(r.summary);
+    setAnalytics(r.items.length ? await getJournalAnalytics().catch(() => null) : null);
   }, []);
   useEffect(() => {
     queueMicrotask(() => load().catch((e: Error) => setError(e.message)));
@@ -155,6 +228,7 @@ function JournalInner() {
             {toast}
           </p>
         )}
+        {analytics && analytics.total.trades > 0 && <Analytics a={analytics} />}
         {form && (
           <Panel title={editId ? "Правка записи" : "Новая запись"} actions={<button type="button" className={s.small} onClick={() => { setForm(null); setEditId(null); }}>закрыть</button>}>
             <form className={s.form} onSubmit={submit}>

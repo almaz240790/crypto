@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from app import auth
 from app.config import settings
 from app.entitlements import entitlements_for
+from app.journal_analytics import TradeRow, analytics
 from app.models import (
     AuthIdentity,
     Instrument,
@@ -325,6 +326,38 @@ def journal_list(
     }
     summary.update(_vs_system(db, user, [e for e, _ in rows]))
     return {"items": items, "summary": summary, "limit": limit, "offset": offset}
+
+
+@router.get("/journal/analytics")
+def journal_analytics(
+    user: User = Depends(auth.current_user), db: Session = Depends(auth.get_db)
+) -> dict[str, Any]:
+    """Аналитика журнала (план 3.8 v2): дни недели, инструменты, градации, капитал, ошибки."""
+    rows = db.execute(
+        select(JournalEntry, Instrument.symbol, Signal.grade, SignalResult.realized_r)
+        .join(Instrument, Instrument.id == JournalEntry.instrument_id)
+        .outerjoin(Signal, Signal.id == JournalEntry.signal_id)
+        .outerjoin(SignalResult, SignalResult.signal_id == JournalEntry.signal_id)
+        .where(JournalEntry.user_id == user.id)
+    ).all()
+    trades = [
+        TradeRow(
+            symbol=sym,
+            direction=e.direction,
+            entry_at=e.entry_at,
+            exit_at=e.exit_at,
+            entry_price=e.entry_price,
+            stop_loss=e.stop_loss,
+            size=e.size,
+            realized_r=e.realized_r,
+            signal_id=e.signal_id,
+            grade=grade,
+            system_r=sys_r,
+        )
+        for e, sym, grade, sys_r in rows
+    ]
+    risk = db.get(RiskProfile, user.id)
+    return analytics(trades, risk.deposit if risk else None, risk.risk_pct if risk else None)
 
 
 def _vs_system(db: Session, user: User, entries: list[JournalEntry]) -> dict[str, Any]:
