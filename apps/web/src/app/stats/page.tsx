@@ -14,6 +14,7 @@ import {
 } from "@/lib/api";
 import { formatDuration, formatPct, formatR, formatTimeUTC, plural } from "@/lib/format";
 import s from "./page.module.css";
+import { getT } from "@/i18n/server";
 
 export const dynamic = "force-dynamic";
 
@@ -49,17 +50,18 @@ function pct(v: number | null | undefined): string {
   return num(v, (n) => formatPct(n * 100, { signed: false }));
 }
 
-function MetricCards({ m }: { m: Metrics }) {
+async function MetricCards({ m }: { m: Metrics }) {
+  const tr = await getT();
   const cards: [string, string, string, string?][] = [
-    ["closed", "закрытых сделок", String(m.closed), `${m.open} ${plural(m.open, "активная", "активные", "активных")}, ${m.expired} ${plural(m.expired, "истёк", "истекли", "истекли")}`],
-    ["winrate", "винрейт", pct(m.winrate)],
-    ["avg_r", "средний R", num(m.avg_r, (n) => formatR(n))],
-    ["profit_factor", "профит-фактор", num(m.profit_factor, (n) => n.toFixed(2))],
+    ["closed", tr("закрытых сделок"), String(m.closed), `${m.open} ${plural(m.open, tr("активная"), tr("активные"), tr("активных"))}, ${m.expired} ${plural(m.expired, tr("истёк"), tr("истекли"), tr("истекли"))}`],
+    ["winrate", tr("винрейт"), pct(m.winrate)],
+    ["avg_r", tr("средний R"), num(m.avg_r, (n) => formatR(n))],
+    ["profit_factor", tr("профит-фактор"), num(m.profit_factor, (n) => n.toFixed(2))],
     ["expectancy", "expectancy", num(m.expectancy, (n) => formatR(n))],
-    ["max_drawdown_r", "макс. просадка", m.closed ? formatR(-m.max_drawdown_r) : "—", m.closed ? `≈ ${(m.max_drawdown_r * 1).toFixed(1)} % при риске 1 %` : undefined],
-    ["max_losing_streak", "серия убытков", String(m.max_losing_streak)],
-    ["tp1_share", "дошли до TP1", pct(m.tp1_share), `TP2 ${pct(m.tp2_share)}, TP3 ${pct(m.tp3_share)}`],
-    ["avg_duration_hours", "в сделке", num(m.avg_duration_hours, (n) => formatDuration(n))],
+    ["max_drawdown_r", tr("макс. просадка"), m.closed ? formatR(-m.max_drawdown_r) : "—", m.closed ? `≈ ${(m.max_drawdown_r * 1).toFixed(1)} % при риске 1 %` : undefined],
+    ["max_losing_streak", tr("серия убытков"), String(m.max_losing_streak)],
+    ["tp1_share", tr("дошли до TP1"), pct(m.tp1_share), `TP2 ${pct(m.tp2_share)}, TP3 ${pct(m.tp3_share)}`],
+    ["avg_duration_hours", tr("в сделке"), num(m.avg_duration_hours, (n) => formatDuration(n))],
   ];
   return (
     <div className={s.cards}>
@@ -84,20 +86,21 @@ function MetricCards({ m }: { m: Metrics }) {
   );
 }
 
-function BreakdownTable({ title, rows, keyLabel }: { title: string; rows: [string, Metrics][]; keyLabel: string }) {
+async function BreakdownTable({ title, rows, keyLabel }: { title: string; rows: [string, Metrics][]; keyLabel: string }) {
+  const tr = await getT();
   return (
     <Panel title={title} flush>
       {rows.length === 0 ? (
-        <EmptyState text="Нет закрытых сделок." />
+        <EmptyState text={tr("Нет закрытых сделок.")} />
       ) : (
         <Table compact stack={false}>
           <thead>
             <tr>
               <Th>{keyLabel}</Th>
-              <Th num>Сделок</Th>
-              <Th num>Винрейт</Th>
-              <Th num>Средний R</Th>
-              <Th num>Итог, R</Th>
+              <Th num>{tr("Сделок")}</Th>
+              <Th num>{tr("Винрейт")}</Th>
+              <Th num>{tr("Средний R")}</Th>
+              <Th num>{tr("Итог, R")}</Th>
             </tr>
           </thead>
           <tbody>
@@ -126,6 +129,7 @@ function one(v: string | string[] | undefined): string {
 }
 
 export default async function StatsPage({ searchParams }: { searchParams: Promise<Search> }) {
+  const tr = await getT();
   const sp = await searchParams;
   const scopeRaw = one(sp.scope);
   const scope = scopeRaw === "forward" || scopeRaw === "backtest" ? scopeRaw : "live";
@@ -169,18 +173,18 @@ export default async function StatsPage({ searchParams }: { searchParams: Promis
       <main className={`container ${s.main}`}>
         <div className={s.top}>
           <div>
-            <h1>Статистика сигналов</h1>
+            <h1>{tr("Статистика сигналов")}</h1>
             <p className="text-2">
               Считается автоматически из таблицы сигналов тем же кодом, что бэктест. Ручного ввода нет. Обновлено {stats ? formatTimeUTC(stats.generated_at) : "—"}.
             </p>
           </div>
-          <nav className={s.scopes} aria-label="область статистики">
+          <nav className={s.scopes} aria-label={tr("область статистики")}>
             {SCOPES.map((x) => (
               <Link key={x.key} href={link({ scope: x.key, version: undefined, run_id: undefined, entry_type: undefined })} aria-current={scope === x.key ? "true" : undefined}>
                 {x.label}
               </Link>
             ))}
-            <Link href="/stats/patterns">Паттерны</Link>
+            <Link href="/stats/patterns">{tr("Паттерны")}</Link>
           </nav>
         </div>
 
@@ -189,7 +193,7 @@ export default async function StatsPage({ searchParams }: { searchParams: Promis
           {scope === "backtest" && stats?.run && (
             <>
               {" "}
-              Прогон #{stats.run.id}: стратегия {stats.run.strategy_version}, период {stats.run.period[0]} — {stats.run.period[1]}, инструментов {stats.run.instruments}, вход {stats.run.entry_type === "limit" ? "лимитный" : "рыночный"}.
+              Прогон #{stats.run.id}: стратегия {stats.run.strategy_version}, период {stats.run.period[0]} — {stats.run.period[1]}, инструментов {stats.run.instruments}, вход {stats.run.entry_type === "limit" ? tr("лимитный") : tr("рыночный")}.
               {stats.run.note ? ` ${stats.run.note}` : ""}
             </>
           )}
@@ -198,10 +202,8 @@ export default async function StatsPage({ searchParams }: { searchParams: Promis
         <form className={s.filters} method="get" action="/stats">
           <input type="hidden" name="scope" value={scope} />
           {scope === "backtest" ? (
-            <label>
-              прогон
-              <select name="run_id" defaultValue={q.run_id ?? ""}>
-                <option value="">последний</option>
+            <label>{tr("прогон")}<select name="run_id" defaultValue={q.run_id ?? ""}>
+                <option value="">{tr("последний")}</option>
                 {runs.map((r) => (
                   <option key={r.id} value={r.id}>
                     #{r.id} {r.strategy_version} {r.period[0]}…{r.period[1]} {r.entry_type}
@@ -210,10 +212,8 @@ export default async function StatsPage({ searchParams }: { searchParams: Promis
               </select>
             </label>
           ) : (
-            <label>
-              версия стратегии
-              <select name="version" defaultValue={q.version ?? ""}>
-                <option value="">все</option>
+            <label>{tr("версия стратегии")}<select name="version" defaultValue={q.version ?? ""}>
+                <option value="">{tr("все")}</option>
                 {versionOptions.map((v) => (
                   <option key={v.id} value={v.version}>
                     {v.name} {v.version}
@@ -222,60 +222,48 @@ export default async function StatsPage({ searchParams }: { searchParams: Promis
               </select>
             </label>
           )}
-          <label>
-            период
-            <select name="days" defaultValue={q.days ?? ""}>
-              <option value="">весь</option>
-              <option value="30">30 дней</option>
-              <option value="90">90 дней</option>
-              <option value="180">180 дней</option>
-              <option value="365">год</option>
+          <label>{tr("период")}<select name="days" defaultValue={q.days ?? ""}>
+              <option value="">{tr("весь")}</option>
+              <option value="30">{tr("30 дней")}</option>
+              <option value="90">{tr("90 дней")}</option>
+              <option value="180">{tr("180 дней")}</option>
+              <option value="365">{tr("год")}</option>
             </select>
           </label>
-          <label>
-            инструмент
-            <input name="symbol" defaultValue={q.symbol ?? ""} placeholder="все" style={{ textTransform: "uppercase" }} />
+          <label>{tr("инструмент")}<input name="symbol" defaultValue={q.symbol ?? ""} placeholder={tr("все")} style={{ textTransform: "uppercase" }} />
           </label>
-          <label>
-            градация
-            <select name="grade" defaultValue={q.grade ?? ""}>
-              <option value="">все</option>
+          <label>{tr("градация")}<select name="grade" defaultValue={q.grade ?? ""}>
+              <option value="">{tr("все")}</option>
               <option value="A">A</option>
               <option value="B">B</option>
               <option value="C">C</option>
             </select>
           </label>
-          <label>
-            тип входа
-            <select name="entry_type" defaultValue={q.entry_type ?? ""}>
-              <option value="">оба</option>
-              <option value="market">рыночный</option>
-              <option value="limit">лимитный</option>
+          <label>{tr("тип входа")}<select name="entry_type" defaultValue={q.entry_type ?? ""}>
+              <option value="">{tr("оба")}</option>
+              <option value="market">{tr("рыночный")}</option>
+              <option value="limit">{tr("лимитный")}</option>
             </select>
           </label>
-          <button type="submit" className="caption" style={{ height: 32, padding: "0 12px", border: "1px solid var(--border)", borderRadius: "var(--radius)", background: "var(--surface)", color: "var(--text)", cursor: "pointer" }}>
-            Применить
-          </button>
+          <button type="submit" className="caption" style={{ height: 32, padding: "0 12px", border: "1px solid var(--border)", borderRadius: "var(--radius)", background: "var(--surface)", color: "var(--text)", cursor: "pointer" }}>{tr("Применить")}</button>
           {query !== `scope=${scope}` && (
-            <Link href={`/stats?scope=${scope}`} className="caption">
-              сбросить
-            </Link>
+            <Link href={`/stats?scope=${scope}`} className="caption">{tr("сбросить")}</Link>
           )}
         </form>
 
         {!stats ? (
           <Panel>
-            <EmptyState text="API недоступен, попробуйте позже." />
+            <EmptyState text={tr("API недоступен, попробуйте позже.")} />
           </Panel>
         ) : !has ? (
           <Panel>
             <EmptyState
               text={
                 scope === "live"
-                  ? "Live-сигналов пока нет: текущая версия стратегии проходит форвард-тест. Переключите область на «Форвард-тест» или «Бэктест»."
+                  ? tr("Live-сигналов пока нет: текущая версия стратегии проходит форвард-тест. Переключите область на «Форвард-тест» или «Бэктест».")
                   : scope === "backtest" && !stats.run
-                    ? "Сохранённых прогонов бэктеста нет."
-                    : "По этим фильтрам сделок нет."
+                    ? tr("Сохранённых прогонов бэктеста нет.")
+                    : tr("По этим фильтрам сделок нет.")
               }
             />
           </Panel>
@@ -284,19 +272,19 @@ export default async function StatsPage({ searchParams }: { searchParams: Promis
             <MetricCards m={m!} />
 
             <div className={s.two}>
-              <Panel title="Накопленный результат, R" actions={<span>{m!.closed} {plural(m!.closed, "сделка", "сделки", "сделок")}, итог {formatR(m!.sum_r)}</span>}>
-                {stats.equity.length > 1 ? <EquityChart points={stats.equity} /> : <EmptyState text="Мало сделок для кривой." />}
+              <Panel title={tr("Накопленный результат, R")} actions={<span>{m!.closed} {plural(m!.closed, tr("сделка"), tr("сделки"), tr("сделок"))}, итог {formatR(m!.sum_r)}</span>}>
+                {stats.equity.length > 1 ? <EquityChart points={stats.equity} /> : <EmptyState text={tr("Мало сделок для кривой.")} />}
               </Panel>
-              <Panel title="Худшие периоды" footer="Три самые глубокие просадки — чтобы вы видели не только итог." flush>
+              <Panel title={tr("Худшие периоды")} footer={tr("Три самые глубокие просадки — чтобы вы видели не только итог.")} flush>
                 {stats.worst_drawdowns.length === 0 ? (
-                  <EmptyState text="Просадок нет." />
+                  <EmptyState text={tr("Просадок нет.")} />
                 ) : (
                   <Table compact stack={false}>
                     <thead>
                       <tr>
-                        <Th>Пик</Th>
-                        <Th>Дно</Th>
-                        <Th num>Глубина</Th>
+                        <Th>{tr("Пик")}</Th>
+                        <Th>{tr("Дно")}</Th>
+                        <Th num>{tr("Глубина")}</Th>
                       </tr>
                     </thead>
                     <tbody>
@@ -316,42 +304,42 @@ export default async function StatsPage({ searchParams }: { searchParams: Promis
             </div>
 
             <div className={s.two}>
-              <Panel title="Распределение результата, R" footer="Сколько закрытых сделок попало в каждый диапазон R.">
+              <Panel title={tr("Распределение результата, R")} footer={tr("Сколько закрытых сделок попало в каждый диапазон R.")}>
                 <RHistogram bins={stats.r_histogram} />
               </Panel>
-              <BreakdownTable title="По типу входа" keyLabel="Вход" rows={entries.map(([k, v]) => [k === "limit" ? "лимитный" : "рыночный", v])} />
+              <BreakdownTable title={tr("По типу входа")} keyLabel={tr("Вход")} rows={entries.map(([k, v]) => [k === "limit" ? tr("лимитный") : tr("рыночный"), v])} />
             </div>
 
             <div className={s.three}>
-              <BreakdownTable title="По месяцам" keyLabel="Месяц" rows={months} />
-              <BreakdownTable title="По градации" keyLabel="Градация" rows={grades} />
-              <BreakdownTable title="По инструментам" keyLabel="Инструмент" rows={symbols} />
+              <BreakdownTable title={tr("По месяцам")} keyLabel={tr("Месяц")} rows={months} />
+              <BreakdownTable title={tr("По градации")} keyLabel={tr("Градация")} rows={grades} />
+              <BreakdownTable title={tr("По инструментам")} keyLabel={tr("Инструмент")} rows={symbols} />
             </div>
 
             <Panel
-              title={trades ? `История: ${trades.total} ${plural(trades.total, "сигнал", "сигнала", "сигналов")}` : "История"}
-              actions={scope === "forward" ? <span>построчная история форварда не публикуется</span> : <CsvButton query={query} />}
+              title={trades ? `${tr("История")}: ${trades.total} ${plural(trades.total, tr("сигнал"), tr("сигнала"), tr("сигналов"))}` : tr("История")}
+              actions={scope === "forward" ? <span>{tr("построчная история форварда не публикуется")}</span> : <CsvButton query={query} />}
               flush
             >
               {!trades ? (
-                <EmptyState text="Для форвард-теста публикуются только агрегаты." />
+                <EmptyState text={tr("Для форвард-теста публикуются только агрегаты.")} />
               ) : trades.items.length === 0 ? (
-                <EmptyState text="Сделок нет." />
+                <EmptyState text={tr("Сделок нет.")} />
               ) : (
                 <>
                   <Table compact>
                     <thead>
                       <tr>
-                        <Th>Время, UTC</Th>
-                        <Th>Инструмент</Th>
-                        <Th>Гр.</Th>
-                        <Th num>Вход</Th>
-                        <Th num>Стоп</Th>
+                        <Th>{tr("Время, UTC")}</Th>
+                        <Th>{tr("Инструмент")}</Th>
+                        <Th>{tr("Гр.")}</Th>
+                        <Th num>{tr("Вход")}</Th>
+                        <Th num>{tr("Стоп")}</Th>
                         <Th num>R:R</Th>
-                        <Th>Тип</Th>
-                        <Th>Статус</Th>
+                        <Th>{tr("Тип")}</Th>
+                        <Th>{tr("Статус")}</Th>
                         <Th num>TP</Th>
-                        <Th num>Результат</Th>
+                        <Th num>{tr("Результат")}</Th>
                         <Th num>MFE / MAE</Th>
                       </tr>
                     </thead>
@@ -377,7 +365,7 @@ export default async function StatsPage({ searchParams }: { searchParams: Promis
                           <Td num mobile="hidden">
                             {Number(t.rr_tp2).toFixed(2)}
                           </Td>
-                          <Td mobile="hidden">{t.entry_type === "limit" ? "лимит" : "рынок"}</Td>
+                          <Td mobile="hidden">{t.entry_type === "limit" ? tr("лимит") : tr("рынок")}</Td>
                           <Td mobile="secondary">
                             <StatusBadge status={t.status} />
                           </Td>
@@ -400,8 +388,8 @@ export default async function StatsPage({ searchParams }: { searchParams: Promis
                         страница {page + 1} из {pages}
                       </span>
                       <span style={{ display: "inline-flex", gap: 12 }}>
-                        {page > 0 && <Link href={link({ page: page - 1 })}>← назад</Link>}
-                        {page + 1 < pages && <Link href={link({ page: page + 1 })}>вперёд →</Link>}
+                        {page > 0 && <Link href={link({ page: page - 1 })}>{tr("← назад")}</Link>}
+                        {page + 1 < pages && <Link href={link({ page: page + 1 })}>{tr("вперёд →")}</Link>}
                       </span>
                     </div>
                   )}

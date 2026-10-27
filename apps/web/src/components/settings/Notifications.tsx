@@ -5,6 +5,7 @@ import s from "@/components/tools/tools.module.css";
 import { Button, EmptyState, Input, Panel, Select } from "@/components/ui";
 import { api } from "@/lib/auth-client";
 import { currentSubscription, pushSupported, subscribePush, testPush, unsubscribePush } from "@/lib/push";
+import { useT } from "@/i18n/client";
 
 export type NotificationSettings = {
   email_digest: "daily" | "weekly" | "off";
@@ -25,6 +26,7 @@ export type NotificationSettings = {
 const TG_BOT = process.env.NEXT_PUBLIC_TELEGRAM_BOT;
 
 export function NotificationsPanel({ userId, onMessage }: { userId: number; onMessage: (text: string, kind?: "ok" | "error") => void }) {
+  const t = useT();
   const [ns, setNs] = useState<NotificationSettings | null>(null);
   const [draft, setDraft] = useState<Partial<NotificationSettings> | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -48,8 +50,8 @@ export function NotificationsPanel({ userId, onMessage }: { userId: number; onMe
   const v = <K extends keyof NotificationSettings>(k: K): NotificationSettings[K] => (draft && k in draft ? (draft[k] as NotificationSettings[K]) : (ns as NotificationSettings)[k]);
   const set = <K extends keyof NotificationSettings>(k: K, x: NotificationSettings[K]) => setDraft((d) => ({ ...(d ?? {}), [k]: x }));
 
-  if (error) return <Panel title="Уведомления"><EmptyState text={error} /></Panel>;
-  if (!ns) return <Panel title="Уведомления"><EmptyState text="Загрузка…" /></Panel>;
+  if (error) return <Panel title={t("Уведомления")}><EmptyState text={error} /></Panel>;
+  if (!ns) return <Panel title={t("Уведомления")}><EmptyState text={t("Загрузка…")} /></Panel>;
 
   const toggleGrade = (g: string) => {
     const cur = v("grades");
@@ -57,7 +59,7 @@ export function NotificationsPanel({ userId, onMessage }: { userId: number; onMe
   };
 
   return (
-    <Panel title="Уведомления" footer="Тихие часы — по UTC. Лимит ограничивает письма о сигналах и событиях в сутки; дайджест в лимит не входит.">
+    <Panel title={t("Уведомления")} footer={t("Тихие часы — по UTC. Лимит ограничивает письма о сигналах и событиях в сутки; дайджест в лимит не входит.")}>
       <form
         className={s.form}
         onSubmit={async (e) => {
@@ -73,32 +75,30 @@ export function NotificationsPanel({ userId, onMessage }: { userId: number; onMe
             const r = await api<NotificationSettings>("/v1/me/notifications", { method: "PATCH", json: body });
             setNs(r);
             setDraft(null);
-            onMessage("Уведомления сохранены");
+            onMessage(t("Уведомления сохранены"));
           } catch (err) {
-            onMessage(err instanceof Error ? err.message : "ошибка", "error");
+            onMessage(err instanceof Error ? err.message : t("ошибка"), "error");
           }
         }}
       >
         <div className={s.row}>
-          <Select label="Email-дайджест" value={v("email_digest")} onChange={(e) => set("email_digest", e.target.value as NotificationSettings["email_digest"])}>
-            <option value="daily">ежедневно (если были сделки)</option>
-            <option value="weekly">раз в неделю, по понедельникам</option>
-            <option value="off">выключен</option>
+          <Select label={t("Email-дайджест")} value={v("email_digest")} onChange={(e) => set("email_digest", e.target.value as NotificationSettings["email_digest"])}>
+            <option value="daily">{t("ежедневно (если были сделки)")}</option>
+            <option value="weekly">{t("раз в неделю, по понедельникам")}</option>
+            <option value="off">{t("выключен")}</option>
           </Select>
-          <Select label="Письма о новых сигналах" value={v("email_signals") ? "on" : "off"} onChange={(e) => set("email_signals", e.target.value === "on")}>
-            <option value="off">нет</option>
-            <option value="on">сразу при публикации</option>
+          <Select label={t("Письма о новых сигналах")} value={v("email_signals") ? "on" : "off"} onChange={(e) => set("email_signals", e.target.value === "on")}>
+            <option value="off">{t("нет")}</option>
+            <option value="on">{t("сразу при публикации")}</option>
           </Select>
-          <Select label="Письма о событиях" value={v("email_events") ? "on" : "off"} onChange={(e) => set("email_events", e.target.value === "on")}>
-            <option value="off">нет</option>
-            <option value="on">вход, цели, стоп</option>
+          <Select label={t("Письма о событиях")} value={v("email_events") ? "on" : "off"} onChange={(e) => set("email_events", e.target.value === "on")}>
+            <option value="off">{t("нет")}</option>
+            <option value="on">{t("вход, цели, стоп")}</option>
           </Select>
         </div>
         <div className={s.row}>
           <div>
-            <div className="caption" style={{ marginBottom: 4 }}>
-              Градации
-            </div>
+            <div className="caption" style={{ marginBottom: 4 }}>{t("Градации")}</div>
             <div className={s.actions}>
               {["A", "B", "C"].map((g) => (
                 <label key={g} style={{ display: "inline-flex", gap: 6, alignItems: "center", fontSize: 14 }}>
@@ -107,23 +107,23 @@ export function NotificationsPanel({ userId, onMessage }: { userId: number; onMe
               ))}
             </div>
           </div>
-          <Select label="Инструменты" value={v("scope")} onChange={(e) => set("scope", e.target.value as NotificationSettings["scope"])}>
-            <option value="all">все</option>
-            <option value="watchlist">только вотчлист</option>
+          <Select label={t("Инструменты")} value={v("scope")} onChange={(e) => set("scope", e.target.value as NotificationSettings["scope"])}>
+            <option value="all">{t("все")}</option>
+            <option value="watchlist">{t("только вотчлист")}</option>
           </Select>
-          <Input label="Лимит в сутки" mono inputMode="numeric" value={String(v("daily_limit"))} onChange={(e) => set("daily_limit", Math.max(1, Math.min(200, Number(e.target.value) || 1)))} />
+          <Input label={t("Лимит в сутки")} mono inputMode="numeric" value={String(v("daily_limit"))} onChange={(e) => set("daily_limit", Math.max(1, Math.min(200, Number(e.target.value) || 1)))} />
         </div>
         <div className={s.row}>
-          <Select label="Тихие часы с (UTC)" value={v("quiet_from") === null ? "" : String(v("quiet_from"))} onChange={(e) => set("quiet_from", e.target.value === "" ? null : Number(e.target.value))}>
-            <option value="">нет</option>
+          <Select label={t("Тихие часы с (UTC)")} value={v("quiet_from") === null ? "" : String(v("quiet_from"))} onChange={(e) => set("quiet_from", e.target.value === "" ? null : Number(e.target.value))}>
+            <option value="">{t("нет")}</option>
             {Array.from({ length: 24 }, (_, h) => (
               <option key={h} value={h}>
                 {String(h).padStart(2, "0")}:00
               </option>
             ))}
           </Select>
-          <Select label="до (UTC)" value={v("quiet_to") === null ? "" : String(v("quiet_to"))} onChange={(e) => set("quiet_to", e.target.value === "" ? null : Number(e.target.value))}>
-            <option value="">нет</option>
+          <Select label={t("до (UTC)")} value={v("quiet_to") === null ? "" : String(v("quiet_to"))} onChange={(e) => set("quiet_to", e.target.value === "" ? null : Number(e.target.value))}>
+            <option value="">{t("нет")}</option>
             {Array.from({ length: 24 }, (_, h) => (
               <option key={h} value={h}>
                 {String(h).padStart(2, "0")}:00
@@ -132,46 +132,42 @@ export function NotificationsPanel({ userId, onMessage }: { userId: number; onMe
           </Select>
         </div>
         <div className={s.row}>
-          <Select label="Push о сигналах" value={v("push_signals") ? "on" : "off"} onChange={(e) => set("push_signals", e.target.value === "on")}>
-            <option value="on">да</option>
-            <option value="off">нет</option>
+          <Select label={t("Push о сигналах")} value={v("push_signals") ? "on" : "off"} onChange={(e) => set("push_signals", e.target.value === "on")}>
+            <option value="on">{t("да")}</option>
+            <option value="off">{t("нет")}</option>
           </Select>
-          <Select label="Push о событиях" value={v("push_events") ? "on" : "off"} onChange={(e) => set("push_events", e.target.value === "on")}>
-            <option value="on">да</option>
-            <option value="off">нет</option>
+          <Select label={t("Push о событиях")} value={v("push_events") ? "on" : "off"} onChange={(e) => set("push_events", e.target.value === "on")}>
+            <option value="on">{t("да")}</option>
+            <option value="off">{t("нет")}</option>
           </Select>
-          <Select label="Push по алертам" value={v("push_alerts") ? "on" : "off"} onChange={(e) => set("push_alerts", e.target.value === "on")}>
-            <option value="on">да</option>
-            <option value="off">нет</option>
+          <Select label={t("Push по алертам")} value={v("push_alerts") ? "on" : "off"} onChange={(e) => set("push_alerts", e.target.value === "on")}>
+            <option value="on">{t("да")}</option>
+            <option value="off">{t("нет")}</option>
           </Select>
-          <Select label="Письма по алертам" value={v("email_alerts") ? "on" : "off"} onChange={(e) => set("email_alerts", e.target.value === "on")}>
-            <option value="on">да</option>
-            <option value="off">нет</option>
+          <Select label={t("Письма по алертам")} value={v("email_alerts") ? "on" : "off"} onChange={(e) => set("email_alerts", e.target.value === "on")}>
+            <option value="on">{t("да")}</option>
+            <option value="off">{t("нет")}</option>
           </Select>
           <div>
-            <div className="caption" style={{ marginBottom: 4 }}>
-              Push на этом устройстве
-            </div>
+            <div className="caption" style={{ marginBottom: 4 }}>{t("Push на этом устройстве")}</div>
             <div className={s.actions}>
               {pushState === "unsupported" ? (
-                <span className="caption">браузер не поддерживает push (на iPhone — установите приложение на экран «Домой»)</span>
+                <span className="caption">{t("браузер не поддерживает push (на iPhone — установите приложение на экран «Домой»)")}</span>
               ) : (
                 <>
                   <Button type="button" size="sm" variant={pushState === "on" ? "default" : "primary"} onClick={async () => {
                     try {
                       const msg = pushState === "on" ? await unsubscribePush() : await subscribePush();
-                      setPushState(pushState === "on" ? "off" : msg === "подписка включена" ? "on" : "off");
-                      onMessage(msg, msg === "подписка включена" || msg === "подписка выключена" ? "ok" : "error");
+                      setPushState(pushState === "on" ? "off" : msg === t("подписка включена") ? "on" : "off");
+                      onMessage(msg, msg === t("подписка включена") || msg === t("подписка выключена") ? "ok" : "error");
                     } catch (err) {
-                      onMessage(err instanceof Error ? err.message : "ошибка", "error");
+                      onMessage(err instanceof Error ? err.message : t("ошибка"), "error");
                     }
                   }}>
-                    {pushState === "on" ? "Выключить push здесь" : "Включить push здесь"}
+                    {pushState === "on" ? t("Выключить push здесь") : t("Включить push здесь")}
                   </Button>
                   {pushState === "on" && (
-                    <Button type="button" size="sm" onClick={() => testPush().then((r) => onMessage(`Push: ${r.status}`)).catch((e: Error) => onMessage(e.message, "error"))}>
-                      Тестовый push
-                    </Button>
+                    <Button type="button" size="sm" onClick={() => testPush().then((r) => onMessage(`Push: ${r.status}`)).catch((e: Error) => onMessage(e.message, "error"))}>{t("Тестовый push")}</Button>
                   )}
                 </>
               )}
@@ -181,34 +177,28 @@ export function NotificationsPanel({ userId, onMessage }: { userId: number; onMe
         <ul style={{ margin: 0, paddingLeft: 18, fontSize: 14, color: "var(--text-2)" }}>
           <li>
             Telegram —{" "}
-            {ns.telegram_linked ? "подключён" : TG_BOT ? (
-              <a href={`https://t.me/${TG_BOT}?start=${userId}`} target="_blank" rel="noreferrer">
-                открыть бота
-              </a>
+            {ns.telegram_linked ? t("подключён") : TG_BOT ? (
+              <a href={`https://t.me/${TG_BOT}?start=${userId}`} target="_blank" rel="noreferrer">{t("открыть бота")}</a>
             ) : (
-              "появится после подключения бота"
+              t("появится после подключения бота")
             )}
             .
           </li>
         </ul>
         <div className={s.actions}>
-          <Button type="submit" size="sm" variant="primary" disabled={!draft}>
-            Сохранить уведомления
-          </Button>
+          <Button type="submit" size="sm" variant="primary" disabled={!draft}>{t("Сохранить уведомления")}</Button>
           <Button
             type="button"
             size="sm"
             onClick={async () => {
               try {
                 const r = await api<{ status: string }>("/v1/me/notifications/test", { method: "POST" });
-                onMessage(`Тестовое письмо: ${r.status}`);
+                onMessage(t("Тестовое письмо: {status}", { status: r.status }));
               } catch (err) {
-                onMessage(err instanceof Error ? err.message : "ошибка", "error");
+                onMessage(err instanceof Error ? err.message : t("ошибка"), "error");
               }
             }}
-          >
-            Отправить тестовое письмо
-          </Button>
+          >{t("Отправить тестовое письмо")}</Button>
         </div>
       </form>
     </Panel>
