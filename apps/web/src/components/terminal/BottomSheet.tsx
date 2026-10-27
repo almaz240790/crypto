@@ -9,6 +9,7 @@ import s from "./terminal.module.css";
  */
 export function BottomSheet({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
   const [pct, setPct] = useState(50);
+  const pctRef = useRef(50);
   const drag = useRef<{ y: number; start: number } | null>(null);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -29,14 +30,20 @@ export function BottomSheet({ title, onClose, children }: { title: string; onClo
   const onMove = (e: React.PointerEvent) => {
     if (!drag.current) return;
     const h = ref.current?.parentElement?.clientHeight ?? window.innerHeight;
-    const next = drag.current.start - ((e.clientY - drag.current.y) / h) * 100;
-    setPct(Math.max(15, Math.min(90, next)));
+    const next = Math.max(15, Math.min(90, drag.current.start - ((e.clientY - drag.current.y) / h) * 100));
+    pctRef.current = next;
+    setPct(next);
   };
   const onUp = () => {
     if (!drag.current) return;
     drag.current = null;
-    if (pct < 30) onClose();
-    else setPct(pct > 70 ? 90 : 50);
+    // move и up могут прийти в одном такте — берём последнее значение из ref, не из замыкания
+    const cur = pctRef.current;
+    if (cur < 30) onClose();
+    else {
+      pctRef.current = cur > 70 ? 90 : 50;
+      setPct(pctRef.current);
+    }
   };
 
   return (

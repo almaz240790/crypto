@@ -75,16 +75,13 @@ test("телефон: long-press включает липкое перекрес�
   const sheet = page.getByRole("dialog", { name: "Индикаторы" });
   await expect(sheet).toHaveAttribute("data-height", "50");
   const handle = sheet.getByRole("separator");
-  const hb = (await handle.boundingBox())!;
-  await page.evaluate(
-    ({ hx, hy }) => {
-      const el = document.elementFromPoint(hx, hy)!;
-      const mk = (t: string, cy: number) => el.dispatchEvent(new PointerEvent(t, { bubbles: true, clientX: hx, clientY: cy, pointerType: "touch", pointerId: 3, isPrimary: true }));
-      mk("pointerdown", hy);
-      mk("pointermove", hy - 300);
-      mk("pointerup", hy - 300);
-    },
-    { hx: hb.x + hb.width / 2, hy: hb.y + hb.height / 2 },
-  );
+  await handle.evaluate((el) => {
+    const r = el.getBoundingClientRect();
+    const hx = r.x + r.width / 2, hy = r.y + r.height / 2;
+    const mk = (t: string, cy: number) => el.dispatchEvent(new PointerEvent(t, { bubbles: true, clientX: hx, clientY: cy, pointerType: "touch", pointerId: 3, isPrimary: true }));
+    mk("pointerdown", hy);
+    mk("pointermove", hy - 300);
+    mk("pointerup", hy - 300);
+  });
   await expect(sheet).toHaveAttribute("data-height", "90");
 });
