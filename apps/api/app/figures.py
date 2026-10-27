@@ -181,7 +181,7 @@ def sync_figures(
 def sync_live(db: Session, inst: Instrument, tf: Timeframe, now: datetime) -> dict[str, int]:
     candles, _ = load_candles(db, inst.id, tf, None, PAGE)
     candles = closed_only(candles, tf, now)
-    if len(candles) < 100:
+    if len(candles) <= DEFAULT_FIGURE_PARAMS.warmup:
         return {"new": 0, "updated": 0, "confirmed": 0, "invalidated": 0}
     return sync_figures(db, inst, tf, candles)
 
@@ -217,7 +217,7 @@ def backfill(
     """Прогон по всей истории: статусы по закрытиям, отработка для подтверждённых."""
     now = now or datetime.now(tz=UTC)
     candles = closed_only(_load_all(db, inst.id, tf, since), tf, now)
-    if len(candles) < 100:
+    if len(candles) <= params.warmup:
         return {"candles": len(candles), "new": 0, "outcomes": 0}
     st = sync_figures(db, inst, tf, candles, params, source="backfill")
     n_out = evaluate_outcomes(db, inst.id, tf, candles, params)
