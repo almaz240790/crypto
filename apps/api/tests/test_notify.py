@@ -84,3 +84,53 @@ def test_signal_text_and_position_size() -> None:
         and "103 / 105 / 108" in text
     )
     assert "рекомендац" in text
+
+
+def test_journal_report_lines_and_digest_due() -> None:
+    from datetime import UTC, datetime, timedelta
+    from decimal import Decimal
+
+    from app.journal_analytics import TradeRow, analytics
+    from app.notify import journal_report_lines, journal_report_text
+    from app.workers.notifier import digest_due
+
+    now = datetime(2026, 10, 26, 6, 5, tzinfo=UTC)  # понедельник
+    rows = [
+        TradeRow(
+            "BTCUSDT",
+            "long",
+            now - timedelta(days=3),
+            now - timedelta(days=2),
+            Decimal(100),
+            Decimal(98),
+            Decimal(1),
+            Decimal("1.5"),
+            7,
+            "A",
+            Decimal("2.5"),
+        ),
+        TradeRow(
+            "ETHUSDT",
+            "short",
+            now - timedelta(days=1),
+            None,
+            Decimal(50),
+            Decimal(51),
+            None,
+            None,
+            None,
+            None,
+            None,
+        ),
+    ]
+    text = "\n".join(journal_report_lines(analytics(rows, Decimal(1000), Decimal("1")), now))
+    assert "отчёт по журналу за неделю, 26.10.2026" in text
+    assert "Сделок: 2, закрыто 1, итог +1.50 R" in text
+    assert "BTCUSDT" in text and "без сигнала" in text
+    assert "  пт " in text and "  вс " in text  # входы 23.10 (пт) и 25.10 (вс)
+    assert "ранний выход: 1 из 1" in text and "вход без сигнала: 1 из 2" in text
+    assert "бюджет 10 USDT" in text and "не является инвестиционной" in text
+    assert digest_due(now, None) and digest_due(now, "2026-10-25")
+    assert not digest_due(now, "2026-10-26")
+    assert not digest_due(now.replace(hour=5), None)
+    assert callable(journal_report_text)
