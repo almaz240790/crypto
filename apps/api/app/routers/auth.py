@@ -11,7 +11,7 @@ from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import auth, twofactor
+from app import auth, ratelimit, twofactor
 from app.billing import start_trial
 from app.config import settings
 from app.mail import send_mail
@@ -138,6 +138,7 @@ def _consume_email_token(db: Session, raw: str, purpose: str) -> User:
 def register(
     body: RegisterIn, request: Request, response: Response, db: Session = Depends(auth.get_db)
 ) -> TokenOut:
+    ratelimit.guard(request, "register", None, ratelimit.REGISTER_PER_IP, ratelimit.REGISTER_PER_IP)
     if db.scalar(select(User).where(User.email == body.email.lower())):
         raise HTTPException(409, "email уже зарегистрирован")
     user = auth.create_user(db, body.email, body.password, body.name)
@@ -159,6 +160,7 @@ def register(
 def login(
     body: LoginIn, request: Request, response: Response, db: Session = Depends(auth.get_db)
 ) -> TokenOut:
+    ratelimit.guard(request, "login", body.email, ratelimit.LOGIN_PER_EMAIL, ratelimit.LOGIN_PER_IP)
     user = db.scalar(select(User).where(User.email == body.email.lower()))
     if (
         user is None
@@ -174,6 +176,7 @@ def login_two_factor(
     body: TwoFactorLoginIn, request: Request, response: Response, db: Session = Depends(auth.get_db)
 ) -> TokenOut:
     """Второй шаг входа: билет из /login + код TOTP или резервный код."""
+    ratelimit.guard(request, "2fa", None, ratelimit.TWO_FACTOR_PER_IP, ratelimit.TWO_FACTOR_PER_IP)
     user = _consume_email_token(db, body.ticket, "2fa")
     row = db.get(TwoFactor, user.id)
     if not twofactor.is_enabled(row) or row is None or not twofactor.verify_code(row, body.code):
@@ -224,8 +227,13 @@ class MagicIn(BaseModel):
 
 
 @router.post("/magic", status_code=202)
-def magic_link(body: MagicIn, db: Session = Depends(auth.get_db)) -> dict[str, str]:
+def magic_link(
+    body: MagicIn, request: Request, db: Session = Depends(auth.get_db)
+) -> dict[str, str]:
     """Ссылка для входа без пароля; ответ одинаковый, существует ли email (не раскрываем)."""
+    ratelimit.guard(
+        request, "magic", body.email, ratelimit.MAIL_PER_EMAIL, ratelimit.MAIL_PER_EMAIL
+    )
     user = db.scalar(select(User).where(User.email == body.email.lower()))
     if user and user.deleted_at is None:
         raw = _email_token(db, user, "magic", timedelta(minutes=15))
@@ -253,7 +261,12 @@ class ResetRequestIn(BaseModel):
 
 
 @router.post("/reset", status_code=202)
-def reset_request(body: ResetRequestIn, db: Session = Depends(auth.get_db)) -> dict[str, str]:
+def reset_request(
+    body: ResetRequestIn, request: Request, db: Session = Depends(auth.get_db)
+) -> dict[str, str]:
+    ratelimit.guard(
+        request, "reset", body.email, ratelimit.MAIL_PER_EMAIL, ratelimit.MAIL_PER_EMAIL
+    )
     user = db.scalar(select(User).where(User.email == body.email.lower()))
     if user and user.deleted_at is None:
         raw = _email_token(db, user, "reset", timedelta(hours=1))
