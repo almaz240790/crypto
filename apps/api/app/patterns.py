@@ -243,7 +243,7 @@ def store(
                 db.flush()
         except IntegrityError:
             if row in db:  # после отката savepoint объект обычно уже вне сессии
-            db.expunge(row)
+                db.expunge(row)
             continue
         db.add(
             PatternEvent(
