@@ -5,11 +5,12 @@ import { DrawingController, DrawingsPrimitive, INDICATORS, defaultParams, indica
 import { LineSeries, createSeriesMarkers, type ISeriesApi, type ISeriesMarkersPluginApi, type SeriesMarker, type Time, type UTCTimestamp } from "lightweight-charts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { BoxPrimitive } from "@/components/chart/BoxPrimitive";
+import { VolumeProfilePrimitive, type VpTokens } from "@/components/chart/VolumeProfilePrimitive";
 import { PATTERN_GLYPH, type Derivatives, type FigureOnChart, type LayersResponse, type PatternOnChart } from "@/lib/chart";
 import s from "./terminal.module.css";
 
 export type ActiveIndicator = { id: string; params: Record<string, number> };
-export type LayerKey = "structure" | "zones" | "levels" | "signals" | "patterns" | "figures";
+export type LayerKey = "structure" | "zones" | "levels" | "signals" | "patterns" | "figures" | "volume_profile";
 export type PanelKey = "funding" | "oi" | "liq";
 export type CrosshairInfo = { candle: Candle; values: { label: string; value: number | null }[] };
 /** Управление видом снаружи (кнопки «+/−», горячие клавиши). */
@@ -75,6 +76,17 @@ class PrimitiveLayer implements Layer {
   setVisible(): void {}
 }
 
+/** Цвета профиля объёма из токенов: бар 18 % акцента, зона стоимости 30 %, POC — охра. */
+function vpTokens(t: ReturnType<typeof tokensFromElement>): VpTokens {
+  const alpha = (hex: string, a: number) => {
+    const m = /^#([0-9a-f]{6})$/i.exec(hex);
+    if (!m) return hex;
+    const n = parseInt(m[1]!, 16);
+    return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`; // color-ok: из токена
+  };
+  return { bar: alpha(t.accent, 0.18), value: alpha(t.accent, 0.3), poc: alpha(t.warn, 0.7), text: t.text2 };
+}
+
 function precisionOf(tick: string | null): { precision: number; minMove: number } {
   if (!tick) return { precision: 2, minMove: 0.01 };
   const t = tick.replace(/0+$/, "");
@@ -101,6 +113,7 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
   const cryptoRef = useRef<Map<PanelKey, { paneIndex: number; series: ISeriesApi<"Line" | "Histogram">[] }>>(new Map());
   const auxRef = useRef<ISeriesApi<"Line">[]>([]);
   const boxRef = useRef<BoxPrimitive | null>(null);
+  const vpRef = useRef<VolumeProfilePrimitive | null>(null);
   const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const drawPrimRef = useRef<DrawingsPrimitive | null>(null);
   const ctrlRef = useRef<DrawingController | null>(null);
@@ -205,6 +218,9 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
     const box = new BoxPrimitive();
     boxRef.current = box;
     term.layers.add(new PrimitiveLayer("zones", box));
+    const vp = new VolumeProfilePrimitive(vpTokens(tokensFromElement(el)));
+    vpRef.current = vp;
+    term.layers.add(new PrimitiveLayer("volume_profile", vp));
     const prim = new DrawingsPrimitive(tokensFromElement(el));
     prim.touch = typeof window !== "undefined" && window.matchMedia("(pointer: coarse)").matches;
     drawPrimRef.current = prim;
@@ -236,6 +252,7 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
     const obs = new MutationObserver(() => {
       term.setTheme(tokensFromElement(el));
       prim.update({ tokens: tokensFromElement(el) });
+      vp.setTokens(vpTokens(tokensFromElement(el)));
     });
     obs.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
@@ -313,6 +330,7 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
       panes.clear();
       auxRef.current = [];
       boxRef.current = null;
+      vpRef.current = null;
       markersRef.current = null;
       ctrl.destroy();
       ctrlRef.current = null;
@@ -333,6 +351,7 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
     term.setCandles(all, true);
     term.resetView(150);
     candlesRef.current = all;
+    vpRef.current?.setCandles(all);
     drawPrimRef.current?.projector?.setBars(all.map((c) => c.time), TF_SECONDS[tf]);
     drawPrimRef.current?.update({});
     const { precision, minMove } = precisionOf(tick);
@@ -347,6 +366,7 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
     if (current) {
       const all = [...candles, current];
       candlesRef.current = all;
+      vpRef.current?.setCandles(all);
       drawPrimRef.current?.projector?.setBars(all.map((c) => c.time), TF_SECONDS[tf]);
     }
   }, [current, candles, tf]);
@@ -459,6 +479,7 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
       return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`; // color-ok: из токена
     };
     const main = term.mainSeries;
+    vpRef.current?.setEnabled(!!layersOn.volume_profile);
     auxRef.current.forEach((sr) => term.chart.removeSeries(sr));
     auxRef.current = [];
     if (!boxRef.current) return;

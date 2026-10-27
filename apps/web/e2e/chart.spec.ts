@@ -28,6 +28,7 @@ test("график: загрузка, строка состояния, смен�
   await expect(strip).toContainText("funding 0.0120 %");
   await page.getByRole("button", { name: "Слои" }).click();
   await page.getByRole("dialog", { name: "Слои" }).getByLabel("Зоны").uncheck();
+  await page.getByRole("dialog", { name: "Слои" }).getByLabel("Профиль объёма").check();
   await page.getByRole("button", { name: "Готово" }).click();
   // тип графика
   await page.getByLabel("тип графика").selectOption("heikin");
@@ -35,6 +36,8 @@ test("график: загрузка, строка состояния, смен�
   // настройки сохраняются между загрузками
   await page.reload();
   await expect(page.getByRole("button", { name: "Индикаторы (3)" })).toBeVisible();
+  await page.getByRole("button", { name: "Слои" }).click();
+  await expect(page.getByRole("dialog", { name: "Слои" }).getByLabel("Профиль объёма")).toBeChecked();
 });
 
 test("график: смена инструмента и сигналы по инструменту", async ({ page }) => {
