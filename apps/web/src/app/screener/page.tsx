@@ -11,6 +11,8 @@ import { createAlert } from "@/lib/alerts";
 import { getAccessToken } from "@/lib/auth-client";
 import { formatPct, formatPrice, formatTimeUTC } from "@/lib/format";
 import { EMPTY_FILTERS, deleteScreen, getScreener, getScreens, putScreen, type SavedScreen, type ScreenerFilters, type ScreenerRow } from "@/lib/user";
+import { useT } from "@/i18n/client";
+import type { T } from "@/i18n";
 
 /** Применение фильтров (план 3.6 v2) — чистая функция, одна на таблицу и экспорт. */
 export function applyFilters(rows: ScreenerRow[], f: ScreenerFilters): ScreenerRow[] {
@@ -38,12 +40,12 @@ function n(x: string | null | undefined): number | null {
   return Number.isFinite(v) ? v : null;
 }
 
-function fmtUsd(x: string | null | undefined): string {
+function fmtUsd(x: string | null | undefined, t: T): string {
   const v = n(x);
   if (v === null) return "—";
-  if (v >= 1e9) return `${(v / 1e9).toFixed(2)} млрд`;
-  if (v >= 1e6) return `${(v / 1e6).toFixed(1)} млн`;
-  if (v >= 1e3) return `${(v / 1e3).toFixed(0)} тыс`;
+  if (v >= 1e9) return t("{n} млрд", { n: (v / 1e9).toFixed(2) });
+  if (v >= 1e6) return t("{n} млн", { n: (v / 1e6).toFixed(1) });
+  if (v >= 1e3) return t("{n} тыс", { n: (v / 1e3).toFixed(0) });
   return v.toFixed(0);
 }
 
@@ -53,6 +55,7 @@ function TrendBadge({ t }: { t?: string }) {
 }
 
 export default function ScreenerPage() {
+  const t = useT();
   const [rows, setRows] = useState<ScreenerRow[] | null>(null);
   const [at, setAt] = useState<string | null>(null);
   const [sparks, setSparks] = useState<Record<string, string[]>>({});
@@ -91,9 +94,9 @@ export default function ScreenerPage() {
       await putScreen(name, f);
       setScreens(await getScreens());
       setScreenName("");
-      say(`Скрин «${name}» сохранён`);
+      say(t("Скрин «{name}» сохранён", { name }));
     } catch (e) {
-      say(e instanceof Error ? e.message : "ошибка");
+      say(e instanceof Error ? e.message : t("ошибка"));
     }
   }
   async function removeScreen(name: string) {
@@ -103,7 +106,7 @@ export default function ScreenerPage() {
   async function exportCsv(symbols: string[]) {
     const res = await fetch(`/v1/screener/export.csv?symbols=${symbols.join(",")}`, { headers: { authorization: `Bearer ${getAccessToken() ?? ""}` }, credentials: "include" });
     if (!res.ok) {
-      say(res.status === 403 ? "Экспорт CSV доступен на тарифе Pro" : `экспорт: ошибка ${res.status}`);
+      say(res.status === 403 ? t("Экспорт CSV доступен на тарифе Pro") : `экспорт: ошибка ${res.status}`);
       return;
     }
     const url = URL.createObjectURL(await res.blob());
@@ -116,10 +119,10 @@ export default function ScreenerPage() {
   async function zoneAlert(r: ScreenerRow) {
     if (!r.zone) return;
     try {
-      await createAlert({ symbol: r.symbol, timeframe: "4h", type: "zone", condition: { kind: r.zone.kind, dir: r.zone.direction }, frequency: "once", note: "из скринера" });
-      say(`Алерт создан: ${r.symbol} — возврат в зону ${r.zone.kind.toUpperCase()}`);
+      await createAlert({ symbol: r.symbol, timeframe: "4h", type: "zone", condition: { kind: r.zone.kind, dir: r.zone.direction }, frequency: "once", note: t("из скринера") });
+      say(t("Алерт создан: {symbol} — возврат в зону {kind}", { symbol: r.symbol, kind: r.zone.kind.toUpperCase() }));
     } catch (e) {
-      say(e instanceof Error ? e.message : "не удалось создать алерт");
+      say(e instanceof Error ? e.message : t("не удалось создать алерт"));
     }
   }
 
@@ -147,93 +150,89 @@ export default function ScreenerPage() {
   }, [rows, sort, f]);
 
   const sortBtn = (k: SortKey, label: string) => (
-    <button type="button" className={s.sortBtn} data-active={sort.k === k} onClick={() => setSort({ k, d: sort.k === k ? ((sort.d * -1) as 1 | -1) : k === "symbol" ? 1 : -1 })} aria-label={`сортировать по: ${label}`}>
+    <button type="button" className={s.sortBtn} data-active={sort.k === k} onClick={() => setSort({ k, d: sort.k === k ? ((sort.d * -1) as 1 | -1) : k === "symbol" ? 1 : -1 })} aria-label={t("сортировать по: {label}", { label })}>
       {label}
       {sort.k === k ? (sort.d === 1 ? " ↑" : " ↓") : ""}
     </button>
   );
 
   return (
-    <AppShell title="Скринер" actions={at ? <span className="caption">данные на {formatTimeUTC(at)}</span> : undefined}>
+    <AppShell title={t("Скринер")} actions={at ? <span className="caption">данные на {formatTimeUTC(at)}</span> : undefined}>
       <div className={s.wrap} style={{ maxWidth: "none" }}>
-        <div className={s.inline} role="group" aria-label="фильтры">
+        <div className={s.inline} role="group" aria-label={t("фильтры")}>
           <select aria-label="bias" value={f.bias} onChange={(e) => setFilter("bias", e.target.value)}>
-            <option value="">любой bias</option>
+            <option value="">{t("любой bias")}</option>
             <option value="long">bias long</option>
             <option value="short">bias short</option>
-            <option value="neutral">нейтральный</option>
+            <option value="neutral">{t("нейтральный")}</option>
           </select>
-          <select aria-label="до зоны" value={f.near} onChange={(e) => setFilter("near", e.target.value)}>
-            <option value="">любое расстояние до зоны</option>
-            <option value="0">в зоне</option>
-            <option value="1">до 1 ATR</option>
-            <option value="2">до 2 ATR</option>
-            <option value="5">до 5 ATR</option>
+          <select aria-label={t("до зоны")} value={f.near} onChange={(e) => setFilter("near", e.target.value)}>
+            <option value="">{t("любое расстояние до зоны")}</option>
+            <option value="0">{t("в зоне")}</option>
+            <option value="1">{t("до 1 ATR")}</option>
+            <option value="2">{t("до 2 ATR")}</option>
+            <option value="5">{t("до 5 ATR")}</option>
           </select>
-          <select aria-label="вид зоны" value={f.zone_kind} onChange={(e) => setFilter("zone_kind", e.target.value)}>
-            <option value="">любая зона</option>
+          <select aria-label={t("вид зоны")} value={f.zone_kind} onChange={(e) => setFilter("zone_kind", e.target.value)}>
+            <option value="">{t("любая зона")}</option>
             <option value="ob">OB</option>
             <option value="sd">S/D</option>
             <option value="fvg">FVG</option>
           </select>
-          <select aria-label="тренд D1" value={f.d1} onChange={(e) => setFilter("d1", e.target.value)}>
-            <option value="">D1 любой</option>
+          <select aria-label={t("тренд D1")} value={f.d1} onChange={(e) => setFilter("d1", e.target.value)}>
+            <option value="">{t("D1 любой")}</option>
             <option value="up">D1 up</option>
             <option value="down">D1 down</option>
             <option value="flat">D1 flat</option>
           </select>
-          <select aria-label="тренд W1" value={f.w1} onChange={(e) => setFilter("w1", e.target.value)}>
-            <option value="">W1 любой</option>
+          <select aria-label={t("тренд W1")} value={f.w1} onChange={(e) => setFilter("w1", e.target.value)}>
+            <option value="">{t("W1 любой")}</option>
             <option value="up">W1 up</option>
             <option value="down">W1 down</option>
             <option value="flat">W1 flat</option>
           </select>
-          <select aria-label="событие H4" value={f.event} onChange={(e) => setFilter("event", e.target.value)}>
-            <option value="">любое событие</option>
-            <option value="bos_up">BOS вверх</option>
-            <option value="bos_down">BOS вниз</option>
-            <option value="choch_up">CHoCH вверх</option>
-            <option value="choch_down">CHoCH вниз</option>
+          <select aria-label={t("событие H4")} value={f.event} onChange={(e) => setFilter("event", e.target.value)}>
+            <option value="">{t("любое событие")}</option>
+            <option value="bos_up">{t("BOS вверх")}</option>
+            <option value="bos_down">{t("BOS вниз")}</option>
+            <option value="choch_up">{t("CHoCH вверх")}</option>
+            <option value="choch_down">{t("CHoCH вниз")}</option>
           </select>
-          <select aria-label="режим ATR" value={f.atrp} onChange={(e) => setFilter("atrp", e.target.value)}>
-            <option value="">любая волатильность</option>
-            <option value="low">ATR ниже 30-го перцентиля</option>
-            <option value="high">ATR выше 70-го перцентиля</option>
+          <select aria-label={t("режим ATR")} value={f.atrp} onChange={(e) => setFilter("atrp", e.target.value)}>
+            <option value="">{t("любая волатильность")}</option>
+            <option value="low">{t("ATR ниже 30-го перцентиля")}</option>
+            <option value="high">{t("ATR выше 70-го перцентиля")}</option>
           </select>
           <select aria-label="funding" value={f.funding} onChange={(e) => setFilter("funding", e.target.value)}>
-            <option value="">любой funding</option>
-            <option value="pos">funding положительный</option>
-            <option value="neg">funding отрицательный</option>
+            <option value="">{t("любой funding")}</option>
+            <option value="pos">{t("funding положительный")}</option>
+            <option value="neg">{t("funding отрицательный")}</option>
           </select>
-          <select aria-label="изменение за 24 ч" value={f.change} onChange={(e) => setFilter("change", e.target.value)}>
-            <option value="">любое изменение 24 ч</option>
-            <option value="up3">рост от 3 %</option>
-            <option value="down3">падение от 3 %</option>
+          <select aria-label={t("изменение за 24 ч")} value={f.change} onChange={(e) => setFilter("change", e.target.value)}>
+            <option value="">{t("любое изменение 24 ч")}</option>
+            <option value="up3">{t("рост от 3 %")}</option>
+            <option value="down3">{t("падение от 3 %")}</option>
           </select>
           {active && (
-            <button type="button" className={s.small} onClick={() => setF(EMPTY_FILTERS)}>
-              сбросить
-            </button>
+            <button type="button" className={s.small} onClick={() => setF(EMPTY_FILTERS)}>{t("сбросить")}</button>
           )}
-          <span className="caption">{rows ? `${list.length} из ${rows.length}` : ""}</span>
+          <span className="caption">{rows ? t("{a} из {b}", { a: list.length, b: rows.length }) : ""}</span>
         </div>
-        <div className={s.inline} role="group" aria-label="скрины">
+        <div className={s.inline} role="group" aria-label={t("скрины")}>
           {user ? (
             <>
-              <select aria-label="сохранённый скрин" value="" onChange={(e) => { const sc = screens.find((x) => x.name === e.target.value); if (sc) setF({ ...EMPTY_FILTERS, ...sc.filters }); }}>
-                <option value="">{screens.length ? "применить скрин…" : "сохранённых скринов нет"}</option>
+              <select aria-label={t("сохранённый скрин")} value="" onChange={(e) => { const sc = screens.find((x) => x.name === e.target.value); if (sc) setF({ ...EMPTY_FILTERS, ...sc.filters }); }}>
+                <option value="">{screens.length ? t("применить скрин…") : t("сохранённых скринов нет")}</option>
                 {screens.map((sc) => (
                   <option key={sc.name} value={sc.name}>
                     {sc.name}
                   </option>
                 ))}
               </select>
-              <input aria-label="имя скрина" placeholder="имя скрина" maxLength={60} value={screenName} onChange={(e) => setScreenName(e.target.value)} />
-              <Button size="sm" onClick={saveScreen} disabled={!screenName.trim() || !active}>
-                Сохранить скрин
-              </Button>
+              <input aria-label={t("имя скрина")} placeholder={t("имя скрина")} maxLength={60} value={screenName} onChange={(e) => setScreenName(e.target.value)} />
+              <Button size="sm" onClick={saveScreen} disabled={!screenName.trim() || !active}>{t("Сохранить скрин")}</Button>
               {screens.map((sc) => (
-                <button key={sc.name} type="button" className={`${s.small} ${s.danger}`} onClick={() => removeScreen(sc.name)} aria-label={`удалить скрин ${sc.name}`}>
+                <button key={sc.name} type="button" className={`${s.small} ${s.danger}`} onClick={() => removeScreen(sc.name)} aria-label={t("удалить скрин {name}", { name: sc.name })}>
                   ✕ {sc.name}
                 </button>
               ))}
@@ -243,8 +242,7 @@ export default function ScreenerPage() {
             </>
           ) : (
             <span className="caption">
-              <Link href="/login?next=/screener">Войдите</Link>, чтобы сохранять скрины, выгружать CSV и ставить алерты.
-            </span>
+              <Link href="/login?next=/screener">{t("Войдите")}</Link>{t(", чтобы сохранять скрины, выгружать CSV и ставить алерты.")}</span>
           )}
         </div>
         {toast && (
@@ -252,31 +250,31 @@ export default function ScreenerPage() {
             {toast}
           </p>
         )}
-        <Panel flush title="Инструменты" footer="Цель скринера — увидеть, что близко к сетапу, до появления сигнала. Расстояние до зоны — в ATR H4. Это не сигнал.">
+        <Panel flush title={t("Инструменты")} footer={t("Цель скринера — увидеть, что близко к сетапу, до появления сигнала. Расстояние до зоны — в ATR H4. Это не сигнал.")}>
           {error ? (
-            <EmptyState text={`Не удалось загрузить: ${error}`} />
+            <EmptyState text={t("Не удалось загрузить: {error}", { error })} />
           ) : !rows ? (
-            <EmptyState text="Считаем по всем инструментам…" />
+            <EmptyState text={t("Считаем по всем инструментам…")} />
           ) : list.length === 0 ? (
-            <EmptyState text="По фильтрам ничего нет." />
+            <EmptyState text={t("По фильтрам ничего нет.")} />
           ) : (
             <Table compact clickable>
               <thead>
                 <tr>
-                  <Th>{sortBtn("symbol", "Инструмент")}</Th>
-                  <Th num>Цена</Th>
-                  <Th>24 свечи H4</Th>
-                  <Th num>{sortBtn("change_24h", "24 ч")}</Th>
-                  <Th num>{sortBtn("volume_24h", "Объём 24 ч")}</Th>
+                  <Th>{sortBtn("symbol", t("Инструмент"))}</Th>
+                  <Th num>{t("Цена")}</Th>
+                  <Th>{t("24 свечи H4")}</Th>
+                  <Th num>{sortBtn("change_24h", t("24 ч"))}</Th>
+                  <Th num>{sortBtn("volume_24h", t("Объём 24 ч"))}</Th>
                   <Th>D1</Th>
                   <Th>W1</Th>
-                  <Th>Последнее событие H4</Th>
-                  <Th>{sortBtn("zone", "Зона · ATR")}</Th>
+                  <Th>{t("Последнее событие H4")}</Th>
+                  <Th>{sortBtn("zone", t("Зона · ATR"))}</Th>
                   <Th num>{sortBtn("atr_percentile", "ATR p")}</Th>
                   <Th num>{sortBtn("funding", "Funding")}</Th>
-                  <Th num>{sortBtn("oi_change_24h", "OI 24 ч")}</Th>
+                  <Th num>{sortBtn("oi_change_24h", t("OI 24 ч"))}</Th>
                   <Th num>{sortBtn("ls_ratio", "L/S")}</Th>
-                  <Th num>Ликв. L/S</Th>
+                  <Th num>{t("Ликв. L/S")}</Th>
                   <Th num>{sortBtn("beta_btc", "β BTC")}</Th>
                 </tr>
               </thead>
@@ -295,7 +293,7 @@ export default function ScreenerPage() {
                     <Td num mobile="right" className={(n(r.change_24h) ?? 0) > 0 ? "up" : (n(r.change_24h) ?? 0) < 0 ? "down" : ""}>
                       {formatPct(n(r.change_24h))}
                     </Td>
-                    <Td num mobile="hidden">{fmtUsd(r.volume_24h)}</Td>
+                    <Td num mobile="hidden">{fmtUsd(r.volume_24h, t)}</Td>
                     <Td mobile="secondary">
                       <TrendBadge t={r.d1_trend} />
                     </Td>
@@ -309,15 +307,15 @@ export default function ScreenerPage() {
                       {r.zone ? (
                         <span>
                           {r.zone.kind.toUpperCase()} {r.zone.direction} · <span className="num">{n(r.zone.distance_atr)?.toFixed(2) ?? "—"}</span>
-                          {r.zone.status === "touched" ? <span className="caption"> (касание)</span> : null}
+                          {r.zone.status === "touched" ? <span className="caption">{" "}{t("(касание)")}</span> : null}
                           {user && (
-                            <button type="button" className={s.small} onClick={() => zoneAlert(r)} aria-label={`алерт: ${r.symbol} вернётся в зону`} title="Уведомить, когда цена вернётся в зону">
+                            <button type="button" className={s.small} onClick={() => zoneAlert(r)} aria-label={`алерт: ${r.symbol} вернётся в зону`} title={t("Уведомить, когда цена вернётся в зону")}>
                               🔔
                             </button>
                           )}
                         </span>
                       ) : (
-                        <span className="text-3">нет активной</span>
+                        <span className="text-3">{t("нет активной")}</span>
                       )}
                     </Td>
                     <Td num mobile="hidden">{r.atr_percentile ?? "—"}</Td>
@@ -326,9 +324,9 @@ export default function ScreenerPage() {
                       {r.funding_pct ? <span className="caption"> p{r.funding_pct}</span> : null}
                     </Td>
                     <Td num mobile="hidden">{formatPct(n(r.oi_change_24h))}</Td>
-                    <Td num mobile="hidden" title={r.ls_top ? `топ-трейдеры ${Number(r.ls_top).toFixed(2)}` : undefined}>{n(r.ls_ratio)?.toFixed(2) ?? "—"}</Td>
+                    <Td num mobile="hidden" title={r.ls_top ? t("топ-трейдеры {n}", { n: Number(r.ls_top).toFixed(2) }) : undefined}>{n(r.ls_ratio)?.toFixed(2) ?? "—"}</Td>
                     <Td num mobile="hidden">
-                      {fmtUsd(r.liq_long_24h)} / {fmtUsd(r.liq_short_24h)}
+                      {fmtUsd(r.liq_long_24h, t)} / {fmtUsd(r.liq_short_24h, t)}
                     </Td>
                     <Td num mobile="hidden">{n(r.beta_btc)?.toFixed(2) ?? "—"}</Td>
                   </tr>
