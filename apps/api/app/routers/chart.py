@@ -7,6 +7,7 @@ from typing import Any
 
 import redis
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -132,6 +133,36 @@ def patterns(
     s = datetime.fromtimestamp(since, tz=UTC) if since else None
     u = datetime.fromtimestamp(until, tz=UTC) if until else None
     return chart_patterns(db, inst, timeframe, s, u, limit)
+
+
+class ExplainIn(BaseModel):
+    symbol: str = Field(max_length=32)
+    tf: str = Field(pattern="^(15m|1h|4h|1d|1w)$")
+    pattern_id: int
+
+
+@router.post("/explain")
+def explain(
+    body: ExplainIn,
+    user: User = Depends(auth.current_user),
+    db: Session = Depends(auth.get_db),
+) -> dict[str, Any]:
+    """Объяснение найденного паттерна по фактам (план 2A.10.3; 2B.14). Free — шаблонный текст;
+    Pro/Premium — текст модели с постпроверкой чисел, кэш 24 ч, лимит запросов в сутки."""
+    from app.llm import explain_pattern
+    from app.models import Pattern
+
+    timeframe = _tf(body.tf)
+    inst = _instrument(db, body.symbol)
+    p = db.get(Pattern, body.pattern_id)
+    if p is None or p.instrument_id != inst.id or p.timeframe != timeframe.value:
+        raise HTTPException(404, "паттерн не найден")
+    r: Any | None
+    try:
+        r = redis.from_url(settings.redis_url, socket_timeout=2)
+    except Exception:
+        r = None
+    return explain_pattern(db, r, user, inst, timeframe, p)
 
 
 @router.get("/derivatives")

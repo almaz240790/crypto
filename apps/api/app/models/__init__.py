@@ -10,6 +10,7 @@ from app.models.derivatives import (
     LongShortRatioRow,
     OpenInterestRow,
 )
+from app.models.llm import LlmRequest
 from app.models.market import Candle, Instrument
 from app.models.patterns import (
     Pattern,
@@ -55,6 +56,7 @@ __all__ = [
     "Instrument",
     "JournalEntry",
     "LiquidationRow",
+    "LlmRequest",
     "LongShortRatioRow",
     "NotificationLog",
     "NotificationSettings",
