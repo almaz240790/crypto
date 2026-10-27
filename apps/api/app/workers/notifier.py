@@ -129,6 +129,7 @@ class Notifier:
         next_monitor = 0.0
         next_stats = 0.0
         next_billing = 0.0
+        digest_logged = False
         while not self.stop.is_set():
             if time.monotonic() >= next_billing:
                 next_billing = time.monotonic() + BILLING_EVERY
@@ -139,6 +140,10 @@ class Notifier:
             now = datetime.now(tz=UTC)
             done = await self.redis.get(KEY_DIGEST + "date")
             done_date = done.decode() if isinstance(done, bytes) else done
+            if not digest_logged:
+                # один раз при старте — чтобы по логам было видно, почему дайджесты (не) ушли
+                log.info("дайджесты: отметка в Redis за %s, час UTC %d", done_date, now.hour)
+                digest_logged = True
             if digest_due(now, done_date):
                 await self.redis.set(KEY_DIGEST + "date", now.strftime("%Y-%m-%d"), ex=3 * 86400)
                 try:
