@@ -75,6 +75,12 @@ async function mock(page: Page, calls: string[], state: { watch: string[]; journ
       const closed = state.journal.filter((e) => e.realized_r != null);
       return json(200, { items: state.journal, summary: { trades: state.journal.length, closed: closed.length, sum_r: "1.5", avg_r: "0.75", winrate: 0.5, linked: 0, executed_share: null, system_avg_r: null } });
     }
+    if (p === "/v1/journal/import") {
+      const b = req.postDataJSON() as { api_key: string; api_secret: string; days: number };
+      if (b.api_key !== "k".repeat(16)) return json(400, { detail: "Binance 401: Invalid API-key" });
+      state.journal.unshift({ id: 42, symbol: "BTCUSDT", direction: "short", entry_price: "66000", entry_at: "2026-10-20T12:00:00Z", stop_loss: null, take_profits: [], size: "0.5", exit_price: "65000", exit_at: "2026-10-21T12:00:00Z", realized_r: null, realized_quote: "498.5", fees: "1.5", tags: ["binance:1", "импорт"], note: "импорт с Binance", source: "import", signal_id: null, created_at: null });
+      return json(200, { imported: 1, matched: 0, open: 0, skipped: 0, symbols: 2, fills: 2, days: b.days });
+    }
     if (p === "/v1/journal" && req.method() === "POST") {
       const b = req.postDataJSON() as Record<string, unknown>;
       const e = { id: state.journal.length + 1, ...b, take_profits: b.take_profits ?? [], tags: b.tags ?? [], realized_r: b.exit_price ? "2.000" : null, realized_quote: null, source: "manual", signal_id: null, created_at: null, fees: null, size: b.size ?? null };
@@ -277,4 +283,23 @@ test("скринер v2: фильтры, сохранённый скрин, CSV,
   expect(state.alerts[0]).toMatchObject({ symbol: "BTCUSDT", type: "zone", condition: { kind: "ob", dir: "up" } });
   await page.getByRole("button", { name: "удалить скрин лонги W1" }).click();
   await expect(page.getByLabel("сохранённый скрин")).toContainText("сохранённых скринов нет");
+});
+
+test("журнал: импорт сделок с биржи", async ({ page }) => {
+  const calls: string[] = [];
+  await mock(page, calls, { watch: [], journal: [] });
+  await page.goto("/journal");
+  await page.getByRole("button", { name: "Импорт с биржи" }).click();
+  const form = page.getByRole("form", { name: "импорт с биржи" });
+  await form.getByLabel("API key").fill("x".repeat(16));
+  await form.getByLabel("API secret").fill("s".repeat(16));
+  await form.getByRole("button", { name: "Импортировать" }).click();
+  await expect(form.getByRole("alert")).toContainText("Invalid API-key");
+  await form.getByLabel("API key").fill("k".repeat(16));
+  await form.getByLabel("Период").selectOption("90");
+  await form.getByRole("button", { name: "Импортировать" }).click();
+  await expect(page.getByRole("status")).toContainText("Импортировано 1 сделок");
+  await expect(page.getByRole("cell", { name: "BTCUSDT short" })).toBeVisible();
+  await expect(page.getByRole("cell", { name: "binance:1 импорт" })).toBeVisible();
+  expect(calls).toContain("POST /v1/journal/import");
 });

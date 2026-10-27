@@ -7,7 +7,7 @@ import s from "@/components/tools/tools.module.css";
 import { Button, EmptyState, Input, Panel, Select, Table, Td, Th } from "@/components/ui";
 import { getAccessToken } from "@/lib/auth-client";
 import { formatPct, formatR, formatTimeUTC } from "@/lib/format";
-import { createJournal, deleteJournal, getInstruments, getJournal, getJournalAnalytics, updateJournal, type AnalyticsBucket, type Instrument, type JournalAnalytics, type JournalEntry, type JournalIn, type JournalSummary } from "@/lib/user";
+import { createJournal, deleteJournal, getInstruments, getJournal, getJournalAnalytics, importTrades, updateJournal, type AnalyticsBucket, type Instrument, type JournalAnalytics, type JournalEntry, type JournalIn, type JournalSummary } from "@/lib/user";
 
 const WEEKDAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
 const GRADES: Record<string, string> = { A: "A", B: "B", C: "C", none: "без сигнала" };
@@ -99,6 +99,26 @@ function JournalInner() {
   const [editId, setEditId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [imp, setImp] = useState<{ api_key: string; api_secret: string; days: string } | null>(null);
+  const [impBusy, setImpBusy] = useState(false);
+
+  async function runImport(ev: FormEvent) {
+    ev.preventDefault();
+    if (!imp) return;
+    setError(null);
+    setImpBusy(true);
+    try {
+      const r = await importTrades({ exchange: "binance", api_key: imp.api_key.trim(), api_secret: imp.api_secret.trim(), days: Number(imp.days) });
+      setImp(null);
+      await load();
+      setToast(`Импортировано ${r.imported} сделок (по сигналам: ${r.matched}, открытых: ${r.open}), пропущено уже известных: ${r.skipped}`);
+      setTimeout(() => setToast(null), 6000);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "ошибка импорта");
+    } finally {
+      setImpBusy(false);
+    }
+  }
 
   const load = useCallback(async () => {
     const r = await getJournal();
@@ -194,6 +214,9 @@ function JournalInner() {
           <Button size="sm" onClick={downloadCsv}>
             CSV
           </Button>
+          <Button size="sm" onClick={() => setImp(imp ? null : { api_key: "", api_secret: "", days: "30" })} aria-pressed={!!imp}>
+            Импорт с биржи
+          </Button>
         </div>
       }
     >
@@ -227,6 +250,32 @@ function JournalInner() {
           <p className={s.toast} role="status">
             {toast}
           </p>
+        )}
+        {imp && (
+          <Panel title="Импорт сделок с Binance (USDT-M фьючерсы)" footer="Нужен API-ключ только на чтение (без прав на торговлю и вывод). Ключ и секрет используются один раз для запроса и не сохраняются. Сделки сопоставляются с сигналами по инструменту, направлению и времени входа; повторный импорт не создаёт дублей.">
+            <form className={s.form} onSubmit={runImport} aria-label="импорт с биржи">
+              {error && (
+                <p className={s.toast} data-kind="error" role="alert">
+                  {error}
+                </p>
+              )}
+              <div className={s.row}>
+                <Input label="API key" mono autoComplete="off" value={imp.api_key} onChange={(e) => setImp({ ...imp, api_key: e.target.value })} required minLength={16} />
+                <Input label="API secret" type="password" mono autoComplete="off" value={imp.api_secret} onChange={(e) => setImp({ ...imp, api_secret: e.target.value })} required minLength={16} />
+                <Select label="Период" value={imp.days} onChange={(e) => setImp({ ...imp, days: e.target.value })}>
+                  <option value="7">7 дней</option>
+                  <option value="30">30 дней</option>
+                  <option value="90">90 дней</option>
+                  <option value="365">год</option>
+                </Select>
+              </div>
+              <div className={s.actions}>
+                <Button type="submit" variant="primary" size="sm" disabled={impBusy || imp.api_key.length < 16 || imp.api_secret.length < 16}>
+                  {impBusy ? "Импортируем…" : "Импортировать"}
+                </Button>
+              </div>
+            </form>
+          </Panel>
         )}
         {analytics && analytics.total.trades > 0 && <Analytics a={analytics} />}
         {form && (

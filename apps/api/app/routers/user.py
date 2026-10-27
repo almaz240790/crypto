@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -34,6 +35,14 @@ from app.models import (
 )
 from app.notify import send_test, settings_dict, settings_for, unsubscribe
 from app.routers.auth import UserOut, _user_out
+from app.trade_import import (
+    MATCH_WINDOW,
+    MAX_SYMBOLS,
+    SignalCandidate,
+    fetch_fills,
+    group_fills,
+    pick_signal,
+)
 
 router = APIRouter(prefix="/v1", tags=["user"])
 
@@ -475,6 +484,116 @@ def journal_list(
     }
     summary.update(_vs_system(db, user, [e for e, _ in rows]))
     return {"items": items, "summary": summary, "limit": limit, "offset": offset}
+
+
+class ImportIn(BaseModel):
+    exchange: str = Field(default="binance", pattern="^binance$")
+    api_key: str = Field(min_length=16, max_length=128)
+    api_secret: str = Field(min_length=16, max_length=128)
+    days: int = Field(default=30, ge=1, le=365)
+    symbols: list[str] = Field(default_factory=list, max_length=MAX_SYMBOLS)
+
+
+@router.post("/journal/import")
+def journal_import(
+    body: ImportIn, user: User = Depends(auth.current_user), db: Session = Depends(auth.get_db)
+) -> dict[str, Any]:
+    """Импорт сделок с Binance USDT-M (план 3.8 v2). Ключи не сохраняются: используются только
+    в этом запросе. Повторный импорт не дублирует сделки (тег ``binance:<id первого fill>``)."""
+    ent = entitlements_for(db, user)
+    now = datetime.now(tz=UTC)
+    since = now - timedelta(days=body.days)
+    instruments = {
+        i.symbol: i
+        for i in db.scalars(select(Instrument).where(Instrument.exchange == "binance")).all()
+    }
+    wanted = [s.upper() for s in body.symbols] or list(instruments)
+    symbols = [s for s in wanted if s in instruments][:MAX_SYMBOLS]
+    fills = []
+    try:
+        with httpx.Client() as client:
+            for sym in symbols:
+                fills += fetch_fills(client, body.api_key, body.api_secret, sym, since)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"биржа недоступна: {e.__class__.__name__}") from e
+    trades = group_fills(fills)
+    existing_tags = {
+        t
+        for (tags,) in db.execute(
+            select(JournalEntry.tags).where(JournalEntry.user_id == user.id)
+        ).all()
+        for t in (tags or [])
+        if isinstance(t, str) and t.startswith("binance:")
+    }
+    count = (
+        db.scalar(
+            select(func.count()).select_from(JournalEntry).where(JournalEntry.user_id == user.id)
+        )
+        or 0
+    )
+    live_signals = db.execute(
+        select(Signal.id, Signal.instrument_id, Signal.direction, Signal.candle_close_time)
+        .join(StrategyVersion, StrategyVersion.id == Signal.strategy_version_id)
+        .where(StrategyVersion.status == "live", Signal.candle_close_time >= since - MATCH_WINDOW)
+    ).all()
+    imported = skipped = matched = open_count = 0
+    for t in trades:
+        if t.tag in existing_tags:
+            skipped += 1
+            continue
+        if ent.journal_limit is not None and count >= ent.journal_limit:
+            raise HTTPException(
+                403,
+                f"на тарифе {ent.plan} журнал до {ent.journal_limit} записей; "
+                f"импортировано {imported}",
+            )
+        inst = instruments[t.symbol]
+        cands = [
+            SignalCandidate(sid, ct)
+            for sid, iid, d, ct in live_signals
+            if iid == inst.id and d == t.direction
+        ]
+        sig_id = pick_signal(cands, t.entry_at)
+        entry = JournalEntry(
+            user_id=user.id,
+            instrument_id=inst.id,
+            direction=t.direction,
+            entry_price=t.entry_price,
+            entry_at=t.entry_at,
+            size=t.size,
+            exit_price=t.exit_price,
+            exit_at=t.exit_at,
+            fees=t.fees,
+            realized_quote=t.realized_quote,
+            tags=[t.tag, "импорт"],
+            note="импорт с Binance",
+            signal_id=sig_id,
+            source="import",
+            take_profits=[],
+        )
+        if sig_id is not None:
+            sig = db.get(Signal, sig_id)
+            if sig is not None:
+                entry.stop_loss = sig.stop_loss
+                entry.take_profits = [format(sig.tp1, "f"), format(sig.tp2, "f")]
+            matched += 1
+        entry.realized_r = _realized_r(entry)
+        db.add(entry)
+        count += 1
+        imported += 1
+        if t.exit_at is None:
+            open_count += 1
+    db.commit()
+    return {
+        "imported": imported,
+        "matched": matched,
+        "open": open_count,
+        "skipped": skipped,
+        "symbols": len(symbols),
+        "fills": len(fills),
+    }
 
 
 @router.get("/journal/analytics")
