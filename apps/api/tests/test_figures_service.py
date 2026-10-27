@@ -122,7 +122,7 @@ def test_sync_backfill_outcomes_stats_and_immutability() -> None:
                 )
             s.flush()
             # live до пробоя: двойная вершина «формируется»
-            before = start + tf.delta * 70
+            before = start + tf.delta * 66
             st = sync_live(s, inst, tf, before)
             row = s.scalar(
                 select(FigureRow).where(
