@@ -15,7 +15,7 @@ const SCREEN = (sym: string, zoneAtr: string | null) => ({
   atr_pct: "1.2", atr_percentile: "48", beta_btc: sym === "BTCUSDT" ? "1" : "1.3", funding: "0.01", funding_pct: "55", oi_change_24h: "2.1", liq_long_24h: "1200000", liq_short_24h: "800000", ls_ratio: sym === "BTCUSDT" ? "1.35" : "0.92", ls_top: "1.8",
 });
 
-async function mock(page: Page, calls: string[], state: { watch: string[]; journal: Record<string, unknown>[]; twoFactor?: boolean; screens?: Record<string, unknown>[]; alerts?: Record<string, unknown>[]; apiKeys?: { id: number; name: string; prefix: string; created_at: string; last_used_at: string | null }[] }) {
+async function mock(page: Page, calls: string[], state: { watch: string[]; journal: Record<string, unknown>[]; twoFactor?: boolean; screens?: Record<string, unknown>[]; alerts?: Record<string, unknown>[]; apiKeys?: { id: number; name: string; prefix: string; created_at: string; last_used_at: string | null }[]; sessions?: Record<string, unknown>[] }) {
   state.screens ??= [];
   state.alerts ??= [];
   await page.context().addCookies([{ name: "pl_auth", value: "1", url: "http://localhost:3101" }]);
@@ -92,6 +92,17 @@ async function mock(page: Page, calls: string[], state: { watch: string[]; journ
       return route.fulfill({ status: 204 });
     }
     if (p === "/v1/me/identities") return json(200, [{ provider: "password", label: ME.email, connected_at: null }]);
+    if (p === "/v1/me/sessions" && req.method() === "GET") {
+      state.sessions ??= [
+        { id: 1, device: "Chrome · macOS", user_agent: "Mozilla/5.0 Chrome", created_at: "2026-10-27T09:00:00Z", expires_at: "2026-11-26T09:00:00Z" },
+        { id: 2, device: "Safari · iPhone", user_agent: "Mozilla/5.0 iPhone Safari", created_at: "2026-10-26T09:00:00Z", expires_at: "2026-11-25T09:00:00Z" },
+      ];
+      return json(200, { items: state.sessions });
+    }
+    if (p.startsWith("/v1/me/sessions/") && req.method() === "DELETE") {
+      state.sessions = (state.sessions ?? []).filter((x) => String((x as { id: number }).id) !== p.split("/").pop());
+      return route.fulfill({ status: 204 });
+    }
     if (p === "/v1/me/api-keys" && req.method() === "GET") return json(200, { items: state.apiKeys ?? [], limit: 5 });
     if (p === "/v1/me/api-keys" && req.method() === "POST") {
       const b = req.postDataJSON() as { name: string };
@@ -329,4 +340,17 @@ test("настройки: API-ключ создаётся, показывает�
   await panel.getByRole("button", { name: "отозвать ключ мой скрипт" }).click();
   await expect(panel).not.toContainText("мой скрипт");
   expect(calls).toContain("DELETE /v1/me/api-keys/1");
+});
+
+test("настройки: сессии и устройства — список и завершение одной", async ({ page }) => {
+  const calls: string[] = [];
+  await mock(page, calls, { watch: [], journal: [] });
+  await page.goto("/settings");
+  const panel = page.getByTestId("sessions");
+  await expect(panel).toContainText("Chrome · macOS");
+  await expect(panel).toContainText("Safari · iPhone");
+  await panel.getByRole("button", { name: "завершить сессию 2" }).click();
+  await expect(page.getByRole("status")).toContainText("Сессия завершена");
+  await expect(panel).not.toContainText("Safari · iPhone");
+  expect(calls).toContain("DELETE /v1/me/sessions/2");
 });

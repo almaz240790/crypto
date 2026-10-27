@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app import apikeys, auth, twofactor
+from app import apikeys, auth, sessions, twofactor
 from app.config import settings
 from app.entitlements import entitlements_for
 from app.journal_analytics import TradeRow, analytics
@@ -382,6 +382,35 @@ def screens_delete(
     if row is not None:
         db.delete(row)
         db.commit()
+    return Response(status_code=204)
+
+
+# --- сессии и устройства (план 3.12 v2) ----------------------------------------------------------
+
+
+@router.get("/me/sessions")
+def sessions_list(
+    user: User = Depends(auth.current_user), db: Session = Depends(auth.get_db)
+) -> dict[str, Any]:
+    rows = sessions.active_sessions(db, user.id)
+    return {"items": [sessions.session_dict(r) for r in rows]}
+
+
+@router.delete("/me/sessions/{session_id}", status_code=204)
+def sessions_revoke_one(
+    session_id: int, user: User = Depends(auth.current_user), db: Session = Depends(auth.get_db)
+) -> Response:
+    if sessions.revoke(db, user.id, session_id) == 0:
+        raise HTTPException(404, "сессия не найдена")
+    return Response(status_code=204)
+
+
+@router.delete("/me/sessions", status_code=204)
+def sessions_revoke_all(
+    user: User = Depends(auth.current_user), db: Session = Depends(auth.get_db)
+) -> Response:
+    """Выйти на всех устройствах, включая текущее (при следующем обновлении токена)."""
+    sessions.revoke(db, user.id, None)
     return Response(status_code=204)
 
 
