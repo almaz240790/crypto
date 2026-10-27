@@ -14,6 +14,7 @@ from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import delete, insert, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.analysis import params_for_version
@@ -235,8 +236,14 @@ def store(
             rules_version_id=rv.id,
             source=source,
         )
-        db.add(row)
-        db.flush()
+        # гонка бэкфилла и live-детектора: дубль по uq_patterns_candle пропускаем (savepoint)
+        try:
+            with db.begin_nested():
+                db.add(row)
+                db.flush()
+        except IntegrityError:
+            db.expunge(row)
+            continue
         db.add(
             PatternEvent(
                 pattern_id=row.id,
