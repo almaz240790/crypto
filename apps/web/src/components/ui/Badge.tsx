@@ -1,5 +1,8 @@
+"use client";
+
 import type { ReactNode } from "react";
 import s from "./Badge.module.css";
+import { useT } from "@/i18n/client";
 
 export type Tone = "neutral" | "up" | "down" | "accent" | "warn" | "muted";
 
@@ -35,16 +38,18 @@ export const STATUS_LABEL: Record<string, { text: string; tone: Tone }> = {
 };
 
 export function StatusBadge({ status }: { status: string }) {
+  const t = useT();
   const m = STATUS_LABEL[status] ?? { text: status, tone: "neutral" as Tone };
-  return <Badge tone={m.tone}>{m.text}</Badge>;
+  return <Badge tone={m.tone}>{t(m.text)}</Badge>;
 }
 
 export function GradeBadge({ grade }: { grade: "A" | "B" | "C" | string }) {
+  const t = useT();
   const cls = [s.grade, grade === "B" ? s.gradeB : "", grade === "C" ? s.gradeC : ""]
     .filter(Boolean)
     .join(" ");
   return (
-    <span className={cls} aria-label={`градация ${grade}`}>
+    <span className={cls} aria-label={t("градация {g}", { g: grade })}>
       {grade}
     </span>
   );

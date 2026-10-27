@@ -2,12 +2,14 @@
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import s from "./terminal.module.css";
+import { useT } from "@/i18n/client";
 
 /**
  * Нижний лист (план 2A.7): высота 50 % экрана, тянется за «ручку» до 90 %, закрывается свайпом вниз.
  * Внутри — списки и формы с полями 44 px, без вложенных модалок.
  */
 export function BottomSheet({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
+  const t = useT();
   const [pct, setPct] = useState(50);
   const pctRef = useRef(50);
   const drag = useRef<{ y: number; start: number } | null>(null);
@@ -48,12 +50,10 @@ export function BottomSheet({ title, onClose, children }: { title: string; onClo
 
   return (
     <div ref={ref} className={s.sheet} role="dialog" aria-label={title} style={{ height: `${pct}%` }} data-height={pct}>
-      <div className={s.handle} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp} aria-label="ручка листа" role="separator" aria-orientation="horizontal" />
+      <div className={s.handle} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp} aria-label={t("ручка листа")} role="separator" aria-orientation="horizontal" />
       <div className={s.sheetHead}>
         <strong>{title}</strong>
-        <button type="button" className={s.chip} onClick={onClose}>
-          Готово
-        </button>
+        <button type="button" className={s.chip} onClick={onClose}>{t("Готово")}</button>
       </div>
       <div className={s.sheetBody}>{children}</div>
     </div>

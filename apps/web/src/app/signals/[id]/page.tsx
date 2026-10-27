@@ -14,6 +14,7 @@ import { formatDuration, formatPct, formatPrice, formatR, formatTimeUTC } from "
 import { journalFromSignal, unrealizedR, type SignalRow } from "@/lib/signals";
 import { useLive } from "@/lib/useLive";
 import s from "./page.module.css";
+import { useT } from "@/i18n/client";
 
 type Detail = SignalRow & {
   facts: string[];
@@ -80,6 +81,7 @@ function groupOf(fact: string): string {
 }
 
 export default function SignalPage() {
+  const t = useT();
   const { id } = useParams<{ id: string }>();
   const { user } = useAuth();
   const [d, setD] = useState<Detail | null>(null);
@@ -172,10 +174,10 @@ export default function SignalPage() {
       await fn();
       setToast({ text: okText, kind: "ok" });
     } catch (e) {
-      setToast({ text: e instanceof Error ? e.message : "ошибка", kind: "error" });
+      setToast({ text: e instanceof Error ? e.message : t("ошибка"), kind: "error" });
     }
     setTimeout(() => setToast(null), 4000);
-  }, []);
+  }, [t]);
 
   // калькулятор позиции (план 3.5): значения из профиля, можно менять
   const [depositEdit, setDeposit] = useState<string | null>(null);
@@ -185,22 +187,22 @@ export default function SignalPage() {
   const riskPct = riskEdit ?? (user?.risk.risk_pct ? String(Number(user.risk.risk_pct)) : "1");
   const leverage = leverageEdit ?? String(user?.risk.default_leverage ?? 3);
 
-  const title = d ? `${d.symbol} ${d.direction === "long" ? "LONG" : "SHORT"}` : "Сигнал";
+  const title = d ? `${d.symbol} ${d.direction === "long" ? "LONG" : "SHORT"}` : t("Сигнал");
 
   if (error) {
     return (
-      <AppShell title="Сигнал">
+      <AppShell title={t("Сигнал")}>
         <Panel>
-          <EmptyState text={`Сигнал недоступен: ${error}`} action={<Button href="/signals" size="sm">К ленте</Button>} />
+          <EmptyState text={`Сигнал недоступен: ${error}`} action={<Button href="/signals" size="sm">{t("К ленте")}</Button>} />
         </Panel>
       </AppShell>
     );
   }
   if (!d) {
     return (
-      <AppShell title="Сигнал">
+      <AppShell title={t("Сигнал")}>
         <Panel>
-          <EmptyState text="Загрузка…" />
+          <EmptyState text={t("Загрузка…")} />
         </Panel>
       </AppShell>
     );
@@ -224,10 +226,10 @@ export default function SignalPage() {
   const margin = notional !== null ? notional / lev : null;
   const split = an?.trade_params.split ?? ["0.4", "0.4", "0.2"];
   const factsByGroup = new Map<string, string[]>();
-  d.facts.forEach((f) => factsByGroup.set(groupOf(f), [...(factsByGroup.get(groupOf(f)) ?? []), f]));
+  d.facts.forEach((f) => factsByGroup.set(t(groupOf(f)), [...(factsByGroup.get(t(groupOf(f))) ?? []), f]));
   const copyParams = () =>
     navigator.clipboard.writeText(
-      `${d.symbol} ${d.direction.toUpperCase()} (${d.grade}, ${d.score})\nвход ${d.entry_limit ?? d.entry_market}\nстоп ${d.stop_loss}\nTP1 ${d.tp1} / TP2 ${d.tp2} / TP3 ${d.tp3}\n${window.location.href}`,
+      `${d.symbol} ${d.direction.toUpperCase()} (${d.grade}, ${d.score})\n${t("вход")} ${d.entry_limit ?? d.entry_market}\n${t("стоп")} ${d.stop_loss}\nTP1 ${d.tp1} / TP2 ${d.tp2} / TP3 ${d.tp3}\n${window.location.href}`,
     );
 
   return (
@@ -238,9 +240,7 @@ export default function SignalPage() {
           <DirectionBadge direction={d.direction} />
           <GradeBadge grade={d.grade} />
           <StatusBadge status={d.status} />
-          <a href={exchangeUrl} target="_blank" rel="noreferrer noopener" className="caption">
-            Открыть на бирже ↗
-          </a>
+          <a href={exchangeUrl} target="_blank" rel="noreferrer noopener" className="caption">{t("Открыть на бирже ↗")}</a>
         </div>
       }
     >
@@ -249,13 +249,12 @@ export default function SignalPage() {
         <span>стратегия {d.strategy_version}</span>
         <span>балл {d.score}</span>
         {price && (
-          <span>
-            цена <span className="num">{formatPrice(price, tick)}</span>
+          <span>{t("цена")}{" "}<span className="num">{formatPrice(price, tick)}</span>
           </span>
         )}
         {pnl !== null && (
           <span className={pnl > 0 ? "up" : pnl < 0 ? "down" : ""}>
-            {open ? "сейчас" : "итог"} {formatR(pnl)}
+            {open ? t("сейчас") : t("итог")} {formatR(pnl)}
           </span>
         )}
         {d.result && <span>длительность {formatDuration(d.result.duration_hours)}</span>}
@@ -264,18 +263,16 @@ export default function SignalPage() {
       <div className={s.grid}>
         <div className={s.col}>
           <Panel
-            title="График"
+            title={t("График")}
             flush
             actions={
-              <div className={s.tfs} role="group" aria-label="таймфрейм">
+              <div className={s.tfs} role="group" aria-label={t("таймфрейм")}>
                 {(["4h", "1d"] as const).map((x) => (
                   <button key={x} type="button" aria-pressed={tf === x} onClick={() => setTf(x)}>
                     {x.toUpperCase()}
                   </button>
                 ))}
-                <Link href={`/chart/${d.symbol}/${tf}`} className={s.openTerminal}>
-                  Открыть в терминале
-                </Link>
+                <Link href={`/chart/${d.symbol}/${tf}`} className={s.openTerminal}>{t("Открыть в терминале")}</Link>
               </div>
             }
             footer={
@@ -285,7 +282,7 @@ export default function SignalPage() {
                   <>
                     {" "}
                     <button type="button" className={s.factBtn} aria-pressed={highlight === "patterns"} onClick={() => setHighlight(highlight === "patterns" ? null : "patterns")} data-testid="signal-patterns">
-                      На сигнальной свече: {onSignalCandle.map((p) => `${p.title} (${p.significant ? "значимый" : "найден"})`).join(", ")}
+                      На сигнальной свече: {onSignalCandle.map((p) => `${p.title} (${p.significant ? t("значимый") : t("найден")})`).join(", ")}
                     </button>
                   </>
                 )}
@@ -295,27 +292,27 @@ export default function SignalPage() {
             {chartSignal && <SignalChart candles={candles} tf={tf} signal={chartSignal} analysis={an} events={chartEvents} patterns={patterns} highlight={highlight} tick={tick} lastPrice={open ? price : null} />}
           </Panel>
 
-          <Panel title="Параметры сделки" flush>
+          <Panel title={t("Параметры сделки")} flush>
             <table className={s.params}>
               <thead>
                 <tr>
-                  <th>Уровень</th>
-                  <th className="num">Цена</th>
-                  <th className="num">От входа</th>
+                  <th>{t("Уровень")}</th>
+                  <th className="num">{t("Цена")}</th>
+                  <th className="num">{t("От входа")}</th>
                   <th className="num">R</th>
-                  <th className="num">Доля закрытия</th>
+                  <th className="num">{t("Доля закрытия")}</th>
                 </tr>
               </thead>
               <tbody>
                 <tr>
-                  <td>Вход {d.entry_limit ? "лимитный" : "рыночный"}</td>
+                  <td>Вход {d.entry_limit ? t("лимитный") : t("рыночный")}</td>
                   <td className="num">{formatPrice(d.entry_limit ?? d.entry_market, tick)}</td>
                   <td className="num">—</td>
                   <td className="num">0</td>
                   <td className="num">—</td>
                 </tr>
                 <tr>
-                  <td className="down">Стоп</td>
+                  <td className="down">{t("Стоп")}</td>
                   <td className="num down">{formatPrice(d.stop_loss, tick)}</td>
                   <td className="num">{formatPct(pctOf(d.stop_loss))}</td>
                   <td className="num">−1.00</td>
@@ -337,14 +334,14 @@ export default function SignalPage() {
               </tbody>
             </table>
             <p className="caption" style={{ padding: "8px 12px" }}>
-              {an?.trade_params.be_after_tp1 ? "После TP1 стоп переносится в безубыток. " : "Стоп не переносится. "}
+              {an?.trade_params.be_after_tp1 ? t("После TP1 стоп переносится в безубыток. ") : t("Стоп не переносится. ")}
               Лимитный ордер живёт {an?.trade_params.limit_expiry_candles ?? 6} свечей H4, позиция закрывается по времени через {an?.trade_params.time_stop_candles ?? 15} свечей. Если в одной минуте были и цель, и стоп — засчитывается стоп.
             </p>
           </Panel>
 
-          <Panel title="История событий" flush>
+          <Panel title={t("История событий")} flush>
             {d.events.length === 0 ? (
-              <EmptyState text="Событий пока нет." />
+              <EmptyState text={t("Событий пока нет.")} />
             ) : (
               <table className={s.events}>
                 <tbody>
@@ -353,7 +350,7 @@ export default function SignalPage() {
                       <td className="num" style={{ textAlign: "left" }}>
                         {formatTimeUTC(e.at)}
                       </td>
-                      <td>{EVENT_LABEL[e.type] ?? e.type}</td>
+                      <td>{t(EVENT_LABEL[e.type] ?? e.type)}</td>
                       <td className="num">{e.price ? formatPrice(e.price, tick) : ""}</td>
                       <td className="caption">{e.source}</td>
                     </tr>
@@ -365,14 +362,14 @@ export default function SignalPage() {
         </div>
 
         <div className={s.col}>
-          <Panel title="Обоснование" footer="Факты сформированы движком по правилам стратегии, не свободным текстом. Клик — подсветка на графике.">
+          <Panel title={t("Обоснование")} footer={t("Факты сформированы движком по правилам стратегии, не свободным текстом. Клик — подсветка на графике.")}>
             {d.facts.length === 0 ? (
-              <EmptyState text="Факты не записаны." />
+              <EmptyState text={t("Факты не записаны.")} />
             ) : (
               <ul className={s.facts}>
                 {an && (
                   <>
-                    <li className={s.factGroup}>Контекст</li>
+                    <li className={s.factGroup}>{t("Контекст")}</li>
                     <li>
                       <button type="button" data-layer="levels" aria-pressed={highlight === "levels"} onClick={() => setHighlight(highlight === "levels" ? null : "levels")}>
                         D1: {an.bias.d1_trend}, W1: {an.bias.w1_trend}, bias {an.bias.bias}
@@ -408,29 +405,29 @@ export default function SignalPage() {
             )}
           </Panel>
 
-          <Panel title={`Скоринг: ${d.score} из 100, градация ${d.grade}`} flush>
+          <Panel title={t("Скоринг: {score} из 100, градация {grade}", { score: d.score, grade: d.grade })} flush>
             {d.score_breakdown && Object.keys(d.score_breakdown).length ? (
               <table className={s.params}>
                 <tbody>
                   {Object.entries(d.score_breakdown).map(([k, v]) => (
                     <tr key={k}>
-                      <td>{SCORE_LABEL[k] ?? k}</td>
+                      <td>{t(SCORE_LABEL[k] ?? k)}</td>
                       <td className="num">{v}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             ) : (
-              <EmptyState text="Разбивка баллов не записана." />
+              <EmptyState text={t("Разбивка баллов не записана.")} />
             )}
           </Panel>
 
-          <Panel title="Калькулятор позиции" footer="Размер позиции = риск в USDT / расстояние до стопа. Плечо меняет только маржу, не риск.">
+          <Panel title={t("Калькулятор позиции")} footer={t("Размер позиции = риск в USDT / расстояние до стопа. Плечо меняет только маржу, не риск.")}>
             <div className={s.calc}>
               <div className={s.calcRow}>
-                <Input label="Депозит, USDT" mono inputMode="decimal" value={deposit} onChange={(e) => setDeposit(e.target.value)} placeholder="—" />
-                <Input label="Риск, %" mono inputMode="decimal" value={riskPct} onChange={(e) => setRiskPct(e.target.value)} />
-                <Select label="Плечо" value={leverage} onChange={(e) => setLeverage(e.target.value)}>
+                <Input label={t("Депозит, USDT")} mono inputMode="decimal" value={deposit} onChange={(e) => setDeposit(e.target.value)} placeholder="—" />
+                <Input label={t("Риск, %")} mono inputMode="decimal" value={riskPct} onChange={(e) => setRiskPct(e.target.value)} />
+                <Select label={t("Плечо")} value={leverage} onChange={(e) => setLeverage(e.target.value)}>
                   {[1, 2, 3, 5, 10, 20].map((x) => (
                     <option key={x} value={x}>
                       {x}×
@@ -439,11 +436,11 @@ export default function SignalPage() {
                 </Select>
               </div>
               <dl className={s.calcOut}>
-                <dt>Риск в USDT</dt>
+                <dt>{t("Риск в USDT")}</dt>
                 <dd className="num">{riskUsd === null ? "—" : riskUsd.toFixed(2)}</dd>
-                <dt>Размер позиции</dt>
+                <dt>{t("Размер позиции")}</dt>
                 <dd className="num">{size === null ? "—" : `${size.toPrecision(6).replace(/\.?0+$/, "")} ${d.symbol.replace(/USDT$/, "")}`}</dd>
-                <dt>Объём позиции</dt>
+                <dt>{t("Объём позиции")}</dt>
                 <dd className="num">{notional === null ? "—" : `${notional.toFixed(2)} USDT`}</dd>
                 <dt>Маржа при {lev}×</dt>
                 <dd className="num">{margin === null ? "—" : `${margin.toFixed(2)} USDT`}</dd>
@@ -451,31 +448,21 @@ export default function SignalPage() {
             </div>
           </Panel>
 
-          <Panel title="Действия">
+          <Panel title={t("Действия")}>
             <div className={s.actions}>
               {open && (
-                <Button size="sm" variant="primary" onClick={() => act(() => journalFromSignal(d), "Запись в журнале создана")}>
-                  Я вошёл
-                </Button>
+                <Button size="sm" variant="primary" onClick={() => act(() => journalFromSignal(d), t("Запись в журнале создана"))}>{t("Я вошёл")}</Button>
               )}
-              <Button size="sm" onClick={() => act(copyParams, "Параметры скопированы")}>
-                Скопировать параметры
-              </Button>
-              <Button size="sm" onClick={() => act(() => navigator.clipboard.writeText(window.location.href), "Ссылка скопирована")}>
-                Поделиться ссылкой
-              </Button>
-              <Button size="sm" variant="ghost" disabled title="появится вместе с уведомлениями">
-                Напомнить при подходе к входу
-              </Button>
+              <Button size="sm" onClick={() => act(copyParams, t("Параметры скопированы"))}>{t("Скопировать параметры")}</Button>
+              <Button size="sm" onClick={() => act(() => navigator.clipboard.writeText(window.location.href), t("Ссылка скопирована"))}>{t("Поделиться ссылкой")}</Button>
+              <Button size="sm" variant="ghost" disabled title={t("появится вместе с уведомлениями")}>{t("Напомнить при подходе к входу")}</Button>
             </div>
             {toast && (
               <p className={s.toast} data-kind={toast.kind} role="status" style={{ marginTop: 8 }}>
                 {toast.text}
               </p>
             )}
-            <p className="caption" style={{ marginTop: 12 }}>
-              Информация носит образовательный характер и не является индивидуальной инвестиционной рекомендацией. Прошлые результаты не гарантируют будущих.
-            </p>
+            <p className="caption" style={{ marginTop: 12 }}>{t("Информация носит образовательный характер и не является индивидуальной инвестиционной рекомендацией. Прошлые результаты не гарантируют будущих.")}</p>
           </Panel>
         </div>
       </div>

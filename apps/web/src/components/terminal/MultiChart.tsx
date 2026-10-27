@@ -13,6 +13,7 @@ import { getInstruments, type Instrument } from "@/lib/user";
 import s from "./terminal.module.css";
 import { TerminalView, type CrosshairInfo, type LayerKey } from "./TerminalView";
 import { useTerminalData } from "./useTerminalData";
+import { useT } from "@/i18n/client";
 
 type Cell = { symbol: string; tf: Timeframe };
 type Saved = { count: 2 | 4; cells: Cell[] };
@@ -42,6 +43,7 @@ function load(): Saved {
 }
 
 function ChartCell({ cell, instruments, authed, onChange }: { cell: Cell; instruments: Instrument[]; authed: boolean; onChange: (c: Cell) => void }) {
+  const t = useT();
   const data = useTerminalData(cell.symbol, cell.tf, authed ? getAccessToken() : null);
   const [cross, setCross] = useState<CrosshairInfo | null>(null);
   const last = data.current ?? data.candles?.[data.candles.length - 1] ?? null;
@@ -50,14 +52,14 @@ function ChartCell({ cell, instruments, authed, onChange }: { cell: Cell; instru
   return (
     <section className={s.multiCell} aria-label={`график ${cell.symbol} ${cell.tf}`}>
       <div className={s.multiHead}>
-        <select aria-label="инструмент" value={cell.symbol} onChange={(e) => onChange({ ...cell, symbol: e.target.value })}>
+        <select aria-label={t("инструмент")} value={cell.symbol} onChange={(e) => onChange({ ...cell, symbol: e.target.value })}>
           {(instruments.length ? instruments : [{ symbol: cell.symbol } as Instrument]).map((i) => (
             <option key={i.symbol} value={i.symbol}>
               {i.symbol}
             </option>
           ))}
         </select>
-        <select aria-label="таймфрейм" value={cell.tf} onChange={(e) => onChange({ ...cell, tf: e.target.value as Timeframe })}>
+        <select aria-label={t("таймфрейм")} value={cell.tf} onChange={(e) => onChange({ ...cell, tf: e.target.value as Timeframe })}>
           {tfs.map((t) => (
             <option key={t} value={t}>
               {t === "4h" ? "H4" : t.toUpperCase()}
@@ -65,11 +67,9 @@ function ChartCell({ cell, instruments, authed, onChange }: { cell: Cell; instru
           ))}
         </select>
         <span className="caption">
-          {cross ? `O ${formatPrice(String(cross.candle.open))} C ${formatPrice(String(cross.candle.close))}` : price != null ? formatPrice(String(price)) : data.error ? "нет данных" : "…"}
+          {cross ? `O ${formatPrice(String(cross.candle.open))} C ${formatPrice(String(cross.candle.close))}` : price != null ? formatPrice(String(price)) : data.error ? t("нет данных") : "…"}
         </span>
-        <Link href={`/chart/${cell.symbol}/${cell.tf}`} className={s.multiOpen}>
-          открыть в терминале
-        </Link>
+        <Link href={`/chart/${cell.symbol}/${cell.tf}`} className={s.multiOpen}>{t("открыть в терминале")}</Link>
       </div>
       <div className={s.multiChart}>
         <TerminalView candles={data.candles ?? []} current={data.current} tf={cell.tf} type="candles" indicators={[]} layersOn={LAYERS} layers={data.layers} figures={data.figures?.items} derivatives={null} panels={[]} tick={data.tick} onNeedOlder={data.loadOlder} onCrosshair={setCross} />
@@ -79,6 +79,7 @@ function ChartCell({ cell, instruments, authed, onChange }: { cell: Cell; instru
 }
 
 export function MultiChart() {
+  const t = useT();
   const { user } = useAuth();
   const [saved, setSaved] = useState<Saved | null>(null);
   const [desktop, setDesktop] = useState<boolean | null>(null);
@@ -109,20 +110,20 @@ export function MultiChart() {
   if (!desktop) {
     return (
       <div style={{ padding: 16 }}>
-        <EmptyState text="Мультичарт доступен на десктопе (ширина экрана от 900 px). На телефоне откройте терминал одного инструмента." action={<Link href="/chart/BTCUSDT/4h">Открыть терминал</Link>} />
+        <EmptyState text={t("Мультичарт доступен на десктопе (ширина экрана от 900 px). На телефоне откройте терминал одного инструмента.")} action={<Link href="/chart/BTCUSDT/4h">{t("Открыть терминал")}</Link>} />
       </div>
     );
   }
   return (
     <div className={s.multi} data-count={saved.count}>
       <div className={s.multiBar}>
-        <span className="text-2">Графиков:</span>
+        <span className="text-2">{t("Графиков:")}</span>
         {([2, 4] as const).map((n) => (
           <button key={n} type="button" className={s.chip} aria-pressed={saved.count === n} onClick={() => setSaved({ ...saved, count: n })}>
             {n}
           </button>
         ))}
-        <span className="caption">Инструмент и таймфрейм у каждого графика свои; слои — структура, зоны, уровни, сигналы, фигуры. Рисунки и индикаторы — в терминале.</span>
+        <span className="caption">{t("Инструмент и таймфрейм у каждого графика свои; слои — структура, зоны, уровни, сигналы, фигуры. Рисунки и индикаторы — в терминале.")}</span>
       </div>
       <div className={s.multiGrid} data-count={saved.count}>
         {cells.map((c, i) => (
