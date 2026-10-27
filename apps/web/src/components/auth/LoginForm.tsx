@@ -2,9 +2,9 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Button, Input } from "@/components/ui";
-import { login, requestMagic } from "@/lib/auth-client";
+import { TwoFactorRequired, login, loginTwoFactor, pendingTwoFactorTicket, requestMagic } from "@/lib/auth-client";
 import { useAuth } from "./AuthProvider";
 import s from "./AuthCard.module.css";
 import { Social } from "./Social";
@@ -18,6 +18,12 @@ export function LoginForm({ next }: { next: string }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sent, setSent] = useState(false);
+  const [twoFactor, setTwoFactor] = useState(false);
+  const [code, setCode] = useState("");
+  // соцвход или ссылка из письма могли уже оставить билет 2FA
+  useEffect(() => {
+    if (pendingTwoFactorTicket()) queueMicrotask(() => setTwoFactor(true));
+  }, []);
 
   const done = useCallback(async () => {
     await reload();
@@ -37,10 +43,44 @@ export function LoginForm({ next }: { next: string }) {
         setSent(true);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "не удалось войти");
+      if (err instanceof TwoFactorRequired) setTwoFactor(true);
+      else setError(err instanceof Error ? err.message : "не удалось войти");
     } finally {
       setBusy(false);
     }
+  }
+
+  async function submitCode(e: FormEvent) {
+    e.preventDefault();
+    setError(null);
+    setBusy(true);
+    try {
+      await loginTwoFactor(code);
+      await done();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "неверный код");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (twoFactor) {
+    return (
+      <form className={s.form} onSubmit={submitCode} noValidate aria-label="код двухфакторной защиты">
+        {error && (
+          <div className={s.error} role="alert">
+            {error}
+          </div>
+        )}
+        <Input label="Код из приложения" name="code" autoComplete="one-time-code" inputMode="numeric" required value={code} onChange={(e) => setCode(e.target.value)} hint="6 цифр из приложения-аутентификатора или один из резервных кодов" />
+        <Button type="submit" variant="primary" block disabled={busy || code.length < 6}>
+          Подтвердить
+        </Button>
+        <button type="button" className={s.linkBtn} onClick={() => { setTwoFactor(false); setCode(""); }}>
+          Назад
+        </button>
+      </form>
+    );
   }
 
   if (sent) {
@@ -90,7 +130,7 @@ export function LoginForm({ next }: { next: string }) {
         </button>
         <Link href="/reset">Забыли пароль?</Link>
       </div>
-      <Social next={next} onDone={done} onError={setError} />
+      <Social next={next} onDone={done} onError={(m) => (pendingTwoFactorTicket() ? setTwoFactor(true) : setError(m))} />
       <div className={s.row}>
         <span className="text-2">Нет аккаунта?</span>
         <Link href={`/register?next=${encodeURIComponent(next)}`}>Зарегистрироваться</Link>

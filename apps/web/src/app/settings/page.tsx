@@ -9,7 +9,107 @@ import { NotificationsPanel } from "@/components/settings/Notifications";
 import { applyTheme } from "@/components/ui/ThemeToggle";
 import { Button, EmptyState, Input, Panel, Select } from "@/components/ui";
 import { patchProfile, patchRisk, pwnedCount } from "@/lib/auth-client";
-import { changePassword, deleteAccount, exportData, getIdentities } from "@/lib/user";
+import { changePassword, deleteAccount, disableTwoFactor, enableTwoFactor, exportData, getIdentities, getTwoFactor, setupTwoFactor, type TwoFactorStatus } from "@/lib/user";
+
+/** Двухфакторная защита (план 3.12, v2): настройка, включение по коду, резервные коды, отключение. */
+function TwoFactorPanel({ note }: { note: (text: string, kind?: "ok" | "error") => void }) {
+  const [st, setSt] = useState<TwoFactorStatus | null>(null);
+  const [setup, setSetup] = useState<{ secret: string; otpauth_url: string } | null>(null);
+  const [code, setCode] = useState("");
+  const [backup, setBackup] = useState<string[] | null>(null);
+  const load = () => getTwoFactor().then(setSt).catch(() => setSt(null));
+  useEffect(() => {
+    queueMicrotask(() => void load());
+  }, []);
+  async function start() {
+    try {
+      setSetup(await setupTwoFactor());
+      setCode("");
+    } catch (err) {
+      note(err instanceof Error ? err.message : "ошибка", "error");
+    }
+  }
+  async function enable(e: FormEvent) {
+    e.preventDefault();
+    try {
+      const r = await enableTwoFactor(code);
+      setBackup(r.backup_codes);
+      setSetup(null);
+      setCode("");
+      await load();
+      note("2FA включена");
+    } catch (err) {
+      note(err instanceof Error ? err.message : "ошибка", "error");
+    }
+  }
+  async function disable(e: FormEvent) {
+    e.preventDefault();
+    try {
+      await disableTwoFactor(code);
+      setCode("");
+      setBackup(null);
+      await load();
+      note("2FA отключена");
+    } catch (err) {
+      note(err instanceof Error ? err.message : "ошибка", "error");
+    }
+  }
+  return (
+    <Panel title="Двухфакторная защита (2FA)" footer="Код из приложения-аутентификатора (Google Authenticator, Aegis, 1Password и т. п.) спрашивается при каждом входе — по паролю, по ссылке из письма и через соцсети.">
+      <div className={s.form} data-testid="two-factor">
+        {st === null ? (
+          <span className="caption">Загрузка…</span>
+        ) : st.enabled ? (
+          <form className={s.form} onSubmit={disable}>
+            <p style={{ margin: 0 }}>
+              Включена · резервных кодов осталось <strong>{st.backup_codes_left}</strong>
+            </p>
+            <div className={s.row}>
+              <Input label="Код для отключения" inputMode="numeric" autoComplete="one-time-code" value={code} onChange={(e) => setCode(e.target.value)} hint="из приложения или резервный" />
+            </div>
+            <div className={s.actions}>
+              <Button type="submit" size="sm" variant="danger" disabled={code.length < 6}>
+                Отключить 2FA
+              </Button>
+            </div>
+          </form>
+        ) : setup ? (
+          <form className={s.form} onSubmit={enable}>
+            <p style={{ margin: 0 }}>
+              1. Добавьте ключ в приложение: <a href={setup.otpauth_url}>открыть в приложении</a> или введите вручную — <code data-testid="two-factor-secret">{setup.secret}</code>
+            </p>
+            <div className={s.row}>
+              <Input label="2. Код из приложения" inputMode="numeric" autoComplete="one-time-code" value={code} onChange={(e) => setCode(e.target.value)} />
+            </div>
+            <div className={s.actions}>
+              <Button type="submit" size="sm" variant="primary" disabled={code.length < 6}>
+                Включить 2FA
+              </Button>
+              <Button type="button" size="sm" variant="ghost" onClick={() => setSetup(null)}>
+                Отмена
+              </Button>
+            </div>
+          </form>
+        ) : (
+          <div className={s.actions}>
+            <span className="text-2">Выключена.</span>
+            <Button type="button" size="sm" onClick={start}>
+              Включить 2FA
+            </Button>
+          </div>
+        )}
+        {backup && (
+          <div role="region" aria-label="резервные коды">
+            <p style={{ margin: "0 0 6px" }}>
+              Резервные коды — сохраните их сейчас, повторно они не показываются. Каждый работает один раз.
+            </p>
+            <code style={{ display: "block", whiteSpace: "pre-wrap", lineHeight: 1.7 }}>{backup.join("\n")}</code>
+          </div>
+        )}
+      </div>
+    </Panel>
+  );
+}
 
 const TZ = ["UTC", "Europe/Moscow", "Europe/Kyiv", "Europe/Berlin", "Europe/London", "Asia/Almaty", "Asia/Tashkent", "Asia/Dubai", "Asia/Singapore", "Asia/Tokyo", "America/New_York", "America/Los_Angeles"];
 
@@ -187,6 +287,7 @@ export default function SettingsPage() {
               </div>
             </form>
           </Panel>
+          <TwoFactorPanel note={note} />
           <NotificationsPanel userId={user.id} onMessage={note} />
         </div>
         <Panel title="Данные и аккаунт" footer="Удаление необратимо: email анонимизируется, сессии отзываются, записи журнала остаются в базе без привязки к вам 30 дней на случай ошибки.">

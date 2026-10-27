@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { loginGoogle } from "@/lib/auth-client";
+import { TwoFactorRequired, loginGoogle } from "@/lib/auth-client";
 import { useAuth } from "./AuthProvider";
 import s from "./AuthCard.module.css";
 
@@ -23,6 +23,10 @@ export function GoogleCallback({ code, state, error }: { code: string | null; st
         const next = state && state.startsWith("/") && !state.startsWith("//") ? state : "/signals";
         router.replace(next);
       } catch (e) {
+        if (e instanceof TwoFactorRequired) {
+          router.replace("/login");
+          return;
+        }
         setMsg(e instanceof Error ? e.message : "не удалось войти через Google");
       }
     })();

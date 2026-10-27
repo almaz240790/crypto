@@ -11,11 +11,13 @@ from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import auth
+from app import auth, twofactor
 from app.billing import start_trial
 from app.config import settings
 from app.mail import send_mail
-from app.models import EmailToken, RiskProfile, User
+from app.models import EmailToken, RiskProfile, TwoFactor, User
+
+TWO_FACTOR_TTL = timedelta(minutes=5)
 
 router = APIRouter(prefix="/v1/auth", tags=["auth"])
 
@@ -34,9 +36,17 @@ class LoginIn(BaseModel):
 
 
 class TokenOut(BaseModel):
-    access_token: str
+    access_token: str = ""
     token_type: str = "bearer"
     expires_in: int = int(auth.ACCESS_TTL.total_seconds())
+    # 2FA: токены не выданы, нужен код из приложения (план 3.12 v2)
+    two_factor: bool = False
+    ticket: str | None = None
+
+
+class TwoFactorLoginIn(BaseModel):
+    ticket: str
+    code: str = Field(min_length=6, max_length=16)
 
 
 class UserOut(BaseModel):
@@ -84,10 +94,15 @@ def _set_refresh_cookie(response: Response, raw: str) -> None:
     )
 
 
-def _issue(db: Session, user: User, request: Request, response: Response) -> TokenOut:
+def _issue(
+    db: Session, user: User, request: Request, response: Response, *, verified: bool = False
+) -> TokenOut:
     if user.role == "user" and user.email.lower() in settings.owner_email_set:
         user.role = "owner"
         db.commit()
+    if not verified and twofactor.is_enabled(db.get(TwoFactor, user.id)):
+        # пароль/ссылка/соцвход прошли, но включена 2FA: короткий билет на второй шаг
+        return TokenOut(two_factor=True, ticket=_email_token(db, user, "2fa", TWO_FACTOR_TTL))
     raw = auth.issue_refresh(db, user, request.headers.get("user-agent"))
     _set_refresh_cookie(response, raw)
     return TokenOut(access_token=auth.make_access_token(user))
@@ -152,6 +167,20 @@ def login(
     ):
         raise HTTPException(401, "неверный email или пароль")
     return _issue(db, user, request, response)
+
+
+@router.post("/login/2fa", response_model=TokenOut)
+def login_two_factor(
+    body: TwoFactorLoginIn, request: Request, response: Response, db: Session = Depends(auth.get_db)
+) -> TokenOut:
+    """Второй шаг входа: билет из /login + код TOTP или резервный код."""
+    user = _consume_email_token(db, body.ticket, "2fa")
+    row = db.get(TwoFactor, user.id)
+    if not twofactor.is_enabled(row) or row is None or not twofactor.verify_code(row, body.code):
+        db.commit()  # билет сгорает даже при неверном коде
+        raise HTTPException(401, "неверный код")
+    db.commit()
+    return _issue(db, user, request, response, verified=True)
 
 
 @router.post("/refresh", response_model=TokenOut)

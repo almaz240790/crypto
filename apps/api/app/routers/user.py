@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app import auth
+from app import auth, twofactor
 from app.config import settings
 from app.entitlements import entitlements_for
 from app.models import (
@@ -25,6 +25,7 @@ from app.models import (
     Signal,
     SignalResult,
     StrategyVersion,
+    TwoFactor,
     User,
     Watchlist,
     WatchlistItem,
@@ -296,6 +297,79 @@ def _journal_dict(e: JournalEntry, symbol: str) -> dict[str, Any]:
         "signal_id": e.signal_id,
         "created_at": e.created_at.isoformat() if e.created_at else None,
     }
+
+
+# --- 2FA (TOTP), план 3.12 v2 -------------------------------------------------------------------
+
+
+class TwoFactorCodeIn(BaseModel):
+    code: str = Field(min_length=6, max_length=16)
+
+
+@router.get("/me/2fa")
+def two_factor_status(
+    user: User = Depends(auth.current_user), db: Session = Depends(auth.get_db)
+) -> dict[str, Any]:
+    row = db.get(TwoFactor, user.id)
+    return {
+        "enabled": twofactor.is_enabled(row),
+        "backup_codes_left": len(row.backup_codes) if row is not None and row.enabled_at else 0,
+    }
+
+
+@router.post("/me/2fa/setup")
+def two_factor_setup(
+    user: User = Depends(auth.current_user), db: Session = Depends(auth.get_db)
+) -> dict[str, Any]:
+    """Новый секрет (пока не включён); повторный вызов заменяет невключённый секрет."""
+    row = db.get(TwoFactor, user.id)
+    if twofactor.is_enabled(row):
+        raise HTTPException(409, "2FA уже включена — сначала отключите")
+    secret = twofactor.new_secret()
+    if row is None:
+        db.add(TwoFactor(user_id=user.id, secret=secret, backup_codes=[]))
+    else:
+        row.secret = secret
+    db.commit()
+    return {"secret": secret, "otpauth_url": twofactor.otpauth_url(secret, user.email)}
+
+
+@router.post("/me/2fa/enable")
+def two_factor_enable(
+    body: TwoFactorCodeIn,
+    user: User = Depends(auth.current_user),
+    db: Session = Depends(auth.get_db),
+) -> dict[str, Any]:
+    """Первый верный код включает 2FA и выдаёт резервные коды (показываются один раз)."""
+    row = db.get(TwoFactor, user.id)
+    if row is None:
+        raise HTTPException(400, "сначала вызовите настройку")
+    if row.enabled_at is not None:
+        raise HTTPException(409, "2FA уже включена")
+    if not twofactor.verify_totp(row.secret, body.code):
+        raise HTTPException(400, "неверный код")
+    plain, hashes = twofactor.make_backup_codes()
+    row.enabled_at = datetime.now(tz=UTC)
+    row.backup_codes = hashes
+    db.commit()
+    return {"enabled": True, "backup_codes": plain}
+
+
+@router.post("/me/2fa/disable", status_code=204)
+def two_factor_disable(
+    body: TwoFactorCodeIn,
+    user: User = Depends(auth.current_user),
+    db: Session = Depends(auth.get_db),
+) -> Response:
+    row = db.get(TwoFactor, user.id)
+    if not twofactor.is_enabled(row) or row is None:
+        raise HTTPException(400, "2FA не включена")
+    if not twofactor.verify_code(row, body.code):
+        db.commit()
+        raise HTTPException(400, "неверный код")
+    db.delete(row)
+    db.commit()
+    return Response(status_code=204)
 
 
 @router.get("/journal")

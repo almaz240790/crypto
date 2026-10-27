@@ -15,7 +15,7 @@ const SCREEN = (sym: string, zoneAtr: string | null) => ({
   atr_pct: "1.2", atr_percentile: "48", beta_btc: sym === "BTCUSDT" ? "1" : "1.3", funding: "0.01", funding_pct: "55", oi_change_24h: "2.1", liq_long_24h: "1200000", liq_short_24h: "800000",
 });
 
-async function mock(page: Page, calls: string[], state: { watch: string[]; journal: Record<string, unknown>[] }) {
+async function mock(page: Page, calls: string[], state: { watch: string[]; journal: Record<string, unknown>[]; twoFactor?: boolean }) {
   await page.context().addCookies([{ name: "pl_auth", value: "1", url: "http://localhost:3101" }]);
   await page.route("**/v1/**", (route) => {
     const req = route.request();
@@ -57,6 +57,18 @@ async function mock(page: Page, calls: string[], state: { watch: string[]; journ
       return route.fulfill({ status: 204 });
     }
     if (p === "/v1/me/identities") return json(200, [{ provider: "password", label: ME.email, connected_at: null }]);
+    if (p === "/v1/me/2fa") return json(200, { enabled: state.twoFactor ?? false, backup_codes_left: state.twoFactor ? 10 : 0 });
+    if (p === "/v1/me/2fa/setup") return json(200, { secret: "JBSWY3DPEHPK3PXP", otpauth_url: "otpauth://totp/Platform:trader%40example.com?secret=JBSWY3DPEHPK3PXP&issuer=Platform" });
+    if (p === "/v1/me/2fa/enable") {
+      const b = req.postDataJSON() as { code: string };
+      if (b.code !== "123456") return json(400, { detail: "неверный код" });
+      state.twoFactor = true;
+      return json(200, { enabled: true, backup_codes: ["AAAA-1", "BBBB-2"] });
+    }
+    if (p === "/v1/me/2fa/disable") {
+      state.twoFactor = false;
+      return route.fulfill({ status: 204 });
+    }
     if (p === "/v1/me" && req.method() === "PATCH") return json(200, { ...ME, ...(req.postDataJSON() as object) });
     if (p === "/v1/me/risk" && req.method() === "PATCH") return json(200, { ...ME, risk: { ...ME.risk, ...(req.postDataJSON() as object) } });
     return json(404, { detail: "нет заглушки" });
@@ -175,4 +187,25 @@ test("уведомления: сохранить настройки, тесто�
   await page.goto("/unsubscribe?token=good");
   await page.getByRole("button", { name: "Отписаться" }).click();
   await expect(page.getByRole("status")).toContainText("Вы отписаны");
+});
+
+test("настройки: включить и отключить 2FA", async ({ page }) => {
+  const calls: string[] = [];
+  await mock(page, calls, { watch: [], journal: [] });
+  await page.goto("/settings");
+  const tf = page.getByTestId("two-factor");
+  await expect(tf).toContainText("Выключена");
+  await tf.getByRole("button", { name: "Включить 2FA" }).click();
+  await expect(tf.getByTestId("two-factor-secret")).toHaveText("JBSWY3DPEHPK3PXP");
+  await tf.getByLabel("2. Код из приложения").fill("111111");
+  await tf.getByRole("button", { name: "Включить 2FA" }).click();
+  await expect(page.getByRole("status")).toContainText("неверный код");
+  await tf.getByLabel("2. Код из приложения").fill("123456");
+  await tf.getByRole("button", { name: "Включить 2FA" }).click();
+  await expect(tf.getByRole("region", { name: "резервные коды" })).toContainText("AAAA-1");
+  await expect(tf).toContainText("резервных кодов осталось 10");
+  await tf.getByLabel("Код для отключения").fill("AAAA-1");
+  await tf.getByRole("button", { name: "Отключить 2FA" }).click();
+  await expect(tf).toContainText("Выключена");
+  expect(calls).toContain("POST /v1/me/2fa/disable");
 });
