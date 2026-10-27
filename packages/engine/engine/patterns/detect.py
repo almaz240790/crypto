@@ -103,6 +103,7 @@ def detect_patterns(
                 index=index,
                 time=last.open_time,
                 price=price,
+                atr=m.atr,
                 rules_version=params.rules_version,
                 context=ctx,
                 significant=is_significant(type_, direction, ctx, params),

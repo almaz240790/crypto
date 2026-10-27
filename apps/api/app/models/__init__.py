@@ -10,6 +10,13 @@ from app.models.derivatives import (
     OpenInterestRow,
 )
 from app.models.market import Candle, Instrument
+from app.models.patterns import (
+    Pattern,
+    PatternEvent,
+    PatternOutcome,
+    PatternRulesVersion,
+    PatternStatsSnapshot,
+)
 from app.models.signals import Signal, SignalEvent, SignalResult, Strategy, StrategyVersion
 from app.models.stats import StatsSnapshot
 from app.models.support import SupportTicket
@@ -49,6 +56,11 @@ __all__ = [
     "NotificationLog",
     "NotificationSettings",
     "OpenInterestRow",
+    "Pattern",
+    "PatternEvent",
+    "PatternOutcome",
+    "PatternRulesVersion",
+    "PatternStatsSnapshot",
     "Payment",
     "PromoCode",
     "PushSubscription",

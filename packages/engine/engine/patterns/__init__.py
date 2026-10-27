@@ -4,7 +4,7 @@
 """
 
 from engine.patterns.detect import detect_last, detect_patterns
-from engine.patterns.outcomes import PatternOutcome, outcome, outcomes
+from engine.patterns.outcomes import PatternOutcome, outcome, outcome_from, outcomes
 from engine.patterns.params import DEFAULT_PATTERN_PARAMS, PatternParams
 from engine.patterns.types import PatternContext, PatternMatch, PatternType, title
 
@@ -18,6 +18,7 @@ __all__ = [
     "detect_last",
     "detect_patterns",
     "outcome",
+    "outcome_from",
     "outcomes",
     "title",
 ]

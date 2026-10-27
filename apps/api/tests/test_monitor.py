@@ -11,7 +11,13 @@ def _snap(**kw: object) -> Snapshot:
     now = datetime(2026, 10, 25, 16, 5, tzinfo=UTC)  # 5 минут после закрытия H4 16:00
     base = dict(
         now=now,
-        heartbeats={"market_data": 1, "scheduler": 30, "tracker": 30, "notifier": 10},
+        heartbeats={
+            "market_data": 1,
+            "scheduler": 30,
+            "tracker": 30,
+            "notifier": 10,
+            "pattern_detector": 20,
+        },
         m1_age_sec=30,
         h4_stale=0,
         h4_total=59,
@@ -51,7 +57,15 @@ def test_engine_not_run_and_stream_silent() -> None:
     assert c["data"].status == "down"
     c = _by(
         evaluate(
-            _snap(heartbeats={"market_data": None, "scheduler": 30, "tracker": 30, "notifier": 10})
+            _snap(
+                heartbeats={
+                    "market_data": None,
+                    "scheduler": 30,
+                    "tracker": 30,
+                    "notifier": 10,
+                    "pattern_detector": 20,
+                }
+            )
         )
     )
     assert c["data"].status == "down"

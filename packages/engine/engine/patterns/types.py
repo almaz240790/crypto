@@ -92,6 +92,8 @@ class PatternMatch:
     """``open_time`` последней свечи."""
     price: Decimal
     """Опорная цена отметки: минимум для бычьих, максимум для медвежьих, close для нейтральных."""
+    atr: Decimal
+    """ATR на последней свече паттерна — нормировка отработки (план 2A.10.4)."""
     rules_version: str
     context: PatternContext
     significant: bool
