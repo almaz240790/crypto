@@ -722,7 +722,13 @@ def screener(
     if symbols:
         wanted = {s.strip().upper() for s in symbols.split(",") if s.strip()}
         rows = [r for r in rows if r["symbol"] in wanted]
-    return {"items": rows, "generated_at": when.isoformat()}
+    # мини-графики в строке (план 3.6 v2): последние 24 закрытия H4, как в ленте
+    sparks = _sparklines(db, [int(r["instrument_id"]) for r in rows if r.get("instrument_id")])
+    return {
+        "items": rows,
+        "generated_at": when.isoformat(),
+        "sparklines": {str(k): v for k, v in sparks.items()},
+    }
 
 
 @router.get("/screener/export.csv")
