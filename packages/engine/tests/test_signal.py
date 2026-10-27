@@ -129,3 +129,50 @@ def test_news_defers_signal() -> None:
     cpi = CalendarEvent(AT + timedelta(minutes=30), "CPI", 3)
     res = evaluate(inputs(calendar=[cpi]), AT, PARAMS)
     assert isinstance(res, SignalCandidate) and res.deferred and not res.publishable
+
+
+def test_signal_candle_patterns_filters_type_direction_and_significance() -> None:
+    from dataclasses import replace
+    from datetime import UTC, datetime
+    from decimal import Decimal
+
+    from engine.candles import Candle, Timeframe
+    from engine.params import ScoringParams, StrategyParams
+    from engine.signal import signal_candle_patterns
+    from engine.structure import Direction, MarketStructure
+
+    t0 = datetime(2024, 1, 1, tzinfo=UTC)
+    rows = [
+        (
+            f"{100 + i / 1000:.3f}",
+            f"{102 + i / 1000:.3f}",
+            f"{99 + i / 1000:.3f}",
+            f"{101 + i / 1000:.3f}",
+            "10",
+        )
+        for i in range(80)
+    ]
+    rows += [
+        ("100", "100.5", "98.5", "99", "10"),
+        ("99", "99.5", "97.5", "98", "10"),
+        ("98", "98.5", "96.5", "97", "10"),
+        ("97", "97.2", "96.3", "96.4", "10"),
+        ("96.4", "98", "96.2", "97.8", "20"),
+    ]
+    h4 = [
+        Candle(
+            t0 + Timeframe.H4.delta * i, Decimal(o), Decimal(h), Decimal(lo), Decimal(c), Decimal(v)
+        )
+        for i, (o, h, lo, c, v) in enumerate(rows)
+    ]
+    params = StrategyParams()
+    st = MarketStructure()
+    assert signal_candle_patterns(h4, st, [], [], Direction.UP, params) == ["Бычье поглощение"]
+    assert signal_candle_patterns(h4, st, [], [], Direction.DOWN, params) == []
+    only_pin = replace(params, scoring=ScoringParams(pattern_types=("pin_bar",)))
+    assert signal_candle_patterns(h4, st, [], [], Direction.UP, only_pin) == []
+    # без объёма паттерн найден, но не значимый — проходит только при pattern_significant_only=False
+    quiet = [*h4[:-1], replace(h4[-1], volume=Decimal(10))]
+    assert signal_candle_patterns(quiet, st, [], [], Direction.UP, params) == []
+    loose = replace(params, scoring=ScoringParams(pattern_significant_only=False))
+    assert signal_candle_patterns(quiet, st, [], [], Direction.UP, loose) == ["Бычье поглощение"]

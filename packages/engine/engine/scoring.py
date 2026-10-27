@@ -39,6 +39,8 @@ class ScoreInput:
     obstacle_before_tp1: bool
     filter_delta: int
     """Суммарный вклад фильтров (деривативы, новости, корреляция, ATR, выходные)."""
+    pattern_on_signal_candle: bool = False
+    """Значимый свечной паттерн из ``pattern_types`` по направлению сделки на сигнальной свече."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +98,8 @@ def score_signal(inp: ScoreInput, params: ScoringParams = DEFAULT_PARAMS) -> Sco
     )
     c["rr"] = _tier(inp.rr_tp2, params.rr_tiers)
     c["no_obstacles"] = 0 if inp.obstacle_before_tp1 else params.no_obstacle_points
+    if params.pattern_points:
+        c["pattern"] = params.pattern_points if inp.pattern_on_signal_candle else 0
     c["filters"] = max(params.filters_min, min(params.filters_max, inp.filter_delta))
     total = max(0, min(100, sum(c.values())))
     return ScoreBreakdown(c, total, grade_for(total, params))
