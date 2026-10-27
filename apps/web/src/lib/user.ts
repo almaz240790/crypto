@@ -112,6 +112,11 @@ export const createJournal = (body: JournalIn) => api<JournalEntry>("/v1/journal
 export const updateJournal = (id: number, body: JournalIn) => api<JournalEntry>(`/v1/journal/${id}`, { method: "PUT", json: body });
 export const deleteJournal = (id: number) => api(`/v1/journal/${id}`, { method: "DELETE" });
 
+export type SessionRow = { id: number; device: string; user_agent: string | null; created_at: string; expires_at: string };
+export const getSessions = () => api<{ items: SessionRow[] }>("/v1/me/sessions");
+export const revokeSession = (id: number) => api<void>(`/v1/me/sessions/${id}`, { method: "DELETE" });
+export const revokeAllSessions = () => api<void>("/v1/me/sessions", { method: "DELETE" });
+
 export type ApiKeyRow = { id: number; name: string; prefix: string; created_at: string | null; last_used_at: string | null };
 export const getApiKeys = () => api<{ items: ApiKeyRow[]; limit: number }>("/v1/me/api-keys");
 export const createApiKey = (name: string) => api<ApiKeyRow & { key: string }>("/v1/me/api-keys", { method: "POST", json: { name } });

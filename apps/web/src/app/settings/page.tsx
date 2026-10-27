@@ -9,7 +9,57 @@ import { NotificationsPanel } from "@/components/settings/Notifications";
 import { applyTheme } from "@/components/ui/ThemeToggle";
 import { Button, EmptyState, Input, Panel, Select } from "@/components/ui";
 import { patchProfile, patchRisk, pwnedCount } from "@/lib/auth-client";
-import { changePassword, createApiKey, deleteAccount, disableTwoFactor, enableTwoFactor, exportData, getApiKeys, getIdentities, getTwoFactor, revokeApiKey, setupTwoFactor, type ApiKeyRow, type TwoFactorStatus } from "@/lib/user";
+import { changePassword, createApiKey, deleteAccount, disableTwoFactor, enableTwoFactor, exportData, getApiKeys, getIdentities, getSessions, getTwoFactor, revokeAllSessions, revokeApiKey, revokeSession, setupTwoFactor, type ApiKeyRow, type SessionRow, type TwoFactorStatus } from "@/lib/user";
+
+/** Сессии и устройства (план 3.12, v2): активные входы, отзыв одного или всех. */
+function SessionsPanel({ note, onLogoutAll }: { note: (text: string, kind?: "ok" | "error") => void; onLogoutAll: () => void }) {
+  const [items, setItems] = useState<SessionRow[] | null>(null);
+  const load = () => getSessions().then((r) => setItems(r.items)).catch(() => setItems([]));
+  useEffect(() => {
+    queueMicrotask(() => void load());
+  }, []);
+  async function revoke(sx: SessionRow) {
+    try {
+      await revokeSession(sx.id);
+      await load();
+      note("Сессия завершена");
+    } catch (err) {
+      note(err instanceof Error ? err.message : "ошибка", "error");
+    }
+  }
+  async function revokeAll() {
+    if (!confirm("Выйти на всех устройствах, включая это?")) return;
+    await revokeAllSessions().catch(() => {});
+    onLogoutAll();
+  }
+  return (
+    <Panel title="Сессии и устройства" footer="Список активных входов по устройствам. Завершённая сессия перестаёт работать при следующем обновлении токена (до 15 минут).">
+      <div className={s.form} data-testid="sessions">
+        {items === null ? (
+          <span className="caption">Загрузка…</span>
+        ) : items.length === 0 ? (
+          <span className="text-2">Активных сессий нет.</span>
+        ) : (
+          <ul style={{ margin: 0, paddingLeft: 18, fontSize: 14 }}>
+            {items.map((sx) => (
+              <li key={sx.id} title={sx.user_agent ?? undefined}>
+                <strong>{sx.device}</strong> · вход {formatTimeUTC(sx.created_at)}{" "}
+                <button type="button" className={`${s.small} ${s.danger}`} onClick={() => revoke(sx)} aria-label={`завершить сессию ${sx.id}`}>
+                  завершить
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        <div className={s.actions}>
+          <Button type="button" size="sm" variant="danger" onClick={revokeAll}>
+            Выйти на всех устройствах
+          </Button>
+        </div>
+      </div>
+    </Panel>
+  );
+}
 import { formatTimeUTC } from "@/lib/format";
 
 const API_BASE = typeof window === "undefined" ? "" : window.location.origin;
@@ -379,6 +429,7 @@ export default function SettingsPage() {
             </form>
           </Panel>
           <TwoFactorPanel note={note} />
+          <SessionsPanel note={note} onLogoutAll={() => void logout().then(() => router.replace("/login"))} />
           <ApiKeysPanel note={note} />
           <NotificationsPanel userId={user.id} onMessage={note} />
         </div>
