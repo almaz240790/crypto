@@ -1,5 +1,10 @@
 "use client";
 
+import { DEFAULT_LOCALE, localeFromCookie, makeT } from "@/i18n";
+
+/** Перевод клиентских сообщений по cookie языка (вне React-дерева). */
+const tc = () => makeT(typeof document === "undefined" ? DEFAULT_LOCALE : (localeFromCookie(document.cookie) ?? DEFAULT_LOCALE));
+
 /**
  * Клиентская авторизация (план 3.2): access-токен живёт в памяти вкладки,
  * refresh — в httpOnly cookie API (path /v1/auth, проксируется Next.js).
@@ -64,7 +69,7 @@ async function readError(res: Response): Promise<string> {
   } catch {
     /* не JSON */
   }
-  return res.status === 429 ? "слишком много попыток, подождите" : `ошибка ${res.status}`;
+  return res.status === 429 ? tc()("слишком много попыток, подождите") : tc()("ошибка {status}", { status: res.status });
 }
 
 /** Получить новый access по refresh-cookie. Один одновременный запрос на вкладку. */
@@ -127,7 +132,7 @@ const TICKET_KEY = "pl-2fa-ticket";
 /** Вход прошёл, но включена 2FA: билет сохранён, нужен код из приложения (страница /login). */
 export class TwoFactorRequired extends Error {
   constructor() {
-    super("нужен код двухфакторной защиты");
+    super(tc()("нужен код двухфакторной защиты"));
     this.name = "TwoFactorRequired";
   }
 }

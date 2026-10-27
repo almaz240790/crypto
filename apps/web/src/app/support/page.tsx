@@ -25,9 +25,9 @@ export default async function SupportPage() {
           <div style={{ padding: "4px 16px" }}>
             {FAQ.map((f) => (
               <details key={f.q} style={{ padding: "10px 0", borderBottom: "1px solid var(--border)" }}>
-                <summary style={{ cursor: "pointer", fontWeight: 500 }}>{f.q}</summary>
+                <summary style={{ cursor: "pointer", fontWeight: 500 }}>{t(f.q)}</summary>
                 <p className="text-2" style={{ margin: "8px 0 0" }}>
-                  {f.a}
+                  {t(f.a)}
                 </p>
               </details>
             ))}

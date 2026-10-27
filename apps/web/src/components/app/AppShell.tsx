@@ -32,7 +32,7 @@ export function AppShell({ title, actions, children, flush = false }: { title: s
   const nav = user && (user.role === "admin" || user.role === "owner") ? [...NAV, { href: "/admin", label: t("Админка") }] : NAV;
   const links = nav.map((n) => (
     <Link key={n.href} href={n.href} aria-current={path === n.href || path.startsWith(n.href + "/") ? "page" : undefined}>
-      {n.label}
+      {t(n.label)}
     </Link>
   ));
 

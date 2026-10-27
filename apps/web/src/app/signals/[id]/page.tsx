@@ -257,7 +257,7 @@ export default function SignalPage() {
             {open ? t("сейчас") : t("итог")} {formatR(pnl)}
           </span>
         )}
-        {d.result && <span>длительность {formatDuration(d.result.duration_hours)}</span>}
+        {d.result && <span>длительность {formatDuration(d.result.duration_hours, t)}</span>}
       </div>
 
       <div className={s.grid}>

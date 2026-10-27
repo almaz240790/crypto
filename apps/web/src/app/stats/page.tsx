@@ -61,7 +61,7 @@ async function MetricCards({ m }: { m: Metrics }) {
     ["max_drawdown_r", tr("макс. просадка"), m.closed ? formatR(-m.max_drawdown_r) : "—", m.closed ? `≈ ${(m.max_drawdown_r * 1).toFixed(1)} % при риске 1 %` : undefined],
     ["max_losing_streak", tr("серия убытков"), String(m.max_losing_streak)],
     ["tp1_share", tr("дошли до TP1"), pct(m.tp1_share), `TP2 ${pct(m.tp2_share)}, TP3 ${pct(m.tp3_share)}`],
-    ["avg_duration_hours", tr("в сделке"), num(m.avg_duration_hours, (n) => formatDuration(n))],
+    ["avg_duration_hours", tr("в сделке"), num(m.avg_duration_hours, (n) => formatDuration(n, tr))],
   ];
   return (
     <div className={s.cards}>

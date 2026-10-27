@@ -78,7 +78,7 @@ function CalculatorInner() {
     marketType: val("marketType") as "spot" | "futures",
     lotSize: inst?.lot_size ? Number(inst.lot_size) : null,
     tps: [num("tp1") || null, num("tp2") || null, num("tp3") || null],
-  });
+  }, t);
   const tick = inst?.tick_size ?? null;
   const base = val("symbol").replace(/USDT$/, "");
 

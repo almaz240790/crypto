@@ -34,13 +34,17 @@ export function roundToLot(size: number, lot: number | null): number {
   return Number((steps * lot).toFixed(digits));
 }
 
-export function calculate(i: CalcInput): CalcOutput | null {
+type Tr = (s: string, vars?: Record<string, string | number>) => string;
+const plain: Tr = (s, v) => s.replace(/\{(\w+)\}/g, (_, k: string) => String(v?.[k] ?? ""));
+
+/** Предупреждения — через `t`, чтобы страница могла показать их на языке пользователя. */
+export function calculate(i: CalcInput, t: Tr = plain): CalcOutput | null {
   const warnings: string[] = [];
   if (!(i.deposit > 0) || !(i.riskPct > 0) || !(i.entry > 0) || !(i.stop > 0)) return null;
   const sign = i.direction === "long" ? 1 : -1;
   const riskPerUnit = (i.entry - i.stop) * sign;
   if (riskPerUnit <= 0) {
-    warnings.push(i.direction === "long" ? "стоп должен быть ниже входа" : "стоп должен быть выше входа");
+    warnings.push(i.direction === "long" ? t("стоп должен быть ниже входа") : t("стоп должен быть выше входа"));
     return { riskUsd: 0, riskPerUnit: 0, sizeRaw: 0, size: 0, notional: 0, requiredLeverage: 0, margin: 0, liquidation: null, tps: [], rrTp2: null, warnings };
   }
   const riskUsd = (i.deposit * i.riskPct) / 100;
@@ -49,15 +53,15 @@ export function calculate(i: CalcInput): CalcOutput | null {
   const notional = size * i.entry;
   const lev = i.marketType === "spot" ? 1 : Math.max(1, i.leverage || 1);
   const requiredLeverage = i.deposit > 0 ? notional / i.deposit : 0;
-  if (i.marketType === "spot" && notional > i.deposit) warnings.push("на споте позиция больше депозита: уменьшите риск или сдвиньте стоп");
-  if (i.marketType === "futures" && requiredLeverage > lev) warnings.push(`для такого размера нужно плечо ≥ ${requiredLeverage.toFixed(1)}×`);
+  if (i.marketType === "spot" && notional > i.deposit) warnings.push(t("на споте позиция больше депозита: уменьшите риск или сдвиньте стоп"));
+  if (i.marketType === "futures" && requiredLeverage > lev) warnings.push(t("для такого размера нужно плечо ≥ {n}×", { n: requiredLeverage.toFixed(1) }));
   const margin = notional / lev;
   const mmr = i.mmr ?? 0.005;
   let liquidation: number | null = null;
   if (i.marketType === "futures") {
     liquidation = i.direction === "long" ? i.entry * (1 - 1 / lev + mmr) : i.entry * (1 + 1 / lev - mmr);
     const liqBeyondStop = i.direction === "long" ? liquidation > i.stop : liquidation < i.stop;
-    if (liqBeyondStop) warnings.push("ликвидация ближе стопа: уменьшите плечо");
+    if (liqBeyondStop) warnings.push(t("ликвидация ближе стопа: уменьшите плечо"));
   }
   const tps = i.tps
     .map((p) => (p && p > 0 ? p : null))

@@ -157,9 +157,9 @@ export function ObjectsPanel(p: Props) {
       {tab === "layouts" && (
         <div className={s.objList}>
           <strong>{t("Шаблоны индикаторов")}</strong>
-          {TEMPLATES.map((t) => (
-            <button key={t.id} type="button" className={s.chip} onClick={() => p.onTemplate(t.id)}>
-              {t.title}
+          {TEMPLATES.map((tp) => (
+            <button key={tp.id} type="button" className={s.chip} onClick={() => p.onTemplate(tp.id)}>
+              {t(tp.title)}
             </button>
           ))}
           <strong>{t("Мои раскладки")}</strong>
