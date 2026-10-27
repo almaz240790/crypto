@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import { askChart, explainPattern, type Explanation, type FigureOnChart, type FigureStat, type PatternOnChart, type PatternStat } from "@/lib/chart";
+import { formatPrice } from "@/lib/format";
 import type { Timeframe } from "@/lib/timeframes";
 import s from "./terminal.module.css";
 
@@ -126,7 +127,7 @@ export function FiguresList({ items, stats, selected, onSelect }: { items: Figur
             {sel && (
               <div className={s.foundDetails}>
                 <div>{f.status === "confirmed" ? "подтверждена закрытием свечи за линией" : f.status === "forming" ? "геометрия без подтверждения: цель и статистика не показываются" : "отменена: цена закрылась против фигуры или вышло время"}</div>
-                {f.status === "confirmed" && f.target && <div>расчётная цель {f.target}{f.invalidation ? `, инвалидация ${f.invalidation}` : ""}</div>}
+                {f.status === "confirmed" && f.target && <div>расчётная цель {formatPrice(f.target)}{f.invalidation ? `, инвалидация ${formatPrice(f.invalidation)}` : ""}</div>}
                 {f.status === "confirmed" && <div>{figureStatText(stats[f.type])}</div>}
                 <div className="caption">не является сигналом или рекомендацией</div>
               </div>

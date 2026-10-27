@@ -211,7 +211,7 @@ test("паттерны: вкладка «Найдено», подробност�
   await expect(figs).toContainText("формируется");
   await figs.getByRole("button", { name: /Двойная вершина/ }).click();
   await expect(figs).toContainText("подтверждена закрытием свечи за линией");
-  await expect(figs).toContainText("расчётная цель 94, инвалидация 104.2");
+  await expect(figs).toContainText("расчётная цель 94.00, инвалидация 104.20");
   await expect(figs).toContainText("историческая отработка 46 % (n=48, до цели за 20 свечей)");
   await figs.getByRole("button", { name: /Восходящий канал/ }).click();
   await expect(figs).toContainText("геометрия без подтверждения");
@@ -295,8 +295,12 @@ test("панели индикаторов: заголовок 24 px, свора�
   await head.getByRole("button", { name: "свернуть панель RSI" }).click();
   await expect(head.getByRole("button", { name: "развернуть панель RSI" })).toHaveAttribute("aria-expanded", "false");
   await expect.poll(paneHeight).toBeLessThanOrEqual(24);
+  // в свёрнутой панели серия и метка последнего значения скрыты
+  const lastLabel = () => page.evaluate(() => (document.querySelector('[data-testid="terminal"]') as HTMLElement & { __chart: { panes(): { getSeries(): { options(): { lastValueVisible: boolean; visible: boolean } }[] }[] } }).__chart.panes()[1]!.getSeries()[0]!.options());
+  expect(await lastLabel()).toMatchObject({ visible: false, lastValueVisible: false });
   await head.getByRole("button", { name: "развернуть панель RSI" }).click();
   await expect.poll(paneHeight).toBeGreaterThan(24);
+  expect(await lastLabel()).toMatchObject({ visible: true, lastValueVisible: true });
   // удаление индикатора убирает заголовок
   await page.getByRole("button", { name: /Индикаторы/ }).click();
   await page.getByRole("dialog", { name: "Индикаторы" }).getByLabel(/RSI/).uncheck();
