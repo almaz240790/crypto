@@ -1,7 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import type { PatternOnChart, PatternStat } from "@/lib/chart";
+import { useState } from "react";
+import { explainPattern, type Explanation, type PatternOnChart, type PatternStat } from "@/lib/chart";
+import type { Timeframe } from "@/lib/timeframes";
 import s from "./terminal.module.css";
 
 /** Панель «Найдено на графике» (план 3.17, 2A.10): свечные паттерны с контекстом и исторической
@@ -33,7 +35,15 @@ export function contextFacts(p: PatternOnChart): string[] {
   return out;
 }
 
-export function FoundList({ items, stats, selected, onSelect, tf }: { items: PatternOnChart[]; stats: Record<string, PatternStat>; selected: number | null; onSelect: (id: number | null) => void; tf: string }) {
+export function FoundList({ items, stats, selected, onSelect, tf, symbol, canExplain = false }: { items: PatternOnChart[]; stats: Record<string, PatternStat>; selected: number | null; onSelect: (id: number | null) => void; tf: string; symbol?: string; canExplain?: boolean }) {
+  const [explained, setExplained] = useState<Record<number, Explanation | "loading" | { error: string }>>({});
+  const explain = (id: number) => {
+    if (!symbol) return;
+    setExplained((p) => ({ ...p, [id]: "loading" }));
+    explainPattern(symbol, tf as Timeframe, id)
+      .then((r) => setExplained((p) => ({ ...p, [id]: r })))
+      .catch((e: Error) => setExplained((p) => ({ ...p, [id]: { error: e.message } })));
+  };
   const list = [...items].reverse().slice(0, 40);
   if (list.length === 0) return <p className="caption">На видимом участке паттернов не найдено. Отметки появляются после закрытия свечи {tf.toUpperCase()}.</p>;
   return (
@@ -59,6 +69,26 @@ export function FoundList({ items, stats, selected, onSelect, tf }: { items: Pat
                   <Link href={`/stats/patterns?tf=${p.tf}&type=${p.type}`}>подробнее</Link>
                 </div>
                 <div className="caption">не является сигналом или рекомендацией</div>
+                {canExplain && symbol && (
+                  <div className={s.explain}>
+                    {explained[p.id] === undefined && (
+                      <button type="button" className={s.chip} onClick={() => explain(p.id)}>
+                        Объяснить
+                      </button>
+                    )}
+                    {explained[p.id] === "loading" && <span className="caption">составляю текст по данным графика…</span>}
+                    {typeof explained[p.id] === "object" && "error" in (explained[p.id] as object) && <span className="caption">{(explained[p.id] as { error: string }).error}</span>}
+                    {typeof explained[p.id] === "object" && "text" in (explained[p.id] as object) && (
+                      <div data-testid="explanation">
+                        <p>{(explained[p.id] as Explanation).text}</p>
+                        <p className="caption">
+                          {(explained[p.id] as Explanation).footer}
+                          {(explained[p.id] as Explanation).source === "template" ? " Шаблонный текст из фактов." : " Текст модели прошёл проверку: все числа — из данных графика."}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
           </li>

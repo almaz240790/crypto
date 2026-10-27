@@ -215,6 +215,13 @@ test("паттерны: вкладка «Найдено», подробност�
   await expect(list).toContainText("снята ликвидность");
   await expect(list).toContainText("историческая отработка 54 % (n=120, 5 свечей)");
   await expect(list).toContainText("не является сигналом");
+  // «Объяснить» (2B.15): текст по фактам с подписью и пометкой источника
+  await list.getByRole("button", { name: "Объяснить" }).click();
+  const expl = list.getByTestId("explanation");
+  await expect(expl).toContainText("54 % случаев (n=120)");
+  await expect(expl).toContainText("Текст составлен по данным графика");
+  await expect(expl).toContainText("Шаблонный текст из фактов");
+  expect(calls.some((c) => c.startsWith("/v1/chart/explain"))).toBe(true);
   await list.getByRole("button", { name: /Доджи/ }).click();
   await expect(list).toContainText("мало данных");
   // слой «Паттерны» в списке слоёв

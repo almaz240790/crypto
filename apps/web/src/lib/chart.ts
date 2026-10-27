@@ -50,3 +50,7 @@ export type PatternsResponse = { symbol: string; tf: string; items: PatternOnCha
 /** Свечные паттерны (план 2A.10.1, 2B.12): публично, по закрытым свечам. */
 export const getPatterns = (symbol: string, tf: Timeframe, since?: number, until?: number) =>
   api<PatternsResponse>(`/v1/chart/patterns?symbol=${symbol}&tf=${tf}${since ? `&since=${since}` : ""}${until ? `&until=${until}` : ""}&limit=500`, { auth: false });
+
+export type Explanation = { text: string; source: "llm" | "cache" | "template"; reason?: string; footer: string; generated_at: string; facts_hash: string; prompt_version: string; used?: number; limit?: number | null };
+/** Объяснение паттерна по фактам (план 2A.10.3): Free — шаблон, Pro+ — текст модели с постпроверкой. */
+export const explainPattern = (symbol: string, tf: Timeframe, pattern_id: number) => api<Explanation>("/v1/chart/explain", { method: "POST", json: { symbol, tf, pattern_id } });

@@ -64,7 +64,7 @@ type Props = {
   onDeleteLayout: (name: string) => void;
   authed: boolean;
   layoutsLimit: number | null;
-  found: { items: PatternOnChart[]; stats: Record<string, PatternStat>; selected: number | null; onSelect: (id: number | null) => void; tf: string };
+  found: { items: PatternOnChart[]; stats: Record<string, PatternStat>; selected: number | null; onSelect: (id: number | null) => void; tf: string; symbol: string; canExplain: boolean };
 };
 
 const LAYER_LABEL: Record<LayerKey, string> = { structure: "Структура", zones: "Зоны", levels: "Уровни", signals: "Сигналы", patterns: "Паттерны" };
@@ -83,7 +83,7 @@ export function ObjectsPanel(p: Props) {
           </button>
         ))}
       </div>
-      {tab === "found" && <FoundList items={p.found.items} stats={p.found.stats} selected={p.found.selected} onSelect={p.found.onSelect} tf={p.found.tf} />}
+      {tab === "found" && <FoundList items={p.found.items} stats={p.found.stats} selected={p.found.selected} onSelect={p.found.onSelect} tf={p.found.tf} symbol={p.found.symbol} canExplain={p.found.canExplain} />}
       {tab === "drawings" && (
         <ul className={s.objList}>
           {p.drawings.length === 0 && <li className="caption">Рисунков нет. Alt+H — линия, Alt+T — трендовая.</li>}
