@@ -8,7 +8,10 @@ const candle = (i: number) => {
   return { t: T0 + i * 14400, o: o.toFixed(2), h: (Math.max(o, c) + 1).toFixed(2), l: (Math.min(o, c) - 1).toFixed(2), c: c.toFixed(2), v: "1000", open: false };
 };
 
-export async function mock(page: Page, calls: string[], authed = false, server: { drawings: Record<string, unknown>[]; layout: Record<string, unknown> | null } = { drawings: [], layout: null }) {
+export type MockServer = { drawings: Record<string, unknown>[]; layout: Record<string, unknown> | null; layouts?: Record<string, Record<string, unknown>> };
+
+export async function mock(page: Page, calls: string[], authed = false, server: MockServer = { drawings: [], layout: null }) {
+  server.layouts ??= {};
   if (authed) await page.context().addCookies([{ name: "pl_auth", value: "1", url: "http://localhost:3101" }]);
   await page.route("**/v1/**", (route) => {
     const u = new URL(route.request().url());
@@ -38,11 +41,24 @@ export async function mock(page: Page, calls: string[], authed = false, server: 
       }
       return json(200, { items: items.map((it) => server.drawings.find((d) => d.client_id === it.client_id)) });
     }
-    if (p === "/v1/chart/layout" && route.request().method() === "GET") return json(200, { name: null, data: server.layout, updated_at: (server.layout?.__updated as number) ?? 0 });
+    if (p === "/v1/chart/layouts") return json(200, Object.keys(server.layouts!).map((name) => ({ name, updated_at: 0 })));
+    if (p === "/v1/chart/layout" && route.request().method() === "GET") {
+      const name = u.searchParams.get("name");
+      if (name) return json(200, { name, data: server.layouts![name] ?? null, updated_at: 0 });
+      return json(200, { name: null, data: server.layout, updated_at: (server.layout?.__updated as number) ?? 0 });
+    }
     if (p === "/v1/chart/layout" && route.request().method() === "PUT") {
-      const b = route.request().postDataJSON() as { data: Record<string, unknown>; updated_at: number };
+      const b = route.request().postDataJSON() as { name: string | null; data: Record<string, unknown>; updated_at: number };
+      if (b.name) {
+        server.layouts![b.name] = b.data;
+        return json(200, { name: b.name, data: b.data, updated_at: b.updated_at });
+      }
       server.layout = { ...b.data, __updated: b.updated_at };
       return json(200, { name: null, data: b.data, updated_at: b.updated_at });
+    }
+    if (p === "/v1/chart/layout" && route.request().method() === "DELETE") {
+      delete server.layouts![u.searchParams.get("name") ?? ""];
+      return route.fulfill({ status: 204, body: "" });
     }
     if (p === "/v1/chart/derivatives")
       return json(200, { symbol: "BTCUSDT", tf: "4h", funding: [{ t: T0 + 100 * 14400, v: "0.0001" }, { t: T0 + 200 * 14400, v: "0.00012" }], funding_current: "0.00012", next_funding_t: Math.floor(Date.now() / 1000) + 3600, oi: [{ t: T0 + 100 * 14400, v: "1000000" }], liquidations: [{ t: T0 + 100 * 14400, long: "1000", short: "2000" }], liquidations_note: "" });
