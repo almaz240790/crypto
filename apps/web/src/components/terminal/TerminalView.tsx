@@ -3,7 +3,7 @@
 import { createTerminal, tokensFromElement, type Candle, type ChartType, type Terminal, type Timeframe } from "@platform/charts";
 import { DrawingController, DrawingsPrimitive, INDICATORS, defaultParams, indicatorById, visibleOn, type Drawing, type DrawingType, type DrawingsState, type IndicatorSpec, type Layer, type LayerContext, type Point, TF_SECONDS } from "@platform/charts";
 import { LineSeries, createSeriesMarkers, type ISeriesApi, type ISeriesMarkersPluginApi, type SeriesMarker, type Time, type UTCTimestamp } from "lightweight-charts";
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { BoxPrimitive } from "@/components/chart/BoxPrimitive";
 import { PATTERN_GLYPH, type Derivatives, type FigureOnChart, type LayersResponse, type PatternOnChart } from "@/lib/chart";
 import s from "./terminal.module.css";
@@ -77,6 +77,14 @@ function precisionOf(tick: string | null): { precision: number; minMove: number 
 }
 
 type Pane = { spec: IndicatorSpec; paneIndex: number | null; series: Record<string, ISeriesApi<"Line" | "Histogram">> };
+/** Заголовок панели под графиком (план 2A.7): панели сворачиваются до 24 px, на телефоне раскрыто не больше трёх. */
+type PaneHead = { key: string; title: string; top: number; collapsed: boolean };
+const PANE_COLLAPSED_PX = 24;
+const PANE_INDICATOR_PX = 90;
+const PANE_CRYPTO_PX = 80;
+const MAX_EXPANDED_MOBILE = 3;
+const MOBILE_QUERY = "(max-width: 899px)";
+const SWIPE_PX = 24;
 
 /** Обёртка React над Terminal из packages/charts: данные, индикаторы, слои, тема. */
 export function TerminalView({ candles, current, tf, type, indicators, layersOn, layers, patterns, highlight, figures, highlightFigure, alertLines, derivatives, panels, tick, onNeedOlder, drawings, onCrosshair }: Props) {
@@ -96,6 +104,60 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
   const onCrosshairRef = useRef(onCrosshair);
   const valuesRef = useRef<Map<string, { label: string; values: (number | null)[] }>>(new Map());
   const stickyRef = useRef(false);
+  const [heads, setHeads] = useState<PaneHead[]>([]);
+  const collapsedRef = useRef<Set<string>>(new Set());
+  const paneObsRef = useRef<ResizeObserver | null>(null);
+  const swipeRef = useRef<{ key: string; y: number } | null>(null);
+
+  // панели под графиком в порядке сверху вниз: индикаторы в отдельных панелях и крипто-панели
+  const paneEntries = useCallback(() => {
+    const out: { key: string; title: string; series: ISeriesApi<"Line" | "Histogram">[]; height: number }[] = [];
+    for (const [id, p] of panesRef.current) {
+      if (p.paneIndex !== null) out.push({ key: id, title: p.spec.title, series: Object.values(p.series), height: PANE_INDICATOR_PX });
+    }
+    for (const [k, p] of cryptoRef.current) out.push({ key: k, title: PANELS.find((x) => x.id === k)?.title ?? k, series: p.series, height: PANE_CRYPTO_PX });
+    return out.filter((e) => e.series.length > 0).sort((a, b) => a.series[0]!.getPane().paneIndex() - b.series[0]!.getPane().paneIndex());
+  }, []);
+
+  const relayout = useCallback(() => {
+    const el = ref.current;
+    if (!el) return;
+    const r0 = el.getBoundingClientRect();
+    const next = paneEntries().map((e) => {
+      const r = e.series[0]!.getPane().getHTMLElement()?.getBoundingClientRect();
+      return { key: e.key, title: e.title, top: r ? Math.round(r.top - r0.top) : 0, collapsed: collapsedRef.current.has(e.key) };
+    });
+    setHeads((prev) => (prev.length === next.length && prev.every((h, i) => h.key === next[i]!.key && h.top === next[i]!.top && h.collapsed === next[i]!.collapsed) ? prev : next));
+  }, [paneEntries]);
+
+  const applyCollapsed = useCallback(
+    (key: string, collapsed: boolean) => {
+      const e = paneEntries().find((x) => x.key === key);
+      if (!e) return;
+      if (collapsed) collapsedRef.current.add(key);
+      else collapsedRef.current.delete(key);
+      e.series.forEach((sr) => sr.applyOptions({ visible: !collapsed }));
+      termRef.current?.setPaneHeight(e.series[0]!.getPane(), collapsed ? PANE_COLLAPSED_PX : e.height);
+      requestAnimationFrame(relayout);
+    },
+    [paneEntries, relayout],
+  );
+
+  // новая панель: наблюдаем её размер; на телефоне раскрытых не больше трёх — старшие сворачиваются
+  const paneAdded = useCallback(
+    (key: string, series: ISeriesApi<"Line" | "Histogram">) => {
+      const pel = series.getPane().getHTMLElement();
+      if (pel) paneObsRef.current?.observe(pel);
+      if (window.matchMedia(MOBILE_QUERY).matches) {
+        const open = paneEntries().filter((e) => e.key !== key && !collapsedRef.current.has(e.key));
+        for (const e of open.slice(0, Math.max(0, open.length + 1 - MAX_EXPANDED_MOBILE))) applyCollapsed(e.key, true);
+      }
+      requestAnimationFrame(relayout);
+    },
+    [paneEntries, applyCollapsed, relayout],
+  );
+
+  const togglePane = useCallback((key: string) => applyCollapsed(key, !collapsedRef.current.has(key)), [applyCollapsed]);
   useEffect(() => {
     needOlderRef.current = onNeedOlder;
     drawingsRef.current = drawings;
@@ -212,8 +274,13 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
     el.addEventListener("pointermove", onPMove);
     el.addEventListener("pointerup", onPUp);
     el.addEventListener("pointercancel", onPUp);
+    const paneObs = new ResizeObserver(() => relayout());
+    paneObs.observe(el);
+    paneObsRef.current = paneObs;
     const panes = panesRef.current;
     return () => {
+      paneObs.disconnect();
+      paneObsRef.current = null;
       obs.disconnect();
       mq.removeEventListener("change", onMq);
       el.removeEventListener("dblclick", onDbl);
@@ -289,6 +356,7 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
       if (!want.has(id)) {
         Object.values(pane.series).forEach((sr) => term.removeSeries(sr));
         panesRef.current.delete(id);
+        collapsedRef.current.delete(id);
         for (const k of [...valuesRef.current.keys()]) if (k.startsWith(`${id}.`)) valuesRef.current.delete(k);
       }
     }
@@ -298,13 +366,15 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
       if (!spec) continue;
       let pane = panesRef.current.get(ind.id);
       if (!pane) {
-        const paneIndex = spec.pane === "separate" ? term.addPane(90) : null;
+        const paneIndex = spec.pane === "separate" ? term.addPane(PANE_INDICATOR_PX) : null;
         const series: Pane["series"] = {};
         for (const sp of spec.series) {
           series[sp.key] = sp.kind === "histogram" ? term.addHistogram(paneIndex ?? 0, color(sp.color)) : term.addLine(paneIndex ?? 0, color(sp.color), sp.width ?? 1);
         }
         pane = { spec, paneIndex, series };
         panesRef.current.set(ind.id, pane);
+        const first = Object.values(series)[0];
+        if (paneIndex !== null && first) paneAdded(ind.id, first);
       }
       const out = spec.compute(all, { ...defaultParams(spec), ...ind.params });
       for (const sp of spec.series) valuesRef.current.set(`${ind.id}.${sp.key}`, { label: `${spec.title} ${sp.label}`.replace(/ (EMA|SMA|RSI|VWAP|ATR)$/, ""), values: out[sp.key] ?? [] });
@@ -314,7 +384,8 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
         pane.series[sp.key]!.setData(data as never);
       }
     }
-  }, [indicators, candles, current]);
+    requestAnimationFrame(relayout);
+  }, [indicators, candles, current, paneAdded, relayout]);
 
   // крипто-панели (план 2A.4): funding, OI, ликвидации — данные с сервера, выровнены по корзинам tf
   useEffect(() => {
@@ -326,6 +397,7 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
       if (!want.has(k)) {
         p.series.forEach((sr) => term.removeSeries(sr));
         cryptoRef.current.delete(k);
+        collapsedRef.current.delete(k);
       }
     }
     if (!derivatives) return;
@@ -333,13 +405,14 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
     for (const k of panels) {
       let p = cryptoRef.current.get(k);
       if (!p) {
-        const paneIndex = term.addPane(80);
+        const paneIndex = term.addPane(PANE_CRYPTO_PX);
         const series: ISeriesApi<"Line" | "Histogram">[] = [];
         if (k === "funding") series.push(term.addLine(paneIndex, tokens.warn, 1));
         else if (k === "oi") series.push(term.addLine(paneIndex, tokens.accent, 1));
         else series.push(term.addHistogram(paneIndex, tokens.up), term.addHistogram(paneIndex, tokens.down));
         p = { paneIndex, series };
         cryptoRef.current.set(k, p);
+        paneAdded(k, series[0]!);
       }
       if (k === "funding") p.series[0]!.setData(asLine(derivatives.funding.map((r) => ({ t: r.t, v: String(Number(r.v) * 100) }))) as never);
       else if (k === "oi") p.series[0]!.setData(asLine(derivatives.oi) as never);
@@ -348,7 +421,8 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
         p.series[1]!.setData(derivatives.liquidations.map((r) => ({ time: r.t as UTCTimestamp, value: -Number(r.short), color: tokens.down })) as never);
       }
     }
-  }, [derivatives, panels]);
+    requestAnimationFrame(relayout);
+  }, [derivatives, panels, paneAdded, relayout]);
 
   // слои: зоны (прямоугольники), структура (отрезки BOS/CHoCH, свинги), уровни, сигналы
   useEffect(() => {
@@ -470,6 +544,31 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
   return (
     <div className={s.chart}>
       <div ref={ref} className={s.canvas} data-testid="terminal" />
+      {heads.map((h) => (
+        <div
+          key={h.key}
+          className={s.paneHead}
+          data-collapsed={h.collapsed || undefined}
+          data-testid={`pane-${h.key}`}
+          style={{ top: h.top }}
+          onTouchStart={(e) => {
+            swipeRef.current = { key: h.key, y: e.touches[0]?.clientY ?? 0 };
+          }}
+          onTouchEnd={(e) => {
+            const st = swipeRef.current;
+            swipeRef.current = null;
+            if (!st || st.key !== h.key) return;
+            const dy = (e.changedTouches[0]?.clientY ?? st.y) - st.y;
+            if (dy > SWIPE_PX && !h.collapsed) applyCollapsed(h.key, true);
+            else if (dy < -SWIPE_PX && h.collapsed) applyCollapsed(h.key, false);
+          }}
+        >
+          <span className={s.paneTitle}>{h.title}</span>
+          <button type="button" className={s.paneToggle} aria-expanded={!h.collapsed} aria-label={`${h.collapsed ? "развернуть" : "свернуть"} панель ${h.title}`} onClick={() => togglePane(h.key)}>
+            {h.collapsed ? "▴" : "▾"}
+          </button>
+        </div>
+      ))}
       {candles.length === 0 && <div className={s.empty}>Нет свечей.</div>}
     </div>
   );

@@ -277,3 +277,27 @@ test("алерты на графике: из горизонтальной лин
   await expect(page.getByRole("button", { name: "Алерт (2)" })).toBeVisible();
   expect(server.alerts[1]!.condition).toEqual({ op: "cross_up", price: "120" });
 });
+
+test("панели индикаторов: заголовок 24 px, сворачивание и раскрытие", async ({ page }) => {
+  const calls: string[] = [];
+  await mock(page, calls);
+  await page.goto("/chart/BTCUSDT/4h");
+  await expect(page.getByTestId("terminal").locator("canvas").first()).toBeVisible();
+  await page.getByRole("button", { name: /Индикаторы/ }).click();
+  await page.getByRole("dialog", { name: "Индикаторы" }).getByLabel(/RSI/).check();
+  await page.getByRole("button", { name: "Готово" }).click();
+  const head = page.getByTestId("pane-rsi");
+  await expect(head).toContainText("RSI");
+  const paneHeight = () => page.evaluate(() => (document.querySelector('[data-testid="terminal"]') as HTMLElement & { __chart: { panes(): { getHeight(): number }[] } }).__chart.panes()[1]!.getHeight());
+  expect(await paneHeight()).toBeGreaterThan(24);
+  await head.getByRole("button", { name: "свернуть панель RSI" }).click();
+  await expect(head.getByRole("button", { name: "развернуть панель RSI" })).toHaveAttribute("aria-expanded", "false");
+  await expect.poll(paneHeight).toBeLessThanOrEqual(24);
+  await head.getByRole("button", { name: "развернуть панель RSI" }).click();
+  await expect.poll(paneHeight).toBeGreaterThan(24);
+  // удаление индикатора убирает заголовок
+  await page.getByRole("button", { name: /Индикаторы/ }).click();
+  await page.getByRole("dialog", { name: "Индикаторы" }).getByLabel(/RSI/).uncheck();
+  await page.getByRole("button", { name: "Готово" }).click();
+  await expect(head).toHaveCount(0);
+});
