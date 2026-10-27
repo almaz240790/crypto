@@ -20,6 +20,7 @@ import { PANELS, TerminalView, type ActiveIndicator, type CrosshairInfo, type La
 import { useDrawings } from "./useDrawings";
 import { deleteLayout, getLayout, listLayouts, putLayout } from "@/lib/drawings";
 import { createAlert, getAlerts, type Alert } from "@/lib/alerts";
+import { getCandles } from "@/lib/chart";
 import { useTerminalData } from "./useTerminalData";
 
 const TYPE_LABEL: Record<ChartType, string> = { candles: "Свечи", bars: "Бары", line: "Линия", heikin: "Heikin Ashi" };
@@ -207,6 +208,20 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
   const prevClose = data.candles && data.candles.length > 1 ? data.candles[data.candles.length - (data.current ? 1 : 2)]!.close : null;
   const price = data.price ? Number(data.price) : last?.close ?? null;
   const change = price != null && prevClose ? ((price - prevClose) / prevClose) * 100 : null;
+  // копия рисунка на другой инструмент (план 2A.5): цены пропорционально последней цене цели
+  const copyDrawing = async (id: string, target: string) => {
+    let ratio = 1;
+    try {
+      const r = await getCandles(target, tf);
+      const lastClose = Number((r.current ?? r.candles[r.candles.length - 1])?.c);
+      if (price && lastClose > 0) ratio = lastClose / price;
+    } catch {
+      say(`Не удалось получить цену ${target}`);
+      return;
+    }
+    const copy = dr.actions.copyTo(id, target, ratio);
+    if (copy) say(`Рисунок скопирован на ${target}${ratio !== 1 ? " (цены пропорционально)" : ""}`);
+  };
   const countdown = last ? secondsToClose(tf, last.time, now) : null;
   const intradayLocked = !user || (data.error ?? "").includes("тарифе");
   const bias = data.layers?.structure?.bias;
@@ -386,6 +401,26 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
               >
                 алерт на уровне
               </button>
+            )}
+            {instruments.length > 1 && (
+              <select
+                className={s.chip}
+                aria-label="скопировать на инструмент"
+                value=""
+                onChange={(e) => {
+                  const target = e.target.value;
+                  if (target) void copyDrawing(sel.id, target);
+                }}
+              >
+                <option value="">скопировать на…</option>
+                {instruments
+                  .filter((i) => i.symbol !== symbol)
+                  .map((i) => (
+                    <option key={i.symbol} value={i.symbol}>
+                      {i.symbol}
+                    </option>
+                  ))}
+              </select>
             )}
             <button type="button" className={s.chip} onClick={() => dr.actions.lock(sel.id)} aria-pressed={sel.locked}>
               {sel.locked ? "разблокировать" : "заблокировать"}
