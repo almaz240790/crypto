@@ -87,3 +87,35 @@ test("рисование: трендовая линия двумя кликам�
   await page.reload();
   await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 1");
 });
+
+test("синхронизация рисунков: запись на сервер, второе устройство видит, конфликт решается по времени", async ({ page, browser }) => {
+  const server = { drawings: [] as Record<string, unknown>[], layout: null as Record<string, unknown> | null };
+  const calls: string[] = [];
+  await mock(page, calls, true, server);
+  await page.goto("/chart/BTCUSDT/4h");
+  const term = page.getByTestId("terminal");
+  await expect(term.locator("canvas").first()).toBeVisible();
+  await page.getByRole("button", { name: "Рисовать" }).click();
+  await page.getByRole("dialog", { name: "Рисование" }).getByRole("button", { name: "Горизонтальная линия" }).click();
+  const box = (await term.boundingBox())!;
+  await page.mouse.click(box.x + box.width * 0.4, box.y + box.height * 0.5);
+  await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 1");
+  await expect(page.getByTestId("drawings-sync")).toHaveText("синхронизировано");
+  expect(server.drawings).toHaveLength(1);
+  expect(server.drawings[0]!.type).toBe("hline");
+  // второе устройство: чистый контекст, те же серверные данные
+  const ctx2 = await browser.newContext({ viewport: { width: 1600, height: 900 } });
+  const page2 = await ctx2.newPage();
+  await mock(page2, [], true, server);
+  await page2.goto("/chart/BTCUSDT/4h");
+  await expect(page2.getByTestId("drawings-count")).toHaveText("рисунков: 1");
+  // на втором устройстве удаляем (новее) — первое после перезагрузки тоже без рисунка
+  page2.once("dialog", (d) => d.accept());
+  await page2.getByRole("button", { name: "Рисовать" }).click();
+  await page2.getByRole("dialog", { name: "Рисование" }).getByRole("button", { name: "удалить все" }).click();
+  await expect(page2.getByTestId("drawings-count")).toHaveText("рисунков: 0");
+  await expect.poll(() => (server.drawings[0]?.deleted_at ? 1 : 0)).toBe(1);
+  await ctx2.close();
+  await page.reload();
+  await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 0");
+});
