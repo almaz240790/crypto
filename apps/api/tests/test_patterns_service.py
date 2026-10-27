@@ -239,7 +239,7 @@ def test_backfill_outcomes_stats_and_live_idempotent() -> None:
                     "10",
                 )
                 for i in range(80)
-            ] + [("100", "102.05", "99.95", "102", "10")]  # марубозу на последней свече
+            ] + [("100", "102.2", "99.9", "102.1", "10")]  # марубозу на последней свече (не внутренний бар)
             for i, (o, h, lo, c, v) in enumerate(rows):
                 s.add(
                     CandleRow(
