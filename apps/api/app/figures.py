@@ -9,6 +9,7 @@ from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import delete, insert, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.chart_data import PAGE, STORED, load_candles
@@ -92,6 +93,33 @@ def _row_values(f: Figure, candles: list[Candle], tf: Timeframe) -> dict[str, An
     }
 
 
+def _insert_or_existing(
+    db: Session, inst: Instrument, tf: Timeframe, vals: dict[str, Any], source: str
+) -> tuple[FigureRow, bool]:
+    """Вставка фигуры; если такую же (uq_figures_geometry) параллельно записал live-воркер —
+    берём его строку (гонка бэкфилла и детектора на закрытии свечи)."""
+    row = FigureRow(instrument_id=inst.id, timeframe=tf.value, source=source, **vals)
+    try:
+        with db.begin_nested():
+            db.add(row)
+            db.flush()
+        return row, True
+    except IntegrityError:
+        if row in db:  # после отката savepoint объект обычно уже вне сессии
+            db.expunge(row)
+        found = db.scalars(
+            select(FigureRow).where(
+                FigureRow.instrument_id == inst.id,
+                FigureRow.timeframe == tf.value,
+                FigureRow.type == vals["type"],
+                FigureRow.start_time == vals["start_time"],
+                FigureRow.end_time == vals["end_time"],
+                FigureRow.rules_version == vals["rules_version"],
+            )
+        ).one()
+        return found, False
+
+
 def sync_figures(
     db: Session,
     inst: Instrument,
@@ -122,10 +150,11 @@ def sync_figures(
         key = (vals["type"], vals["start_time"], vals["end_time"])
         seen.add(key)
         row = existing.get(key)
+        inserted = False
         if row is None:
-            row = FigureRow(instrument_id=inst.id, timeframe=tf.value, source=source, **vals)
-            db.add(row)
-            db.flush()
+            row, inserted = _insert_or_existing(db, inst, tf, vals, source)
+            existing[key] = row
+        if inserted:
             db.add(
                 FigureEvent(
                     figure_id=row.id,
