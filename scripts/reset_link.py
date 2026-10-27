@@ -18,12 +18,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "apps" / "api"))
 
-from sqlalchemy import select  # noqa: E402
+from sqlalchemy import select
 
-from app import auth  # noqa: E402
-from app.config import settings  # noqa: E402
-from app.db import SessionLocal  # noqa: E402
-from app.models import EmailToken, User  # noqa: E402
+from app import auth
+from app.config import settings
+from app.db import SessionLocal
+from app.models import EmailToken, User
 
 TTL = timedelta(hours=1)
 
