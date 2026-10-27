@@ -5,7 +5,7 @@ export { heikinAshi, heikinNext } from "./heikin";
 export { LayerManager } from "./layers";
 export type { Layer, LayerContext } from "./layers";
 export { createTerminal, Terminal } from "./terminal";
-export type { PaneSeries, TerminalOptions } from "./terminal";
+export type { PaneSeries, ScaleMode, TerminalOptions } from "./terminal";
 export { alpha, chartOptions, seriesColors, tokensFromElement } from "./theme";
 export { CHART_TYPES, TF_SECONDS } from "./types";
 export type { Candle, ChartType, ThemeTokens, Timeframe } from "./types";

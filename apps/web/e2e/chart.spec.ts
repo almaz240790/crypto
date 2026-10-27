@@ -411,3 +411,28 @@ test("десктоп: ширина панели объектов меняетс�
   await expect(page.getByTestId("terminal").locator("canvas").first()).toBeVisible();
   await expect.poll(async () => Math.round((await page.getByRole("complementary", { name: "панель объектов" }).boundingBox())!.width)).toBe(400);
 });
+
+test("шкала: логарифмическая и процентная, наложение второго инструмента", async ({ page }) => {
+  const calls: string[] = [];
+  await mock(page, calls);
+  await page.goto("/chart/BTCUSDT/4h");
+  await expect(page.getByTestId("terminal").locator("canvas").first()).toBeVisible();
+  await expect(page.getByLabel("состояние")).toContainText("цена");
+  type Host = HTMLElement & { __chart: { priceScale(id: string): { options(): { mode: number } }; panes(): { getSeries(): { seriesType(): string }[] }[] } };
+  const mode = () => page.evaluate(() => (document.querySelector('[data-testid="terminal"]') as Host).__chart.priceScale("right").options().mode);
+  const lines = () => page.evaluate(() => (document.querySelector('[data-testid="terminal"]') as Host).__chart.panes()[0]!.getSeries().filter((s) => s.seriesType() === "Line").length);
+  expect(await mode()).toBe(0);
+  await page.getByLabel("шкала").selectOption("log");
+  await expect.poll(mode).toBe(1);
+  const before = await lines();
+  await page.getByLabel("наложение").selectOption("ETHUSDT");
+  await expect.poll(() => calls.some((c) => c.startsWith("/v1/chart/candles?symbol=ETHUSDT&tf=4h"))).toBe(true);
+  await expect.poll(lines).toBe(before + 1);
+  await page.getByLabel("шкала").selectOption("percent");
+  await expect.poll(mode).toBe(2);
+  await page.getByLabel("наложение").selectOption("");
+  await expect.poll(lines).toBe(before);
+  await page.reload();
+  await expect(page.getByTestId("terminal").locator("canvas").first()).toBeVisible();
+  await expect(page.getByLabel("шкала")).toHaveValue("percent");
+});

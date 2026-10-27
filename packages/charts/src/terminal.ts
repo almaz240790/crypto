@@ -1,5 +1,10 @@
 import type { IChartApi, ISeriesApi, LogicalRange, SeriesType, Time, UTCTimestamp } from "lightweight-charts";
-import { BarSeries, CandlestickSeries, HistogramSeries, LineSeries, createChart, type IPaneApi } from "lightweight-charts";
+import { BarSeries, CandlestickSeries, HistogramSeries, LineSeries, PriceScaleMode, createChart, type IPaneApi } from "lightweight-charts";
+
+/** Режим ценовой шкалы (план 2A.3): линейная, логарифмическая, процентная (для сравнения инструментов). */
+export type ScaleMode = "linear" | "log" | "percent";
+const SCALE_MODES: Record<ScaleMode, PriceScaleMode> = { linear: PriceScaleMode.Normal, log: PriceScaleMode.Logarithmic, percent: PriceScaleMode.Percentage };
+const OVERLAY_SCALE = "overlay";
 import { createBuffer, needsNewer, needsOlder, prependOlder, pushLatest, replaceNewest, type BufferState } from "./buffer";
 import { heikinAshi } from "./heikin";
 import { LayerManager } from "./layers";
@@ -41,6 +46,8 @@ export class Terminal {
   private readonly opts: TerminalOptions;
   private requesting = false;
   private panes = 1;
+  private scaleMode: ScaleMode = "linear";
+  private overlay: ISeriesApi<"Line"> | null = null;
   private readonly container: HTMLElement;
 
   constructor(container: HTMLElement, opts: TerminalOptions) {
@@ -170,6 +177,34 @@ export class Terminal {
 
   removeSeries(s: PaneSeries): void {
     this.chart.removeSeries(s);
+  }
+
+  /** Режим правой шкалы; наложенный инструмент в процентном режиме делит шкалу с основным. */
+  setScaleMode(mode: ScaleMode): void {
+    this.scaleMode = mode;
+    this.chart.priceScale("right").applyOptions({ mode: SCALE_MODES[mode] });
+    this.overlay?.applyOptions({ priceScaleId: mode === "percent" ? "right" : OVERLAY_SCALE });
+  }
+
+  /** Фиксация шкалы: автомасштаб выключен, пока пользователь не сбросит вид. */
+  setAutoScale(on: boolean): void {
+    this.chart.priceScale("right").applyOptions({ autoScale: on });
+  }
+
+  /** Наложение второго инструмента (план 2A.3 v2): линия закрытий; null — убрать. */
+  setOverlay(candles: readonly Candle[] | null, color: string): void {
+    if (!candles || candles.length === 0) {
+      if (this.overlay) this.chart.removeSeries(this.overlay);
+      this.overlay = null;
+      return;
+    }
+    if (!this.overlay) {
+      this.overlay = this.chart.addSeries(LineSeries, { color, lineWidth: 1, priceLineVisible: false, lastValueVisible: true, crosshairMarkerVisible: false, priceScaleId: this.scaleMode === "percent" ? "right" : OVERLAY_SCALE }, 0);
+      this.chart.priceScale(OVERLAY_SCALE).applyOptions({ visible: false, scaleMargins: { top: 0.08, bottom: 0.2 } });
+    } else {
+      this.overlay.applyOptions({ color });
+    }
+    this.overlay.setData(candles.map((c) => ({ time: c.time as Time, value: c.close })));
   }
 
   /** Масштаб вокруг точки (x в пикселях контейнера; без x — вокруг центра видимой области). */

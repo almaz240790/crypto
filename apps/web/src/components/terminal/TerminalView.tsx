@@ -1,6 +1,6 @@
 "use client";
 
-import { createTerminal, tokensFromElement, type Candle, type ChartType, type Terminal, type Timeframe } from "@platform/charts";
+import { createTerminal, tokensFromElement, type Candle, type ChartType, type ScaleMode, type Terminal, type Timeframe } from "@platform/charts";
 import { DrawingController, DrawingsPrimitive, INDICATORS, defaultParams, indicatorById, visibleOn, type Drawing, type DrawingType, type DrawingsState, type IndicatorSpec, type Layer, type LayerContext, type Point, TF_SECONDS } from "@platform/charts";
 import { LineSeries, createSeriesMarkers, type ISeriesApi, type ISeriesMarkersPluginApi, type SeriesMarker, type Time, type UTCTimestamp } from "lightweight-charts";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -49,6 +49,9 @@ type Props = {
   onVisibleFrom?: (t: number | null) => void;
   /** Вызывается с управлением видом после создания графика и с null при размонтировании. */
   onReady?: (controls: TerminalControls | null) => void;
+  /** Режим ценовой шкалы и наложенный инструмент (план 2A.3). */
+  scale?: ScaleMode;
+  overlay?: Candle[] | null;
   drawings?: {
     state: DrawingsState;
     tool: DrawingType | null;
@@ -106,7 +109,7 @@ const MOBILE_QUERY = "(max-width: 899px)";
 const SWIPE_PX = 24;
 
 /** Обёртка React над Terminal из packages/charts: данные, индикаторы, слои, тема. */
-export function TerminalView({ candles, current, tf, type, indicators, layersOn, layers, patterns, highlight, figures, highlightFigure, alertLines, derivatives, panels, tick, onNeedOlder, drawings, onCrosshair, onVisibleFrom, onReady }: Props) {
+export function TerminalView({ candles, current, tf, type, indicators, layersOn, layers, patterns, highlight, figures, highlightFigure, alertLines, derivatives, panels, tick, onNeedOlder, drawings, onCrosshair, onVisibleFrom, onReady, scale = "linear", overlay = null }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const tfRef = useRef(tf);
@@ -381,6 +384,16 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
     if (ctrl.tool !== (drawings?.tool ?? null)) ctrl.setTool(drawings?.tool ?? null);
     ctrl.setMagnet(drawings?.magnet ?? true);
   }, [drawings, tf]);
+
+  useEffect(() => {
+    termRef.current?.setScaleMode(scale);
+  }, [scale]);
+
+  useEffect(() => {
+    const term = termRef.current;
+    if (!term || !ref.current) return;
+    term.setOverlay(overlay, tokensFromElement(ref.current).warn);
+  }, [overlay]);
 
   useEffect(() => {
     termRef.current?.setType(type);
