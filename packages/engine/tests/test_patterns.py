@@ -90,6 +90,7 @@ def test_engulfing_bullish_after_decline_with_volume() -> None:
     assert m.price == D("96.2")
     assert m.title == "Бычье поглощение"
     assert m.rules_version == "candles@1.0.0"
+    assert m.atr == atr(cs, 14)[m.index]
 
 
 def test_engulfing_without_volume_is_found_but_not_significant() -> None:

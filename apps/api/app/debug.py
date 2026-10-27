@@ -70,7 +70,9 @@ def render_png(
     zones: Sequence[Zone],
     window: int,
     title: str,
+    marks: Sequence[tuple[int, int, Decimal, str, str | None]] = (),
 ) -> bytes:
+    """``marks`` — (start_index, index, price, label, direction) для отметок паттернов."""
     n = len(candles)
     start = max(0, n - window)
     list(range(n))
@@ -150,6 +152,34 @@ def render_png(
             fontsize=6,
             color=color,
             family="monospace",
+        )
+
+    for ms, mi, mp, label, direction in marks:
+        if mi < start:
+            continue
+        color = UP if direction == "up" else DOWN if direction == "down" else MUTED
+        ax.add_patch(
+            Rectangle(
+                (ms - 0.45, float(min(c.low for c in candles[ms : mi + 1]))),
+                mi - ms + 0.9,
+                float(
+                    max(c.high for c in candles[ms : mi + 1])
+                    - min(c.low for c in candles[ms : mi + 1])
+                ),
+                fill=False,
+                edgecolor=color,
+                linewidth=1.2,
+            )
+        )
+        ax.annotate(
+            label,
+            (mi, float(mp)),
+            xytext=(0, -14 if direction == "up" else 10),
+            textcoords="offset points",
+            fontsize=8,
+            color=color,
+            family="monospace",
+            ha="center",
         )
 
     ticks = list(range(start, n, max(1, window // 12)))
@@ -423,3 +453,114 @@ def live_status(token: str | None = None) -> dict[str, Any]:
     except Exception as exc:
         out["workers"] = {"error": f"{type(exc).__name__}: {exc}"[:200]}
     return out
+
+
+# --- свечные паттерны (план 2B.10: визуальная проверка 20 примеров на тип) ------------------------
+
+PATTERN_BEFORE, PATTERN_AFTER = 60, 12
+
+
+@router.get("/patterns", response_class=HTMLResponse)
+def patterns_index(
+    token: str | None = None,
+    tf: str | None = Query(None, pattern="^(15m|1h|4h|1d|1w)$"),
+    type: str | None = Query(None, max_length=24),
+    significant: bool | None = None,
+    n: int = Query(20, ge=1, le=100),
+    seed: int = 1,
+) -> str:
+    """Список случайных подтверждённых отметок по каждому типу со ссылками на PNG."""
+    _check(token)
+    from app.models import Instrument, Pattern
+    from app.patterns import pattern_dict
+    from engine.patterns import PatternType
+
+    rng = random.Random(seed)
+    types = [type] if type else [t.value for t in PatternType]
+    parts = [
+        "<html><head><meta charset='utf-8'><style>body{font:13px monospace;margin:20px}"
+        "a{color:#0F4C81}li{margin:2px 0}</style></head><body>"
+    ]
+    parts.append("<h2>Свечные паттерны — примеры для визуальной проверки</h2>")
+    from sqlalchemy import select as _select
+
+    from app.db import SessionLocal
+
+    with SessionLocal() as db:
+        for t in types:
+            q = (
+                _select(Pattern, Instrument.symbol)
+                .join(Instrument, Instrument.id == Pattern.instrument_id)
+                .where(Pattern.type == t)
+            )
+            if tf:
+                q = q.where(Pattern.timeframe == tf)
+            if significant is not None:
+                q = q.where(Pattern.is_significant == significant)
+            rows = db.execute(q.order_by(Pattern.id.desc()).limit(2000)).all()
+            if not rows:
+                parts.append(f"<h3>{t}</h3><p>нет отметок</p>")
+                continue
+            sample = rng.sample(rows, min(n, len(rows)))
+            parts.append(f"<h3>{t} — всего {len(rows)}, показано {len(sample)}</h3><ol>")
+            for p, symbol in sample:
+                d = pattern_dict(p)
+                parts.append(
+                    f"<li><a href='/debug/patterns/{p.id}.png?token={token}'>"
+                    f"{symbol} {p.timeframe} "
+                    f"{p.confirm_time:%d.%m.%Y %H:%M}</a> {d['title']} "
+                    f"{'значимый' if p.is_significant else 'найден'} · {p.source}</li>"
+                )
+            parts.append("</ol>")
+    parts.append("</body></html>")
+    return "".join(parts)
+
+
+@router.get("/patterns/{pattern_id}.png")
+def pattern_png(pattern_id: int, token: str | None = None) -> Response:
+    _check(token)
+    from sqlalchemy import select as _select
+
+    from app.db import SessionLocal
+    from app.models import Instrument, Pattern
+    from app.patterns import pattern_dict
+
+    with SessionLocal() as db:
+        row = db.execute(
+            _select(Pattern, Instrument.symbol)
+            .join(Instrument, Instrument.id == Pattern.instrument_id)
+            .where(Pattern.id == pattern_id)
+        ).first()
+        if row is None:
+            raise HTTPException(404, "нет отметки")
+        p, symbol = row
+        d = pattern_dict(p)
+    tf = Timeframe(p.timeframe)
+    end = p.candle_close_time + tf.delta * PATTERN_AFTER
+    candles = load_candles(symbol, tf, end + tf.delta, PATTERN_BEFORE + PATTERN_AFTER + CONTEXT)
+    if not candles:
+        raise HTTPException(404, "нет свечей")
+    structure = analyze_structure(candles)
+    zones = analyze_zones(candles, structure)
+    idx = {c.open_time: i for i, c in enumerate(candles)}
+    mi = idx.get(p.candle_close_time - tf.delta)
+    ms = idx.get(p.start_time)
+    if mi is None or ms is None:
+        raise HTTPException(404, "свечи паттерна не найдены")
+    ctx = p.context
+    title = (
+        f"{symbol} {tf.value}  {d['title']}  {'значимый' if p.is_significant else 'найден'}  "
+        f"подтверждён {p.confirm_time:%d.%m.%Y %H:%M} UTC  "
+        f"run={ctx.get('prior_run')} vol={ctx.get('volume_ratio')} "
+        f"zone={ctx.get('zone_distance_atr')} sweep={ctx.get('sweep')} "
+        f"pierced={ctx.get('pierced')} trend={ctx.get('trend')}/{ctx.get('htf_trend')}"
+    )
+    png = render_png(
+        candles,
+        structure,
+        zones,
+        PATTERN_BEFORE + PATTERN_AFTER,
+        title,
+        marks=[(ms, mi, Decimal(str(d["price"])), d["title"], p.direction)],
+    )
+    return Response(png, media_type="image/png")

@@ -124,6 +124,8 @@ def evaluate(s: Snapshot) -> list[Component]:
     out.append(Component("tracker", "Трекер сделок", st, d))
     st, d = hb("notifier", 120, 600)
     out.append(Component("notifier", "Уведомления", st, d))
+    st, d = hb("pattern_detector", 180, 900)
+    out.append(Component("patterns", "Паттерны на графике", st, d))
     out.append(
         Component(
             "api",
@@ -151,7 +153,7 @@ def collect(db: Session, r: Any | None) -> Snapshot:
     ts = int(now.timestamp())
     heartbeats: dict[str, int | None] = {}
     redis_ok = r is not None
-    for name in ("market_data", "scheduler", "tracker", "notifier"):
+    for name in ("market_data", "scheduler", "tracker", "notifier", "pattern_detector"):
         try:
             v = r.get(f"{name}:heartbeat") if r is not None else None
             heartbeats[name] = (ts - int(v)) if v else None

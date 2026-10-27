@@ -42,6 +42,7 @@ from app.snapshots import find as find_snapshot
 from app.stats import filter_trades, load_trades, stats_payload, trade_rows, trades_from_run
 from engine.backtest import BacktestTrade
 from engine.candles import Timeframe
+from engine.patterns import PatternType
 from engine.strategies import STRATEGIES
 
 router = APIRouter(prefix="/v1", tags=["public"])
@@ -555,6 +556,38 @@ def stats(
     payload["source"] = "live"
     payload["generated_at"] = datetime.now(tz=UTC).isoformat()
     return payload
+
+
+@router.get("/stats/patterns")
+def stats_patterns(
+    tf: str = Query("4h", pattern="^(15m|1h|4h|1d|1w)$"),
+    scope: str = Query("backfill", pattern="^(backfill|live)$"),
+    horizon: int = Query(5, ge=1, le=20),
+    type: str | None = Query(None, max_length=24),
+    symbol: str | None = Query(None, max_length=32),
+    with_context: bool | None = None,
+    db: Session = Depends(auth.get_db),
+) -> dict[str, Any]:
+    """Историческая отработка свечных паттернов (план 2A.10.4): n, доля, интервал Уилсона 95 %,
+    средний ход в ATR; при n < 30 — «мало данных». Считается из ``pattern_outcomes`` без
+    ручного ввода; область ``backfill`` (история) и ``live`` не смешиваются."""
+    from app.patterns import stats_payload
+
+    instrument_id = None
+    if symbol:
+        instrument_id = db.scalar(
+            select(Instrument.id).where(
+                Instrument.symbol == symbol.upper(), Instrument.market_type == "futures"
+            )
+        )
+        if instrument_id is None:
+            raise HTTPException(404, "инструмент не найден")
+    if type is not None:
+        try:
+            PatternType(type)
+        except ValueError as e:
+            raise HTTPException(404, "неизвестный тип паттерна") from e
+    return stats_payload(db, tf, scope, horizon, type, instrument_id, with_context)
 
 
 @router.get("/stats/trades")

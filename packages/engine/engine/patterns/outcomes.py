@@ -22,6 +22,29 @@ class PatternOutcome:
     """Для паттернов без направления: favorable — ход вверх, adverse — вниз."""
 
 
+def outcome_from(
+    ref: Decimal,
+    direction: Direction | None,
+    after: Sequence[Candle],
+    horizon: int,
+    atr_value: Decimal,
+    params: PatternParams = DEFAULT_PATTERN_PARAMS,
+) -> PatternOutcome:
+    """Отработка по свечам ``after`` (первые ``horizon`` штук после паттерна) от цены ``ref``."""
+    window = after[:horizon]
+    if len(window) < horizon or atr_value <= 0:
+        return PatternOutcome(horizon, None, None, None)
+    up = (max(c.high for c in window) - ref) / atr_value
+    down = (ref - min(c.low for c in window)) / atr_value
+    if direction is Direction.UP:
+        fav, adv = up, down
+    elif direction is Direction.DOWN:
+        fav, adv = down, up
+    else:
+        return PatternOutcome(horizon, None, up, down)
+    return PatternOutcome(horizon, fav >= params.outcome_move_atr, fav, adv)
+
+
 def outcome(
     candles: Sequence[Candle],
     match: PatternMatch,
@@ -30,19 +53,10 @@ def outcome(
     params: PatternParams = DEFAULT_PATTERN_PARAMS,
 ) -> PatternOutcome:
     """Считается по свечам ``index+1 .. index+horizon`` относительно close свечи паттерна."""
-    window = candles[match.index + 1 : match.index + 1 + horizon]
-    if len(window) < horizon or atr_value <= 0:
-        return PatternOutcome(horizon, None, None, None)
-    ref = candles[match.index].close
-    up = (max(c.high for c in window) - ref) / atr_value
-    down = (ref - min(c.low for c in window)) / atr_value
-    if match.direction is Direction.UP:
-        fav, adv = up, down
-    elif match.direction is Direction.DOWN:
-        fav, adv = down, up
-    else:
-        return PatternOutcome(horizon, None, up, down)
-    return PatternOutcome(horizon, fav >= params.outcome_move_atr, fav, adv)
+    after = candles[match.index + 1 : match.index + 1 + horizon]
+    return outcome_from(
+        candles[match.index].close, match.direction, after, horizon, atr_value, params
+    )
 
 
 def outcomes(
