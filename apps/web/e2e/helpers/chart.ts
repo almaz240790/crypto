@@ -8,7 +8,7 @@ const candle = (i: number) => {
   return { t: T0 + i * 14400, o: o.toFixed(2), h: (Math.max(o, c) + 1).toFixed(2), l: (Math.min(o, c) - 1).toFixed(2), c: c.toFixed(2), v: "1000", open: false };
 };
 
-export async function mock(page: Page, calls: string[], authed = false) {
+export async function mock(page: Page, calls: string[], authed = false, server: { drawings: Record<string, unknown>[]; layout: Record<string, unknown> | null } = { drawings: [], layout: null }) {
   if (authed) await page.context().addCookies([{ name: "pl_auth", value: "1", url: "http://localhost:3101" }]);
   await page.route("**/v1/**", (route) => {
     const u = new URL(route.request().url());
@@ -25,6 +25,24 @@ export async function mock(page: Page, calls: string[], authed = false) {
       const n = before ? 500 : 300;
       const items = Array.from({ length: n }, (_, i) => candle(before ? i - 500 : i));
       return json(200, { symbol: "BTCUSDT", tf, candles: items, current: { ...candle(n), t: T0 + n * 14400, open: true }, has_older: !before, tick_size: "0.1", server_time: "" });
+    }
+    if (p === "/v1/drawings" && route.request().method() === "GET") return json(200, { symbol: "BTCUSDT", items: server.drawings, limit: 100, sync: true });
+    if (p === "/v1/drawings" && route.request().method() === "PUT") {
+      const items = route.request().postDataJSON() as Record<string, unknown>[];
+      for (const it of items) {
+        const i = server.drawings.findIndex((d) => d.client_id === it.client_id);
+        const cur = i >= 0 ? server.drawings[i]! : null;
+        const win = !cur || (it.updated_at as number) >= (cur.updated_at as number) ? it : cur;
+        if (i >= 0) server.drawings[i] = win;
+        else server.drawings.push(win);
+      }
+      return json(200, { items: items.map((it) => server.drawings.find((d) => d.client_id === it.client_id)) });
+    }
+    if (p === "/v1/chart/layout" && route.request().method() === "GET") return json(200, { name: null, data: server.layout, updated_at: (server.layout?.__updated as number) ?? 0 });
+    if (p === "/v1/chart/layout" && route.request().method() === "PUT") {
+      const b = route.request().postDataJSON() as { data: Record<string, unknown>; updated_at: number };
+      server.layout = { ...b.data, __updated: b.updated_at };
+      return json(200, { name: null, data: b.data, updated_at: b.updated_at });
     }
     if (p === "/v1/chart/derivatives")
       return json(200, { symbol: "BTCUSDT", tf: "4h", funding: [{ t: T0 + 100 * 14400, v: "0.0001" }, { t: T0 + 200 * 14400, v: "0.00012" }], funding_current: "0.00012", next_funding_t: Math.floor(Date.now() / 1000) + 3600, oi: [{ t: T0 + 100 * 14400, v: "1000000" }], liquidations: [{ t: T0 + 100 * 14400, long: "1000", short: "2000" }], liquidations_note: "" });

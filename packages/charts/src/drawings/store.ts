@@ -27,13 +27,38 @@ export function updateDrawing(state: DrawingsState, id: string, patch: Partial<D
   return record ? commit(state, items) : { ...state, items };
 }
 
+/** Удаление — мягкое: остаётся запись с ``deleted_at`` для синхронизации. */
 export function removeDrawing(state: DrawingsState, id: string): DrawingsState {
-  const next = commit(state, state.items.filter((d) => d.id !== id));
+  const now = Date.now();
+  const next = commit(state, state.items.map((d) => (d.id === id ? { ...d, deleted_at: now, updated_at: now } : d)));
   return { ...next, selectedId: state.selectedId === id ? null : state.selectedId };
 }
 
 export function clearDrawings(state: DrawingsState): DrawingsState {
-  return { ...commit(state, []), selectedId: null };
+  const now = Date.now();
+  return { ...commit(state, state.items.map((d) => (d.deleted_at ? d : { ...d, deleted_at: now, updated_at: now }))), selectedId: null };
+}
+
+/** Живые (не удалённые) рисунки. */
+export function alive(state: DrawingsState): Drawing[] {
+  return state.items.filter((d) => !d.deleted_at);
+}
+
+/** Применить версии с сервера: последняя запись побеждает по updated_at, при равенстве — удаление. */
+export function mergeRemote(state: DrawingsState, remote: Drawing[]): DrawingsState {
+  const byId = new Map(state.items.map((d) => [d.id, d]));
+  for (const r of remote) {
+    const local = byId.get(r.id);
+    byId.set(r.id, resolve(local, r));
+  }
+  return { ...state, items: [...byId.values()].sort((a, b) => a.updated_at - b.updated_at) };
+}
+
+export function resolve(local: Drawing | undefined, remote: Drawing): Drawing {
+  if (!local) return remote;
+  if (remote.updated_at > local.updated_at) return remote;
+  if (remote.updated_at < local.updated_at) return local;
+  return remote.deleted_at ? remote : local;
 }
 
 export function toggleLock(state: DrawingsState, id: string): DrawingsState {
@@ -67,5 +92,5 @@ export const canRedo = (s: DrawingsState) => s.future.length > 0;
 /** Рисунки, видимые на таймфрейме: без привязки или с этой привязкой. */
 export function visibleOn(state: DrawingsState, timeframe: string): Drawing[] {
   if (state.hidden) return [];
-  return state.items.filter((d) => d.timeframe === null || d.timeframe === timeframe);
+  return state.items.filter((d) => !d.deleted_at && (d.timeframe === null || d.timeframe === timeframe));
 }

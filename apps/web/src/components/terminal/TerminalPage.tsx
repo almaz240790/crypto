@@ -3,7 +3,7 @@
 import { CHART_TYPES, INDICATORS, TOOL_TITLES, defaultParams, positionStats, secondsToClose, type ChartType, type DrawingType, type Timeframe } from "@platform/charts";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { Badge } from "@/components/ui";
 import { getAccessToken } from "@/lib/auth-client";
@@ -12,7 +12,8 @@ import { formatPct, formatPrice } from "@/lib/format";
 import { getInstruments, type Instrument } from "@/lib/user";
 import s from "./terminal.module.css";
 import { PANELS, TerminalView, type ActiveIndicator, type LayerKey, type PanelKey } from "./TerminalView";
-import { DRAWINGS_LIMIT, useDrawings } from "./useDrawings";
+import { useDrawings } from "./useDrawings";
+import { getLayout, putLayout } from "@/lib/drawings";
 import { useTerminalData } from "./useTerminalData";
 
 const TYPE_LABEL: Record<ChartType, string> = { candles: "Свечи", bars: "Бары", line: "Линия", heikin: "Heikin Ashi" };
@@ -21,7 +22,7 @@ const DEFAULT_INDICATORS: ActiveIndicator[] = [{ id: "ema", params: { period: 50
 const TOOLS: DrawingType[] = ["hline", "hray", "vline", "trend", "ray", "extended", "channel", "rect", "fib", "position-long", "position-short", "note", "ruler"];
 const STORAGE = "pl-terminal";
 
-type Saved = { type: ChartType; indicators: ActiveIndicator[]; layers: Record<LayerKey, boolean>; panels: PanelKey[] };
+type Saved = { type: ChartType; indicators: ActiveIndicator[]; layers: Record<LayerKey, boolean>; panels: PanelKey[]; updated_at?: number };
 
 function load(): Saved {
   const base: Saved = { type: "candles", indicators: DEFAULT_INDICATORS, layers: { structure: true, zones: true, levels: true, signals: true }, panels: [] };
@@ -44,7 +45,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
   const [saved, setSaved] = useState<Saved | null>(null);
   const [instruments, setInstruments] = useState<Instrument[]>([]);
   const [sheet, setSheet] = useState<"indicators" | "layers" | "draw" | null>(null);
-  const dr = useDrawings(symbol);
+  const dr = useDrawings(symbol, !!user);
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
   const data = useTerminalData(symbol, tf, user ? getAccessToken() : null);
 
@@ -80,6 +81,27 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
       }
     }
   }, [saved]);
+  // раскладка: при входе берём с сервера, если она новее локальной; изменения отправляем с задержкой
+  const layoutPulled = useRef(false);
+  useEffect(() => {
+    if (!user || layoutPulled.current) return;
+    layoutPulled.current = true;
+    getLayout()
+      .then((r) => {
+        if (!r.data) return;
+        const local = load();
+        if (r.updated_at > (local.updated_at ?? 0)) setSaved({ ...local, ...(r.data as Partial<Saved>), updated_at: r.updated_at });
+      })
+      .catch(() => {});
+  }, [user]);
+  useEffect(() => {
+    if (!user || !saved || !layoutPulled.current) return;
+    const t = setTimeout(() => {
+      const { updated_at, ...data } = saved;
+      void putLayout(data, updated_at ?? Date.now()).catch(() => {});
+    }, 800);
+    return () => clearTimeout(t);
+  }, [saved, user]);
 
   const st = saved ?? load();
   const last = data.current ?? data.candles?.[data.candles.length - 1] ?? null;
@@ -95,15 +117,15 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
       const cur = p ?? load();
       const has = cur.indicators.some((i) => i.id === id);
       const spec = INDICATORS.find((i) => i.id === id)!;
-      return { ...cur, indicators: has ? cur.indicators.filter((i) => i.id !== id) : [...cur.indicators, { id, params: defaultParams(spec) }] };
+      return { ...cur, indicators: has ? cur.indicators.filter((i) => i.id !== id) : [...cur.indicators, { id, params: defaultParams(spec) }], updated_at: Date.now() };
     });
   const togglePanel = (k: PanelKey) =>
     setSaved((p) => {
       const cur = p ?? load();
       const has = cur.panels.includes(k);
-      return { ...cur, panels: has ? cur.panels.filter((x) => x !== k) : [...cur.panels, k] };
+      return { ...cur, panels: has ? cur.panels.filter((x) => x !== k) : [...cur.panels, k], updated_at: Date.now() };
     });
-  const toggleLayer = (k: LayerKey) => setSaved((p) => ({ ...(p ?? load()), layers: { ...(p ?? load()).layers, [k]: !(p ?? load()).layers[k] } }));
+  const toggleLayer = (k: LayerKey) => setSaved((p) => ({ ...(p ?? load()), layers: { ...(p ?? load()).layers, [k]: !(p ?? load()).layers[k] }, updated_at: Date.now() }));
   const indicatorIds = useMemo(() => new Set(st.indicators.map((i) => i.id)), [st.indicators]);
   const sel = dr.selected;
   const pos = useMemo(() => {
@@ -146,7 +168,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
             </Link>
           ))}
         </nav>
-        <select aria-label="тип графика" value={st.type} onChange={(e) => setSaved({ ...st, type: e.target.value as ChartType })}>
+        <select aria-label="тип графика" value={st.type} onChange={(e) => setSaved({ ...st, type: e.target.value as ChartType, updated_at: Date.now() })}>
           {CHART_TYPES.map((t) => (
             <option key={t} value={t}>
               {TYPE_LABEL[t]}
@@ -224,7 +246,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
         )}
         {dr.limitHit && (
           <p className={s.card} role="alert">
-            Лимит рисунков на инструмент: {DRAWINGS_LIMIT}. Удалите лишние или дождитесь синхронизации с тарифными лимитами.{" "}
+            Лимит рисунков на инструмент: {dr.limit}. Удалите лишние{!user ? " или войдите" : " или перейдите на тариф выше"}.{" "}
             <button type="button" className={s.chip} onClick={dr.dismissLimit}>
               понятно
             </button>
@@ -258,9 +280,9 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
                 <button
                   type="button"
                   className={s.chip}
-                  disabled={dr.state.items.length === 0}
+                  disabled={dr.items.length === 0}
                   onClick={() => {
-                    if (confirm(`Удалить все рисунки по ${symbol} (${dr.state.items.length})?`)) dr.actions.clear();
+                    if (confirm(`Удалить все рисунки по ${symbol} (${dr.items.length})?`)) dr.actions.clear();
                   }}
                 >
                   удалить все
@@ -315,8 +337,13 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
           ↷
         </button>
         <span className="caption" data-testid="drawings-count">
-          рисунков: {dr.state.items.length}
+          рисунков: {dr.items.length}
         </span>
+        {user && dr.sync !== "off" && (
+          <span className="caption" data-testid="drawings-sync">
+            {dr.sync === "ok" ? "синхронизировано" : dr.sync === "queued" ? "в очереди" : "ошибка синхронизации"}
+          </span>
+        )}
         {data.layers?.signals.length ? (
           <Link className="caption" href={`/signals?symbol=${symbol}&tab=all`}>
             сигналов по инструменту: {data.layers.signals.length}

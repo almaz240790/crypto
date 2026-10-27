@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { channelOffset, distToSegment, extend, fibLevels, hitTest, lineAt, magnetSnap, positionStats, rulerInfo, type Projector } from "../drawings/geometry";
-import { addDrawing, canRedo, canUndo, clearDrawings, createState, redo, removeDrawing, toggleLock, undo, updateDrawing, visibleOn } from "../drawings/store";
+import { addDrawing, alive, canRedo, canUndo, clearDrawings, createState, mergeRemote, redo, removeDrawing, resolve, toggleLock, undo, updateDrawing, visibleOn } from "../drawings/store";
 import { HANDLE_TOUCH_PX, UNDO_STEPS, pointsNeeded, type Drawing } from "../drawings/types";
 import type { Candle } from "../types";
 
@@ -20,18 +20,19 @@ describe("хранилище рисунков", () => {
     s = redo(s);
     expect(s.items[0]!.text).toBe("x");
     s = removeDrawing(s, "b");
-    expect(s.items).toHaveLength(1);
+    expect(alive(s)).toHaveLength(1);
+    expect(s.items.find((x) => x.id === "b")!.deleted_at).toBeTruthy();
     expect(canUndo(s)).toBe(true);
     s = undo(s);
-    expect(s.items).toHaveLength(2);
+    expect(alive(s)).toHaveLength(2);
     expect(canRedo(s)).toBe(true);
     for (let i = 0; i < 70; i++) s = addDrawing(s, d(`n${i}`));
     expect(s.past.length).toBe(UNDO_STEPS);
     s = toggleLock(s, "a");
     expect(s.items.find((x) => x.id === "a")!.locked).toBe(true);
     s = clearDrawings(s);
-    expect(s.items).toEqual([]);
-    expect(undo(s).items.length).toBeGreaterThan(0);
+    expect(alive(s)).toEqual([]);
+    expect(alive(undo(s)).length).toBeGreaterThan(0);
   });
 
   it("правка без записи в историю (перетаскивание) не плодит шаги", () => {
@@ -97,5 +98,21 @@ describe("геометрия", () => {
     const e = extend(0, 0, 10, 10, 100, false);
     expect(e.x2).toBe(110);
     expect(e.y2).toBe(110);
+  });
+});
+
+describe("слияние с сервером (два устройства)", () => {
+  it("последняя запись побеждает, при равенстве — удаление; порядок слияния не важен", () => {
+    const local = addDrawing(createState(), { ...d("a"), updated_at: 100, text: "local" });
+    const remoteNewer = { ...d("a"), updated_at: 200, text: "remote" };
+    expect(mergeRemote(local, [remoteNewer]).items[0]!.text).toBe("remote");
+    const remoteOlder = { ...d("a"), updated_at: 50, text: "old" };
+    expect(mergeRemote(local, [remoteOlder]).items[0]!.text).toBe("local");
+    const gone = { ...d("a"), updated_at: 100, deleted_at: 100 };
+    expect(resolve(local.items[0], gone).deleted_at).toBe(100);
+    const other = { ...d("b"), updated_at: 10 };
+    const merged = mergeRemote(local, [other, remoteNewer]);
+    expect(merged.items.map((x) => x.id)).toEqual(["b", "a"]);
+    expect(visibleOn(mergeRemote(local, [gone]), "4h")).toEqual([]);
   });
 });

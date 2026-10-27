@@ -33,6 +33,8 @@ export type Drawing = {
   /** Уровни Фибоначчи (доли), только для fib. */
   levels?: number[];
   updated_at: number;
+  /** Мягкое удаление (unix-мс) — для синхронизации между устройствами; в списках не показывается. */
+  deleted_at?: number | null;
 };
 
 export const DEFAULT_STYLE: DrawingStyle = { color: "accent", width: 1, dashed: false };

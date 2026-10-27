@@ -36,12 +36,20 @@ class Entitlements:
     watchlist_limit: int | None
     intraday: bool = True
     """Таймфреймы 1m–15m на графике (Free — нет, план 2A.3)."""
+    drawings_limit: int | None = None
+    """Рисунков на инструмент (раздел 4: 10 / 100 / без лимита)."""
+    drawings_sync: bool = True
+    """Синхронизация рисунков между устройствами (Free — нет)."""
+    layouts_limit: int | None = None
+    """Именованных раскладок (раздел 4: 0 / 5 / 20)."""
 
 
 ENTITLEMENTS: dict[str, Entitlements] = {
-    FREE: Entitlements(FREE, ("A",), 12, False, False, False, False, 20, 5, False),
-    PRO: Entitlements(PRO, None, 0, True, True, True, False, None, 50, True),
-    PREMIUM: Entitlements(PREMIUM, None, 0, True, True, True, True, None, None, True),
+    FREE: Entitlements(FREE, ("A",), 12, False, False, False, False, 20, 5, False, 10, False, 0),
+    PRO: Entitlements(PRO, None, 0, True, True, True, False, None, 50, True, 100, True, 5),
+    PREMIUM: Entitlements(
+        PREMIUM, None, 0, True, True, True, True, None, None, True, None, True, 20
+    ),
 }
 
 
@@ -101,4 +109,7 @@ def restrictions_dict(ent: Entitlements) -> dict[str, object]:
         "journal_limit": ent.journal_limit,
         "watchlist_limit": ent.watchlist_limit,
         "intraday": ent.intraday,
+        "drawings_limit": ent.drawings_limit,
+        "drawings_sync": ent.drawings_sync,
+        "layouts_limit": ent.layouts_limit,
     }
