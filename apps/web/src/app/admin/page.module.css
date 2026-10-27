@@ -56,3 +56,8 @@
   max-height: 240px;
   overflow: auto;
 }
+
+.labeling {
+  display: grid;
+  gap: 10px;
+}

@@ -18,6 +18,7 @@ const TABS = [
   ["users", "Пользователи"],
   ["billing", "Биллинг"],
   ["tickets", "Тикеты"],
+  ["labeling", "Разметка"],
   ["system", "Система"],
   ["audit", "Аудит"],
 ] as const;
@@ -614,6 +615,118 @@ function Tickets({ run }: { run: Run }) {
   );
 }
 
+/** Инструмент разметки фигур (план 2A.10.2, 4B.2): график без подсказок, три кнопки, тип, время, каппа. */
+function Labeling({ run }: { run: Run }) {
+  const [cand, setCand] = useState<A.LabelCandidate | null | undefined>(undefined);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [type, setType] = useState("");
+  const [started, setStarted] = useState(0);
+  const [stats, setStats] = useState<A.LabelStats | null>(null);
+  const [imgKey, setImgKey] = useState(0);
+  const load = useCallback(() => {
+    A.getNextLabel()
+      .then((r) => {
+        setCand(r.candidate);
+        setMsg(r.message ?? null);
+        setType("");
+        setStarted(Date.now());
+        setImgKey((k) => k + 1);
+      })
+      .catch(() => setCand(null));
+    A.getLabelStats().then(setStats).catch(() => {});
+  }, []);
+  useEffect(() => {
+    queueMicrotask(() => void load());
+  }, [load]);
+  const send = (label: "figure" | "not_figure" | "unsure") => {
+    if (!cand) return;
+    const time_spent_s = Math.min(3600, Math.round((Date.now() - started) / 1000));
+    void run(() => A.submitLabel({ figure_id: cand.figure_id, label, figure_type: label === "figure" ? type || null : null, time_spent_s }), "Метка сохранена", load);
+  };
+  return (
+    <div className={s.grid}>
+      <Panel title="Кандидат" footer="Без подсказок: тип и линии не показываются, участок кандидата выделен рамкой. Метка принимается при согласии ≥ 2 разметчиков из 3.">
+        {cand === undefined ? (
+          <EmptyState text="Загрузка…" />
+        ) : cand === null ? (
+          <EmptyState text={msg ?? "Очередь пуста — все кандидаты размечены вами."} />
+        ) : (
+          <div className={s.labeling} data-testid="label-candidate">
+            <p className="caption">
+              {cand.symbol} {cand.tf === "4h" ? "H4" : cand.tf.toUpperCase()} · участок {formatTimeUTC(new Date(cand.span_from * 1000).toISOString(), { withYear: true })} — {formatTimeUTC(new Date(cand.span_to * 1000).toISOString(), { withYear: true })}
+            </p>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img key={imgKey} src={`${A.labelImageUrl(cand.figure_id)}?v=${imgKey}`} alt="свечи кандидата" style={{ width: "100%", borderRadius: 8, border: "1px solid var(--border)" }} />
+            <div className={t.inline}>
+              <Select label="Тип фигуры (если фигура)" value={type} onChange={(e) => setType(e.target.value)}>
+                <option value="">не указан</option>
+                {cand.types.map((x) => (
+                  <option key={x.id} value={x.id}>
+                    {x.title}
+                  </option>
+                ))}
+              </Select>
+            </div>
+            <div className={t.inline}>
+              <Button onClick={() => send("figure")}>Фигура</Button>
+              <Button variant="ghost" onClick={() => send("not_figure")}>
+                Не фигура
+              </Button>
+              <Button variant="ghost" onClick={() => send("unsure")}>
+                Не уверен
+              </Button>
+            </div>
+          </div>
+        )}
+      </Panel>
+      <Panel title="Согласованность и прогресс">
+        {!stats ? (
+          <EmptyState text="Пока нет меток." />
+        ) : (
+          <>
+            <p className="caption">
+              Размечено кандидатов: {stats.candidates_labeled}. Цель — {stats.target_per_type} на тип. Согласие ≥ 2: {Object.entries(stats.consensus).map(([k, v]) => `${k} ${v}`).join(", ") || "—"}.
+            </p>
+            <Table compact stack={false}>
+              <thead>
+                <tr>
+                  <Th>разметчик</Th>
+                  <Th num>меток</Th>
+                  <Th num>сек/метка</Th>
+                  <Th>распределение</Th>
+                </tr>
+              </thead>
+              <tbody>
+                {stats.labelers.map((l) => (
+                  <tr key={l.id}>
+                    <Td>{l.email ?? l.id}</Td>
+                    <Td num>{l.n}</Td>
+                    <Td num>{l.avg_time_s}</Td>
+                    <Td>{Object.entries(l.labels).map(([k, v]) => `${k}: ${v}`).join(", ")}</Td>
+                  </tr>
+                ))}
+              </tbody>
+            </Table>
+            <h3>Каппа Коэна (цель ≥ 0.6)</h3>
+            {stats.kappa.length === 0 ? (
+              <p className="caption">Нужны минимум два разметчика с общими кандидатами.</p>
+            ) : (
+              <ul>
+                {stats.kappa.map((k) => (
+                  <li key={`${k.a}-${k.b}`} data-testid="kappa-row">
+                    {k.a} × {k.b}: {k.kappa === null ? "мало общих кандидатов" : k.kappa.toFixed(2)} (n={k.n})
+                  </li>
+                ))}
+              </ul>
+            )}
+            <p className="caption">По типам: {Object.entries(stats.per_type).map(([k, v]) => `${k} ${v}`).join(", ") || "—"}</p>
+          </>
+        )}
+      </Panel>
+    </div>
+  );
+}
+
 function System() {
   const [d, setD] = useState<A.SystemStatus | null>(null);
   useEffect(() => {
@@ -731,6 +844,7 @@ function AdminInner() {
       {tab === "users" && <Users run={run} me={{ id: user.id, role: user.role }} />}
       {tab === "billing" && <Billing run={run} />}
       {tab === "tickets" && <Tickets run={run} />}
+      {tab === "labeling" && <Labeling run={run} />}
       {tab === "system" && <System />}
       {tab === "audit" && <Audit />}
     </>

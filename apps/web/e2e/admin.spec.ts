@@ -10,7 +10,7 @@ const VERSIONS = [
 
 async function mock(page: Page, calls: string[]) {
   await page.context().addCookies([{ name: "pl_auth", value: "1", url: "http://localhost:3101" }]);
-  const state = { requests: [] as Record<string, unknown>[], audit: [] as Record<string, unknown>[], versions: VERSIONS.map((v) => ({ ...v })), promos: [] as Record<string, unknown>[], users: <Record<string, unknown>[]>[{ id: 1, email: OWNER.email, name: null, role: "owner", country: "RU", verified: true, created_at: "2026-10-25T10:00:00Z", blocked_at: null, blocked_reason: null, deleted: false, plan: "pro", plan_until: "2026-11-01T10:00:00Z", plan_status: "trialing" }, { id: 2, email: "beta@example.com", name: "Beta", role: "user", country: null, verified: true, created_at: "2026-10-26T10:00:00Z", blocked_at: null, blocked_reason: null, deleted: false, plan: "free", plan_until: null, plan_status: null }] };
+  const state = { labels: [] as Record<string, unknown>[], requests: [] as Record<string, unknown>[], audit: [] as Record<string, unknown>[], versions: VERSIONS.map((v) => ({ ...v })), promos: [] as Record<string, unknown>[], users: <Record<string, unknown>[]>[{ id: 1, email: OWNER.email, name: null, role: "owner", country: "RU", verified: true, created_at: "2026-10-25T10:00:00Z", blocked_at: null, blocked_reason: null, deleted: false, plan: "pro", plan_until: "2026-11-01T10:00:00Z", plan_status: "trialing" }, { id: 2, email: "beta@example.com", name: "Beta", role: "user", country: null, verified: true, created_at: "2026-10-26T10:00:00Z", blocked_at: null, blocked_reason: null, deleted: false, plan: "free", plan_until: null, plan_status: null }] };
   await page.route("**/v1/**", (route) => {
     const req = route.request();
     const u = new URL(req.url());
@@ -40,6 +40,13 @@ async function mock(page: Page, calls: string[]) {
     }
     if (p === "/v1/admin/signals") return json(200, [{ id: "s1", symbol: "BTCUSDT", version: "1.1.0", scope: "forward", direction: "long", grade: "A", score: 80, status: "active", candle_close_time: "2026-10-25T08:00:00Z", entry: "100", stop: "98", flags: ["weekend"], facts: ["BOS up"], input_hash: "abc" }]);
     if (p === "/v1/admin/signals/s1/cancel") return json(200, { id: "s1", status: "cancelled" });
+    if (p === "/v1/admin/labels/next") return json(200, state.labels.length ? { candidate: null, message: "очередь пуста" } : { candidate: { figure_id: 11, symbol: "BTCUSDT", tf: "4h", window_from: 1760000000, window_to: 1760400000, span_from: 1760100000, span_to: 1760300000, types: [{ id: "flag", title: "Флаг" }, { id: "double_top", title: "Двойная вершина" }] } });
+    if (p === "/v1/admin/labels/11/image.png") return route.fulfill({ status: 200, contentType: "image/png", body: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", "base64") });
+    if (p === "/v1/admin/labels" && req.method() === "POST") {
+      state.labels.push(req.postDataJSON() as Record<string, unknown>);
+      return json(201, { id: 1, figure_id: 11, label: "figure" });
+    }
+    if (p === "/v1/admin/labels/stats") return json(200, { labelers: [{ id: 1, email: "owner@example.com", n: state.labels.length, avg_time_s: 4, labels: { figure: state.labels.length } }], kappa: [{ a: 1, b: 2, n: 3, kappa: 0.67 }], candidates_labeled: state.labels.length, consensus: {}, per_type: { flag: state.labels.length }, target_per_type: 600, generated_at: "" });
     if (p === "/v1/admin/audit") return json(200, state.audit);
     if (p === "/v1/admin/users" && req.method() === "GET") return json(200, state.users);
     if (p === "/v1/admin/users/2/subscription") {
@@ -123,4 +130,18 @@ test("админка: промокод и ручная выдача тарифа
   await expect(page.getByRole("status")).toContainText("Тариф выдан");
   await expect(beta).toContainText("premium");
   expect(calls).toContain("POST /v1/admin/users/2/subscription");
+});
+
+test("админка: разметка кандидата фигуры — три кнопки, тип, каппа", async ({ page }) => {
+  const calls: string[] = [];
+  await mock(page, calls);
+  await page.goto("/admin?tab=labeling");
+  await expect(page.getByTestId("label-candidate")).toBeVisible();
+  await expect(page.getByTestId("label-candidate")).toContainText("BTCUSDT H4");
+  await expect(page.getByTestId("kappa-row")).toContainText("0.67");
+  await page.getByLabel("Тип фигуры (если фигура)").selectOption("flag");
+  await page.getByRole("button", { name: "Фигура", exact: true }).click();
+  await expect(page.getByRole("status")).toContainText("Метка сохранена");
+  expect(calls).toContain("POST /v1/admin/labels");
+  await expect(page.getByText("Очередь пуста")).toBeVisible();
 });

@@ -28,3 +28,11 @@ export const getPromos = () => api<Promo[]>("/v1/admin/promo");
 export const createPromo = (body: { code: string; percent: number; fixed_usd: string; plan: string | null; max_uses: number | null; expires_at: string | null }) => api<Promo>("/v1/admin/promo", { method: "POST", json: body });
 export const togglePromo = (id: number, active: boolean) => api<Promo>(`/v1/admin/promo/${id}?active=${active}`, { method: "PATCH" });
 export const grantSubscription = (userId: number, plan: string, months: number, reason: string) => api(`/v1/admin/users/${userId}/subscription`, { method: "POST", json: { plan, months, reason } });
+
+/** Разметка кандидатов фигур (план 2A.10.2; 4B.2). */
+export type LabelCandidate = { figure_id: number; symbol: string; tf: string; window_from: number; window_to: number; span_from: number; span_to: number; types: { id: string; title: string }[] };
+export type LabelStats = { labelers: { id: number; email: string | null; n: number; avg_time_s: number; labels: Record<string, number> }[]; kappa: { a: number; b: number; n: number; kappa: number | null }[]; candidates_labeled: number; consensus: Record<string, number>; per_type: Record<string, number>; target_per_type: number; generated_at: string };
+export const getNextLabel = () => api<{ candidate: LabelCandidate | null; message?: string }>("/v1/admin/labels/next");
+export const submitLabel = (body: { figure_id: number; label: "figure" | "not_figure" | "unsure"; figure_type?: string | null; time_spent_s: number }) => api("/v1/admin/labels", { method: "POST", json: body });
+export const getLabelStats = () => api<LabelStats>("/v1/admin/labels/stats");
+export const labelImageUrl = (figureId: number) => `/v1/admin/labels/${figureId}/image.png`;

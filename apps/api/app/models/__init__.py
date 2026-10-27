@@ -13,6 +13,7 @@ from app.models.derivatives import (
 from app.models.figures import FigureEvent, FigureOutcomeRow, FigureRow, FigureStatsSnapshot
 from app.models.llm import LlmRequest
 from app.models.market import Candle, Instrument
+from app.models.ml import MlLabel
 from app.models.patterns import (
     Pattern,
     PatternEvent,
@@ -63,6 +64,7 @@ __all__ = [
     "LiquidationRow",
     "LlmRequest",
     "LongShortRatioRow",
+    "MlLabel",
     "NotificationLog",
     "NotificationSettings",
     "OpenInterestRow",
