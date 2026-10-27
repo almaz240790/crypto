@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/components/app/AppShell";
 import { useAuth } from "@/components/auth/AuthProvider";
 import s from "@/components/tools/tools.module.css";
@@ -20,10 +21,23 @@ function readPresets(): Preset[] {
   }
 }
 
-export default function CalculatorPage() {
+function CalculatorInner() {
+  const sp = useSearchParams();
   const { user } = useAuth();
   const [instruments, setInstruments] = useState<Instrument[]>([]);
-  const [v, setV] = useState<Record<string, string>>({ symbol: "BTCUSDT", direction: "long", marketType: "futures", leverage: "3", riskPct: "1", deposit: "", entry: "", stop: "", tp1: "", tp2: "", tp3: "" });
+  const [v, setV] = useState<Record<string, string>>(() => ({
+    symbol: sp.get("symbol") ?? "BTCUSDT",
+    direction: sp.get("direction") === "short" ? "short" : "long",
+    marketType: "futures",
+    leverage: "3",
+    riskPct: "1",
+    deposit: "",
+    entry: sp.get("entry") ?? "",
+    stop: sp.get("stop") ?? "",
+    tp1: sp.get("tp") ?? "",
+    tp2: "",
+    tp3: "",
+  }));
   const [presets, setPresets] = useState<Preset[]>([]);
   const [presetName, setPresetName] = useState("");
   const [edited, setEdited] = useState<Set<string>>(new Set());
@@ -186,5 +200,13 @@ export default function CalculatorPage() {
         </Panel>
       </div>
     </AppShell>
+  );
+}
+
+export default function CalculatorPage() {
+  return (
+    <Suspense fallback={null}>
+      <CalculatorInner />
+    </Suspense>
   );
 }

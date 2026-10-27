@@ -174,3 +174,41 @@
     gap: 10px;
   }
 }
+
+.card {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  font-size: 13px;
+  z-index: 10;
+}
+
+.card input[type="text"],
+.card input:not([type]) {
+  flex: 1 1 160px;
+  height: 32px;
+}
+
+.posStats {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}

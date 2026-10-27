@@ -18,3 +18,16 @@ test("график на телефоне: страница не шире экр�
   const box = await page.getByTestId("terminal").boundingBox();
   expect(Math.round(box!.x + box!.width)).toBeLessThanOrEqual(393);
 });
+
+test("рисование на телефоне: горизонтальная линия одним тапом", async ({ page }) => {
+  const calls: string[] = [];
+  await mock(page, calls, true);
+  await page.goto("/chart/BTCUSDT/4h");
+  const term = page.getByTestId("terminal");
+  await expect(term.locator("canvas").first()).toBeVisible();
+  await page.getByRole("button", { name: "Рисовать" }).tap();
+  await page.getByRole("dialog", { name: "Рисование" }).getByRole("button", { name: "Горизонтальная линия" }).tap();
+  const box = (await term.boundingBox())!;
+  await page.touchscreen.tap(box.x + box.width * 0.4, box.y + box.height * 0.5);
+  await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 1");
+});
