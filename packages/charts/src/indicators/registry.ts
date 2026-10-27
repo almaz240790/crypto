@@ -1,5 +1,5 @@
 import type { Candle } from "../types";
-import { atr, bollinger, ema, macd, rsi, sma, stochastic, supertrend, volumeSma, vwapDaily, type Value } from "./core";
+import { atr, bollinger, cci, ema, ichimoku, keltner, macd, obv, rsi, sma, stochastic, supertrend, volumeSma, vwapDaily, type Value } from "./core";
 
 /** Описание индикатора для панели настроек и шаблонов (план 2A.4). Цвета — ключи токенов, не hex. */
 export type ParamSpec = { key: string; label: string; default: number; min: number; max: number; step?: number };
@@ -89,6 +89,37 @@ export const INDICATORS: IndicatorSpec[] = [
     params: [{ key: "period", label: "MA", default: 20, min: 1, max: 200 }],
     series: [{ key: "volume", label: "Объём", kind: "histogram", color: "text3" }, { key: "ma", label: "MA", kind: "line", color: "warn" }],
     compute: (c, p) => ({ volume: c.map((x) => x.volume), ma: volumeSma(c, p.period ?? 20) }),
+  },
+  // --- v2 (план, этап 4) ---
+  {
+    id: "ichimoku", title: "Ichimoku", pane: "overlay",
+    params: [{ key: "tenkan", label: "Tenkan", default: 9, min: 1, max: 100 }, { key: "kijun", label: "Kijun", default: 26, min: 1, max: 200 }, { key: "senkou", label: "Senkou B", default: 52, min: 1, max: 400 }, { key: "shift", label: "Сдвиг облака", default: 26, min: 0, max: 100 }],
+    series: [{ key: "tenkan", label: "Tenkan", kind: "line", color: "accent" }, { key: "kijun", label: "Kijun", kind: "line", color: "warn" }, { key: "senkouA", label: "Senkou A", kind: "line", color: "up" }, { key: "senkouB", label: "Senkou B", kind: "line", color: "down" }],
+    compute: (c, p) => {
+      const v = ichimoku(c, p.tenkan ?? 9, p.kijun ?? 26, p.senkou ?? 52, p.shift ?? 26);
+      return { tenkan: v.map((x) => x.tenkan), kijun: v.map((x) => x.kijun), senkouA: v.map((x) => x.senkouA), senkouB: v.map((x) => x.senkouB) };
+    },
+  },
+  {
+    id: "keltner", title: "Keltner Channels", pane: "overlay",
+    params: [{ key: "period", label: "EMA", default: 20, min: 1, max: 200 }, { key: "atr", label: "ATR", default: 10, min: 1, max: 100 }, { key: "mult", label: "Множитель", default: 2, min: 0.5, max: 10, step: 0.5 }],
+    series: [{ key: "up", label: "Верх", kind: "line", color: "accent" }, { key: "mid", label: "EMA", kind: "line", color: "warn" }, { key: "lo", label: "Низ", kind: "line", color: "accent" }],
+    compute: (c, p) => {
+      const v = keltner(c, p.period ?? 20, p.atr ?? 10, p.mult ?? 2);
+      return { mid: v.map((x) => x.mid), up: v.map((x) => x.up), lo: v.map((x) => x.lo) };
+    },
+  },
+  {
+    id: "cci", title: "CCI", pane: "separate", levels: [-100, 100],
+    params: [{ key: "period", label: "Период", default: 20, min: 2, max: 200 }],
+    series: [{ key: "value", label: "CCI", kind: "line", color: "accent" }],
+    compute: (c, p) => ({ value: cci(c, p.period ?? 20) }),
+  },
+  {
+    id: "obv", title: "OBV", pane: "separate",
+    params: [],
+    series: [{ key: "value", label: "OBV", kind: "line", color: "accent" }],
+    compute: (c) => ({ value: obv(c) }),
   },
 ];
 

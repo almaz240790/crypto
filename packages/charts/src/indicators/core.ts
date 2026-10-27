@@ -251,6 +251,114 @@ export class SupertrendCalc implements Calc<SupertrendValue> {
 
 // --- полные расчёты --------------------------------------------------------------------------------
 
+// --- индикаторы v2 (план, этап 4: Ichimoku, CCI, Keltner, OBV) ------------------------------
+
+/** Максимум и минимум окна по high/low. */
+class WindowExtremes {
+  private readonly highs: number[] = [];
+  private readonly lows: number[] = [];
+  constructor(private readonly period: number) {
+    if (period < 1) throw new Error("period должен быть >= 1");
+  }
+  push(high: number, low: number): { hh: number; ll: number } | null {
+    this.highs.push(high);
+    this.lows.push(low);
+    if (this.highs.length > this.period) { this.highs.shift(); this.lows.shift(); }
+    if (this.highs.length < this.period) return null;
+    let hh = -Infinity, ll = Infinity;
+    for (let i = 0; i < this.period; i++) { if (this.highs[i]! > hh) hh = this.highs[i]!; if (this.lows[i]! < ll) ll = this.lows[i]!; }
+    return { hh, ll };
+  }
+}
+
+/** CCI: (TP − SMA(TP)) / (0.015 · среднее отклонение); при нулевом отклонении — 0. */
+export class CciCalc implements Calc<Value> {
+  private readonly buf: number[] = [];
+  constructor(private readonly period = 20) {
+    if (period < 1) throw new Error("period должен быть >= 1");
+  }
+  push(c: Candle): Value {
+    const tp = (c.high + c.low + c.close) / 3;
+    this.buf.push(tp);
+    if (this.buf.length > this.period) this.buf.shift();
+    if (this.buf.length < this.period) return null;
+    let s = 0;
+    for (const x of this.buf) s += x;
+    const mean = s / this.period;
+    let dev = 0;
+    for (const x of this.buf) dev += Math.abs(x - mean);
+    const md = dev / this.period;
+    return md === 0 ? 0 : (tp - mean) / (0.015 * md);
+  }
+}
+
+export type KeltnerValue = { mid: Value; up: Value; lo: Value };
+
+/** Канал Кельтнера: EMA(close) ± mult · ATR. */
+export class KeltnerCalc implements Calc<KeltnerValue> {
+  private readonly ema: EmaCalc;
+  private readonly atr: AtrCalc;
+  constructor(period = 20, atrPeriod = 10, private readonly mult = 2) {
+    this.ema = new EmaCalc(period);
+    this.atr = new AtrCalc(atrPeriod);
+  }
+  push(c: Candle): KeltnerValue {
+    const mid = this.ema.push(c);
+    const a = this.atr.push(c);
+    if (mid === null || a === null) return { mid, up: null, lo: null };
+    return { mid, up: mid + this.mult * a, lo: mid - this.mult * a };
+  }
+}
+
+/** OBV: накопленный объём со знаком изменения close. */
+export class ObvCalc implements Calc<Value> {
+  private prevClose: number | null = null;
+  private value = 0;
+  push(c: Candle): Value {
+    if (this.prevClose !== null) {
+      if (c.close > this.prevClose) this.value += c.volume;
+      else if (c.close < this.prevClose) this.value -= c.volume;
+    }
+    this.prevClose = c.close;
+    return this.value;
+  }
+}
+
+export type IchimokuValue = { tenkan: Value; kijun: Value; senkouA: Value; senkouB: Value };
+
+/**
+ * Ichimoku: tenkan/kijun/senkou B — середины диапазонов; облако (A, B) сдвинуто вперёд на shift свечей,
+ * то есть значение на свече i посчитано по свече i − shift. Chikou (close назад) не считается:
+ * его нельзя получить инкрементально, а будущие свечи за последней не отображаются.
+ */
+export class IchimokuCalc implements Calc<IchimokuValue> {
+  private readonly t: WindowExtremes;
+  private readonly k: WindowExtremes;
+  private readonly s: WindowExtremes;
+  private readonly cloud: { a: Value; b: Value }[] = [];
+  constructor(tenkan = 9, kijun = 26, senkou = 52, private readonly shift = 26) {
+    if (shift < 0) throw new Error("shift должен быть >= 0");
+    this.t = new WindowExtremes(tenkan);
+    this.k = new WindowExtremes(kijun);
+    this.s = new WindowExtremes(senkou);
+  }
+  push(c: Candle): IchimokuValue {
+    const mid = (x: { hh: number; ll: number } | null): Value => (x === null ? null : (x.hh + x.ll) / 2);
+    const tenkan = mid(this.t.push(c.high, c.low));
+    const kijun = mid(this.k.push(c.high, c.low));
+    const b = mid(this.s.push(c.high, c.low));
+    const a = tenkan === null || kijun === null ? null : (tenkan + kijun) / 2;
+    this.cloud.push({ a, b });
+    const shown = this.cloud.length > this.shift ? this.cloud.shift()! : { a: null, b: null };
+    return { tenkan, kijun, senkouA: shown.a, senkouB: shown.b };
+  }
+}
+
+export const cci = (candles: readonly Candle[], period = 20): Value[] => run(new CciCalc(period), candles);
+export const keltner = (candles: readonly Candle[], period = 20, atrPeriod = 10, mult = 2): KeltnerValue[] => run(new KeltnerCalc(period, atrPeriod, mult), candles);
+export const obv = (candles: readonly Candle[]): Value[] => run(new ObvCalc(), candles);
+export const ichimoku = (candles: readonly Candle[], tenkan = 9, kijun = 26, senkou = 52, shift = 26): IchimokuValue[] => run(new IchimokuCalc(tenkan, kijun, senkou, shift), candles);
+
 export const sma = (candles: readonly Candle[], period: number): Value[] => run(new SmaCalc(period), candles);
 export const ema = (candles: readonly Candle[], period: number): Value[] => run(new EmaCalc(period), candles);
 export const atr = (candles: readonly Candle[], period = 14): Value[] => run(new AtrCalc(period), candles);
