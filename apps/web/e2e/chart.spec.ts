@@ -119,3 +119,19 @@ test("синхронизация рисунков: запись на серве�
   await page.reload();
   await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 0");
 });
+
+test("перекрестие: наведение показывает OHLCV и значения индикаторов", async ({ page }) => {
+  const calls: string[] = [];
+  await mock(page, calls);
+  await page.goto("/chart/BTCUSDT/4h");
+  const term = page.getByTestId("terminal");
+  await expect(term.locator("canvas").first()).toBeVisible();
+  const box = (await term.boundingBox())!;
+  await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.4);
+  const ohlc = page.getByTestId("ohlc");
+  await expect(ohlc).toBeVisible();
+  await expect(ohlc).toContainText("O ");
+  await expect(ohlc).toContainText("EMA");
+  await page.mouse.move(box.x - 50, box.y - 50);
+  await expect(ohlc).toBeHidden();
+});

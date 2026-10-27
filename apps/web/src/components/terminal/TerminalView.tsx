@@ -11,6 +11,8 @@ import s from "./terminal.module.css";
 export type ActiveIndicator = { id: string; params: Record<string, number> };
 export type LayerKey = "structure" | "zones" | "levels" | "signals";
 export type PanelKey = "funding" | "oi" | "liq";
+export type CrosshairInfo = { candle: Candle; values: { label: string; value: number | null }[] };
+const LONG_PRESS_MS = 300;
 export const PANELS: { id: PanelKey; title: string }[] = [
   { id: "funding", title: "Funding" },
   { id: "oi", title: "Open interest" },
@@ -29,6 +31,8 @@ type Props = {
   panels: PanelKey[];
   tick: string | null;
   onNeedOlder: (before: number) => Promise<{ candles: Candle[]; hasOlder: boolean } | null>;
+  /** Перекрестие: свеча под курсором/пальцем и значения индикаторов (план 2A.7). */
+  onCrosshair?: (info: CrosshairInfo | null) => void;
   drawings?: {
     state: DrawingsState;
     tool: DrawingType | null;
@@ -67,7 +71,7 @@ function precisionOf(tick: string | null): { precision: number; minMove: number 
 type Pane = { spec: IndicatorSpec; paneIndex: number | null; series: Record<string, ISeriesApi<"Line" | "Histogram">> };
 
 /** Обёртка React над Terminal из packages/charts: данные, индикаторы, слои, тема. */
-export function TerminalView({ candles, current, tf, type, indicators, layersOn, layers, derivatives, panels, tick, onNeedOlder, drawings }: Props) {
+export function TerminalView({ candles, current, tf, type, indicators, layersOn, layers, derivatives, panels, tick, onNeedOlder, drawings, onCrosshair }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const tfRef = useRef(tf);
@@ -81,11 +85,15 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
   const drawingsRef = useRef(drawings);
   const candlesRef = useRef<Candle[]>([]);
   const needOlderRef = useRef(onNeedOlder);
+  const onCrosshairRef = useRef(onCrosshair);
+  const valuesRef = useRef<Map<string, { label: string; values: (number | null)[] }>>(new Map());
+  const stickyRef = useRef(false);
   useEffect(() => {
     needOlderRef.current = onNeedOlder;
     drawingsRef.current = drawings;
     tfRef.current = tf;
-  }, [onNeedOlder, drawings, tf]);
+    onCrosshairRef.current = onCrosshair;
+  }, [onNeedOlder, drawings, tf, onCrosshair]);
 
   // создание терминала
   useEffect(() => {
@@ -143,11 +151,68 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
     mq.addEventListener("change", onMq);
     const onDbl = () => term.resetView(120);
     el.addEventListener("dblclick", onDbl);
+    // перекрестие → свеча и значения индикаторов; на телефоне long-press (300 мс) включает «липкий» режим
+    const emit = (time: number | null) => {
+      if (time === null) {
+        if (!stickyRef.current) onCrosshairRef.current?.(null);
+        return;
+      }
+      const all = candlesRef.current;
+      const i = all.findIndex((c) => c.time === time);
+      if (i < 0) return;
+      const values = [...valuesRef.current.values()].map((v) => ({ label: v.label, value: v.values[i] ?? null }));
+      onCrosshairRef.current?.({ candle: all[i]!, values });
+    };
+    term.chart.subscribeCrosshairMove((p) => emit(typeof p.time === "number" ? p.time : null));
+    let pressTimer: ReturnType<typeof setTimeout> | undefined;
+    let pressStart: { x: number; y: number } | null = null;
+    const scrollOpts = (on: boolean) => term.chart.applyOptions({ handleScroll: { horzTouchDrag: on, vertTouchDrag: false }, handleScale: { pinch: on } });
+    const onPDown = (e: PointerEvent) => {
+      if (e.pointerType !== "touch" || drawingsRef.current?.tool) return;
+      pressStart = { x: e.clientX, y: e.clientY };
+      pressTimer = setTimeout(() => {
+        stickyRef.current = true;
+        el.dataset.sticky = "1";
+        el.dataset.stickyArmed = "1"; // первое отпускание после long-press режим не выключает
+        scrollOpts(false);
+        if (navigator.vibrate) navigator.vibrate(10);
+      }, LONG_PRESS_MS);
+    };
+    const onPMove = (e: PointerEvent) => {
+      if (pressStart && !stickyRef.current && Math.hypot(e.clientX - pressStart.x, e.clientY - pressStart.y) > 8) {
+        clearTimeout(pressTimer);
+        pressStart = null;
+      }
+    };
+    const onPUp = (e: PointerEvent) => {
+      clearTimeout(pressTimer);
+      const wasTap = pressStart !== null && Math.hypot(e.clientX - pressStart.x, e.clientY - pressStart.y) < 8;
+      pressStart = null;
+      if (stickyRef.current) {
+        scrollOpts(true);
+        if (wasTap && !el.dataset.stickyArmed) {
+          // короткий тап в липком режиме — выход
+          stickyRef.current = false;
+          delete el.dataset.sticky;
+          onCrosshairRef.current?.(null);
+        }
+        delete el.dataset.stickyArmed;
+      }
+    };
+    el.addEventListener("pointerdown", onPDown);
+    el.addEventListener("pointermove", onPMove);
+    el.addEventListener("pointerup", onPUp);
+    el.addEventListener("pointercancel", onPUp);
     const panes = panesRef.current;
     return () => {
       obs.disconnect();
       mq.removeEventListener("change", onMq);
       el.removeEventListener("dblclick", onDbl);
+      el.removeEventListener("pointerdown", onPDown);
+      el.removeEventListener("pointermove", onPMove);
+      el.removeEventListener("pointerup", onPUp);
+      el.removeEventListener("pointercancel", onPUp);
+      clearTimeout(pressTimer);
       panes.clear();
       auxRef.current = [];
       boxRef.current = null;
@@ -215,6 +280,7 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
       if (!want.has(id)) {
         Object.values(pane.series).forEach((sr) => term.removeSeries(sr));
         panesRef.current.delete(id);
+        for (const k of [...valuesRef.current.keys()]) if (k.startsWith(`${id}.`)) valuesRef.current.delete(k);
       }
     }
     const all = current ? [...candles, current] : candles;
@@ -232,6 +298,7 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
         panesRef.current.set(ind.id, pane);
       }
       const out = spec.compute(all, { ...defaultParams(spec), ...ind.params });
+      for (const sp of spec.series) valuesRef.current.set(`${ind.id}.${sp.key}`, { label: `${spec.title} ${sp.label}`.replace(/ (EMA|SMA|RSI|VWAP|ATR)$/, ""), values: out[sp.key] ?? [] });
       for (const sp of spec.series) {
         const values = out[sp.key] ?? [];
         const data = all.map((c, i) => ({ time: c.time as UTCTimestamp, value: values[i] })).filter((d) => d.value != null) as { time: UTCTimestamp; value: number }[];
