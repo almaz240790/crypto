@@ -12,6 +12,8 @@ export type ActiveIndicator = { id: string; params: Record<string, number> };
 export type LayerKey = "structure" | "zones" | "levels" | "signals" | "patterns" | "figures";
 export type PanelKey = "funding" | "oi" | "liq";
 export type CrosshairInfo = { candle: Candle; values: { label: string; value: number | null }[] };
+/** Управление видом снаружи (кнопки «+/−», горячие клавиши). */
+export type TerminalControls = { zoom: (factor: number) => void; reset: () => void };
 const LONG_PRESS_MS = 300;
 export const PANELS: { id: PanelKey; title: string }[] = [
   { id: "funding", title: "Funding" },
@@ -41,6 +43,10 @@ type Props = {
   onNeedOlder: (before: number) => Promise<{ candles: Candle[]; hasOlder: boolean } | null>;
   /** Перекрестие: свеча под курсором/пальцем и значения индикаторов (план 2A.7). */
   onCrosshair?: (info: CrosshairInfo | null) => void;
+  /** Время первой видимой свечи (для счётчика «Найдено» по видимой части). */
+  onVisibleFrom?: (t: number | null) => void;
+  /** Вызывается с управлением видом после создания графика и с null при размонтировании. */
+  onReady?: (controls: TerminalControls | null) => void;
   drawings?: {
     state: DrawingsState;
     tool: DrawingType | null;
@@ -87,7 +93,7 @@ const MOBILE_QUERY = "(max-width: 899px)";
 const SWIPE_PX = 24;
 
 /** Обёртка React над Terminal из packages/charts: данные, индикаторы, слои, тема. */
-export function TerminalView({ candles, current, tf, type, indicators, layersOn, layers, patterns, highlight, figures, highlightFigure, alertLines, derivatives, panels, tick, onNeedOlder, drawings, onCrosshair }: Props) {
+export function TerminalView({ candles, current, tf, type, indicators, layersOn, layers, patterns, highlight, figures, highlightFigure, alertLines, derivatives, panels, tick, onNeedOlder, drawings, onCrosshair, onVisibleFrom, onReady }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const tfRef = useRef(tf);
@@ -102,6 +108,9 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
   const candlesRef = useRef<Candle[]>([]);
   const needOlderRef = useRef(onNeedOlder);
   const onCrosshairRef = useRef(onCrosshair);
+  const onVisibleFromRef = useRef(onVisibleFrom);
+  const onReadyRef = useRef(onReady);
+  const visibleFromRef = useRef<number | null>(null);
   const valuesRef = useRef<Map<string, { label: string; values: (number | null)[] }>>(new Map());
   const stickyRef = useRef(false);
   const [heads, setHeads] = useState<PaneHead[]>([]);
@@ -163,7 +172,9 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
     drawingsRef.current = drawings;
     tfRef.current = tf;
     onCrosshairRef.current = onCrosshair;
-  }, [onNeedOlder, drawings, tf, onCrosshair]);
+    onVisibleFromRef.current = onVisibleFrom;
+    onReadyRef.current = onReady;
+  }, [onNeedOlder, drawings, tf, onCrosshair, onVisibleFrom, onReady]);
 
   // создание терминала
   useEffect(() => {
@@ -178,8 +189,17 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
           term.addOlder(r.candles, r.hasOlder);
         });
       },
+      onVisibleRange: (r) => {
+        const all = candlesRef.current;
+        const i = r ? Math.min(all.length - 1, Math.max(0, Math.floor(r.from))) : -1;
+        const t = i >= 0 ? (all[i]?.time ?? null) : null;
+        if (t === visibleFromRef.current) return;
+        visibleFromRef.current = t;
+        onVisibleFromRef.current?.(t);
+      },
     });
     termRef.current = term;
+    onReadyRef.current?.({ zoom: (f) => term.zoom(f), reset: () => term.resetView(150) });
     (el as HTMLElement & { __chart?: unknown }).__chart = term.chart;
     const box = new BoxPrimitive();
     boxRef.current = box;
@@ -298,6 +318,7 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
       drawPrimRef.current = null;
       term.destroy();
       termRef.current = null;
+      onReadyRef.current?.(null);
     };
     // тип меняется через setType ниже, не пересоздаём
     // eslint-disable-next-line react-hooks/exhaustive-deps

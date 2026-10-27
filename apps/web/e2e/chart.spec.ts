@@ -348,3 +348,36 @@ test("мультичарт: 2 и 4 графика, смена инструмен
   await expect(page.getByRole("region", { name: /^график / })).toHaveCount(4);
   await expect(page.getByRole("region", { name: /^график / }).first()).toHaveAttribute("aria-label", "график ETHUSDT 1d");
 });
+
+test("масштаб: кнопки «+/−», клавиши, колесо и трекпад, сброс", async ({ page }) => {
+  const calls: string[] = [];
+  await mock(page, calls);
+  await page.goto("/chart/BTCUSDT/4h");
+  const term = page.getByTestId("terminal");
+  await expect(term.locator("canvas").first()).toBeVisible();
+  await expect(page.getByLabel("состояние")).toContainText("цена");
+  type Host = HTMLElement & { __chart: { timeScale(): { getVisibleLogicalRange(): { from: number; to: number } | null } } };
+  const range = async () => (await page.evaluate(() => (document.querySelector('[data-testid="terminal"]') as Host).__chart.timeScale().getVisibleLogicalRange())) ?? { from: 0, to: 0 };
+  const width = async () => { const r = await range(); return r.to - r.from; };
+  await expect.poll(width).toBeGreaterThan(50);
+  const w0 = await width();
+  await page.getByRole("button", { name: "приблизить" }).click();
+  await expect.poll(width).toBeLessThan(w0 * 0.9);
+  await page.getByRole("button", { name: "отдалить" }).click();
+  await expect.poll(width).toBeGreaterThan(w0 * 0.95);
+  await page.keyboard.press("+");
+  await expect.poll(width).toBeLessThan(w0 * 0.9);
+  // колесо: вертикальное — масштаб, горизонтальное — прокрутка без изменения масштаба
+  const box = (await term.boundingBox())!;
+  await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.5);
+  const w1 = await width();
+  await page.mouse.wheel(0, -200);
+  await expect.poll(width).toBeLessThan(w1 * 0.8);
+  const w2 = await width();
+  const from2 = (await range()).from;
+  await page.mouse.wheel(-200, 0);
+  await expect.poll(async () => (await range()).from).toBeLessThan(from2);
+  expect(Math.abs((await width()) - w2)).toBeLessThan(0.5);
+  await page.getByRole("button", { name: "показать последние свечи" }).click();
+  await expect.poll(width).toBeGreaterThan(w0 * 0.95);
+});
