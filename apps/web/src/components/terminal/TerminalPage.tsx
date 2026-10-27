@@ -449,7 +449,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
                 </p>
               </form>
             )}
-            {sheet === "found" && <FoundList items={data.patterns?.items ?? []} stats={data.patterns?.stats ?? {}} selected={foundSel} onSelect={setFoundSel} tf={tf} />}
+            {sheet === "found" && <FoundList items={data.patterns?.items ?? []} stats={data.patterns?.stats ?? {}} selected={foundSel} onSelect={setFoundSel} tf={tf} symbol={symbol} canExplain={!!user} />}
             {sheet === "draw" &&
               TOOLS.map((t) => (
                 <button
@@ -527,7 +527,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
           onDeleteLayout={removeLayout}
           authed={!!user}
           layoutsLimit={user ? null : 0}
-          found={{ items: data.patterns?.items ?? [], stats: data.patterns?.stats ?? {}, selected: foundSel, onSelect: setFoundSel, tf }}
+          found={{ items: data.patterns?.items ?? [], stats: data.patterns?.stats ?? {}, selected: foundSel, onSelect: setFoundSel, tf, symbol, canExplain: !!user }}
         />
       </div>
       <div className={s.bottom}>
