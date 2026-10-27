@@ -340,7 +340,7 @@ test("мультичарт: 2 и 4 графика, смена инструмен
   const cells = page.getByRole("region", { name: /^график / });
   await expect(cells).toHaveCount(2);
   await expect(cells.first().locator("canvas").first()).toBeVisible();
-  expect(calls.some((c) => c.startsWith("/v1/chart/candles?symbol=ETHUSDT&tf=4h"))).toBe(true);
+  await expect.poll(() => calls.some((c) => c.startsWith("/v1/chart/candles?symbol=ETHUSDT&tf=4h"))).toBe(true);
   await page.getByRole("button", { name: "4", exact: true }).click();
   await expect(cells).toHaveCount(4);
   await expect(cells.nth(3)).toHaveAttribute("aria-label", "график BNBUSDT 1d");
