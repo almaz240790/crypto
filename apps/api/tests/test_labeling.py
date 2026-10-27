@@ -44,7 +44,7 @@ db_only = pytest.mark.skipif(not _db_available(), reason="БД с миграци
 @db_only
 def test_queue_label_and_stats() -> None:
     import random
-    from datetime import UTC, datetime
+    from datetime import UTC, datetime, timedelta
     from decimal import Decimal
 
     from app.db import SessionLocal
@@ -69,7 +69,9 @@ def test_queue_label_and_stats() -> None:
             s.flush()
             t0 = datetime(2026, 1, 1, tzinfo=UTC)
             figs = []
-            for typ in ("double_top", "flag", "flag"):
+            for i, typ in enumerate(("double_top", "flag", "flag")):
+                # разная геометрия: иначе сработает уникальный индекс uq_figures_geometry
+                start = t0 - timedelta(hours=4 * (i + 1))
                 f = FigureRow(
                     instrument_id=inst.id,
                     timeframe="4h",
@@ -77,7 +79,7 @@ def test_queue_label_and_stats() -> None:
                     direction="down",
                     status="confirmed",
                     scale=2,
-                    start_time=t0,
+                    start_time=start,
                     end_time=t0,
                     known_time=t0,
                     geometry={},
