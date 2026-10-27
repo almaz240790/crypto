@@ -9,6 +9,7 @@ import { Button, EmptyState, Input, Panel, Select } from "@/components/ui";
 import { calculate } from "@/lib/calc";
 import { formatPrice } from "@/lib/format";
 import { getInstruments, type Instrument } from "@/lib/user";
+import { useT } from "@/i18n/client";
 
 type Preset = { name: string; v: Record<string, string> };
 const KEY = "calc.presets";
@@ -22,6 +23,7 @@ function readPresets(): Preset[] {
 }
 
 function CalculatorInner() {
+  const t = useT();
   const sp = useSearchParams();
   const { user } = useAuth();
   const [instruments, setInstruments] = useState<Instrument[]>([]);
@@ -100,35 +102,35 @@ function CalculatorInner() {
   };
 
   return (
-    <AppShell title="Калькулятор позиции">
+    <AppShell title={t("Калькулятор позиции")}>
       <div className={s.two}>
-        <Panel title="Параметры" footer="Депозит, риск, плечо и тип рынка подставляются из профиля; измените в настройках.">
+        <Panel title={t("Параметры")} footer={t("Депозит, риск, плечо и тип рынка подставляются из профиля; измените в настройках.")}>
           <div className={s.form}>
             <div className={s.row}>
-              <Select label="Инструмент" value={val("symbol")} onChange={(e) => set("symbol", e.target.value)}>
+              <Select label={t("Инструмент")} value={val("symbol")} onChange={(e) => set("symbol", e.target.value)}>
                 {(instruments.length ? instruments : [{ symbol: "BTCUSDT" } as Instrument]).map((i) => (
                   <option key={i.symbol} value={i.symbol}>
                     {i.symbol}
                   </option>
                 ))}
               </Select>
-              <Select label="Направление" value={val("direction")} onChange={(e) => set("direction", e.target.value)}>
+              <Select label={t("Направление")} value={val("direction")} onChange={(e) => set("direction", e.target.value)}>
                 <option value="long">long</option>
                 <option value="short">short</option>
               </Select>
-              <Select label="Рынок" value={val("marketType")} onChange={(e) => set("marketType", e.target.value)}>
-                <option value="futures">фьючерсы</option>
-                <option value="spot">спот</option>
+              <Select label={t("Рынок")} value={val("marketType")} onChange={(e) => set("marketType", e.target.value)}>
+                <option value="futures">{t("фьючерсы")}</option>
+                <option value="spot">{t("спот")}</option>
               </Select>
             </div>
             <div className={s.row}>
-              <Input label="Депозит, USDT" mono inputMode="decimal" value={val("deposit")} onChange={(e) => set("deposit", e.target.value)} />
-              <Input label="Риск, %" mono inputMode="decimal" value={val("riskPct")} onChange={(e) => set("riskPct", e.target.value)} />
-              <Input label="Плечо" mono inputMode="numeric" value={val("leverage")} onChange={(e) => set("leverage", e.target.value)} disabled={val("marketType") === "spot"} />
+              <Input label={t("Депозит, USDT")} mono inputMode="decimal" value={val("deposit")} onChange={(e) => set("deposit", e.target.value)} />
+              <Input label={t("Риск, %")} mono inputMode="decimal" value={val("riskPct")} onChange={(e) => set("riskPct", e.target.value)} />
+              <Input label={t("Плечо")} mono inputMode="numeric" value={val("leverage")} onChange={(e) => set("leverage", e.target.value)} disabled={val("marketType") === "spot"} />
             </div>
             <div className={s.row}>
-              <Input label="Вход" mono inputMode="decimal" value={val("entry")} onChange={(e) => set("entry", e.target.value)} />
-              <Input label="Стоп" mono inputMode="decimal" value={val("stop")} onChange={(e) => set("stop", e.target.value)} />
+              <Input label={t("Вход")} mono inputMode="decimal" value={val("entry")} onChange={(e) => set("entry", e.target.value)} />
+              <Input label={t("Стоп")} mono inputMode="decimal" value={val("stop")} onChange={(e) => set("stop", e.target.value)} />
             </div>
             <div className={s.row}>
               <Input label="TP1" mono inputMode="decimal" value={val("tp1")} onChange={(e) => set("tp1", e.target.value)} />
@@ -136,10 +138,8 @@ function CalculatorInner() {
               <Input label="TP3" mono inputMode="decimal" value={val("tp3")} onChange={(e) => set("tp3", e.target.value)} />
             </div>
             <div className={s.inline}>
-              <input placeholder="имя пресета" aria-label="имя пресета" value={presetName} onChange={(e) => setPresetName(e.target.value)} />
-              <Button size="sm" onClick={savePreset} disabled={!presetName.trim()}>
-                Сохранить пресет
-              </Button>
+              <input placeholder={t("имя пресета")} aria-label={t("имя пресета")} value={presetName} onChange={(e) => setPresetName(e.target.value)} />
+              <Button size="sm" onClick={savePreset} disabled={!presetName.trim()}>{t("Сохранить пресет")}</Button>
               {presets.map((p) => (
                 <button key={p.name} type="button" className={s.small} onClick={() => loadPreset(p)}>
                   {p.name}
@@ -148,30 +148,30 @@ function CalculatorInner() {
             </div>
           </div>
         </Panel>
-        <Panel title="Результат" footer="Цена ликвидации — приближённо по формуле изолированной маржи с поддерживающей маржой 0.5 %; у биржи она зависит от уровня позиции и комиссий. Проверяйте в терминале биржи.">
+        <Panel title={t("Результат")} footer={t("Цена ликвидации — приближённо по формуле изолированной маржи с поддерживающей маржой 0.5 %; у биржи она зависит от уровня позиции и комиссий. Проверяйте в терминале биржи.")}>
           {!out ? (
-            <EmptyState text="Заполните депозит, риск, вход и стоп." />
+            <EmptyState text={t("Заполните депозит, риск, вход и стоп.")} />
           ) : (
             <div className={s.form}>
               <dl className={s.out}>
-                <dt>Риск в USDT</dt>
+                <dt>{t("Риск в USDT")}</dt>
                 <dd className="num">{out.riskUsd.toFixed(2)}</dd>
-                <dt>Расстояние до стопа</dt>
+                <dt>{t("Расстояние до стопа")}</dt>
                 <dd className="num">{out.riskPerUnit > 0 ? `${formatPrice(out.riskPerUnit, tick)} (${((out.riskPerUnit / num("entry")) * 100).toFixed(2)} %)` : "—"}</dd>
-                <dt>Размер позиции</dt>
+                <dt>{t("Размер позиции")}</dt>
                 <dd className="num" data-testid="calc-size">
                   {out.size} {base}
                   {inst?.lot_size && out.size !== out.sizeRaw ? <span className="caption"> (округлено к шагу {inst.lot_size})</span> : null}
                 </dd>
-                <dt>Объём позиции</dt>
+                <dt>{t("Объём позиции")}</dt>
                 <dd className="num">{out.notional.toFixed(2)} USDT</dd>
                 {val("marketType") === "futures" && (
                   <>
-                    <dt>Нужное плечо</dt>
-                    <dd className="num">{out.requiredLeverage <= 1 ? "без плеча" : `≥ ${out.requiredLeverage.toFixed(1)}×`}</dd>
+                    <dt>{t("Нужное плечо")}</dt>
+                    <dd className="num">{out.requiredLeverage <= 1 ? t("без плеча") : `≥ ${out.requiredLeverage.toFixed(1)}×`}</dd>
                     <dt>Маржа при {num("leverage") || 1}×</dt>
                     <dd className="num">{out.margin.toFixed(2)} USDT</dd>
-                    <dt>Ликвидация (≈)</dt>
+                    <dt>{t("Ликвидация (≈)")}</dt>
                     <dd className="num">{out.liquidation ? formatPrice(out.liquidation, tick) : "—"}</dd>
                   </>
                 )}
@@ -185,7 +185,7 @@ function CalculatorInner() {
                 ))}
                 {out.rrTp2 !== null && (
                   <>
-                    <dt>R:R до TP2</dt>
+                    <dt>{t("R:R до TP2")}</dt>
                     <dd className="num">{out.rrTp2.toFixed(2)}</dd>
                   </>
                 )}

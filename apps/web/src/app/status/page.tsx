@@ -3,6 +3,7 @@ import { Footer, Header } from "@/components/site";
 import { Badge, EmptyState, Panel, Table, Td, Th } from "@/components/ui";
 import { API_URL } from "@/lib/api";
 import { formatTimeUTC } from "@/lib/format";
+import { getT } from "@/i18n/server";
 
 export const dynamic = "force-dynamic";
 
@@ -31,6 +32,7 @@ async function load(): Promise<Status | null> {
 }
 
 export default async function StatusPage() {
+  const t = await getT();
   const st = await load();
   const titles = new Map((st?.components ?? []).map((c) => [c.key, c.title]));
   return (
@@ -38,23 +40,23 @@ export default async function StatusPage() {
       <Header />
       <main className="container" style={{ padding: "24px 0", display: "grid", gap: 16, maxWidth: 900 }}>
         <div>
-          <h1>Статус системы</h1>
+          <h1>{t("Статус системы")}</h1>
           <p className="text-2">Проверяется каждую минуту. Обновлено {st ? formatTimeUTC(st.generated_at) : "—"}.</p>
         </div>
         {!st ? (
           <Panel>
-            <EmptyState text="API недоступен. Если это длится дольше нескольких минут — это и есть инцидент." />
+            <EmptyState text={t("API недоступен. Если это длится дольше нескольких минут — это и есть инцидент.")} />
           </Panel>
         ) : (
           <>
-            <Panel title={`Общий статус: ${LABEL[st.status]}`} flush>
+            <Panel title={t("Общий статус: {s}", { s: t(LABEL[st.status]) })} flush>
               <Table compact stack={false}>
                 <thead>
                   <tr>
-                    <Th>Компонент</Th>
-                    <Th>Состояние</Th>
-                    <Th>Подробности</Th>
-                    <Th num>Доступность 7 д</Th>
+                    <Th>{t("Компонент")}</Th>
+                    <Th>{t("Состояние")}</Th>
+                    <Th>{t("Подробности")}</Th>
+                    <Th num>{t("Доступность 7 д")}</Th>
                   </tr>
                 </thead>
                 <tbody>
@@ -62,7 +64,7 @@ export default async function StatusPage() {
                     <tr key={c.key}>
                       <Td>{c.title}</Td>
                       <Td>
-                        <Badge tone={TONE[c.status]}>{LABEL[c.status]}</Badge>
+                        <Badge tone={TONE[c.status]}>{t(LABEL[c.status])}</Badge>
                       </Td>
                       <Td className="text-2">{c.detail}</Td>
                       <Td num>{c.uptime_7d.toFixed(2)} %</Td>
@@ -71,18 +73,18 @@ export default async function StatusPage() {
                 </tbody>
               </Table>
             </Panel>
-            <Panel title="Инциденты за 7 дней" flush footer="Инциденты открывает и закрывает монитор автоматически; записи не редактируются вручную.">
+            <Panel title={t("Инциденты за 7 дней")} flush footer={t("Инциденты открывает и закрывает монитор автоматически; записи не редактируются вручную.")}>
               {st.incidents.length === 0 ? (
-                <EmptyState text="Инцидентов не было." />
+                <EmptyState text={t("Инцидентов не было.")} />
               ) : (
                 <Table compact stack={false}>
                   <thead>
                     <tr>
-                      <Th>Открыт</Th>
-                      <Th>Закрыт</Th>
-                      <Th>Компонент</Th>
-                      <Th>Уровень</Th>
-                      <Th>Что случилось</Th>
+                      <Th>{t("Открыт")}</Th>
+                      <Th>{t("Закрыт")}</Th>
+                      <Th>{t("Компонент")}</Th>
+                      <Th>{t("Уровень")}</Th>
+                      <Th>{t("Что случилось")}</Th>
                     </tr>
                   </thead>
                   <tbody>
@@ -92,11 +94,11 @@ export default async function StatusPage() {
                           {formatTimeUTC(i.opened_at)}
                         </Td>
                         <Td className="num" style={{ textAlign: "left" }}>
-                          {i.closed_at ? formatTimeUTC(i.closed_at) : "ещё открыт"}
+                          {i.closed_at ? formatTimeUTC(i.closed_at) : t("ещё открыт")}
                         </Td>
                         <Td>{titles.get(i.component) ?? i.component}</Td>
                         <Td>
-                          <Badge tone={i.severity === "down" ? "down" : "warn"}>{LABEL[i.severity as "degraded" | "down"]}</Badge>
+                          <Badge tone={i.severity === "down" ? "down" : "warn"}>{t(LABEL[i.severity as "degraded" | "down"])}</Badge>
                         </Td>
                         <Td className="text-2">{i.message}</Td>
                       </tr>
@@ -107,9 +109,7 @@ export default async function StatusPage() {
             </Panel>
           </>
         )}
-        <p className="caption">
-          Правила: сигнал публикуется в течение 60 секунд после закрытия свечи H4; отсутствие закрытия свечи дольше 2 минут или прогона движка по более чем 5 % инструментов считается инцидентом.
-        </p>
+        <p className="caption">{t("Правила: сигнал публикуется в течение 60 секунд после закрытия свечи H4; отсутствие закрытия свечи дольше 2 минут или прогона движка по более чем 5 % инструментов считается инцидентом.")}</p>
       </main>
       <Footer />
     </>

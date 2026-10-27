@@ -14,6 +14,7 @@ import { changePassword, createApiKey, deleteAccount, disableTwoFactor, enableTw
 
 /** Сессии и устройства (план 3.12, v2): активные входы, отзыв одного или всех. */
 function SessionsPanel({ note, onLogoutAll }: { note: (text: string, kind?: "ok" | "error") => void; onLogoutAll: () => void }) {
+  const t = useT();
   const [items, setItems] = useState<SessionRow[] | null>(null);
   const load = () => getSessions().then((r) => setItems(r.items)).catch(() => setItems([]));
   useEffect(() => {
@@ -23,50 +24,48 @@ function SessionsPanel({ note, onLogoutAll }: { note: (text: string, kind?: "ok"
     try {
       await revokeSession(sx.id);
       await load();
-      note("Сессия завершена");
+      note(t("Сессия завершена"));
     } catch (err) {
-      note(err instanceof Error ? err.message : "ошибка", "error");
+      note(err instanceof Error ? err.message : t("ошибка"), "error");
     }
   }
   async function revokeAll() {
-    if (!confirm("Выйти на всех устройствах, включая это?")) return;
+    if (!confirm(t("Выйти на всех устройствах, включая это?"))) return;
     await revokeAllSessions().catch(() => {});
     onLogoutAll();
   }
   return (
-    <Panel title="Сессии и устройства" footer="Список активных входов по устройствам. Завершённая сессия перестаёт работать при следующем обновлении токена (до 15 минут).">
+    <Panel title={t("Сессии и устройства")} footer={t("Список активных входов по устройствам. Завершённая сессия перестаёт работать при следующем обновлении токена (до 15 минут).")}>
       <div className={s.form} data-testid="sessions">
         {items === null ? (
-          <span className="caption">Загрузка…</span>
+          <span className="caption">{t("Загрузка…")}</span>
         ) : items.length === 0 ? (
-          <span className="text-2">Активных сессий нет.</span>
+          <span className="text-2">{t("Активных сессий нет.")}</span>
         ) : (
           <ul style={{ margin: 0, paddingLeft: 18, fontSize: 14 }}>
             {items.map((sx) => (
               <li key={sx.id} title={sx.user_agent ?? undefined}>
                 <strong>{sx.device}</strong> · вход {formatTimeUTC(sx.created_at)}{" "}
-                <button type="button" className={`${s.small} ${s.danger}`} onClick={() => revoke(sx)} aria-label={`завершить сессию ${sx.id}`}>
-                  завершить
-                </button>
+                <button type="button" className={`${s.small} ${s.danger}`} onClick={() => revoke(sx)} aria-label={`завершить сессию ${sx.id}`}>{t("завершить")}</button>
               </li>
             ))}
           </ul>
         )}
         <div className={s.actions}>
-          <Button type="button" size="sm" variant="danger" onClick={revokeAll}>
-            Выйти на всех устройствах
-          </Button>
+          <Button type="button" size="sm" variant="danger" onClick={revokeAll}>{t("Выйти на всех устройствах")}</Button>
         </div>
       </div>
     </Panel>
   );
 }
 import { formatTimeUTC } from "@/lib/format";
+import { useT } from "@/i18n/client";
 
 const API_BASE = typeof window === "undefined" ? "" : window.location.origin;
 
 /** API-ключи для чтения (план 3.10, Premium): список, создание с показом один раз, отзыв. */
 function ApiKeysPanel({ note }: { note: (text: string, kind?: "ok" | "error") => void }) {
+  const t = useT();
   const [keys, setKeys] = useState<ApiKeyRow[] | null>(null);
   const [limit, setLimit] = useState(5);
   const [denied, setDenied] = useState<string | null>(null);
@@ -93,23 +92,23 @@ function ApiKeysPanel({ note }: { note: (text: string, kind?: "ok" | "error") =>
       setFresh(r.key);
       setName("");
       await load();
-      note("Ключ создан — скопируйте его сейчас");
+      note(t("Ключ создан — скопируйте его сейчас"));
     } catch (err) {
-      note(err instanceof Error ? err.message : "ошибка", "error");
+      note(err instanceof Error ? err.message : t("ошибка"), "error");
     }
   }
   async function revoke(k: ApiKeyRow) {
-    if (!confirm(`Отозвать ключ «${k.name}» (${k.prefix}…)? Запросы с ним перестанут работать.`)) return;
+    if (!confirm(t("Отозвать ключ «{name}» ({prefix}…)? Запросы с ним перестанут работать.", { name: k.name, prefix: k.prefix }))) return;
     await revokeApiKey(k.id).catch((err: Error) => note(err.message, "error"));
     await load();
   }
   return (
-    <Panel title="API-ключи для чтения (Premium)" footer={<>Ключ передаётся в заголовке X-API-Key и даёт только чтение (GET) тех же эндпоинтов /v1: сигналы, статистика, графики. Лимит 600 запросов в минуту на ключ. Ключ показывается один раз. <Link href="/api-docs">Документация API</Link>.</>}>
+    <Panel title={t("API-ключи для чтения (Premium)")} footer={<>{t("Ключ передаётся в заголовке X-API-Key и даёт только чтение (GET) тех же эндпоинтов /v1: сигналы, статистика, графики. Лимит 600 запросов в минуту на ключ. Ключ показывается один раз.")}{" "}<Link href="/api-docs">{t("Документация API")}</Link>.</>}>
       <div className={s.form} data-testid="api-keys">
         {denied ? (
           <span className="text-2">{denied}</span>
         ) : keys === null ? (
-          <span className="caption">Загрузка…</span>
+          <span className="caption">{t("Загрузка…")}</span>
         ) : (
           <>
             {keys.length > 0 && (
@@ -117,32 +116,27 @@ function ApiKeysPanel({ note }: { note: (text: string, kind?: "ok" | "error") =>
                 {keys.map((k) => (
                   <li key={k.id}>
                     <strong>{k.name}</strong> · <code>{k.prefix}…</code> · создан {k.created_at ? formatTimeUTC(k.created_at) : "—"}
-                    {k.last_used_at ? ` · использован ${formatTimeUTC(k.last_used_at)}` : " · ещё не использовался"}{" "}
-                    <button type="button" className={`${s.small} ${s.danger}`} onClick={() => revoke(k)} aria-label={`отозвать ключ ${k.name}`}>
-                      отозвать
-                    </button>
+                    {k.last_used_at ? ` · использован ${formatTimeUTC(k.last_used_at)}` : t(" · ещё не использовался")}{" "}
+                    <button type="button" className={`${s.small} ${s.danger}`} onClick={() => revoke(k)} aria-label={`отозвать ключ ${k.name}`}>{t("отозвать")}</button>
                   </li>
                 ))}
               </ul>
             )}
             {fresh && (
-              <div role="region" aria-label="новый ключ">
-                <p style={{ margin: "0 0 6px" }}>Новый ключ (больше не покажется):</p>
+              <div role="region" aria-label={t("новый ключ")}>
+                <p style={{ margin: "0 0 6px" }}>{t("Новый ключ (больше не покажется):")}</p>
                 <code style={{ display: "block", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>{fresh}</code>
-                <p className="caption" style={{ margin: "6px 0 0" }}>
-                  Пример: <code>{`curl -H "X-API-Key: ${fresh.slice(0, 10)}…" ${API_BASE}/v1/signals?tab=all`}</code>
+                <p className="caption" style={{ margin: "6px 0 0" }}>{t("Пример:")}{" "}<code>{`curl -H "X-API-Key: ${fresh.slice(0, 10)}…" ${API_BASE}/v1/signals?tab=all`}</code>
                 </p>
               </div>
             )}
             {keys.length < limit && (
               <form className={s.form} onSubmit={create}>
                 <div className={s.row}>
-                  <Input label="Название ключа" value={name} onChange={(e) => setName(e.target.value)} maxLength={60} required placeholder="например, мой скрипт" />
+                  <Input label={t("Название ключа")} value={name} onChange={(e) => setName(e.target.value)} maxLength={60} required placeholder={t("например, мой скрипт")} />
                 </div>
                 <div className={s.actions}>
-                  <Button type="submit" size="sm" disabled={!name.trim()}>
-                    Создать ключ
-                  </Button>
+                  <Button type="submit" size="sm" disabled={!name.trim()}>{t("Создать ключ")}</Button>
                 </div>
               </form>
             )}
@@ -155,6 +149,7 @@ function ApiKeysPanel({ note }: { note: (text: string, kind?: "ok" | "error") =>
 
 /** Двухфакторная защита (план 3.12, v2): настройка, включение по коду, резервные коды, отключение. */
 function TwoFactorPanel({ note }: { note: (text: string, kind?: "ok" | "error") => void }) {
+  const t = useT();
   const [st, setSt] = useState<TwoFactorStatus | null>(null);
   const [setup, setSetup] = useState<{ secret: string; otpauth_url: string } | null>(null);
   const [code, setCode] = useState("");
@@ -168,7 +163,7 @@ function TwoFactorPanel({ note }: { note: (text: string, kind?: "ok" | "error") 
       setSetup(await setupTwoFactor());
       setCode("");
     } catch (err) {
-      note(err instanceof Error ? err.message : "ошибка", "error");
+      note(err instanceof Error ? err.message : t("ошибка"), "error");
     }
   }
   async function enable(e: FormEvent) {
@@ -179,9 +174,9 @@ function TwoFactorPanel({ note }: { note: (text: string, kind?: "ok" | "error") 
       setSetup(null);
       setCode("");
       await load();
-      note("2FA включена");
+      note(t("2FA включена"));
     } catch (err) {
-      note(err instanceof Error ? err.message : "ошибка", "error");
+      note(err instanceof Error ? err.message : t("ошибка"), "error");
     }
   }
   async function disable(e: FormEvent) {
@@ -191,60 +186,48 @@ function TwoFactorPanel({ note }: { note: (text: string, kind?: "ok" | "error") 
       setCode("");
       setBackup(null);
       await load();
-      note("2FA отключена");
+      note(t("2FA отключена"));
     } catch (err) {
-      note(err instanceof Error ? err.message : "ошибка", "error");
+      note(err instanceof Error ? err.message : t("ошибка"), "error");
     }
   }
   return (
-    <Panel title="Двухфакторная защита (2FA)" footer="Код из приложения-аутентификатора (Google Authenticator, Aegis, 1Password и т. п.) спрашивается при каждом входе — по паролю, по ссылке из письма и через соцсети.">
+    <Panel title={t("Двухфакторная защита (2FA)")} footer={t("Код из приложения-аутентификатора (Google Authenticator, Aegis, 1Password и т. п.) спрашивается при каждом входе — по паролю, по ссылке из письма и через соцсети.")}>
       <div className={s.form} data-testid="two-factor">
         {st === null ? (
-          <span className="caption">Загрузка…</span>
+          <span className="caption">{t("Загрузка…")}</span>
         ) : st.enabled ? (
           <form className={s.form} onSubmit={disable}>
-            <p style={{ margin: 0 }}>
-              Включена · резервных кодов осталось <strong>{st.backup_codes_left}</strong>
+            <p style={{ margin: 0 }}>{t("Включена · резервных кодов осталось")}{" "}<strong>{st.backup_codes_left}</strong>
             </p>
             <div className={s.row}>
-              <Input label="Код для отключения" inputMode="numeric" autoComplete="one-time-code" value={code} onChange={(e) => setCode(e.target.value)} hint="из приложения или резервный" />
+              <Input label={t("Код для отключения")} inputMode="numeric" autoComplete="one-time-code" value={code} onChange={(e) => setCode(e.target.value)} hint={t("из приложения или резервный")} />
             </div>
             <div className={s.actions}>
-              <Button type="submit" size="sm" variant="danger" disabled={code.length < 6}>
-                Отключить 2FA
-              </Button>
+              <Button type="submit" size="sm" variant="danger" disabled={code.length < 6}>{t("Отключить 2FA")}</Button>
             </div>
           </form>
         ) : setup ? (
           <form className={s.form} onSubmit={enable}>
-            <p style={{ margin: 0 }}>
-              1. Добавьте ключ в приложение: <a href={setup.otpauth_url}>открыть в приложении</a> или введите вручную — <code data-testid="two-factor-secret">{setup.secret}</code>
+            <p style={{ margin: 0 }}>{t("1. Добавьте ключ в приложение:")}{" "}<a href={setup.otpauth_url}>{t("открыть в приложении")}</a>{" "}{t("или введите вручную —")}{" "}<code data-testid="two-factor-secret">{setup.secret}</code>
             </p>
             <div className={s.row}>
-              <Input label="2. Код из приложения" inputMode="numeric" autoComplete="one-time-code" value={code} onChange={(e) => setCode(e.target.value)} />
+              <Input label={t("2. Код из приложения")} inputMode="numeric" autoComplete="one-time-code" value={code} onChange={(e) => setCode(e.target.value)} />
             </div>
             <div className={s.actions}>
-              <Button type="submit" size="sm" variant="primary" disabled={code.length < 6}>
-                Включить 2FA
-              </Button>
-              <Button type="button" size="sm" variant="ghost" onClick={() => setSetup(null)}>
-                Отмена
-              </Button>
+              <Button type="submit" size="sm" variant="primary" disabled={code.length < 6}>{t("Включить 2FA")}</Button>
+              <Button type="button" size="sm" variant="ghost" onClick={() => setSetup(null)}>{t("Отмена")}</Button>
             </div>
           </form>
         ) : (
           <div className={s.actions}>
-            <span className="text-2">Выключена.</span>
-            <Button type="button" size="sm" onClick={start}>
-              Включить 2FA
-            </Button>
+            <span className="text-2">{t("Выключена.")}</span>
+            <Button type="button" size="sm" onClick={start}>{t("Включить 2FA")}</Button>
           </div>
         )}
         {backup && (
-          <div role="region" aria-label="резервные коды">
-            <p style={{ margin: "0 0 6px" }}>
-              Резервные коды — сохраните их сейчас, повторно они не показываются. Каждый работает один раз.
-            </p>
+          <div role="region" aria-label={t("резервные коды")}>
+            <p style={{ margin: "0 0 6px" }}>{t("Резервные коды — сохраните их сейчас, повторно они не показываются. Каждый работает один раз.")}</p>
             <code style={{ display: "block", whiteSpace: "pre-wrap", lineHeight: 1.7 }}>{backup.join("\n")}</code>
           </div>
         )}
@@ -256,6 +239,7 @@ function TwoFactorPanel({ note }: { note: (text: string, kind?: "ok" | "error") 
 const TZ = ["UTC", "Europe/Moscow", "Europe/Kyiv", "Europe/Berlin", "Europe/London", "Asia/Almaty", "Asia/Tashkent", "Asia/Dubai", "Asia/Singapore", "Asia/Tokyo", "America/New_York", "America/Los_Angeles"];
 
 export default function SettingsPage() {
+  const t = useT();
   const router = useRouter();
   const { user, reload, logout } = useAuth();
   const [msg, setMsg] = useState<{ text: string; kind: "ok" | "error" } | null>(null);
@@ -284,9 +268,9 @@ export default function SettingsPage() {
       applyTheme(theme);
       await reload();
       setProfile(null);
-      note("Профиль сохранён");
+      note(t("Профиль сохранён"));
     } catch (err) {
-      note(err instanceof Error ? err.message : "ошибка", "error");
+      note(err instanceof Error ? err.message : t("ошибка"), "error");
     }
   }
 
@@ -304,23 +288,23 @@ export default function SettingsPage() {
       await patchRisk(body as never);
       await reload();
       setRisk(null);
-      note("Риск-профиль сохранён");
+      note(t("Риск-профиль сохранён"));
     } catch (err) {
-      note(err instanceof Error ? err.message : "ошибка", "error");
+      note(err instanceof Error ? err.message : t("ошибка"), "error");
     }
   }
 
   async function savePassword(e: FormEvent) {
     e.preventDefault();
     try {
-      if (pw.next.length < 10) throw new Error("новый пароль короче 10 символов");
+      if (pw.next.length < 10) throw new Error(t("новый пароль короче 10 символов"));
       const n = await pwnedCount(pw.next);
-      if (n && n > 0) throw new Error("этот пароль встречается в утечках");
+      if (n && n > 0) throw new Error(t("этот пароль встречается в утечках"));
       await changePassword(pw.current || null, pw.next);
       setPw({ current: "", next: "" });
-      note("Пароль изменён");
+      note(t("Пароль изменён"));
     } catch (err) {
-      note(err instanceof Error ? err.message : "ошибка", "error");
+      note(err instanceof Error ? err.message : t("ошибка"), "error");
     }
   }
 
@@ -337,16 +321,16 @@ export default function SettingsPage() {
 
   if (!user) {
     return (
-      <AppShell title="Настройки">
+      <AppShell title={t("Настройки")}>
         <Panel>
-          <EmptyState text="Загрузка профиля…" />
+          <EmptyState text={t("Загрузка профиля…")} />
         </Panel>
       </AppShell>
     );
   }
 
   return (
-    <AppShell title="Настройки">
+    <AppShell title={t("Настройки")}>
       <div className={s.wrap}>
         {msg && (
           <p className={s.toast} data-kind={msg.kind} role="status">
@@ -354,21 +338,21 @@ export default function SettingsPage() {
           </p>
         )}
         <div className={s.two}>
-          <Panel title="Профиль">
+          <Panel title={t("Профиль")}>
             <form className={s.form} onSubmit={saveProfile}>
-              <Input label="Email" value={user.email} disabled hint={user.email_verified ? "подтверждён" : "не подтверждён — проверьте почту"} />
-              <Input label="Имя" value={p("name")} onChange={(e) => setProfile((x) => ({ ...(x ?? {}), name: e.target.value }))} maxLength={100} />
+              <Input label="Email" value={user.email} disabled hint={user.email_verified ? t("подтверждён") : t("не подтверждён — проверьте почту")} />
+              <Input label={t("Имя")} value={p("name")} onChange={(e) => setProfile((x) => ({ ...(x ?? {}), name: e.target.value }))} maxLength={100} />
               <div className={s.row}>
-                <Select label="Тема" value={p("theme") || "system"} onChange={(e) => setProfile((x) => ({ ...(x ?? {}), theme: e.target.value }))}>
-                  <option value="system">как в системе</option>
-                  <option value="light">светлая</option>
-                  <option value="dark">тёмная</option>
+                <Select label={t("Тема")} value={p("theme") || "system"} onChange={(e) => setProfile((x) => ({ ...(x ?? {}), theme: e.target.value }))}>
+                  <option value="system">{t("как в системе")}</option>
+                  <option value="light">{t("светлая")}</option>
+                  <option value="dark">{t("тёмная")}</option>
                 </Select>
-                <Select label="Язык" value={p("locale") || "ru"} onChange={(e) => setProfile((x) => ({ ...(x ?? {}), locale: e.target.value }))}>
-                  <option value="ru">русский</option>
-                  <option value="en">English (скоро)</option>
+                <Select label={t("Язык")} value={p("locale") || "ru"} onChange={(e) => setProfile((x) => ({ ...(x ?? {}), locale: e.target.value }))}>
+                  <option value="ru">{t("русский")}</option>
+                  <option value="en">{t("English (скоро)")}</option>
                 </Select>
-                <Select label="Часовой пояс" value={p("timezone") || "UTC"} onChange={(e) => setProfile((x) => ({ ...(x ?? {}), timezone: e.target.value }))}>
+                <Select label={t("Часовой пояс")} value={p("timezone") || "UTC"} onChange={(e) => setProfile((x) => ({ ...(x ?? {}), timezone: e.target.value }))}>
                   {TZ.map((z) => (
                     <option key={z} value={z}>
                       {z}
@@ -377,55 +361,49 @@ export default function SettingsPage() {
                 </Select>
               </div>
               <div className={s.actions}>
-                <Button type="submit" size="sm" variant="primary" disabled={!profile}>
-                  Сохранить профиль
-                </Button>
+                <Button type="submit" size="sm" variant="primary" disabled={!profile}>{t("Сохранить профиль")}</Button>
               </div>
             </form>
           </Panel>
-          <Panel title="Риск-профиль" footer="Используется калькулятором и карточкой сигнала. Депозит хранится только если вы его указали.">
+          <Panel title={t("Риск-профиль")} footer={t("Используется калькулятором и карточкой сигнала. Депозит хранится только если вы его указали.")}>
             <form className={s.form} onSubmit={saveRisk}>
               <div className={s.row}>
-                <Input label="Депозит, USDT" mono inputMode="decimal" value={r("deposit") === "null" ? "" : r("deposit")} onChange={(e) => setRisk((x) => ({ ...(x ?? {}), deposit: e.target.value }))} placeholder="—" />
-                <Input label="Риск на сделку, %" mono inputMode="decimal" value={r("risk_pct")} onChange={(e) => setRisk((x) => ({ ...(x ?? {}), risk_pct: e.target.value }))} />
-                <Input label="Плечо по умолчанию" mono inputMode="numeric" value={r("default_leverage")} onChange={(e) => setRisk((x) => ({ ...(x ?? {}), default_leverage: e.target.value }))} />
+                <Input label={t("Депозит, USDT")} mono inputMode="decimal" value={r("deposit") === "null" ? "" : r("deposit")} onChange={(e) => setRisk((x) => ({ ...(x ?? {}), deposit: e.target.value }))} placeholder="—" />
+                <Input label={t("Риск на сделку, %")} mono inputMode="decimal" value={r("risk_pct")} onChange={(e) => setRisk((x) => ({ ...(x ?? {}), risk_pct: e.target.value }))} />
+                <Input label={t("Плечо по умолчанию")} mono inputMode="numeric" value={r("default_leverage")} onChange={(e) => setRisk((x) => ({ ...(x ?? {}), default_leverage: e.target.value }))} />
               </div>
               <div className={s.row}>
-                <Select label="Биржа" value={r("exchange") || "binance"} onChange={(e) => setRisk((x) => ({ ...(x ?? {}), exchange: e.target.value }))}>
+                <Select label={t("Биржа")} value={r("exchange") || "binance"} onChange={(e) => setRisk((x) => ({ ...(x ?? {}), exchange: e.target.value }))}>
                   <option value="binance">Binance</option>
                   <option value="bybit">Bybit</option>
                 </Select>
-                <Select label="Рынок" value={r("market_type") || "futures"} onChange={(e) => setRisk((x) => ({ ...(x ?? {}), market_type: e.target.value }))}>
-                  <option value="futures">фьючерсы</option>
-                  <option value="spot">спот</option>
+                <Select label={t("Рынок")} value={r("market_type") || "futures"} onChange={(e) => setRisk((x) => ({ ...(x ?? {}), market_type: e.target.value }))}>
+                  <option value="futures">{t("фьючерсы")}</option>
+                  <option value="spot">{t("спот")}</option>
                 </Select>
               </div>
               <div className={s.actions}>
-                <Button type="submit" size="sm" variant="primary" disabled={!risk}>
-                  Сохранить риск
-                </Button>
+                <Button type="submit" size="sm" variant="primary" disabled={!risk}>{t("Сохранить риск")}</Button>
               </div>
             </form>
           </Panel>
         </div>
         <div className={s.two}>
-          <Panel title="Пароль и способы входа">
+          <Panel title={t("Пароль и способы входа")}>
             <form className={s.form} onSubmit={savePassword}>
               <ul style={{ margin: 0, paddingLeft: 18, fontSize: 14 }}>
-                {identities.length === 0 ? <li className="text-2">только email-ссылка</li> : identities.map((i) => (
+                {identities.length === 0 ? <li className="text-2">{t("только email-ссылка")}</li> : identities.map((i) => (
                   <li key={i.provider + i.label}>
-                    {i.provider === "password" ? "пароль" : i.provider}: {i.label}
+                    {i.provider === "password" ? t("пароль") : i.provider}: {i.label}
                   </li>
                 ))}
               </ul>
               <div className={s.row}>
-                <Input label="Текущий пароль" type="password" autoComplete="current-password" value={pw.current} onChange={(e) => setPw((x) => ({ ...x, current: e.target.value }))} hint="если пароля ещё не было — оставьте пустым" />
-                <Input label="Новый пароль" type="password" autoComplete="new-password" value={pw.next} onChange={(e) => setPw((x) => ({ ...x, next: e.target.value }))} minLength={10} />
+                <Input label={t("Текущий пароль")} type="password" autoComplete="current-password" value={pw.current} onChange={(e) => setPw((x) => ({ ...x, current: e.target.value }))} hint={t("если пароля ещё не было — оставьте пустым")} />
+                <Input label={t("Новый пароль")} type="password" autoComplete="new-password" value={pw.next} onChange={(e) => setPw((x) => ({ ...x, next: e.target.value }))} minLength={10} />
               </div>
               <div className={s.actions}>
-                <Button type="submit" size="sm" disabled={pw.next.length < 10}>
-                  Сменить пароль
-                </Button>
+                <Button type="submit" size="sm" disabled={pw.next.length < 10}>{t("Сменить пароль")}</Button>
               </div>
             </form>
           </Panel>
@@ -434,35 +412,29 @@ export default function SettingsPage() {
           <ApiKeysPanel note={note} />
           <NotificationsPanel userId={user.id} onMessage={note} />
         </div>
-        <Panel title="Данные и аккаунт" footer="Удаление необратимо: email анонимизируется, сессии отзываются, записи журнала остаются в базе без привязки к вам 30 дней на случай ошибки.">
+        <Panel title={t("Данные и аккаунт")} footer={t("Удаление необратимо: email анонимизируется, сессии отзываются, записи журнала остаются в базе без привязки к вам 30 дней на случай ошибки.")}>
           <div className={s.form}>
             <div className={s.actions}>
-              <Button size="sm" onClick={download}>
-                Выгрузить мои данные (JSON)
-              </Button>
-              <Button size="sm" variant="ghost" onClick={() => logout().then(() => router.push("/"))}>
-                Выйти
-              </Button>
+              <Button size="sm" onClick={download}>{t("Выгрузить мои данные (JSON)")}</Button>
+              <Button size="sm" variant="ghost" onClick={() => logout().then(() => router.push("/"))}>{t("Выйти")}</Button>
             </div>
             <div className={s.inline}>
-              <input placeholder="введите email для подтверждения" aria-label="подтверждение email" value={confirmEmail} onChange={(e) => setConfirmEmail(e.target.value)} style={{ minWidth: 280 }} />
+              <input placeholder={t("введите email для подтверждения")} aria-label={t("подтверждение email")} value={confirmEmail} onChange={(e) => setConfirmEmail(e.target.value)} style={{ minWidth: 280 }} />
               <Button
                 size="sm"
                 variant="danger"
                 disabled={confirmEmail.trim().toLowerCase() !== user.email.toLowerCase()}
                 onClick={async () => {
-                  if (!confirm("Удалить аккаунт без возможности восстановления?")) return;
+                  if (!confirm(t("Удалить аккаунт без возможности восстановления?"))) return;
                   try {
                     await deleteAccount();
                     await logout();
                     router.push("/");
                   } catch (err) {
-                    note(err instanceof Error ? err.message : "ошибка", "error");
+                    note(err instanceof Error ? err.message : t("ошибка"), "error");
                   }
                 }}
-              >
-                Удалить аккаунт
-              </Button>
+              >{t("Удалить аккаунт")}</Button>
             </div>
           </div>
         </Panel>

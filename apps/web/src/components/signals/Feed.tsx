@@ -26,6 +26,8 @@ import { useLive } from "@/lib/useLive";
 import { Countdown } from "./Countdown";
 import s from "./Feed.module.css";
 import { Sparkline } from "./Sparkline";
+import { useT } from "@/i18n/client";
+import type { T } from "@/i18n";
 const GRADES = ["A", "B", "C"];
 const DAYS = [
   ["", "весь период"],
@@ -35,15 +37,16 @@ const DAYS = [
   ["365", "год"],
 ];
 
-function ago(iso: string, now: number): string {
+function ago(iso: string, now: number, t: T): string {
   const m = Math.max(0, Math.round((now - new Date(iso).getTime()) / 60000));
-  if (m < 60) return `${m} мин`;
+  if (m < 60) return t("{n} мин", { n: m });
   const h = Math.floor(m / 60);
-  if (h < 48) return `${h} ч`;
-  return `${Math.floor(h / 24)} д`;
+  if (h < 48) return t("{n} ч", { n: h });
+  return t("{n} д", { n: Math.floor(h / 24) });
 }
 
 export function Feed({ instruments }: { instruments: { symbol: string; tick_size: string | null }[] }) {
+  const t = useT();
   const ticks = useMemo(() => Object.fromEntries(instruments.map((i) => [i.symbol, i.tick_size])), [instruments]);
   const router = useRouter();
   const pathname = usePathname();
@@ -111,7 +114,7 @@ export function Feed({ instruments }: { instruments: { symbol: string; tick_size
       className={s.sortBtn}
       data-active={filters.sort === key}
       onClick={() => setFilters({ sort: key, order: filters.sort === key && filters.order === "desc" ? "asc" : "desc" })}
-      aria-label={`сортировать по: ${label}`}
+      aria-label={t("сортировать по: {label}", { label })}
     >
       {label}
       {filters.sort === key ? (filters.order === "desc" ? " ↓" : " ↑") : ""}
@@ -123,7 +126,7 @@ export function Feed({ instruments }: { instruments: { symbol: string; tick_size
       await fn();
       setToast({ text: okText, kind: "ok" });
     } catch (e) {
-      setToast({ text: e instanceof Error ? e.message : "ошибка", kind: "error" });
+      setToast({ text: e instanceof Error ? e.message : t("ошибка"), kind: "error" });
     }
     setTimeout(() => setToast(null), 4000);
   }
@@ -134,27 +137,24 @@ export function Feed({ instruments }: { instruments: { symbol: string; tick_size
   return (
     <div className={s.wrap}>
       <div className={s.counters}>
-        <span>
-          активных <strong>{summary?.active ?? "—"}</strong>
+        <span>{t("активных")}{" "}<strong>{summary?.active ?? "—"}</strong>
         </span>
-        <span>
-          новых сегодня <strong>{summary?.today_new ?? "—"}</strong>
+        <span>{t("новых сегодня")}{" "}<strong>{summary?.today_new ?? "—"}</strong>
         </span>
-        <span>
-          следующая свеча H4 через <Countdown until={summary?.next_h4_close ?? null} onZero={onZero} />
+        <span>{t("следующая свеча H4 через")}{" "}<Countdown until={summary?.next_h4_close ?? null} onZero={onZero} />
         </span>
-        <span className={s.live} title={connected ? "живые цены по WebSocket" : "нет соединения, цены по последней минуте"}>
+        <span className={s.live} title={connected ? t("живые цены по WebSocket") : t("нет соединения, цены по последней минуте")}>
           <i data-on={connected} /> {connected ? "live" : "offline"}
         </span>
       </div>
 
-      <div className={s.bar} role="group" aria-label="фильтры">
+      <div className={s.bar} role="group" aria-label={t("фильтры")}>
         <div className={s.tabs}>
           {(
             [
-              ["open", "Активные"],
-              ["closed", "История"],
-              ["all", "Все"],
+              ["open", t("Активные")],
+              ["closed", t("История")],
+              ["all", t("Все")],
             ] as const
           ).map(([v, l]) => (
             <button key={v} type="button" aria-pressed={filters.tab === v} onClick={() => setFilters({ tab: v })}>
@@ -164,8 +164,8 @@ export function Feed({ instruments }: { instruments: { symbol: string; tick_size
         </div>
         <input
           list="feed-symbols"
-          placeholder="инструмент"
-          aria-label="инструмент"
+          placeholder={t("инструмент")}
+          aria-label={t("инструмент")}
           defaultValue={filters.symbol}
           key={`sym-${filters.symbol}`}
           onBlur={(e) => e.target.value.toUpperCase() !== filters.symbol && setFilters({ symbol: e.target.value.toUpperCase() })}
@@ -176,20 +176,20 @@ export function Feed({ instruments }: { instruments: { symbol: string; tick_size
             <option key={x.symbol} value={x.symbol} />
           ))}
         </datalist>
-        <select aria-label="направление" value={filters.direction} onChange={(e) => setFilters({ direction: e.target.value })}>
-          <option value="">long и short</option>
+        <select aria-label={t("направление")} value={filters.direction} onChange={(e) => setFilters({ direction: e.target.value })}>
+          <option value="">{t("long и short")}</option>
           <option value="long">long</option>
           <option value="short">short</option>
         </select>
-        <select aria-label="градация" value={filters.grade} onChange={(e) => setFilters({ grade: e.target.value })}>
-          <option value="">все градации</option>
+        <select aria-label={t("градация")} value={filters.grade} onChange={(e) => setFilters({ grade: e.target.value })}>
+          <option value="">{t("все градации")}</option>
           {GRADES.map((g) => (
             <option key={g} value={g}>
               только {g}
             </option>
           ))}
         </select>
-        <select aria-label="период" value={filters.days} onChange={(e) => setFilters({ days: e.target.value })}>
+        <select aria-label={t("период")} value={filters.days} onChange={(e) => setFilters({ days: e.target.value })}>
           {DAYS.map(([v, l]) => (
             <option key={v} value={v}>
               {l}
@@ -197,15 +197,13 @@ export function Feed({ instruments }: { instruments: { symbol: string; tick_size
           ))}
         </select>
         {canForward && (
-          <select aria-label="стратегия" value={filters.scope} onChange={(e) => setFilters({ scope: e.target.value as "live" | "forward" })}>
+          <select aria-label={t("стратегия")} value={filters.scope} onChange={(e) => setFilters({ scope: e.target.value as "live" | "forward" })}>
             <option value="live">live</option>
-            <option value="forward">форвард (только админ)</option>
+            <option value="forward">{t("форвард (только админ)")}</option>
           </select>
         )}
         {filtersToSearch(filters) && (
-          <button type="button" className={s.sortBtn} onClick={() => router.replace(pathname)}>
-            сбросить
-          </button>
+          <button type="button" className={s.sortBtn} onClick={() => router.replace(pathname)}>{t("сбросить")}</button>
         )}
       </div>
 
@@ -217,22 +215,22 @@ export function Feed({ instruments }: { instruments: { symbol: string; tick_size
 
       {data?.restrictions && (data.restrictions.delay_hours > 0 || data.restrictions.grades) && (
         <p className="caption" role="note">
-          Тариф {data.restrictions.plan}: сигналы градации {data.restrictions.grades?.join(", ") ?? "всех"} с задержкой {data.restrictions.delay_hours} ч
+          Тариф {data.restrictions.plan}: сигналы градации {data.restrictions.grades?.join(", ") ?? t("всех")} с задержкой {data.restrictions.delay_hours} ч
           {!data.restrictions.all_instruments && ", только BTC, ETH и инструменты вотчлиста"}.{" "}
-          <Link href="/pricing">Тарифы</Link>
+          <Link href="/pricing">{t("Тарифы")}</Link>
         </p>
       )}
-      <Panel flush title={data ? `${data.total} ${data.scope === "forward" ? "форвард-" : ""}сигналов` : "Сигналы"} actions={<span>обновляется по WebSocket и каждую свечу H4</span>}>
+      <Panel flush title={data ? `${data.total} ${data.scope === "forward" ? t("форвард-") : ""}${t("сигналов")}` : t("Сигналы")} actions={<span>{t("обновляется по WebSocket и каждую свечу H4")}</span>}>
         {error ? (
-          <EmptyState text={`Не удалось загрузить ленту: ${error}`} />
+          <EmptyState text={t("Не удалось загрузить ленту: {error}", { error })} />
         ) : !data ? (
-          <EmptyState text="Загрузка…" />
+          <EmptyState text={t("Загрузка…")} />
         ) : items.length === 0 ? (
           <EmptyState
             text={
               filters.tab === "open"
-                ? `Нет активных сигналов. Следующая проверка через ${summary ? "" : "—"}`
-                : "По этим фильтрам сигналов нет."
+                ? t("Нет активных сигналов. Следующая проверка через {rest}", { rest: summary ? "" : "—" })
+                : t("По этим фильтрам сигналов нет.")
             }
             action={filters.tab === "open" ? <Countdown until={summary?.next_h4_close ?? null} /> : undefined}
           />
@@ -240,16 +238,16 @@ export function Feed({ instruments }: { instruments: { symbol: string; tick_size
           <Table clickable compact>
             <thead>
               <tr>
-                <Th>{sortBtn("time", "Время, UTC")}</Th>
-                <Th>{sortBtn("symbol", "Инструмент")}</Th>
-                <Th>{sortBtn("score", "Гр.")}</Th>
-                <Th num>Вход</Th>
+                <Th>{sortBtn("time", t("Время, UTC"))}</Th>
+                <Th>{sortBtn("symbol", t("Инструмент"))}</Th>
+                <Th>{sortBtn("score", t("Гр."))}</Th>
+                <Th num>{t("Вход")}</Th>
                 <Th num>SL</Th>
                 <Th num>TP1</Th>
                 <Th num>TP2</Th>
                 <Th num>TP3</Th>
                 <Th num>{sortBtn("rr", "R:R")}</Th>
-                <Th>{sortBtn("status", "Статус")}</Th>
+                <Th>{sortBtn("status", t("Статус"))}</Th>
                 <Th num>P&L, R</Th>
                 <Th className={s.actCol} />
               </tr>
@@ -262,7 +260,7 @@ export function Feed({ instruments }: { instruments: { symbol: string; tick_size
                 const tick = ticks[r.symbol] ?? null;
                 return (
                   <tr key={r.id} onClick={() => router.push(`/signals/${r.id}`)}>
-                    <Td mobile="secondary" title={`${ago(r.candle_close_time, now)} назад`}>
+                    <Td mobile="secondary" title={t("{ago} назад", { ago: ago(r.candle_close_time, now, t) })}>
                       <span className="text-2 num" style={{ textAlign: "left" }}>
                         {formatTimeUTC(r.candle_close_time).replace(" UTC", "")}
                       </span>
@@ -297,20 +295,16 @@ export function Feed({ instruments }: { instruments: { symbol: string; tick_size
                     </Td>
                     <Td mobile="secondary">
                       <StatusBadge status={r.status} />{" "}
-                      {r.last_event_at && <span className={s.ago}>{ago(r.last_event_at, now)}</span>}
+                      {r.last_event_at && <span className={s.ago}>{ago(r.last_event_at, now, t)}</span>}
                     </Td>
                     <Td num mobile="right" className={pnl == null ? "" : pnl > 0 ? "up" : pnl < 0 ? "down" : ""}>
                       {pnl == null ? "—" : formatR(pnl)}
                     </Td>
                     <Td mobile="hidden" className={s.actCol} onClick={(e) => e.stopPropagation()}>
                       <span className={s.actions}>
-                        <button type="button" onClick={() => act(() => addToWatchlist(r.symbol), `${r.symbol} в вотчлисте`)}>
-                          + вотчлист
-                        </button>
+                        <button type="button" onClick={() => act(() => addToWatchlist(r.symbol), `${r.symbol} в вотчлисте`)}>{t("+ вотчлист")}</button>
                         {open && (
-                          <button type="button" onClick={() => act(() => journalFromSignal(r), `Запись в журнале: ${r.symbol} ${r.direction}`)}>
-                            я вошёл
-                          </button>
+                          <button type="button" onClick={() => act(() => journalFromSignal(r), `Запись в журнале: ${r.symbol} ${r.direction}`)}>{t("я вошёл")}</button>
                         )}
                       </span>
                     </Td>
@@ -328,18 +322,12 @@ export function Feed({ instruments }: { instruments: { symbol: string; tick_size
             страница {filters.page + 1} из {pages}
           </span>
           <span className={s.actions}>
-            <button type="button" disabled={filters.page === 0} onClick={() => setFilters({ page: filters.page - 1 })}>
-              назад
-            </button>
-            <button type="button" disabled={filters.page + 1 >= pages} onClick={() => setFilters({ page: filters.page + 1 })}>
-              вперёд
-            </button>
+            <button type="button" disabled={filters.page === 0} onClick={() => setFilters({ page: filters.page - 1 })}>{t("назад")}</button>
+            <button type="button" disabled={filters.page + 1 >= pages} onClick={() => setFilters({ page: filters.page + 1 })}>{t("вперёд")}</button>
           </span>
         </div>
       )}
-      <p className="caption">
-        Прошлые результаты не гарантируют будущих. Сигнал — не рекомендация; решение о входе и размере позиции принимаете вы.
-      </p>
+      <p className="caption">{t("Прошлые результаты не гарантируют будущих. Сигнал — не рекомендация; решение о входе и размере позиции принимаете вы.")}</p>
     </div>
   );
 }
