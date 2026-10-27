@@ -71,8 +71,11 @@ def render_png(
     window: int,
     title: str,
     marks: Sequence[tuple[int, int, Decimal, str, str | None]] = (),
+    segments: Sequence[tuple[int, float, int, float, str, str]] = (),
+    dots: Sequence[tuple[int, float]] = (),
 ) -> bytes:
-    """``marks`` — (start_index, index, price, label, direction) для отметок паттернов."""
+    """``marks`` — (start_index, index, price, label, direction) для отметок паттернов;
+    ``segments`` — (i1, p1, i2, p2, цвет, стиль) линии фигур; ``dots`` — опорные точки."""
     n = len(candles)
     start = max(0, n - window)
     list(range(n))
@@ -181,6 +184,20 @@ def render_png(
             family="monospace",
             ha="center",
         )
+
+    for i1, p1, i2, p2, color, style in segments:
+        if i2 < start:
+            continue
+        ax.plot(
+            [max(i1, start), i2],
+            [p1 + (p2 - p1) * (max(i1, start) - i1) / max(1, i2 - i1), p2],
+            color=color,
+            linewidth=1.3,
+            ls=style,
+        )
+    for di, dp in dots:
+        if di >= start:
+            ax.plot(di, dp, marker="o", color=TEXT, markersize=4)
 
     ticks = list(range(start, n, max(1, window // 12)))
     ax.set_xticks(ticks)
@@ -563,4 +580,122 @@ def pattern_png(pattern_id: int, token: str | None = None) -> Response:
         title,
         marks=[(ms, mi, Decimal(str(d["price"])), d["title"], p.direction)],
     )
+    return Response(png, media_type="image/png")
+
+
+# --- графические фигуры (план 4B.1: визуальная проверка 20 кандидатов на тип) ------------------
+
+FIGURE_SYMBOLS = (
+    "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT",
+    "BNBUSDT",
+    "XRPUSDT",
+    "ADAUSDT",
+    "DOGEUSDT",
+    "LINKUSDT",
+)
+FIGURE_WINDOW = 1500
+
+
+def _figures_for(symbol: str, tf: Timeframe, end: datetime) -> tuple[list[Candle], list[Any]]:
+    from engine.figures import detect_figures
+
+    candles = load_candles(symbol, tf, end, FIGURE_WINDOW)
+    if len(candles) < 100:
+        return candles, []
+    return candles, detect_figures(candles)
+
+
+@router.get("/figures", response_class=HTMLResponse)
+def figures_index(
+    token: str | None = None,
+    tf: str = Query("4h", pattern="^(1h|4h|1d|1w)$"),
+    n: int = Query(20, ge=1, le=100),
+    status: str = Query("confirmed", pattern="^(confirmed|forming|invalidated|all)$"),
+    seed: int = 1,
+) -> str:
+    """Случайные кандидаты фигур по типам: последние 1500 свечей по 8 инструментам."""
+    _check(token)
+    from engine.figures import TITLES, FigureType
+
+    rng = random.Random(seed)
+    timeframe = Timeframe(tf)
+    end = datetime.now(tz=UTC)
+    pool: dict[str, list[tuple[str, int, Any]]] = {t.value: [] for t in FigureType}
+    for symbol in FIGURE_SYMBOLS:
+        _, figs = _figures_for(symbol, timeframe, end)
+        for i, f in enumerate(figs):
+            if status != "all" and f.status.value != status:
+                continue
+            pool[f.type.value].append((symbol, i, f))
+    parts = [
+        "<html><head><meta charset='utf-8'><style>body{font:13px monospace;margin:20px}"
+        "a{color:#0F4C81}li{margin:2px 0}</style></head><body>",
+        f"<h2>Графические фигуры — кандидаты ({tf}, статус {status})</h2>",
+    ]
+    for t in FigureType:
+        rows = pool[t.value]
+        parts.append(f"<h3>{TITLES[t]} — всего {len(rows)}</h3>")
+        if not rows:
+            parts.append("<p>нет кандидатов</p>")
+            continue
+        parts.append("<ol>")
+        for symbol, i, f in rng.sample(rows, min(n, len(rows))):
+            parts.append(
+                f"<li><a href='/debug/figures/{symbol}/{tf}/{i}.png?token={token}'>{symbol} "
+                f"#{i}</a> {f.status.value} · качество {f.quality:.2f} · масштаб {f.scale} · "
+                f"свечи {f.start_index}–{f.end_index}"
+                f"{' · пробой ' + str(f.confirm_index) if f.confirm_index is not None else ''}</li>"
+            )
+        parts.append("</ol>")
+    parts.append("</body></html>")
+    return "".join(parts)
+
+
+@router.get("/figures/{symbol}/{tf}/{idx}.png")
+def figure_png(symbol: str, tf: str, idx: int, token: str | None = None) -> Response:
+    _check(token)
+    timeframe = Timeframe(tf)
+    candles, figs = _figures_for(symbol.upper(), timeframe, datetime.now(tz=UTC))
+    if idx < 0 or idx >= len(figs):
+        raise HTTPException(404, "нет кандидата")
+    f = figs[idx]
+    structure = analyze_structure(candles)
+    zones = analyze_zones(candles, structure)
+    last = max(f.confirm_index or 0, f.invalidated_index or 0, f.end_index)
+    left = max(0, f.start_index - 25)
+    right = min(len(candles) - 1, last + 25)
+    sub = candles[: right + 1]
+    window = right - left + 1
+    color = {"confirmed": UP, "forming": ACCENT, "invalidated": DOWN}[f.status.value]
+    segments = [
+        (
+            ln.a.index,
+            float(ln.a.price),
+            ln.b.index,
+            float(ln.b.price),
+            color,
+            "-" if f.status.value != "forming" else "--",
+        )
+        for ln in f.lines
+    ]
+    if f.target is not None and f.confirm_index is not None:
+        segments.append((f.confirm_index, float(f.target), right, float(f.target), UP, ":"))
+    if f.invalidation is not None:
+        segments.append(
+            (f.start_index, float(f.invalidation), right, float(f.invalidation), DOWN, ":")
+        )
+    dots = [(p.index, float(p.price)) for p in f.points]
+    breakout = (
+        "пробой " + candles[f.confirm_index].open_time.strftime("%d.%m.%Y %H:%M")
+        if f.confirm_index is not None
+        else ""
+    )
+    title = (
+        f"{symbol.upper()} {tf}  {f.title}  {f.status.value}  q={f.quality:.2f}  scale={f.scale}  "
+        f"dir={f.direction.value if f.direction else '-'}  "
+        f"{breakout}"
+    )
+    png = render_png(sub, structure, zones, window, title, segments=segments, dots=dots)
     return Response(png, media_type="image/png")
