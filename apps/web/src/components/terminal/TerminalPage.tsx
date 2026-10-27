@@ -3,7 +3,7 @@
 import { CHART_TYPES, INDICATORS, TOOL_TITLES, defaultParams, positionStats, secondsToClose, type ChartType, type DrawingType, type Timeframe } from "@platform/charts";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { Badge } from "@/components/ui";
 import { getAccessToken } from "@/lib/auth-client";
@@ -11,7 +11,8 @@ import { INTRADAY, TIMEFRAMES } from "@/lib/timeframes";
 import { formatPct, formatPrice } from "@/lib/format";
 import { getInstruments, type Instrument } from "@/lib/user";
 import s from "./terminal.module.css";
-import { PANELS, TerminalView, type ActiveIndicator, type LayerKey, type PanelKey } from "./TerminalView";
+import { BottomSheet } from "./BottomSheet";
+import { PANELS, TerminalView, type ActiveIndicator, type CrosshairInfo, type LayerKey, type PanelKey } from "./TerminalView";
 import { useDrawings } from "./useDrawings";
 import { getLayout, putLayout } from "@/lib/drawings";
 import { useTerminalData } from "./useTerminalData";
@@ -45,6 +46,9 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
   const [saved, setSaved] = useState<Saved | null>(null);
   const [instruments, setInstruments] = useState<Instrument[]>([]);
   const [sheet, setSheet] = useState<"indicators" | "layers" | "draw" | null>(null);
+  const [cross, setCross] = useState<CrosshairInfo | null>(null);
+  const [bars, setBars] = useState<"shown" | "hidden">("shown");
+  const closeSheet = useCallback(() => setSheet(null), []);
   const dr = useDrawings(symbol, !!user);
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
   const data = useTerminalData(symbol, tf, user ? getAccessToken() : null);
@@ -151,8 +155,12 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
     [dr.state, dr.tool, dr.magnet, dr.draft, dr.actions, dr.setDraft],
   );
 
+  const fmtV = (v: number | null) => (v == null ? "—" : Math.abs(v) >= 1000 ? v.toFixed(1) : Math.abs(v) >= 1 ? v.toFixed(2) : v.toPrecision(3));
   return (
-    <div className={s.page}>
+    <div className={s.page} data-bars={bars}>
+      <button type="button" className={`${s.chip} ${s.fsBtn}`} onClick={() => setBars(bars === "shown" ? "hidden" : "shown")} aria-label={bars === "shown" ? "скрыть панели" : "показать панели"}>
+        {bars === "shown" ? "⤢" : "⤡"}
+      </button>
       <div className={s.top}>
         <select aria-label="инструмент" value={symbol} onChange={(e) => router.push(`/chart/${e.target.value}/${tf}`)}>
           {(instruments.length ? instruments : [{ symbol } as Instrument]).map((i) => (
@@ -200,6 +208,32 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
         {st.type === "heikin" && <span className="caption">Heikin Ashi: паттерны и сигналы считаются по обычным свечам</span>}
       </div>
       <div className={s.area}>
+      {cross && (
+        <div className={s.ohlc} data-testid="ohlc" aria-live="polite">
+          <span>{new Date(cross.candle.time * 1000).toLocaleString("ru-RU", { timeZone: "UTC", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })} UTC</span>
+          <span>
+            O <strong>{fmtV(cross.candle.open)}</strong>
+          </span>
+          <span>
+            H <strong>{fmtV(cross.candle.high)}</strong>
+          </span>
+          <span>
+            L <strong>{fmtV(cross.candle.low)}</strong>
+          </span>
+          <span className={cross.candle.close >= cross.candle.open ? "up" : "down"}>
+            C <strong>{fmtV(cross.candle.close)}</strong> {(((cross.candle.close - cross.candle.open) / cross.candle.open) * 100).toFixed(2)} %
+          </span>
+          <span>
+            V <strong>{fmtV(cross.candle.volume)}</strong>
+          </span>
+          {cross.values.map((v) => (
+            <span key={v.label}>
+              {v.label} <strong>{fmtV(v.value)}</strong>
+            </span>
+          ))}
+          {cross.candle.open_ && <span className="caption">свеча не закрыта</span>}
+        </div>
+      )}
         {data.error && !intradayLocked ? (
           <div className={s.empty} role="alert">
             {data.error}
@@ -209,7 +243,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
             Таймфреймы 1m–15m доступны после входа на тарифе Pro. <Link href="/pricing">Тарифы</Link>
           </div>
         ) : (
-          <TerminalView candles={data.candles ?? []} current={data.current} tf={tf} type={st.type} indicators={st.indicators} layersOn={st.layers} layers={data.layers} derivatives={data.derivatives} panels={st.panels} tick={data.tick} onNeedOlder={data.loadOlder} drawings={drawingsProps} />
+          <TerminalView candles={data.candles ?? []} current={data.current} tf={tf} type={st.type} indicators={st.indicators} layersOn={st.layers} layers={data.layers} derivatives={data.derivatives} panels={st.panels} tick={data.tick} onNeedOlder={data.loadOlder} drawings={drawingsProps} onCrosshair={setCross} />
         )}
         {sel && (
           <div className={s.card} role="region" aria-label="выбранный рисунок">
@@ -253,7 +287,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
           </p>
         )}
         {sheet && (
-          <div className={s.sheet} role="dialog" aria-label={sheet === "indicators" ? "Индикаторы" : sheet === "layers" ? "Слои" : "Рисование"}>
+          <BottomSheet title={sheet === "indicators" ? "Индикаторы" : sheet === "layers" ? "Слои" : "Рисование"} onClose={closeSheet}>
             {sheet === "draw" &&
               TOOLS.map((t) => (
                 <button
@@ -309,10 +343,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
                     <input type="checkbox" checked={st.layers[k]} onChange={() => toggleLayer(k)} /> {LAYER_LABEL[k]}
                   </label>
                 ))}
-            <button type="button" className={s.chip} onClick={() => setSheet(null)}>
-              Готово
-            </button>
-          </div>
+          </BottomSheet>
         )}
       </div>
       <div className={s.bottom}>

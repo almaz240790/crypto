@@ -124,21 +124,104 @@
   left: 0;
   right: 0;
   bottom: 0;
-  max-height: 60%;
-  overflow: auto;
+  height: 50%;
+  display: grid;
+  grid-template-rows: auto auto 1fr;
   background: var(--surface);
   border-top: 1px solid var(--border);
-  padding: 12px;
-  display: grid;
-  gap: 8px;
+  border-radius: 12px 12px 0 0;
+  box-shadow: 0 -1px 0 var(--border);
   z-index: 10;
+  touch-action: none;
+}
+
+.handle {
+  height: 20px;
+  display: grid;
+  place-items: center;
+  cursor: grab;
+}
+
+.handle::before {
+  content: "";
+  width: 36px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+}
+
+.sheetHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px 8px;
+}
+
+.sheetBody {
+  overflow: auto;
+  padding: 0 12px 12px;
+  display: grid;
+  gap: 6px;
+  align-content: start;
 }
 
 .sheet label {
   display: flex;
   align-items: center;
   gap: 8px;
-  min-height: 36px;
+  min-height: 44px;
+}
+
+.sheet .chip {
+  min-height: 44px;
+}
+
+.ohlc {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  right: 64px;
+  z-index: 4;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 4px 8px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  pointer-events: none;
+}
+
+.ohlc strong {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.fsBtn {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 5;
+  display: none;
+}
+
+@media (orientation: landscape) and (max-height: 520px) {
+  .page[data-bars="hidden"] .top,
+  .page[data-bars="hidden"] .strip,
+  .page[data-bars="hidden"] .bottom {
+    display: none;
+  }
+
+  .page[data-bars="hidden"] {
+    height: 100dvh;
+  }
+
+  .fsBtn {
+    display: inline-flex;
+  }
 }
 
 .empty {
