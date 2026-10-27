@@ -354,3 +354,10 @@ test("настройки: сессии и устройства — список 
   await expect(panel).not.toContainText("Safari · iPhone");
   expect(calls).toContain("DELETE /v1/me/sessions/2");
 });
+
+test("документация API открывается и ведёт в настройки", async ({ page }) => {
+  await page.goto("/api-docs");
+  await expect(page.getByRole("heading", { name: "API для чтения" })).toBeVisible();
+  await expect(page.getByText("GET /v1/signals", { exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "настройках" })).toHaveAttribute("href", "/settings");
+});

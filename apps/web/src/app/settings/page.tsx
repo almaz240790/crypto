@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState, type FormEvent } from "react";
 import { AppShell } from "@/components/app/AppShell";
@@ -103,7 +104,7 @@ function ApiKeysPanel({ note }: { note: (text: string, kind?: "ok" | "error") =>
     await load();
   }
   return (
-    <Panel title="API-ключи для чтения (Premium)" footer="Ключ передаётся в заголовке X-API-Key и даёт только чтение (GET) тех же эндпоинтов /v1: сигналы, статистика, графики. Лимит 600 запросов в минуту на ключ. Ключ показывается один раз.">
+    <Panel title="API-ключи для чтения (Premium)" footer={<>Ключ передаётся в заголовке X-API-Key и даёт только чтение (GET) тех же эндпоинтов /v1: сигналы, статистика, графики. Лимит 600 запросов в минуту на ключ. Ключ показывается один раз. <Link href="/api-docs">Документация API</Link>.</>}>
       <div className={s.form} data-testid="api-keys">
         {denied ? (
           <span className="text-2">{denied}</span>
