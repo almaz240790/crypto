@@ -14,6 +14,11 @@ const PATTERNS = [
   ["harami", "харами"], ["inside_bar", "внутренний бар"], ["inside_bar_breakout", "пробой внутреннего бара"], ["marubozu", "марубозу"], ["tweezer", "пинцет"],
 ] as const;
 const TFS = ["15m", "1h", "4h", "1d", "1w"];
+const FIGURES = [
+  ["double_top", "двойная вершина"], ["double_bottom", "двойное дно"], ["head_shoulders", "голова и плечи"], ["inv_head_shoulders", "перевёрнутые голова и плечи"],
+  ["triangle_sym", "симметричный треугольник"], ["triangle_asc", "восходящий треугольник"], ["triangle_desc", "нисходящий треугольник"], ["flag", "флаг"], ["pennant", "вымпел"],
+  ["wedge_rising", "восходящий клин"], ["wedge_falling", "нисходящий клин"], ["channel_up", "восходящий канал"], ["channel_down", "нисходящий канал"], ["range", "диапазон"], ["cup_handle", "чашка с ручкой"],
+] as const;
 
 type Draft = { symbol: string; type: AlertType; timeframe: string; frequency: AlertFrequency; expires_in_days: number; note: string; op: string; price: string; price2: string; indicator: string; period: string; value: string; kind: string; dir: string; event: string; types: string[]; significant_only: boolean };
 const EMPTY: Draft = { symbol: "BTCUSDT", type: "price", timeframe: "4h", frequency: "once", expires_in_days: 30, note: "", op: "cross_up", price: "", price2: "", indicator: "rsi", period: "", value: "", kind: "any", dir: "any", event: "any", types: [], significant_only: false };
@@ -28,8 +33,10 @@ function toBody(d: Draft) {
           ? { kind: d.kind, dir: d.dir }
           : d.type === "structure"
             ? { event: d.event, dir: d.dir }
-            : { types: d.types, dir: d.dir, significant_only: d.significant_only };
-  return { symbol: d.symbol || null, type: d.type, timeframe: d.type === "price" ? null : d.type === "pattern" && d.timeframe === "any" ? null : d.timeframe, condition, frequency: d.frequency, expires_in_days: d.expires_in_days, note: d.note || null };
+            : d.type === "figure"
+              ? { types: d.types, dir: d.dir }
+              : { types: d.types, dir: d.dir, significant_only: d.significant_only };
+  return { symbol: d.symbol || null, type: d.type, timeframe: d.type === "price" ? null : (d.type === "pattern" || d.type === "figure") && d.timeframe === "any" ? null : d.timeframe, condition, frequency: d.frequency, expires_in_days: d.expires_in_days, note: d.note || null };
 }
 
 export default function AlertsPage() {
@@ -55,7 +62,7 @@ export default function AlertsPage() {
       .catch(() => {});
   }, [load]);
   const set = <K extends keyof Draft>(k: K, v: Draft[K]) => setD((p) => ({ ...p, [k]: v }));
-  const onType = (t: AlertType) => setD((p) => ({ ...p, type: t, op: t === "price" ? "cross_up" : t === "indicator" ? "above" : p.op, timeframe: t === "zone" || t === "structure" ? (["4h", "1d"].includes(p.timeframe) ? p.timeframe : "4h") : p.timeframe }));
+  const onType = (t: AlertType) => setD((p) => ({ ...p, type: t, types: [], op: t === "price" ? "cross_up" : t === "indicator" ? "above" : p.op, timeframe: t === "zone" || t === "structure" ? (["4h", "1d"].includes(p.timeframe) ? p.timeframe : "4h") : t === "figure" ? (["4h", "1d", "1w", "any"].includes(p.timeframe) ? p.timeframe : "4h") : p.timeframe }));
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setBusy(true);
@@ -112,7 +119,7 @@ export default function AlertsPage() {
             <label>
               инструмент
               <select aria-label="инструмент алерта" value={d.symbol} onChange={(e) => set("symbol", e.target.value)}>
-                {d.type === "pattern" && <option value="">вотчлист</option>}
+                {(d.type === "pattern" || d.type === "figure") && <option value="">вотчлист</option>}
                 {(instruments.length ? instruments.map((i) => i.symbol) : ["BTCUSDT", "ETHUSDT"]).map((sym) => (
                   <option key={sym} value={sym}>
                     {sym}
@@ -124,8 +131,8 @@ export default function AlertsPage() {
               <label>
                 таймфрейм
                 <select aria-label="таймфрейм алерта" value={d.timeframe} onChange={(e) => set("timeframe", e.target.value)}>
-                  {d.type === "pattern" && <option value="any">любой</option>}
-                  {(d.type === "zone" || d.type === "structure" ? ["4h", "1d"] : TFS).map((t) => (
+                  {(d.type === "pattern" || d.type === "figure") && <option value="any">любой</option>}
+                  {(d.type === "zone" || d.type === "structure" ? ["4h", "1d"] : d.type === "figure" ? ["4h", "1d", "1w"] : TFS).map((t) => (
                     <option key={t} value={t}>
                       {t === "4h" ? "H4" : t.toUpperCase()}
                     </option>
@@ -220,6 +227,16 @@ export default function AlertsPage() {
                 <label className={s.inline}>
                   <input type="checkbox" checked={d.significant_only} onChange={(e) => set("significant_only", e.target.checked)} /> только значимые
                 </label>
+              </fieldset>
+            )}
+            {d.type === "figure" && (
+              <fieldset className={s.fieldset}>
+                <legend>фигуры (пусто — любые)</legend>
+                {FIGURES.map(([id, label]) => (
+                  <label key={id} className={s.inline}>
+                    <input type="checkbox" checked={d.types.includes(id)} onChange={(e) => set("types", e.target.checked ? [...d.types, id] : d.types.filter((x) => x !== id))} /> {label}
+                  </label>
+                ))}
               </fieldset>
             )}
             {d.type !== "price" && d.type !== "indicator" && (

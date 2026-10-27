@@ -24,6 +24,8 @@ from sqlalchemy import select
 from app.chart_data import bucket_start
 from app.config import settings
 from app.db import SessionLocal
+from app.figures import FIGURE_TFS, evaluate_pending, sync_live
+from app.figures import recompute_stats as recompute_figure_stats
 from app.models import Instrument
 from app.patterns import DETECT_TFS, detect_and_store, evaluate_outcomes, recompute_stats
 from app.workers.market_data import CHANNEL_CLOSED
@@ -79,6 +81,15 @@ def process(symbol: str, tf: Timeframe, close_time: datetime) -> int | None:
             return None
         rows = detect_and_store(db, inst, tf, close_time)
         db.commit()
+        if tf in FIGURE_TFS:
+            try:
+                st = sync_live(db, inst, tf, close_time)
+                db.commit()
+                if st["confirmed"] or st["invalidated"]:
+                    log.info("%s %s фигуры: %s", symbol, tf.value, st)
+            except Exception:
+                db.rollback()
+                log.exception("%s %s: ошибка поиска фигур", symbol, tf.value)
         return len(rows)
 
 
@@ -86,12 +97,16 @@ def outcomes_once() -> int:
     with SessionLocal() as db:
         n = evaluate_outcomes(db)
         db.commit()
+        n += evaluate_pending(db)
+        db.commit()
         return n
 
 
 def stats_once() -> int:
     with SessionLocal() as db:
         n = recompute_stats(db)
+        db.commit()
+        n += recompute_figure_stats(db)
         db.commit()
         return n
 

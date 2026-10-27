@@ -10,6 +10,7 @@ from app.models.derivatives import (
     LongShortRatioRow,
     OpenInterestRow,
 )
+from app.models.figures import FigureEvent, FigureOutcomeRow, FigureRow, FigureStatsSnapshot
 from app.models.llm import LlmRequest
 from app.models.market import Candle, Instrument
 from app.models.patterns import (
@@ -51,6 +52,10 @@ __all__ = [
     "ChartLayout",
     "Drawing",
     "EmailToken",
+    "FigureEvent",
+    "FigureOutcomeRow",
+    "FigureRow",
+    "FigureStatsSnapshot",
     "FundingRateRow",
     "Incident",
     "Instrument",

@@ -2,7 +2,7 @@
 
 import { foldMinute, type Candle, type Timeframe } from "@platform/charts";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getCandles, getDerivatives, getLayers, getPatterns, toCandle, type Derivatives, type LayersResponse, type PatternsResponse } from "@/lib/chart";
+import { FIGURE_TFS, getCandles, getDerivatives, getFigures, getLayers, getPatterns, toCandle, type Derivatives, type FiguresResponse, type LayersResponse, type PatternsResponse } from "@/lib/chart";
 import { useLive, type LiveCandle } from "@/lib/useLive";
 
 /** Свечи инструмента/таймфрейма: первая порция, подгрузка влево, текущая свеча из минутных по WebSocket. */
@@ -13,6 +13,7 @@ export function useTerminalData(symbol: string, tf: Timeframe, token: string | n
   const [layers, setLayers] = useState<LayersResponse | null>(null);
   const [derivatives, setDerivatives] = useState<Derivatives | null>(null);
   const [patterns, setPatterns] = useState<PatternsResponse | null>(null);
+  const [figures, setFigures] = useState<FiguresResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tick, setTick] = useState<string | null>(null);
   const loadingOlder = useRef(false);
@@ -28,6 +29,7 @@ export function useTerminalData(symbol: string, tf: Timeframe, token: string | n
       setLayers(null);
       setDerivatives(null);
       setPatterns(null);
+      setFigures(null);
       setError(null);
     });
     getCandles(symbol, tf)
@@ -44,6 +46,10 @@ export function useTerminalData(symbol: string, tf: Timeframe, token: string | n
         getPatterns(symbol, tf, closed[0]?.time)
           .then((pr) => !dead && setPatterns(pr))
           .catch(() => {});
+        if (FIGURE_TFS.includes(tf))
+          getFigures(symbol, tf, closed[0]?.time)
+            .then((fr) => !dead && setFigures(fr))
+            .catch(() => {});
       })
       .catch((e: Error) => !dead && setError(e.message));
     getLayers(symbol, tf)
@@ -94,5 +100,5 @@ export function useTerminalData(symbol: string, tf: Timeframe, token: string | n
   );
 
   const { prices, connected } = useLive([symbol], token, undefined, onCandle);
-  return { candles, current, hasOlder, layers, derivatives, patterns, error, tick, loadOlder, price: prices[symbol]?.p ?? null, connected };
+  return { candles, current, hasOlder, layers, derivatives, patterns, figures, error, tick, loadOlder, price: prices[symbol]?.p ?? null, connected };
 }

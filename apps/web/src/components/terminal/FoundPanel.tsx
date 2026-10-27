@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { explainPattern, type Explanation, type PatternOnChart, type PatternStat } from "@/lib/chart";
+import { explainPattern, type Explanation, type FigureOnChart, type FigureStat, type PatternOnChart, type PatternStat } from "@/lib/chart";
 import type { Timeframe } from "@/lib/timeframes";
 import s from "./terminal.module.css";
 
@@ -89,6 +89,46 @@ export function FoundList({ items, stats, selected, onSelect, tf, symbol, canExp
                     )}
                   </div>
                 )}
+              </div>
+            )}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+
+export function figureStatText(st: FigureStat | undefined): string {
+  if (!st || st.low_n || !st.success_rate) return "историческая отработка: мало данных";
+  return `историческая отработка ${Math.round(Number(st.success_rate) * 100)} % (n=${st.n}, до цели за 20 свечей)`;
+}
+
+const FIGURE_STATUS: Record<FigureOnChart["status"], string> = { forming: "формируется", confirmed: "подтверждена", invalidated: "отменена" };
+
+/** Список фигур в панели «Найдено» (4B.6): статус, качество геометрии, цель, отработка типа. */
+export function FiguresList({ items, stats, selected, onSelect }: { items: FigureOnChart[]; stats: Record<string, FigureStat>; selected: number | null; onSelect: (id: number | null) => void }) {
+  const list = [...items].reverse().slice(0, 20);
+  if (list.length === 0) return <p className="caption">Фигур на видимом участке нет. Фигуры ищутся на H4, D1 и W1 по закрытым свечам.</p>;
+  return (
+    <ul className={s.objList} aria-label="найденные фигуры">
+      {list.map((f) => {
+        const sel = f.id === selected;
+        return (
+          <li key={f.id} className={s.found} data-selected={sel || undefined}>
+            <button type="button" className={s.objName} aria-pressed={sel} onClick={() => onSelect(sel ? null : f.id)}>
+              <strong>{f.title}</strong>{" "}
+              <span className="caption">
+                {FIGURE_STATUS[f.status]} · качество {f.quality.toFixed(2)}
+                {f.confirm_t ? ` · пробой ${new Date(f.confirm_t * 1000).toLocaleString("ru-RU", { timeZone: "UTC", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })} UTC` : ""}
+              </span>
+            </button>
+            {sel && (
+              <div className={s.foundDetails}>
+                <div>{f.status === "confirmed" ? "подтверждена закрытием свечи за линией" : f.status === "forming" ? "геометрия без подтверждения: цель и статистика не показываются" : "отменена: цена закрылась против фигуры или вышло время"}</div>
+                {f.status === "confirmed" && f.target && <div>расчётная цель {f.target}{f.invalidation ? `, инвалидация ${f.invalidation}` : ""}</div>}
+                {f.status === "confirmed" && <div>{figureStatText(stats[f.type])}</div>}
+                <div className="caption">не является сигналом или рекомендацией</div>
               </div>
             )}
           </li>

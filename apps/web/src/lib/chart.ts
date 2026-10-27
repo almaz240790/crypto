@@ -70,3 +70,11 @@ export const PATTERN_GLYPH: Record<string, string> = {
   marubozu: "МБ",
   tweezer: "ПЦ",
 };
+
+export type FigureOnChart = { id: number; type: string; title: string; direction: "up" | "down" | null; status: "forming" | "confirmed" | "invalidated"; scale: number; start_t: number; end_t: number; known_t: number; confirm_t: number | null; invalidated_t: number | null; points: [number, string][]; lines: { name: string; a: [number, string]; b: [number, string] }[]; breakout_level: string | null; target: string | null; invalidation: string | null; quality: number; metrics: Record<string, number>; source: string; tf: string };
+export type FigureStat = { type: string; title: string; n: number; low_n: boolean; success_rate: string | null; ci_low: string | null; ci_high: string | null; avg_move_atr: string | null; avg_adverse_atr: string | null; avg_bars_to_target: string | null };
+export type FiguresResponse = { symbol: string; tf: string; items: FigureOnChart[]; stats: Record<string, FigureStat>; note: string };
+/** Графические фигуры (план 2A.10.2, 4B.6): публично, по закрытым свечам; только 4h/1d/1w. */
+export const getFigures = (symbol: string, tf: Timeframe, since?: number, until?: number) =>
+  api<FiguresResponse>(`/v1/chart/figures?symbol=${symbol}&tf=${tf}${since ? `&since=${since}` : ""}${until ? `&until=${until}` : ""}&limit=100`, { auth: false });
+export const FIGURE_TFS: Timeframe[] = ["4h", "1d", "1w"];

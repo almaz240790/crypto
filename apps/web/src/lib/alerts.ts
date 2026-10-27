@@ -1,7 +1,7 @@
 import { api } from "./auth-client";
 
 /** Алерты на графике (план 2A.6; задача 2B.13). */
-export type AlertType = "price" | "indicator" | "zone" | "structure" | "pattern";
+export type AlertType = "price" | "indicator" | "zone" | "structure" | "pattern" | "figure";
 export type AlertFrequency = "once" | "every" | "once_per_bar";
 export type AlertTrigger = { id: number; alert_id: number; triggered_at: string; price: string | null; details: Record<string, unknown>; notified: boolean };
 export type Alert = {
@@ -47,4 +47,4 @@ export const getAlertTriggers = (limit = 100) => api<{ items: (AlertTrigger & { 
 
 export const STATUS_LABEL: Record<Alert["status"], string> = { active: "активен", triggered: "сработал", expired: "истёк", paused: "на паузе" };
 export const FREQ_LABEL: Record<AlertFrequency, string> = { once: "один раз", every: "каждый раз", once_per_bar: "раз в свечу" };
-export const TYPE_LABEL: Record<AlertType, string> = { price: "Цена", indicator: "Индикатор", zone: "Зона", structure: "Структура", pattern: "Паттерн" };
+export const TYPE_LABEL: Record<AlertType, string> = { price: "Цена", indicator: "Индикатор", zone: "Зона", structure: "Структура", pattern: "Паттерн", figure: "Фигура" };

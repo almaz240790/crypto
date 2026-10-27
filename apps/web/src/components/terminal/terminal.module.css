@@ -496,3 +496,10 @@
 .explain p {
   margin: 0;
 }
+
+.objHead {
+  display: block;
+  padding: 6px 8px 2px;
+  font-size: 12px;
+  color: var(--text-2);
+}

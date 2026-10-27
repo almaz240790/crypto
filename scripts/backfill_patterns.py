@@ -21,6 +21,9 @@ from sqlalchemy import select
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "apps" / "api"))
 
 from app.db import SessionLocal
+from app.figures import FIGURE_TFS
+from app.figures import backfill as backfill_figures
+from app.figures import recompute_stats as recompute_figure_stats
 from app.models import Instrument
 from app.patterns import BACKFILL_TFS, backfill, recompute_stats
 from engine.candles import Timeframe
@@ -35,6 +38,7 @@ def main() -> None:
     ap.add_argument("--tf", nargs="*", default=[t.value for t in BACKFILL_TFS])
     ap.add_argument("--from", dest="since", default="2022-01-01")
     ap.add_argument("--no-stats", action="store_true")
+    ap.add_argument("--figures", action="store_true", help="фигуры вместо свечных паттернов")
     a = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     symbols: list[str] = list(a.symbols or [])
@@ -52,17 +56,22 @@ def main() -> None:
         for inst in instruments:
             for tf in tfs:
                 try:
-                    r = backfill(db, inst, tf, since=since)
+                    if a.figures:
+                        if tf not in FIGURE_TFS:
+                            continue
+                        r = backfill_figures(db, inst, tf, since=since)
+                    else:
+                        r = backfill(db, inst, tf, since=since)
                     db.commit()
                 except Exception:
                     db.rollback()
                     log.exception("%s %s: ошибка", inst.symbol, tf.value)
                     continue
-                total["patterns"] += r["patterns"]
+                total["patterns"] += r.get("patterns", r.get("new", 0))
                 total["outcomes"] += r["outcomes"]
                 log.info("%s %s: %s", inst.symbol, tf.value, r)
         if not a.no_stats:
-            n = recompute_stats(db)
+            n = recompute_figure_stats(db) if a.figures else recompute_stats(db)
             db.commit()
             log.info("агрегаты: %d строк", n)
     log.info("готово за %.0f с: %s", time.monotonic() - started, total)

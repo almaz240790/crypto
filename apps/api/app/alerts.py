@@ -22,6 +22,8 @@ from app.mail import send_mail
 from app.models import (
     Alert,
     AlertTrigger,
+    FigureEvent,
+    FigureRow,
     Instrument,
     Pattern,
     User,
@@ -38,7 +40,7 @@ from engine.zones import analyze_zones
 
 log = logging.getLogger("alerts")
 
-TYPES = ("price", "indicator", "zone", "structure", "pattern")
+TYPES = ("price", "indicator", "zone", "structure", "pattern", "figure")
 FREQUENCIES = ("once", "every", "once_per_bar")
 BAR_TFS = (Timeframe.M15, Timeframe.H1, Timeframe.H4, Timeframe.D1, Timeframe.W1)
 STRUCTURE_TFS = (Timeframe.H4, Timeframe.D1)
@@ -107,6 +109,21 @@ def validate_condition(type_: str, cond: dict[str, Any], timeframe: str | None) 
         if ev not in ("bos", "choch", "any"):
             raise ValueError("событие: bos, choch или any")
         return {"event": ev, "dir": d}
+    if type_ == "figure":
+        from engine.figures import FigureType
+
+        if timeframe is not None and timeframe not in ("4h", "1d", "1w"):
+            raise ValueError("фигуры: таймфрейм 4h, 1d, 1w или любой")
+        ftypes = [str(t) for t in (cond.get("types") or [])]
+        for t in ftypes:
+            try:
+                FigureType(t)
+            except ValueError as e:
+                raise ValueError(f"неизвестная фигура: {t}") from e
+        d = cond.get("dir", "any")
+        if d not in ("up", "down", "any"):
+            raise ValueError("направление: up, down или any")
+        return {"types": ftypes, "dir": d, "min_quality": float(cond.get("min_quality") or 0.6)}
     # pattern
     if timeframe is not None and timeframe not in {t.value for t in BAR_TFS}:
         raise ValueError("паттерны: таймфрейм 15m–1w или любой")
@@ -164,6 +181,12 @@ def condition_text(alert: Alert, symbol: str | None) -> str:
         ev = "BOS/CHoCH" if c["event"] == "any" else c["event"].upper()
         d = {"up": " вверх", "down": " вниз", "any": ""}[c["dir"]]
         return f"{sym}{tf}: {ev}{d}"
+    if alert.type == "figure":
+        from engine.figures import TITLES, FigureType
+
+        fnames = ", ".join(TITLES[FigureType(t)].lower() for t in c["types"]) or "фигура"
+        fd = {"up": " вверх", "down": " вниз", "any": ""}[c["dir"]]
+        return f"{sym}{tf or ' любой TF'}: подтверждена {fnames}{fd}"
     names = ", ".join(_pattern_name(t) for t in c["types"]) or "свечной паттерн"
     sig = " (значимый)" if c.get("significant_only") else ""
     d = {"up": " бычий", "down": " медвежий", "any": ""}[c["dir"]]
@@ -481,6 +504,69 @@ def evaluate_patterns(db: Session, since_id: int, limit: int = 500) -> tuple[int
                 },
             )
     return rows[-1].id, fired
+
+
+def figure_matches(cond: dict[str, Any], alert_tf: str | None, r: FigureRow) -> bool:
+    if alert_tf is not None and r.timeframe != alert_tf:
+        return False
+    if cond["types"] and r.type not in cond["types"]:
+        return False
+    if cond["dir"] != "any" and r.direction != cond["dir"]:
+        return False
+    return float(r.quality) >= float(cond.get("min_quality") or 0)
+
+
+def evaluate_figures(db: Session, since_id: int, limit: int = 500) -> tuple[int, int]:
+    """Алерты по переходам фигур в «подтверждена» (события с id > since_id)."""
+    rows = db.execute(
+        select(FigureEvent, FigureRow)
+        .join(FigureRow, FigureRow.id == FigureEvent.figure_id)
+        .where(
+            FigureEvent.id > since_id, FigureEvent.type == "confirmed", FigureRow.source == "live"
+        )
+        .order_by(FigureEvent.id)
+        .limit(limit)
+    ).all()
+    last = db.scalar(
+        select(FigureEvent.id)
+        .where(FigureEvent.id > since_id)
+        .order_by(FigureEvent.id.desc())
+        .limit(1)
+    )
+    if not rows:
+        return (last or since_id), 0
+    alerts = _active(db, "figure", None)
+    fired = 0
+    cache: dict[int, set[int]] = {}
+    for ev, r in rows:
+        for a in alerts:
+            if a.instrument_id is None:
+                ids = cache.setdefault(a.user_id, _watchlist_ids(db, a.user_id))
+                if r.instrument_id not in ids:
+                    continue
+            elif a.instrument_id != r.instrument_id:
+                continue
+            if not figure_matches(a.condition, a.timeframe, r) or not may_trigger(
+                a, ev.occurred_at
+            ):
+                continue
+            from engine.figures import TITLES, FigureType
+
+            fired += _fire(
+                db,
+                a,
+                ev.occurred_at,
+                r.breakout_level,
+                {
+                    "figure_id": r.id,
+                    "type": r.type,
+                    "title": TITLES[FigureType(r.type)],
+                    "quality": float(r.quality),
+                    "symbol": _symbol(db, r.instrument_id),
+                    "tf": r.timeframe,
+                },
+            )
+    return rows[-1][0].id, fired
 
 
 def expire(db: Session, now: datetime | None = None) -> int:

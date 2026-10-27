@@ -590,6 +590,25 @@ def stats_patterns(
     return stats_payload(db, tf, scope, horizon, type, instrument_id, with_context)
 
 
+@router.get("/stats/figures")
+def stats_figures(
+    tf: str = Query("4h", pattern="^(4h|1d|1w)$"),
+    scope: str = Query("backfill", pattern="^(backfill|live)$"),
+    type: str | None = Query(None, max_length=24),
+    db: Session = Depends(auth.get_db),
+) -> dict[str, Any]:
+    """Историческая отработка графических фигур (план 2A.10.4, 4B.6)."""
+    from app.figures import stats_payload as figure_stats
+    from engine.figures import FigureType
+
+    if type is not None:
+        try:
+            FigureType(type)
+        except ValueError as e:
+            raise HTTPException(404, "неизвестный тип фигуры") from e
+    return figure_stats(db, tf, scope, type)
+
+
 @router.get("/stats/trades")
 def stats_trades(
     scope: str = Query("live", pattern="^(live|forward|backtest)$"),

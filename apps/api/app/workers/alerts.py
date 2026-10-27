@@ -20,7 +20,7 @@ from datetime import UTC, datetime
 import redis.asyncio as aioredis
 from sqlalchemy import select
 
-from app.alerts import evaluate_bars, evaluate_patterns, evaluate_price, expire
+from app.alerts import evaluate_bars, evaluate_figures, evaluate_patterns, evaluate_price, expire
 from app.config import settings
 from app.db import SessionLocal
 from app.models import Instrument
@@ -33,6 +33,7 @@ DONE_TTL = 24 * 3600
 LOOP_EVERY = 30
 HEARTBEAT_KEY = "alerts:heartbeat"
 CURSOR_KEY = "alerts:pattern_cursor"
+FIGURE_CURSOR_KEY = "alerts:figure_cursor"
 
 
 def done_key(symbol: str, tf: str, close_time: datetime) -> str:
@@ -70,6 +71,13 @@ def process_bars(symbol: str, tf: Timeframe, close_time: datetime) -> int:
 def patterns_once(cursor: int) -> tuple[int, int]:
     with SessionLocal() as db:
         new_cursor, fired = evaluate_patterns(db, cursor)
+        db.commit()
+        return new_cursor, fired
+
+
+def figures_once(cursor: int) -> tuple[int, int]:
+    with SessionLocal() as db:
+        new_cursor, fired = evaluate_figures(db, cursor)
         db.commit()
         return new_cursor, fired
 
@@ -132,6 +140,12 @@ class AlertsWorker:
                     await self.redis.set(CURSOR_KEY, new_cursor)
                 if fired:
                     log.info("паттерны: сработало %d", fired)
+                fcursor = int(await self.redis.get(FIGURE_CURSOR_KEY) or 0)
+                new_f, ffired = await asyncio.to_thread(figures_once, fcursor)
+                if new_f != fcursor:
+                    await self.redis.set(FIGURE_CURSOR_KEY, new_f)
+                if ffired:
+                    log.info("фигуры: сработало %d", ffired)
                 expired = await asyncio.to_thread(expire_once)
                 if expired:
                     log.info("истекло алертов: %d", expired)
