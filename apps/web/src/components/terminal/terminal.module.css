@@ -503,3 +503,33 @@
   font-size: 12px;
   color: var(--text-2);
 }
+
+.ask {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.ask textarea {
+  width: 100%;
+  font: inherit;
+  font-size: 13px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  resize: vertical;
+}
+
+.askRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.ask p {
+  margin: 0;
+}

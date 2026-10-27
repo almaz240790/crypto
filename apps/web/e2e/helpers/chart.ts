@@ -70,6 +70,10 @@ export async function mock(page: Page, calls: string[], authed = false, server: 
       server.alerts!.push(a);
       return json(201, a);
     }
+    if (p === "/v1/chart/ask") {
+      const b = route.request().postDataJSON() as { question: string };
+      return json(200, { text: `По данным графика: тренд D1 восходящий (структура). Вопрос: ${b.question.slice(0, 20)}`, source: "llm", footer: "Текст составлен по данным графика на 12:00 UTC, не является рекомендацией.", generated_at: "", facts_hash: "abc", prompt_version: "question.v1" });
+    }
     if (p === "/v1/chart/explain") {
       const b = route.request().postDataJSON() as { pattern_id: number };
       return json(200, { text: `Бычье поглощение на BTCUSDT H4: значимый, подтверждён на закрытии свечи. Историческая отработка: 54 % случаев (n=120).`, source: b.pattern_id === 1 ? "template" : "llm", footer: "Текст составлен по данным графика на 12:00 UTC, не является рекомендацией.", generated_at: "", facts_hash: "abc", prompt_version: "explain_pattern.v1" });
