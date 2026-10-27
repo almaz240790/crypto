@@ -92,3 +92,32 @@ def test_grade_thresholds_and_params() -> None:
     assert grade_for(40) is Grade.C and grade_for(39) is Grade.NONE
     with pytest.raises(ValueError):
         ScoringParams(grade_a=50)
+
+
+def test_pattern_component_only_when_enabled() -> None:
+    from engine.params import ScoringParams
+    from engine.scoring import ScoreInput, score_signal
+    from engine.structure import Trend
+    from engine.zones import ZoneKind
+
+    base = dict(
+        w1_trend=Trend.UP,
+        signal_up=True,
+        bos_strength_atr=Decimal("0.5"),
+        zone_kinds=frozenset({ZoneKind.OB}),
+        sweep_before_entry=False,
+        volume_ratio=None,
+        rr_tp2=Decimal(2),
+        obstacle_before_tp1=False,
+        filter_delta=0,
+    )
+    off = score_signal(ScoreInput(**base, pattern_on_signal_candle=True))
+    assert "pattern" not in off.components
+    on = score_signal(
+        ScoreInput(**base, pattern_on_signal_candle=True), ScoringParams(pattern_points=5)
+    )
+    assert on.components["pattern"] == 5 and on.total == off.total + 5
+    none = score_signal(
+        ScoreInput(**base, pattern_on_signal_candle=False), ScoringParams(pattern_points=5)
+    )
+    assert none.components["pattern"] == 0 and none.total == off.total

@@ -193,6 +193,11 @@ class ScoringParams:
         (Decimal("1.8"), 5),
     )
     no_obstacle_points: int = 10
+    pattern_points: int = 0
+    """Бонус за значимый свечной паттерн на сигнальной свече по направлению сделки (план 2A.10.5,
+    задача 4B.9). 0 — компонент выключен и в разбивку не попадает."""
+    pattern_types: tuple[str, ...] = ("pin_bar", "engulfing")
+    pattern_significant_only: bool = True
     filters_min: int = -45
     filters_max: int = 25
     grade_a: int = 75

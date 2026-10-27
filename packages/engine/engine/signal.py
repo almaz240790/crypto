@@ -53,8 +53,9 @@ from engine.filters import (
     volume_filter,
 )
 from engine.indicators import atr
-from engine.liquidity import find_equal_levels, find_sweeps, period_levels
+from engine.liquidity import Sweep, find_equal_levels, find_sweeps, period_levels
 from engine.params import StrategyParams
+from engine.patterns import DEFAULT_PATTERN_PARAMS, detect_patterns
 from engine.scoring import ScoreBreakdown, ScoreInput, score_signal
 from engine.structure import Direction, EventType, MarketStructure, SwingKind, analyze_structure
 from engine.trade import TradeRejection, TradeSetup, build_trade
@@ -233,6 +234,7 @@ def evaluate(
     )
     bos_strength = abs(h4[bos_index].close - bos_event.level) / atr_bos
     volume_ratio = Decimal(vol.data["ratio"]) if "ratio" in vol.data else None
+    pattern_titles = signal_candle_patterns(h4, structure, zones, sweeps, direction, params)
     score = score_signal(
         ScoreInput(
             w1_trend=bias.w1_trend,
@@ -244,6 +246,7 @@ def evaluate(
             rr_tp2=trade.rr_tp2,
             obstacle_before_tp1=obstacle,
             filter_delta=summary.score_delta,
+            pattern_on_signal_candle=bool(pattern_titles),
         ),
         params.scoring,
     )
@@ -256,6 +259,9 @@ def evaluate(
         "Ликвидность: снятие перед входом"
         if sweep_recent
         else "Ликвидность: снятия перед входом нет",
+        "Паттерн на сигнальной свече: " + ", ".join(pattern_titles)
+        if pattern_titles
+        else "Паттерн на сигнальной свече: нет",
         *trade.notes,
         f"Скоринг: {score.total} ({score.grade})",
     ]
@@ -274,6 +280,36 @@ def evaluate(
         facts=tuple(facts),
         deferred=summary.deferred,
     )
+
+
+def signal_candle_patterns(
+    h4: Sequence[Candle],
+    structure: MarketStructure,
+    zones: Sequence[Zone],
+    sweeps: Sequence[Sweep],
+    direction: Direction,
+    params: StrategyParams,
+) -> list[str]:
+    """Названия значимых паттернов из ``scoring.pattern_types`` на сигнальной свече по направлению.
+
+    Считается всегда (попадает в факты обоснования), в скоринг — только при ``pattern_points``.
+    """
+    sp = params.scoring
+    matches = detect_patterns(
+        h4,
+        DEFAULT_PATTERN_PARAMS,
+        structure=structure,
+        zones=zones,
+        sweeps=sweeps,
+        since=len(h4) - 1,
+    )
+    return [
+        m.title
+        for m in matches
+        if m.type.value in sp.pattern_types
+        and m.direction is direction
+        and (m.significant or not sp.pattern_significant_only)
+    ]
 
 
 def replay(
