@@ -110,6 +110,7 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
       },
     });
     termRef.current = term;
+    (el as HTMLElement & { __chart?: unknown }).__chart = term.chart;
     const box = new BoxPrimitive();
     boxRef.current = box;
     term.layers.add(new PrimitiveLayer("zones", box));

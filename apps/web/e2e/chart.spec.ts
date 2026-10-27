@@ -42,7 +42,7 @@ test("график: смена инструмента и сигналы по и�
   await mock(page, calls, true);
   await page.goto("/chart/BTCUSDT/4h");
   await expect(page.getByText("сигналов по инструменту: 1")).toBeVisible();
-  await page.getByLabel("инструмент").selectOption("ETHUSDT");
+  await page.getByLabel("инструмент", { exact: true }).selectOption("ETHUSDT");
   await expect(page).toHaveURL(/\/chart\/ETHUSDT\/4h$/);
   await expect(page.getByRole("link", { name: "1M" })).not.toHaveAttribute("aria-disabled", "true");
 });
@@ -135,4 +135,64 @@ test("перекрестие: наведение показывает OHLCV и �
   await expect(ohlc).toContainText("EMA");
   await page.mouse.move(box.x - 50, box.y - 50);
   await expect(ohlc).toBeHidden();
+});
+
+test("десктоп: тулбар и горячие клавиши, панель объектов, шаблоны, именованные раскладки, снимок PNG", async ({ page }) => {
+  const server = { drawings: [] as Record<string, unknown>[], layout: null as Record<string, unknown> | null, layouts: {} as Record<string, Record<string, unknown>> };
+  const calls: string[] = [];
+  await mock(page, calls, true, server);
+  await page.goto("/chart/BTCUSDT/4h");
+  const term = page.getByTestId("terminal");
+  await expect(term.locator("canvas").first()).toBeVisible();
+  const toolbar = page.getByRole("toolbar", { name: "панель рисования" });
+  const objects = page.getByRole("complementary", { name: "панель объектов" });
+  await expect(toolbar).toBeVisible();
+  await expect(objects).toBeVisible();
+  // Alt+H включает горизонтальную линию, клик по графику создаёт рисунок
+  await page.keyboard.press("Alt+h");
+  await expect(toolbar.getByRole("button", { name: "Горизонтальная линия" })).toHaveAttribute("aria-pressed", "true");
+  const box = (await term.boundingBox())!;
+  await page.mouse.click(box.x + box.width * 0.4, box.y + box.height * 0.5);
+  await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 1");
+  await page.keyboard.press("Escape");
+  await expect(toolbar.getByRole("button", { name: "Горизонтальная линия" })).toHaveAttribute("aria-pressed", "false");
+  // панель объектов: список, блокировка запрещает удаление, разблокировка и удаление
+  await expect(objects.getByRole("tab", { name: "Рисунки (1)" })).toBeVisible();
+  await expect(objects).toContainText("Горизонтальная линия");
+  await objects.getByRole("button", { name: "заблокировать Горизонтальная линия" }).click();
+  await expect(objects.getByRole("button", { name: "удалить Горизонтальная линия" })).toBeDisabled();
+  await objects.getByRole("button", { name: "разблокировать Горизонтальная линия" }).click();
+  await objects.getByRole("button", { name: "удалить Горизонтальная линия" }).click();
+  await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 0");
+  await toolbar.getByRole("button", { name: "отменить" }).click();
+  await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 1");
+  // слои из панели
+  await objects.getByRole("tab", { name: "Слои" }).click();
+  await objects.getByLabel("Ликвидации").check();
+  await expect(page.getByRole("button", { name: "Индикаторы (2)" })).toBeVisible();
+  // шаблон «Осцилляторы» → три индикатора, панели сброшены
+  await objects.getByRole("tab", { name: "Раскладки" }).click();
+  await objects.getByRole("button", { name: "Осцилляторы" }).click();
+  await expect(page.getByRole("button", { name: "Индикаторы (3)" })).toBeVisible();
+  // именованная раскладка: сохранить, применить после «Чистый», удалить
+  await objects.getByLabel("имя раскладки").fill("моя");
+  await objects.getByRole("button", { name: "Сохранить" }).click();
+  await expect(page.getByRole("status")).toContainText("Раскладка «моя» сохранена");
+  expect(Object.keys(server.layouts)).toEqual(["моя"]);
+  await objects.getByRole("button", { name: "Чистый" }).click();
+  await expect(page.getByRole("button", { name: "Индикаторы (0)" })).toBeVisible();
+  await objects.getByRole("button", { name: "моя", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Индикаторы (3)" })).toBeVisible();
+  await objects.getByRole("button", { name: "удалить раскладку моя" }).click();
+  await expect(objects.getByRole("button", { name: "моя", exact: true })).toHaveCount(0);
+  expect(Object.keys(server.layouts)).toEqual([]);
+  // цифра 6 → D1; скрыть панель объектов
+  await page.keyboard.press("6");
+  await expect(page).toHaveURL(/\/chart\/BTCUSDT\/1d$/);
+  await page.getByRole("button", { name: "Объекты" }).click();
+  await expect(objects).toBeHidden();
+  // снимок PNG скачивается файлом
+  const dl = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Снимок" }).click();
+  expect((await dl).suggestedFilename()).toMatch(/^platform-BTCUSDT-1d-\d+\.png$/);
 });

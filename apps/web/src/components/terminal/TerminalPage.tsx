@@ -1,6 +1,6 @@
 "use client";
 
-import { CHART_TYPES, INDICATORS, TOOL_TITLES, defaultParams, positionStats, secondsToClose, type ChartType, type DrawingType, type Timeframe } from "@platform/charts";
+import { CHART_TYPES, INDICATORS, TOOL_TITLES, defaultParams, positionStats, secondsToClose, tokensFromElement, type ChartType, type DrawingType, type Timeframe } from "@platform/charts";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -12,9 +12,12 @@ import { formatPct, formatPrice } from "@/lib/format";
 import { getInstruments, type Instrument } from "@/lib/user";
 import s from "./terminal.module.css";
 import { BottomSheet } from "./BottomSheet";
+import { DrawToolbar, ObjectsPanel } from "./DesktopPanels";
+import { download, snapshotPng } from "./snapshot";
+import { TEMPLATES } from "./templates";
 import { PANELS, TerminalView, type ActiveIndicator, type CrosshairInfo, type LayerKey, type PanelKey } from "./TerminalView";
 import { useDrawings } from "./useDrawings";
-import { getLayout, putLayout } from "@/lib/drawings";
+import { deleteLayout, getLayout, listLayouts, putLayout } from "@/lib/drawings";
 import { useTerminalData } from "./useTerminalData";
 
 const TYPE_LABEL: Record<ChartType, string> = { candles: "Свечи", bars: "Бары", line: "Линия", heikin: "Heikin Ashi" };
@@ -48,6 +51,10 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
   const [sheet, setSheet] = useState<"indicators" | "layers" | "draw" | null>(null);
   const [cross, setCross] = useState<CrosshairInfo | null>(null);
   const [bars, setBars] = useState<"shown" | "hidden">("shown");
+  const [objects, setObjects] = useState<"shown" | "hidden">("shown");
+  const [layouts, setLayouts] = useState<{ name: string }[]>([]);
+  const [toast, setToast] = useState<string | null>(null);
+  const areaRef = useRef<HTMLDivElement>(null);
   const closeSheet = useCallback(() => setSheet(null), []);
   const dr = useDrawings(symbol, !!user);
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
@@ -69,13 +76,69 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
         dr.setTool(null);
         dr.setDraft(null);
         dr.actions.select(null);
+      } else if (e.altKey && e.key.toLowerCase() === "h") {
+        e.preventDefault();
+        dr.setTool("hline");
+      } else if (e.altKey && e.key.toLowerCase() === "t") {
+        e.preventDefault();
+        dr.setTool("trend");
+      } else if (!e.ctrlKey && !e.metaKey && !e.altKey && /^[1-7]$/.test(e.key)) {
+        const t = TIMEFRAMES[Number(e.key) - 1];
+        if (t) router.push(`/chart/${symbol}/${t}`);
       } else if ((e.key === "Delete" || e.key === "Backspace") && dr.selected && !dr.selected.locked) dr.actions.remove(dr.selected.id);
       else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && !e.shiftKey) dr.actions.undo();
       else if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === "y" || (e.key.toLowerCase() === "z" && e.shiftKey))) dr.actions.redo();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [dr]);
+  }, [dr, router, symbol]);
+  useEffect(() => {
+    if (!user) return;
+    listLayouts()
+      .then((r) => setLayouts(r))
+      .catch(() => {});
+  }, [user]);
+  const say = (t: string) => {
+    setToast(t);
+    setTimeout(() => setToast(null), 2500);
+  };
+  const applyTemplate = (id: string) => {
+    const t = TEMPLATES.find((x) => x.id === id);
+    if (t) setSaved({ ...(saved ?? load()), indicators: t.indicators, panels: t.panels, updated_at: Date.now() });
+  };
+  const saveLayout = (name: string) => {
+    const cur = saved ?? load();
+    putLayout({ type: cur.type, indicators: cur.indicators, layers: cur.layers, panels: cur.panels, symbol, tf }, Date.now(), name)
+      .then(() => {
+        setLayouts((l) => (l.some((x) => x.name === name) ? l : [...l, { name }]));
+        say(`Раскладка «${name}» сохранена`);
+      })
+      .catch((e: Error) => say(e.message));
+  };
+  const loadLayout = (name: string) => {
+    getLayout(name)
+      .then((r) => {
+        if (!r.data) return;
+        const d = r.data as Partial<Saved> & { symbol?: string; tf?: string };
+        setSaved({ ...(saved ?? load()), ...d, updated_at: Date.now() });
+        if (d.symbol && d.tf && (d.symbol !== symbol || d.tf !== tf)) router.push(`/chart/${d.symbol}/${d.tf}`);
+        say(`Раскладка «${name}» применена`);
+      })
+      .catch((e: Error) => say(e.message));
+  };
+  const removeLayout = (name: string) => {
+    deleteLayout(name)
+      .then(() => setLayouts((l) => l.filter((x) => x.name !== name)))
+      .catch((e: Error) => say(e.message));
+  };
+  const snapshot = () => {
+    const canvasHost = areaRef.current?.querySelector('[data-testid="terminal"]') as HTMLElement | null;
+    const chart = (canvasHost as (HTMLElement & { __chart?: import("lightweight-charts").IChartApi }) | null)?.__chart;
+    if (!chart) return say("график ещё не готов");
+    const t = tokensFromElement(canvasHost!);
+    const url = snapshotPng(chart, `${symbol} · ${tf === "4h" ? "H4" : tf.toUpperCase()} · ${new Date().toISOString().slice(0, 16).replace("T", " ")} UTC`, window.location.href, { surface: t.surface, text2: t.text2, fontMono: t.fontMono });
+    download(url, `platform-${symbol}-${tf}-${Date.now()}.png`);
+  };
   useEffect(() => {
     if (saved) {
       try {
@@ -176,6 +239,12 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
             </Link>
           ))}
         </nav>
+        <button type="button" className={s.chip} onClick={snapshot} title="Снимок PNG с водяным знаком">
+          Снимок
+        </button>
+        <button type="button" className={`${s.chip} ${s.desktopOnly}`} aria-pressed={objects === "shown"} onClick={() => setObjects(objects === "shown" ? "hidden" : "shown")}>
+          Объекты
+        </button>
         <select aria-label="тип графика" value={st.type} onChange={(e) => setSaved({ ...st, type: e.target.value as ChartType, updated_at: Date.now() })}>
           {CHART_TYPES.map((t) => (
             <option key={t} value={t}>
@@ -207,7 +276,14 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
         <span className="caption">{data.connected ? "live" : "без связи"}</span>
         {st.type === "heikin" && <span className="caption">Heikin Ashi: паттерны и сигналы считаются по обычным свечам</span>}
       </div>
-      <div className={s.area}>
+      {toast && (
+        <p role="status" className="caption" style={{ margin: 0, padding: "2px 12px" }}>
+          {toast}
+        </p>
+      )}
+      <div className={s.area} ref={areaRef} data-objects={objects}>
+        <DrawToolbar tool={dr.tool} onTool={(t) => dr.setTool(t)} magnet={dr.magnet} onMagnet={dr.setMagnet} canUndo={dr.canUndo} canRedo={dr.canRedo} onUndo={dr.actions.undo} onRedo={dr.actions.redo} />
+        <div className={s.chartCol}>
       {cross && (
         <div className={s.ohlc} data-testid="ohlc" aria-live="polite">
           <span>{new Date(cross.candle.time * 1000).toLocaleString("ru-RU", { timeZone: "UTC", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })} UTC</span>
@@ -345,6 +421,25 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
                 ))}
           </BottomSheet>
         )}
+        </div>
+        <ObjectsPanel
+          drawings={dr.items}
+          selectedId={dr.state.selectedId}
+          onSelect={dr.actions.select}
+          onLock={dr.actions.lock}
+          onRemove={dr.actions.remove}
+          layers={st.layers}
+          onLayer={toggleLayer}
+          panels={st.panels}
+          onPanel={togglePanel}
+          onTemplate={applyTemplate}
+          layouts={layouts}
+          onSaveLayout={saveLayout}
+          onLoadLayout={loadLayout}
+          onDeleteLayout={removeLayout}
+          authed={!!user}
+          layoutsLimit={user ? null : 0}
+        />
       </div>
       <div className={s.bottom}>
         <button type="button" className={s.chip} aria-pressed={sheet === "indicators"} onClick={() => setSheet(sheet === "indicators" ? null : "indicators")}>
@@ -361,10 +456,10 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
             Готово
           </button>
         )}
-        <button type="button" className={s.chip} onClick={dr.actions.undo} disabled={!dr.canUndo} aria-label="отменить">
+        <button type="button" className={`${s.chip} ${s.mobileOnly}`} onClick={dr.actions.undo} disabled={!dr.canUndo} aria-label="отменить">
           ↶
         </button>
-        <button type="button" className={s.chip} onClick={dr.actions.redo} disabled={!dr.canRedo} aria-label="повторить">
+        <button type="button" className={`${s.chip} ${s.mobileOnly}`} onClick={dr.actions.redo} disabled={!dr.canRedo} aria-label="повторить">
           ↷
         </button>
         <span className="caption" data-testid="drawings-count">

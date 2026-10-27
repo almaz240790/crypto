@@ -49,8 +49,10 @@ export const listDrawings = (symbol: string, since = 0) => api<{ symbol: string;
 export const upsertDrawings = (items: DrawingWire[]) => api<{ items: DrawingWire[] }>("/v1/drawings", { method: "PUT", json: items });
 
 export type LayoutData = Record<string, unknown>;
-export const getLayout = () => api<{ name: string | null; data: LayoutData | null; updated_at: number }>("/v1/chart/layout");
-export const putLayout = (data: LayoutData, updated_at: number) => api<{ data: LayoutData; updated_at: number }>("/v1/chart/layout", { method: "PUT", json: { name: null, data, updated_at } });
+export const getLayout = (name?: string) => api<{ name: string | null; data: LayoutData | null; updated_at: number }>(`/v1/chart/layout${name ? `?name=${encodeURIComponent(name)}` : ""}`);
+export const putLayout = (data: LayoutData, updated_at: number, name: string | null = null) => api<{ data: LayoutData; updated_at: number }>("/v1/chart/layout", { method: "PUT", json: { name, data, updated_at } });
+export const listLayouts = () => api<{ name: string; updated_at: number }[]>("/v1/chart/layouts");
+export const deleteLayout = (name: string) => api<void>(`/v1/chart/layout?name=${encodeURIComponent(name)}`, { method: "DELETE" });
 
 /** Офлайн-очередь: изменения, не доставленные на сервер (по client_id — последняя версия). */
 const QUEUE = "pl-drawings-queue";
