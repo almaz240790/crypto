@@ -14,11 +14,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app import auth, twofactor
+from app import apikeys, auth, twofactor
 from app.config import settings
 from app.entitlements import entitlements_for
 from app.journal_analytics import TradeRow, analytics
 from app.models import (
+    ApiKey,
     AuthIdentity,
     Instrument,
     JournalEntry,
@@ -380,6 +381,75 @@ def screens_delete(
     )
     if row is not None:
         db.delete(row)
+        db.commit()
+    return Response(status_code=204)
+
+
+# --- API-ключи для чтения (план 3.10, Premium) ---------------------------------------------------
+
+
+class ApiKeyIn(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+
+
+def _key_dict(k: ApiKey) -> dict[str, Any]:
+    return {
+        "id": k.id,
+        "name": k.name,
+        "prefix": k.prefix,
+        "created_at": k.created_at.isoformat() if k.created_at else None,
+        "last_used_at": k.last_used_at.isoformat() if k.last_used_at else None,
+    }
+
+
+def _require_api_access(db: Session, user: User) -> None:
+    if not entitlements_for(db, user).api_access:
+        raise HTTPException(403, "API-ключи доступны на тарифе Premium")
+
+
+@router.get("/me/api-keys")
+def api_keys_list(
+    user: User = Depends(auth.current_user), db: Session = Depends(auth.get_db)
+) -> dict[str, Any]:
+    _require_api_access(db, user)
+    rows = db.scalars(
+        select(ApiKey)
+        .where(ApiKey.user_id == user.id, ApiKey.revoked_at.is_(None))
+        .order_by(ApiKey.created_at)
+    ).all()
+    return {"items": [_key_dict(k) for k in rows], "limit": apikeys.KEYS_LIMIT}
+
+
+@router.post("/me/api-keys", status_code=201)
+def api_keys_create(
+    body: ApiKeyIn, user: User = Depends(auth.current_user), db: Session = Depends(auth.get_db)
+) -> dict[str, Any]:
+    """Ключ показывается один раз в ответе; хранится только хэш."""
+    _require_api_access(db, user)
+    n = db.scalar(
+        select(func.count())
+        .select_from(ApiKey)
+        .where(ApiKey.user_id == user.id, ApiKey.revoked_at.is_(None))
+    )
+    if (n or 0) >= apikeys.KEYS_LIMIT:
+        raise HTTPException(409, f"не больше {apikeys.KEYS_LIMIT} ключей")
+    raw, prefix, key_hash = apikeys.new_key()
+    row = ApiKey(user_id=user.id, name=body.name, prefix=prefix, key_hash=key_hash)
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return {**_key_dict(row), "key": raw}
+
+
+@router.delete("/me/api-keys/{key_id}", status_code=204)
+def api_keys_revoke(
+    key_id: int, user: User = Depends(auth.current_user), db: Session = Depends(auth.get_db)
+) -> Response:
+    row = db.get(ApiKey, key_id)
+    if row is None or row.user_id != user.id:
+        raise HTTPException(404, "ключ не найден")
+    if row.revoked_at is None:
+        row.revoked_at = datetime.now(tz=UTC)
         db.commit()
     return Response(status_code=204)
 

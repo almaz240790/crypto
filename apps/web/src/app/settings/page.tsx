@@ -9,7 +9,98 @@ import { NotificationsPanel } from "@/components/settings/Notifications";
 import { applyTheme } from "@/components/ui/ThemeToggle";
 import { Button, EmptyState, Input, Panel, Select } from "@/components/ui";
 import { patchProfile, patchRisk, pwnedCount } from "@/lib/auth-client";
-import { changePassword, deleteAccount, disableTwoFactor, enableTwoFactor, exportData, getIdentities, getTwoFactor, setupTwoFactor, type TwoFactorStatus } from "@/lib/user";
+import { changePassword, createApiKey, deleteAccount, disableTwoFactor, enableTwoFactor, exportData, getApiKeys, getIdentities, getTwoFactor, revokeApiKey, setupTwoFactor, type ApiKeyRow, type TwoFactorStatus } from "@/lib/user";
+import { formatTimeUTC } from "@/lib/format";
+
+const API_BASE = typeof window === "undefined" ? "" : window.location.origin;
+
+/** API-ключи для чтения (план 3.10, Premium): список, создание с показом один раз, отзыв. */
+function ApiKeysPanel({ note }: { note: (text: string, kind?: "ok" | "error") => void }) {
+  const [keys, setKeys] = useState<ApiKeyRow[] | null>(null);
+  const [limit, setLimit] = useState(5);
+  const [denied, setDenied] = useState<string | null>(null);
+  const [name, setName] = useState("");
+  const [fresh, setFresh] = useState<string | null>(null);
+  const load = () =>
+    getApiKeys()
+      .then((r) => {
+        setKeys(r.items);
+        setLimit(r.limit);
+        setDenied(null);
+      })
+      .catch((e: Error) => {
+        setKeys([]);
+        setDenied(e.message);
+      });
+  useEffect(() => {
+    queueMicrotask(() => void load());
+  }, []);
+  async function create(e: FormEvent) {
+    e.preventDefault();
+    try {
+      const r = await createApiKey(name.trim());
+      setFresh(r.key);
+      setName("");
+      await load();
+      note("Ключ создан — скопируйте его сейчас");
+    } catch (err) {
+      note(err instanceof Error ? err.message : "ошибка", "error");
+    }
+  }
+  async function revoke(k: ApiKeyRow) {
+    if (!confirm(`Отозвать ключ «${k.name}» (${k.prefix}…)? Запросы с ним перестанут работать.`)) return;
+    await revokeApiKey(k.id).catch((err: Error) => note(err.message, "error"));
+    await load();
+  }
+  return (
+    <Panel title="API-ключи для чтения (Premium)" footer="Ключ передаётся в заголовке X-API-Key и даёт только чтение (GET) тех же эндпоинтов /v1: сигналы, статистика, графики. Лимит 600 запросов в минуту на ключ. Ключ показывается один раз.">
+      <div className={s.form} data-testid="api-keys">
+        {denied ? (
+          <span className="text-2">{denied}</span>
+        ) : keys === null ? (
+          <span className="caption">Загрузка…</span>
+        ) : (
+          <>
+            {keys.length > 0 && (
+              <ul style={{ margin: 0, paddingLeft: 18, fontSize: 14 }}>
+                {keys.map((k) => (
+                  <li key={k.id}>
+                    <strong>{k.name}</strong> · <code>{k.prefix}…</code> · создан {k.created_at ? formatTimeUTC(k.created_at) : "—"}
+                    {k.last_used_at ? ` · использован ${formatTimeUTC(k.last_used_at)}` : " · ещё не использовался"}{" "}
+                    <button type="button" className={`${s.small} ${s.danger}`} onClick={() => revoke(k)} aria-label={`отозвать ключ ${k.name}`}>
+                      отозвать
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {fresh && (
+              <div role="region" aria-label="новый ключ">
+                <p style={{ margin: "0 0 6px" }}>Новый ключ (больше не покажется):</p>
+                <code style={{ display: "block", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>{fresh}</code>
+                <p className="caption" style={{ margin: "6px 0 0" }}>
+                  Пример: <code>{`curl -H "X-API-Key: ${fresh.slice(0, 10)}…" ${API_BASE}/v1/signals?tab=all`}</code>
+                </p>
+              </div>
+            )}
+            {keys.length < limit && (
+              <form className={s.form} onSubmit={create}>
+                <div className={s.row}>
+                  <Input label="Название ключа" value={name} onChange={(e) => setName(e.target.value)} maxLength={60} required placeholder="например, мой скрипт" />
+                </div>
+                <div className={s.actions}>
+                  <Button type="submit" size="sm" disabled={!name.trim()}>
+                    Создать ключ
+                  </Button>
+                </div>
+              </form>
+            )}
+          </>
+        )}
+      </div>
+    </Panel>
+  );
+}
 
 /** Двухфакторная защита (план 3.12, v2): настройка, включение по коду, резервные коды, отключение. */
 function TwoFactorPanel({ note }: { note: (text: string, kind?: "ok" | "error") => void }) {
@@ -288,6 +379,7 @@ export default function SettingsPage() {
             </form>
           </Panel>
           <TwoFactorPanel note={note} />
+          <ApiKeysPanel note={note} />
           <NotificationsPanel userId={user.id} onMessage={note} />
         </div>
         <Panel title="Данные и аккаунт" footer="Удаление необратимо: email анонимизируется, сессии отзываются, записи журнала остаются в базе без привязки к вам 30 дней на случай ошибки.">

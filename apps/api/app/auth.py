@@ -214,7 +214,27 @@ def google_exchange(code: str, redirect_uri: str) -> dict[str, Any]:
 # --- зависимости FastAPI -------------------------------------------------------------------------
 
 
+def _api_key_user(request: Request, db: Session, raw: str) -> User:
+    """Вход по API-ключу (план 3.10): только GET, лимит запросов на ключ, только Premium."""
+    from app import apikeys, ratelimit
+    from app.entitlements import entitlements_for
+
+    if request.method != "GET":
+        raise HTTPException(403, "API-ключ даёт только чтение")
+    user = apikeys.find_user(db, raw)
+    if user is None:
+        raise HTTPException(401, "неверный или отозванный API-ключ")
+    if not entitlements_for(db, user).api_access:
+        raise HTTPException(403, "API-ключи доступны на тарифе Premium")
+    if not ratelimit.hit(f"apikey:{sha256(raw)[:16]}", *apikeys.API_RATE):
+        raise HTTPException(429, "лимит запросов по ключу исчерпан, подождите минуту")
+    return user
+
+
 def current_user(request: Request, db: Session = Depends(get_db)) -> User:
+    api_key = request.headers.get("x-api-key")
+    if api_key:
+        return _api_key_user(request, db, api_key.strip())
     header = request.headers.get("authorization", "")
     if not header.lower().startswith("bearer "):
         raise HTTPException(401, "нужен токен")

@@ -110,6 +110,11 @@ export const createJournal = (body: JournalIn) => api<JournalEntry>("/v1/journal
 export const updateJournal = (id: number, body: JournalIn) => api<JournalEntry>(`/v1/journal/${id}`, { method: "PUT", json: body });
 export const deleteJournal = (id: number) => api(`/v1/journal/${id}`, { method: "DELETE" });
 
+export type ApiKeyRow = { id: number; name: string; prefix: string; created_at: string | null; last_used_at: string | null };
+export const getApiKeys = () => api<{ items: ApiKeyRow[]; limit: number }>("/v1/me/api-keys");
+export const createApiKey = (name: string) => api<ApiKeyRow & { key: string }>("/v1/me/api-keys", { method: "POST", json: { name } });
+export const revokeApiKey = (id: number) => api<void>(`/v1/me/api-keys/${id}`, { method: "DELETE" });
+
 export type TwoFactorStatus = { enabled: boolean; backup_codes_left: number };
 export const getTwoFactor = () => api<TwoFactorStatus>("/v1/me/2fa");
 export const setupTwoFactor = () => api<{ secret: string; otpauth_url: string }>("/v1/me/2fa/setup", { method: "POST" });
