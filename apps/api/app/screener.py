@@ -132,6 +132,13 @@ def _derivatives(session: Session, inst_id: int, now: datetime) -> dict[str, Any
         ),
         {"i": inst_id, "s": since24},
     ).first()
+    ls = session.execute(
+        text(
+            "select global_ratio, top_traders_ratio from long_short_ratios "
+            "where instrument_id=:i order by time desc limit 1"
+        ),
+        {"i": inst_id},
+    ).first()
     f_now = funding[-1] if funding else None
     return {
         "funding": _dec(f_now * 100) if f_now is not None else None,
@@ -141,6 +148,8 @@ def _derivatives(session: Session, inst_id: int, now: datetime) -> dict[str, Any
         "oi_change_24h": (_dec((oi_now / oi_24 - 1) * 100) if oi_now and oi_24 else None),
         "liq_long_24h": _dec(liq[0]) if liq else None,
         "liq_short_24h": _dec(liq[1]) if liq else None,
+        "ls_ratio": _dec(ls[0]) if ls else None,
+        "ls_top": _dec(ls[1]) if ls else None,
     }
 
 
@@ -240,6 +249,8 @@ CSV_COLUMNS = (
     "oi_change_24h",
     "liq_long_24h",
     "liq_short_24h",
+    "ls_ratio",
+    "ls_top",
     "beta_btc",
 )
 

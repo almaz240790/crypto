@@ -62,7 +62,7 @@ export async function mock(page: Page, calls: string[], authed = false, server: 
       return route.fulfill({ status: 204, body: "" });
     }
     if (p === "/v1/chart/derivatives")
-      return json(200, { symbol: "BTCUSDT", tf: "4h", funding: [{ t: T0 + 100 * 14400, v: "0.0001" }, { t: T0 + 200 * 14400, v: "0.00012" }], funding_current: "0.00012", next_funding_t: Math.floor(Date.now() / 1000) + 3600, oi: [{ t: T0 + 100 * 14400, v: "1000000" }], liquidations: [{ t: T0 + 100 * 14400, long: "1000", short: "2000" }], liquidations_note: "" });
+      return json(200, { symbol: "BTCUSDT", tf: "4h", funding: [{ t: T0 + 100 * 14400, v: "0.0001" }, { t: T0 + 200 * 14400, v: "0.00012" }], funding_current: "0.00012", next_funding_t: Math.floor(Date.now() / 1000) + 3600, oi: [{ t: T0 + 100 * 14400, v: "1000000" }], liquidations: [{ t: T0 + 100 * 14400, long: "1000", short: "2000" }], liquidations_note: "", ls_ratio: [{ t: T0 + 100 * 14400, v: "1.2" }, { t: T0 + 200 * 14400, v: "0.9" }], ls_top: [{ t: T0 + 100 * 14400, v: "1.5" }] });
     if (p === "/v1/alerts" && route.request().method() === "GET") return json(200, { items: server.alerts, active: server.alerts!.length, limit: 50, types: [], frequencies: [] });
     if (p === "/v1/alerts" && route.request().method() === "POST") {
       const b = route.request().postDataJSON() as { symbol: string; type: string; condition: { op: string; price: string }; frequency: string; drawing_client_id: string | null };

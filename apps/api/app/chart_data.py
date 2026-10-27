@@ -373,6 +373,13 @@ def load_derivatives(
         ),
         {"i": instrument_id, "s": since, "u": until},
     ).all()
+    ls = db.execute(
+        text(
+            "select time, global_ratio, top_traders_ratio from long_short_ratios "
+            "where instrument_id=:i and time>=:s and time<:u order by 1"
+        ),
+        {"i": instrument_id, "s": since, "u": until},
+    ).all()
     last_f = f[-1] if f else None
     interval = int(last_f[2] or 8) if last_f else 8
     next_funding = int(last_f[0].timestamp()) + interval * 3600 if last_f is not None else None
@@ -383,4 +390,6 @@ def load_derivatives(
         "oi": bucket_last([(r[0], r[1]) for r in oi], size),
         "liquidations": bucket_sum([(r[0], r[1], r[2]) for r in liq], size),
         "liquidations_note": "ликвидации из публичного потока Binance (не полный объём)",
+        "ls_ratio": bucket_last([(r[0], r[1]) for r in ls], size),
+        "ls_top": bucket_last([(r[0], r[2]) for r in ls], size),
     }

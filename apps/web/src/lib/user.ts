@@ -24,6 +24,8 @@ export type ScreenerRow = {
   oi_change_24h?: string | null;
   liq_long_24h?: string | null;
   liq_short_24h?: string | null;
+  ls_ratio?: string | null;
+  ls_top?: string | null;
 };
 
 export type JournalEntry = {
