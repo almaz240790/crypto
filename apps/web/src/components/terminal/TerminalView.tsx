@@ -5,7 +5,7 @@ import { DrawingController, DrawingsPrimitive, INDICATORS, defaultParams, indica
 import { LineSeries, createSeriesMarkers, type ISeriesApi, type ISeriesMarkersPluginApi, type SeriesMarker, type Time, type UTCTimestamp } from "lightweight-charts";
 import { useEffect, useRef } from "react";
 import { BoxPrimitive } from "@/components/chart/BoxPrimitive";
-import type { Derivatives, LayersResponse, PatternOnChart } from "@/lib/chart";
+import { PATTERN_GLYPH, type Derivatives, type LayersResponse, type PatternOnChart } from "@/lib/chart";
 import s from "./terminal.module.css";
 
 export type ActiveIndicator = { id: string; params: Record<string, number> };
@@ -13,22 +13,6 @@ export type LayerKey = "structure" | "zones" | "levels" | "signals" | "patterns"
 export type PanelKey = "funding" | "oi" | "liq";
 export type CrosshairInfo = { candle: Candle; values: { label: string; value: number | null }[] };
 const LONG_PRESS_MS = 300;
-/** Короткие подписи маркеров паттернов (план 2A.10.1): без оценочных слов. */
-export const PATTERN_GLYPH: Record<string, string> = {
-  engulfing: "ПГ",
-  pin_bar: "ПБ",
-  doji: "Д",
-  doji_dragonfly: "Д↑",
-  doji_gravestone: "Д↓",
-  star: "ЗВ",
-  three_line: "3",
-  harami: "ХР",
-  inside_bar: "ВБ",
-  inside_bar_breakout: "ВБ›",
-  marubozu: "МБ",
-  tweezer: "ПЦ",
-};
-
 export const PANELS: { id: PanelKey; title: string }[] = [
   { id: "funding", title: "Funding" },
   { id: "oi", title: "Open interest" },

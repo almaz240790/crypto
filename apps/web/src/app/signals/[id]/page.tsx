@@ -7,7 +7,9 @@ import { useAuth } from "@/components/auth/AuthProvider";
 import type { Analysis, ChartCandle, Layer } from "@/components/chart/SignalChart";
 import { SignalChart } from "@/components/chart/SignalChart";
 import { Button, DirectionBadge, EmptyState, GradeBadge, Input, Panel, Select, StatusBadge } from "@/components/ui";
+import Link from "next/link";
 import { api, getAccessToken } from "@/lib/auth-client";
+import { getPatterns, type PatternOnChart } from "@/lib/chart";
 import { formatDuration, formatPct, formatPrice, formatR, formatTimeUTC } from "@/lib/format";
 import { journalFromSignal, unrealizedR, type SignalRow } from "@/lib/signals";
 import { useLive } from "@/lib/useLive";
@@ -84,6 +86,7 @@ export default function SignalPage() {
   const [an, setAn] = useState<AnalysisFull | null>(null);
   const [tf, setTf] = useState<"4h" | "1d">("4h");
   const [candles, setCandles] = useState<ChartCandle[]>([]);
+  const [patterns, setPatterns] = useState<PatternOnChart[]>([]);
   const [tick, setTick] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [highlight, setHighlight] = useState<Layer | null>(null);
@@ -121,6 +124,25 @@ export default function SignalPage() {
       alive = false;
     };
   }, [id, tf]);
+
+  // свечные паттерны вокруг сигнальной свечи (план 3.5, 2B.16): ±3 свечи
+  useEffect(() => {
+    if (!d) return;
+    let alive = true;
+    const step = tf === "4h" ? 14400 : 86400;
+    const close = Math.floor(new Date(d.candle_close_time).getTime() / 1000);
+    getPatterns(d.symbol, tf, close - 3 * step, close + 3 * step)
+      .then((r) => alive && setPatterns(r.items))
+      .catch(() => alive && setPatterns([]));
+    return () => {
+      alive = false;
+    };
+  }, [d, tf]);
+  const onSignalCandle = useMemo(() => {
+    if (!d) return [];
+    const close = Math.floor(new Date(d.candle_close_time).getTime() / 1000);
+    return patterns.filter((p) => p.confirm_t === close);
+  }, [patterns, d]);
 
   const symbols = useMemo(() => (d ? [d.symbol] : []), [d]);
   const { prices } = useLive(symbols, getAccessToken());
@@ -251,11 +273,26 @@ export default function SignalPage() {
                     {x.toUpperCase()}
                   </button>
                 ))}
+                <Link href={`/chart/${d.symbol}/${tf}`} className={s.openTerminal}>
+                  Открыть в терминале
+                </Link>
               </div>
             }
-            footer="Зона входа, стоп, цели, PDH/PDL/PWH/PWL, swing-точки (H/L), линии BOS/CHoCH, снятия ликвидности и события трекера. Клик по факту в обосновании подсвечивает элемент."
+            footer={
+              <>
+                Зона входа, стоп, цели, PDH/PDL/PWH/PWL, swing-точки (H/L), линии BOS/CHoCH, снятия ликвидности, свечные паттерны и события трекера. Клик по факту в обосновании подсвечивает элемент.
+                {onSignalCandle.length > 0 && (
+                  <>
+                    {" "}
+                    <button type="button" className={s.factBtn} aria-pressed={highlight === "patterns"} onClick={() => setHighlight(highlight === "patterns" ? null : "patterns")} data-testid="signal-patterns">
+                      На сигнальной свече: {onSignalCandle.map((p) => `${p.title} (${p.significant ? "значимый" : "найден"})`).join(", ")}
+                    </button>
+                  </>
+                )}
+              </>
+            }
           >
-            {chartSignal && <SignalChart candles={candles} tf={tf} signal={chartSignal} analysis={an} events={chartEvents} highlight={highlight} tick={tick} lastPrice={open ? price : null} />}
+            {chartSignal && <SignalChart candles={candles} tf={tf} signal={chartSignal} analysis={an} events={chartEvents} patterns={patterns} highlight={highlight} tick={tick} lastPrice={open ? price : null} />}
           </Panel>
 
           <Panel title="Параметры сделки" flush>

@@ -1,12 +1,15 @@
 "use client";
 
 /**
- * График карточки сигнала (план 3.5, 5.6): свечи H4/D1, зона входа, стоп и цели, PDH/PDL/PWH/PWL,
- * swing-точки, линии BOS/CHoCH, равные уровни, снятия ликвидности, маркеры событий трекера.
- * Тема — из CSS-токенов; без градиентов и свечений. Lightweight Charts грузится только в браузере.
+ * График карточки сигнала (план 3.5; 2B.16 — урезанный режим терминала из packages/charts):
+ * свечи H4/D1, зона входа, стоп и цели, PDH/PDL/PWH/PWL, swing-точки, линии BOS/CHoCH, равные уровни,
+ * снятия ликвидности, маркеры событий трекера, свечные паттерны на сигнальной свече.
+ * Без рисования и настройки индикаторов. Тема — из CSS-токенов.
  */
+import { createTerminal, tokensFromElement, type Layer as ChartLayer, type LayerContext, type Terminal } from "@platform/charts";
+import { LineSeries, createSeriesMarkers, type IPriceLine, type ISeriesApi, type ISeriesMarkersPluginApi, type SeriesMarker, type Time, type UTCTimestamp } from "lightweight-charts";
 import { useEffect, useRef, useState } from "react";
-import type { IChartApi, IPriceLine, ISeriesApi, SeriesMarker, Time, UTCTimestamp } from "lightweight-charts";
+import { PATTERN_GLYPH, type PatternOnChart } from "@/lib/chart";
 import { BoxPrimitive } from "./BoxPrimitive";
 import s from "./SignalChart.module.css";
 
@@ -35,7 +38,7 @@ export type ChartSignal = {
 export type ChartEvent = { type: string; price: string | null; at: string };
 
 /** Слои, которые можно подсветить из обоснования. */
-export type Layer = "zone" | "entry" | "sl" | "tp" | "bos" | "choch" | "levels" | "eq" | "sweep" | "swing" | "events";
+export type Layer = "zone" | "entry" | "sl" | "tp" | "bos" | "choch" | "levels" | "eq" | "sweep" | "swing" | "events" | "patterns";
 
 type Props = {
   candles: ChartCandle[];
@@ -43,6 +46,8 @@ type Props = {
   signal: ChartSignal;
   analysis: Analysis | null;
   events: ChartEvent[];
+  /** Свечные паттерны вокруг сигнальной свечи (план 3.5, 2B.16). */
+  patterns?: PatternOnChart[];
   highlight: Layer | null;
   tick: string | null;
   lastPrice?: string | null;
@@ -61,20 +66,21 @@ const EVENT_LABEL: Record<string, string> = {
   expired: "истёк",
 };
 
-function tokens(el: HTMLElement) {
-  const cs = getComputedStyle(el);
-  const v = (name: string) => cs.getPropertyValue(name).trim();
-  return {
-    bg: v("--surface"),
-    grid: v("--border"),
-    text: v("--text-2"),
-    muted: v("--text-3"),
-    up: v("--up"),
-    down: v("--down"),
-    accent: v("--accent"),
-    warn: v("--warn"),
-    font: cs.fontFamily,
-  };
+class PrimitiveLayer implements ChartLayer {
+  private main: LayerContext["main"] | null = null;
+  constructor(
+    readonly id: string,
+    private readonly primitive: object,
+  ) {}
+  attach(ctx: LayerContext): void {
+    this.main = ctx.main;
+    ctx.main.attachPrimitive(this.primitive as never);
+  }
+  detach(): void {
+    this.main?.detachPrimitive(this.primitive as never);
+    this.main = null;
+  }
+  setVisible(): void {}
 }
 
 function alpha(hex: string, a: number): string {
@@ -101,13 +107,14 @@ function precisionOf(tick: string | null): { precision: number; minMove: number 
   return { precision: p, minMove: Number(tick) || 0.01 };
 }
 
-export function SignalChart({ candles, tf, signal, analysis, events, highlight, tick, lastPrice, height = 380 }: Props) {
+export function SignalChart({ candles, tf, signal, analysis, events, patterns = [], highlight, tick, lastPrice, height = 380 }: Props) {
   const ref = useRef<HTMLDivElement>(null);
-  const chartRef = useRef<IChartApi | null>(null);
-  const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+  const termRef = useRef<Terminal | null>(null);
   const linesRef = useRef<Map<string, IPriceLine[]>>(new Map());
   const auxRef = useRef<Map<string, ISeriesApi<"Line">[]>>(new Map());
   const boxRef = useRef<BoxPrimitive | null>(null);
+  const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
+  const baseMarkersRef = useRef<SeriesMarker<Time>[]>([]);
   const [ready, setReady] = useState(false);
   const [themeKey, setThemeKey] = useState(0);
 
@@ -127,215 +134,138 @@ export function SignalChart({ candles, tf, signal, analysis, events, highlight, 
   useEffect(() => {
     const el = ref.current;
     if (!el || candles.length === 0) return;
-    let disposed = false;
-    let chart: IChartApi | null = null;
-    let ro: ResizeObserver | null = null;
     const lines = linesRef.current;
     const aux = auxRef.current;
-
-    (async () => {
-      const lwc = await import("lightweight-charts");
-      if (disposed) return;
-      const c = tokens(el);
-      const { precision, minMove } = precisionOf(tick);
-      chart = lwc.createChart(el, {
-        width: el.clientWidth,
-        height,
-        layout: {
-          background: { type: lwc.ColorType.Solid, color: c.bg },
-          textColor: c.text,
-          fontFamily: c.font,
-          fontSize: 11,
-          attributionLogo: false,
-        },
-        grid: { vertLines: { color: c.grid }, horzLines: { color: c.grid } },
-        rightPriceScale: { borderColor: c.grid, scaleMargins: { top: 0.08, bottom: 0.08 } },
-        timeScale: { borderColor: c.grid, timeVisible: true, secondsVisible: false, rightOffset: 4 },
-        crosshair: {
-          mode: lwc.CrosshairMode.Normal,
-          vertLine: { color: c.muted, labelBackgroundColor: c.accent },
-          horzLine: { color: c.muted, labelBackgroundColor: c.accent },
-        },
-        handleScale: { axisPressedMouseMove: true },
-        localization: { locale: "ru-RU" },
+    const c = tokensFromElement(el);
+    const { precision, minMove } = precisionOf(tick);
+    const term = createTerminal(el, { tokens: c, type: "candles" });
+    termRef.current = term;
+    term.chart.applyOptions({ localization: { locale: "ru-RU" }, timeScale: { rightOffset: 4 }, handleScale: { axisPressedMouseMove: true } });
+    const series = term.mainSeries;
+    series.applyOptions({ priceFormat: { type: "price", precision, minMove }, priceLineVisible: false, lastValueVisible: true });
+    term.setCandles(
+      candles.map((k) => ({ time: k.t, open: Number(k.o), high: Number(k.h), low: Number(k.l), close: Number(k.c), volume: Number(k.v), open_: false })),
+      false,
+    );
+    const step = tf === "4h" ? 14400 : 86400;
+    const sigTime = snap((ts(signal.candle_close_time) - 1) as UTCTimestamp, step);
+    const firstTime = candles[0]!.t as UTCTimestamp;
+    const lastTime = candles[candles.length - 1]!.t as UTCTimestamp;
+    const inRange = (t: UTCTimestamp) => t >= firstTime && t <= lastTime;
+    const addLine = (layer: string, price: number, color: string, style: number, title: string, width: 1 | 2 = 1) => {
+      const line = series.createPriceLine({ price, color, lineWidth: width, lineStyle: style, axisLabelVisible: true, title });
+      const arr = lines.get(layer) ?? [];
+      arr.push(line);
+      lines.set(layer, arr);
+    };
+    const addSeg = (layer: string, from: UTCTimestamp, to: UTCTimestamp, price: number, color: string, style: number) => {
+      const a = snap(from, step);
+      const b = snap(to, step);
+      if (!inRange(a) && !inRange(b)) return;
+      const from2 = Math.max(a, firstTime) as UTCTimestamp;
+      const to2 = Math.min(Math.max(b, from2 + step), lastTime + step) as UTCTimestamp;
+      const ls = term.chart.addSeries(LineSeries, { color, lineWidth: 1, lineStyle: style, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
+      ls.setData([
+        { time: from2, value: price },
+        { time: to2, value: price },
+      ]);
+      const arr = aux.get(layer) ?? [];
+      arr.push(ls);
+      aux.set(layer, arr);
+    };
+    const D = 2, S = 0, O = 1; // LineStyle: Solid / Dotted / Dashed
+    // параметры сделки
+    if (signal.entry) addLine("entry", Number(signal.entry), c.accent, S, "вход", 1);
+    if (signal.stop_loss) addLine("sl", Number(signal.stop_loss), c.down, D, "SL");
+    (["tp1", "tp2", "tp3"] as const).forEach((k) => {
+      const v = signal[k];
+      if (v) addLine("tp", Number(v), c.up, D, k.toUpperCase());
+    });
+    // уровни и структура
+    if (analysis) {
+      const L = analysis.levels;
+      (["pdh", "pdl", "pwh", "pwl"] as const).forEach((k) => {
+        const v = L[k];
+        if (v) addLine("levels", Number(v), c.text3, O, k.toUpperCase());
       });
-      chartRef.current = chart;
-      const series = chart.addSeries(lwc.CandlestickSeries, {
-        upColor: c.up,
-        downColor: c.down,
-        borderUpColor: c.up,
-        borderDownColor: c.down,
-        wickUpColor: c.up,
-        wickDownColor: c.down,
-        priceFormat: { type: "price", precision, minMove },
-        priceLineVisible: false,
-        lastValueVisible: true,
-      });
-      seriesRef.current = series;
-      series.setData(
-        candles.map((k) => ({
-          time: k.t as UTCTimestamp,
-          open: Number(k.o),
-          high: Number(k.h),
-          low: Number(k.l),
-          close: Number(k.c),
-        })),
-      );
-      const step = tf === "4h" ? 14400 : 86400;
-      const sigTime = snap(ts(signal.candle_close_time) - 1 as UTCTimestamp, step);
-      const firstTime = candles[0].t as UTCTimestamp;
-      const lastTime = candles[candles.length - 1].t as UTCTimestamp;
-      const inRange = (t: UTCTimestamp) => t >= firstTime && t <= lastTime;
-
-      const addLine = (layer: string, price: number, color: string, style: number, title: string, width: 1 | 2 = 1) => {
-        const line = series.createPriceLine({ price, color, lineWidth: width, lineStyle: style, axisLabelVisible: true, title });
-        const arr = linesRef.current.get(layer) ?? [];
-        arr.push(line);
-        linesRef.current.set(layer, arr);
-      };
-      const addSeg = (layer: string, from: UTCTimestamp, to: UTCTimestamp, price: number, color: string, style: number) => {
-        const a = snap(from, step);
-        const b = snap(to, step);
-        if (!inRange(a) && !inRange(b)) return;
-        const from2 = (Math.max(a, firstTime) as UTCTimestamp);
-        const to2 = (Math.min(Math.max(b, from2 + step), lastTime + step) as UTCTimestamp);
-        const ls = chart!.addSeries(lwc.LineSeries, {
-          color,
-          lineWidth: 1,
-          lineStyle: style,
-          priceLineVisible: false,
-          lastValueVisible: false,
-          crosshairMarkerVisible: false,
-        });
-        ls.setData([
-          { time: from2, value: price },
-          { time: to2, value: price },
-        ]);
-        const arr = auxRef.current.get(layer) ?? [];
-        arr.push(ls);
-        auxRef.current.set(layer, arr);
-      };
-
-      // параметры сделки
-      const D = lwc.LineStyle.Dashed;
-      const S = lwc.LineStyle.Solid;
-      const O = lwc.LineStyle.Dotted;
-      if (signal.entry) addLine("entry", Number(signal.entry), c.accent, S, "вход", 1);
-      if (signal.stop_loss) addLine("sl", Number(signal.stop_loss), c.down, D, "SL");
-      (["tp1", "tp2", "tp3"] as const).forEach((k) => {
-        const v = signal[k];
-        if (v) addLine("tp", Number(v), c.up, D, k.toUpperCase());
-      });
-      // уровни
-      if (analysis) {
-        const L = analysis.levels;
-        (["pdh", "pdl", "pwh", "pwl"] as const).forEach((k) => {
-          const v = L[k];
-          if (v) addLine("levels", Number(v), c.muted, O, k.toUpperCase());
-        });
-        analysis.events.forEach((e) => {
-          addSeg(e.type, ts(e.from_time), ts(e.time), Number(e.level), e.type === "bos" ? c.accent : c.warn, O);
-        });
-        analysis.equal_levels.forEach((e) => {
-          const to = e.to_time ? ts(e.to_time) : lastTime;
-          addSeg("eq", ts(e.from_time), to, Number(e.price), c.muted, D);
-        });
-      }
-      // зона входа
-      const box = new BoxPrimitive();
-      series.attachPrimitive(box);
-      boxRef.current = box;
-      if (signal.zone) {
-        const z = analysis?.zones.find((x) => x.top === signal.zone?.top && x.bottom === signal.zone?.bottom);
-        const from = z ? snap(ts(z.from_time), step) : sigTime;
-        box.setBoxes([
-          {
-            id: "zone",
-            from: (Math.max(from, firstTime) as Time),
-            to: null,
-            top: Number(signal.zone.top),
-            bottom: Number(signal.zone.bottom),
-            fill: alpha(c.accent, 0.12),
-            stroke: c.accent,
-            label: signal.zone.kind ? signal.zone.kind.toUpperCase() : "зона",
-          },
-        ]);
-      }
-      // маркеры: свинги, снятия, события трекера, сигнальная свеча
-      const markers: SeriesMarker<Time>[] = [];
-      analysis?.swings.forEach((sw) => {
-        const t = snap(ts(sw.time), step);
+      analysis.events.forEach((e) => addSeg(e.type, ts(e.from_time), ts(e.time), Number(e.level), e.type === "bos" ? c.accent : c.warn, O));
+      analysis.equal_levels.forEach((e) => addSeg("eq", ts(e.from_time), e.to_time ? ts(e.to_time) : lastTime, Number(e.price), c.text3, D));
+    }
+    // зона входа
+    const box = new BoxPrimitive();
+    term.layers.add(new PrimitiveLayer("zone", box));
+    boxRef.current = box;
+    if (signal.zone) {
+      const z = analysis?.zones.find((x) => x.top === signal.zone?.top && x.bottom === signal.zone?.bottom);
+      const from = z ? snap(ts(z.from_time), step) : sigTime;
+      box.setBoxes([{ id: "zone", from: Math.max(from, firstTime) as Time, to: null, top: Number(signal.zone.top), bottom: Number(signal.zone.bottom), fill: alpha(c.accent, 0.12), stroke: c.accent, label: signal.zone.kind ? signal.zone.kind.toUpperCase() : "зона" }]);
+    }
+    // маркеры: свинги, снятия, паттерны, события трекера, сигнальная свеча
+    const markers: SeriesMarker<Time>[] = [];
+    analysis?.swings.forEach((sw) => {
+      const t = snap(ts(sw.time), step);
+      if (!inRange(t)) return;
+      markers.push({ time: t, position: sw.kind === "high" ? "aboveBar" : "belowBar", shape: "circle", color: c.text3, text: sw.kind === "high" ? "H" : "L", size: 0 });
+    });
+    analysis?.sweeps.forEach((sw) => {
+      const t = snap(ts(sw.time), step);
+      if (!inRange(t)) return;
+      markers.push({ time: t, position: sw.kind === "low" ? "belowBar" : "aboveBar", shape: "square", color: c.warn, text: "sweep", size: 0 });
+    });
+    patterns.forEach((p) => {
+      const t = snap(p.t as UTCTimestamp, step);
+      if (!inRange(t)) return;
+      markers.push({ time: t, position: p.direction === "up" ? "belowBar" : "aboveBar", shape: p.direction === "up" ? "arrowUp" : p.direction === "down" ? "arrowDown" : "square", color: p.significant ? c.accent : alpha(c.text3, 0.7), text: PATTERN_GLYPH[p.type] ?? "•", size: 0 });
+    });
+    markers.push({ time: sigTime, position: signal.direction === "long" ? "belowBar" : "aboveBar", shape: signal.direction === "long" ? "arrowUp" : "arrowDown", color: c.accent, text: "сигнал", size: 1 });
+    events
+      .filter((e) => e.type !== "created")
+      .forEach((e) => {
+        const t = snap(ts(e.at), step);
         if (!inRange(t)) return;
-        markers.push({
-          time: t,
-          position: sw.kind === "high" ? "aboveBar" : "belowBar",
-          shape: "circle",
-          color: c.muted,
-          text: sw.kind === "high" ? "H" : "L",
-          size: 0,
-        });
+        const bad = e.type === "sl" || e.type === "expired" || e.type === "time_stop";
+        markers.push({ time: t, position: bad ? "aboveBar" : "belowBar", shape: "square", color: bad ? c.down : c.up, text: EVENT_LABEL[e.type] ?? e.type, size: 0 });
       });
-      analysis?.sweeps.forEach((sw) => {
-        const t = snap(ts(sw.time), step);
-        if (!inRange(t)) return;
-        markers.push({ time: t, position: sw.kind === "low" ? "belowBar" : "aboveBar", shape: "square", color: c.warn, text: "sweep", size: 0 });
-      });
-      markers.push({ time: sigTime, position: signal.direction === "long" ? "belowBar" : "aboveBar", shape: signal.direction === "long" ? "arrowUp" : "arrowDown", color: c.accent, text: "сигнал", size: 1 });
-      events
-        .filter((e) => e.type !== "created")
-        .forEach((e) => {
-          const t = snap(ts(e.at), step);
-          if (!inRange(t)) return;
-          const bad = e.type === "sl" || e.type === "expired" || e.type === "time_stop";
-          markers.push({ time: t, position: bad ? "aboveBar" : "belowBar", shape: "square", color: bad ? c.down : c.up, text: EVENT_LABEL[e.type] ?? e.type, size: 0 });
-        });
-      markers.sort((a, b) => (a.time as number) - (b.time as number));
-      lwc.createSeriesMarkers(series, markers);
-
-      chart.timeScale().fitContent();
-      ro = new ResizeObserver(() => chart?.applyOptions({ width: el.clientWidth }));
-      ro.observe(el);
-      setReady(true);
-    })();
-
+    markers.sort((a, b) => (a.time as number) - (b.time as number));
+    baseMarkersRef.current = markers;
+    markersRef.current = createSeriesMarkers(series, markers);
+    term.chart.timeScale().fitContent();
+    setReady(true);
     return () => {
-      disposed = true;
-      ro?.disconnect();
       lines.clear();
       aux.clear();
       boxRef.current = null;
-      seriesRef.current = null;
-      chartRef.current = null;
-      chart?.remove();
+      markersRef.current = null;
+      termRef.current = null;
+      term.destroy();
       setReady(false);
     };
-  }, [candles, tf, signal, analysis, events, tick, height, themeKey]);
+  }, [candles, tf, signal, analysis, events, patterns, tick, height, themeKey]);
 
   // подсветка слоя из обоснования
   useEffect(() => {
     if (!ready) return;
     const el = ref.current;
     if (!el) return;
-    const c = tokens(el);
-    for (const [layer, lines] of linesRef.current) {
-      lines.forEach((l) => l.applyOptions({ lineWidth: layer === highlight ? 3 : 1 }));
-    }
-    for (const [layer, list] of auxRef.current) {
-      list.forEach((ls) => ls.applyOptions({ lineWidth: layer === highlight ? 3 : 1 }));
-    }
+    const c = tokensFromElement(el);
+    for (const [layer, lines] of linesRef.current) lines.forEach((l) => l.applyOptions({ lineWidth: layer === highlight ? 3 : 1 }));
+    for (const [layer, list] of auxRef.current) list.forEach((ls) => ls.applyOptions({ lineWidth: layer === highlight ? 3 : 1 }));
     const box = boxRef.current;
-    if (box && box.boxes.length) {
-      box.setBoxes(box.boxes.map((b) => ({ ...b, highlighted: highlight === "zone", fill: alpha(c.accent, highlight === "zone" ? 0.22 : 0.12) })));
+    if (box && box.boxes.length) box.setBoxes(box.boxes.map((b) => ({ ...b, highlighted: highlight === "zone", fill: alpha(c.accent, highlight === "zone" ? 0.22 : 0.12) })));
+    const mk = markersRef.current;
+    if (mk) {
+      const glyphs = new Set(Object.values(PATTERN_GLYPH));
+      mk.setMarkers(baseMarkersRef.current.map((m) => (glyphs.has(m.text ?? "") ? { ...m, size: highlight === "patterns" ? 1 : 0, color: highlight === "patterns" ? c.warn : m.color } : m)));
     }
   }, [highlight, ready, themeKey]);
 
   // живая цена
   useEffect(() => {
     if (!ready || !lastPrice) return;
-    const series = seriesRef.current;
+    const series = termRef.current?.mainSeries;
     if (!series) return;
-    const c = tokens(ref.current!);
-    const line = series.createPriceLine({ price: Number(lastPrice), color: c.text, lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: "" });
+    const c = tokensFromElement(ref.current!);
+    const line = series.createPriceLine({ price: Number(lastPrice), color: c.text2, lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: "" });
     return () => series.removePriceLine(line);
   }, [lastPrice, ready]);
 

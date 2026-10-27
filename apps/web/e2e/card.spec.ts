@@ -48,6 +48,10 @@ async function mock(page: Page, calls: string[]) {
     if (p === "/v1/prices") return json(200, { BTCUSDT: { p: "105.30", at: "" } });
     if (p === "/v1/signals/abc") return json(200, DETAIL);
     if (p === "/v1/signals/abc/analysis") return json(200, ANALYSIS);
+    if (p === "/v1/chart/patterns") {
+      const close = Math.floor(new Date(SIG_T).getTime() / 1000);
+      return json(200, { symbol: "BTCUSDT", tf: u.searchParams.get("tf"), horizon: 5, note: "", stats: {}, items: [{ id: 11, type: "engulfing", title: "Бычье поглощение", direction: "up", status: "confirmed", significant: true, t: close - 14400, start_t: close - 28800, confirm_t: close, price: "100", atr: "2", context: {}, source: "backfill", tf: "4h" }] });
+    }
     if (p === "/v1/signals/abc/candles") return json(200, { tf: u.searchParams.get("tf"), candles });
     if (p === "/v1/journal") return json(201, {});
     return json(404, { detail: "нет заглушки" });
@@ -79,6 +83,12 @@ test("карточка: график, параметры, подсветка ф�
   await expect(page.getByText(/^50 BTC$/)).toBeVisible();
   await page.getByLabel("Риск, %").fill("2");
   await expect(page.getByText("200.00", { exact: true })).toBeVisible();
+  // паттерны на сигнальной свече (2B.16) и переход в терминал
+  await expect.poll(() => calls.some((c) => c.includes("/v1/chart/patterns"))).toBe(true);
+  await expect(page.getByTestId("signal-patterns")).toContainText("Бычье поглощение (значимый)");
+  await page.getByTestId("signal-patterns").click();
+  await expect(page.getByTestId("signal-patterns")).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("link", { name: "Открыть в терминале" })).toHaveAttribute("href", "/chart/BTCUSDT/4h");
   // переключение на D1 запрашивает свечи D1
   await page.getByRole("button", { name: "1D" }).click();
   await expect.poll(() => calls.some((c) => c.includes("/candles?tf=1d"))).toBe(true);
