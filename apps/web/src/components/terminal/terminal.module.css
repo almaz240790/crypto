@@ -22,6 +22,58 @@
   height: 32px;
 }
 
+/* Списки в стиле кнопок терминала: без системной заливки, со своей стрелкой */
+.top select {
+  appearance: none;
+  padding: 0 28px 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background-color: var(--bg);
+  background-image: linear-gradient(45deg, transparent 50%, var(--text-3) 50%), linear-gradient(135deg, var(--text-3) 50%, transparent 50%);
+  background-position: calc(100% - 15px) 50%, calc(100% - 10px) 50%;
+  background-size: 5px 5px;
+  background-repeat: no-repeat;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.top select {
+  flex: 0 1 auto;
+  min-width: 92px;
+  max-width: 150px;
+  text-overflow: ellipsis;
+}
+
+@media (min-width: 900px) {
+  .top {
+    flex-wrap: nowrap;
+  }
+}
+
+.top select:hover {
+  border-color: var(--text-3);
+}
+
+.topSpacer {
+  flex: 1 1 auto;
+}
+
+.live::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--text-3);
+  vertical-align: middle;
+}
+
+.live[data-on]::before {
+  background: var(--up);
+}
+
 .tfs {
   display: inline-flex;
   gap: 2px;
@@ -483,7 +535,9 @@
   }
 
   .strip {
-    gap: 10px;
+    gap: 4px 12px;
+    flex-wrap: wrap;
+    overflow-x: visible;
   }
 }
 
@@ -670,4 +724,32 @@
 .multiChart > div {
   height: 100%;
   min-height: 0;
+}
+
+/* Ссылка-кнопка под списками «Найдено»: показать всё / только значимые */
+.linkBtn {
+  margin: 6px 8px 2px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.linkBtn:hover {
+  text-decoration: underline;
+}
+
+/* в строке состояния скрытые на телефоне пункты остаются строчными, чтобы не терять пробелы */
+.strip .desktopOnly {
+  display: none;
+}
+
+@media (min-width: 900px) {
+  .strip .desktopOnly {
+    display: inline;
+  }
 }

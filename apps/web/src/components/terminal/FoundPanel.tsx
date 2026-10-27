@@ -40,6 +40,7 @@ export function contextFacts(p: PatternOnChart, t: T): string[] {
 
 export function FoundList({ items, stats, selected, onSelect, tf, symbol, canExplain = false }: { items: PatternOnChart[]; stats: Record<string, PatternStat>; selected: number | null; onSelect: (id: number | null) => void; tf: string; symbol?: string; canExplain?: boolean }) {
   const t = useT();
+  const [showAll, setShowAll] = useState(false);
   const [explained, setExplained] = useState<Record<number, Explanation | "loading" | { error: string }>>({});
   const explain = (id: number) => {
     if (!symbol) return;
@@ -48,9 +49,24 @@ export function FoundList({ items, stats, selected, onSelect, tf, symbol, canExp
       .then((r) => setExplained((p) => ({ ...p, [id]: r })))
       .catch((e: Error) => setExplained((p) => ({ ...p, [id]: { error: e.message } })));
   };
-  const list = [...items].reverse().slice(0, 40);
-  if (list.length === 0) return <p className="caption">На видимом участке паттернов не найдено. Отметки появляются после закрытия свечи {tf.toUpperCase()}.</p>;
+  // по умолчанию — только значимые (с контекстом из правил); остальные по кнопке
+  const significant = items.filter((p) => p.significant || p.id === selected);
+  const list = [...(showAll ? items : significant)].reverse().slice(0, 40);
+  const more = items.length - significant.length;
+  const toggle = more > 0 && (
+    <button type="button" className={s.linkBtn} onClick={() => setShowAll(!showAll)}>
+      {showAll ? t("Только значимые") : t("Показать все ({n})", { n: items.length })}
+    </button>
+  );
+  if (list.length === 0)
+    return (
+      <>
+        <p className="caption">{items.length ? t("Значимых паттернов на видимом участке нет.") : t("На видимом участке паттернов не найдено. Отметки появляются после закрытия свечи {tf}.", { tf: tf.toUpperCase() })}</p>
+        {toggle}
+      </>
+    );
   return (
+    <>
     <ul className={s.objList} aria-label={t("найденные паттерны")}>
       {list.map((p) => {
         const sel = p.id === selected;
@@ -97,6 +113,8 @@ export function FoundList({ items, stats, selected, onSelect, tf, symbol, canExp
         );
       })}
     </ul>
+    {toggle}
+    </>
   );
 }
 
@@ -111,9 +129,24 @@ const FIGURE_STATUS: Record<FigureOnChart["status"], string> = { forming: "фо�
 /** Список фигур в панели «Найдено» (4B.6): статус, качество геометрии, цель, отработка типа. */
 export function FiguresList({ items, stats, selected, onSelect }: { items: FigureOnChart[]; stats: Record<string, FigureStat>; selected: number | null; onSelect: (id: number | null) => void }) {
   const t = useT();
-  const list = [...items].reverse().slice(0, 20);
-  if (list.length === 0) return <p className="caption">{t("Фигур на видимом участке нет. Фигуры ищутся на H4, D1 и W1 по закрытым свечам.")}</p>;
+  const [showAll, setShowAll] = useState(false);
+  const live = items.filter((f) => f.status !== "invalidated" || f.id === selected);
+  const list = [...(showAll ? items : live)].reverse().slice(0, 20);
+  const hidden = items.length - live.length;
+  const toggle = hidden > 0 && (
+    <button type="button" className={s.linkBtn} onClick={() => setShowAll(!showAll)}>
+      {showAll ? t("Скрыть отменённые") : t("Показать отменённые ({n})", { n: hidden })}
+    </button>
+  );
+  if (list.length === 0)
+    return (
+      <>
+        <p className="caption">{t("Фигур на видимом участке нет. Фигуры ищутся на H4, D1 и W1 по закрытым свечам.")}</p>
+        {toggle}
+      </>
+    );
   return (
+    <>
     <ul className={s.objList} aria-label={t("найденные фигуры")}>
       {list.map((f) => {
         const sel = f.id === selected;
@@ -138,6 +171,8 @@ export function FiguresList({ items, stats, selected, onSelect }: { items: Figur
         );
       })}
     </ul>
+    {toggle}
+    </>
   );
 }
 

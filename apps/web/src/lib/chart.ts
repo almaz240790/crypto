@@ -58,20 +58,20 @@ export type Explanation = { text: string; source: "llm" | "cache" | "template"; 
 /** Объяснение паттерна по фактам (план 2A.10.3): Free — шаблон, Pro+ — текст модели с постпроверкой. */
 export const explainPattern = (symbol: string, tf: Timeframe, pattern_id: number) => api<Explanation>("/v1/chart/explain", { method: "POST", json: { symbol, tf, pattern_id } });
 
-/** Короткие подписи маркеров паттернов (план 2A.10.1): без оценочных слов. */
-export const PATTERN_GLYPH: Record<string, string> = {
-  engulfing: "ПГ",
-  pin_bar: "ПБ",
-  doji: "Д",
-  doji_dragonfly: "Д↑",
-  doji_gravestone: "Д↓",
-  star: "ЗВ",
-  three_line: "3",
-  harami: "ХР",
-  inside_bar: "ВБ",
-  inside_bar_breakout: "ВБ›",
-  marubozu: "МБ",
-  tweezer: "ПЦ",
+/** Подписи паттернов на графике (план 2A.10.1): понятные названия без оценочных слов. */
+export const PATTERN_LABEL: Record<string, string> = {
+  engulfing: "поглощение",
+  pin_bar: "пин-бар",
+  doji: "доджи",
+  doji_dragonfly: "доджи-стрекоза",
+  doji_gravestone: "доджи-надгробие",
+  star: "звезда",
+  three_line: "три свечи",
+  harami: "харами",
+  inside_bar: "внутренний бар",
+  inside_bar_breakout: "пробой вн. бара",
+  marubozu: "марубозу",
+  tweezer: "пинцет",
 };
 
 export type FigureOnChart = { id: number; type: string; title: string; direction: "up" | "down" | null; status: "forming" | "confirmed" | "invalidated"; scale: number; start_t: number; end_t: number; known_t: number; confirm_t: number | null; invalidated_t: number | null; points: [number, string][]; lines: { name: string; a: [number, string]; b: [number, string] }[]; breakout_level: string | null; target: string | null; invalidation: string | null; quality: number; metrics: Record<string, number>; source: string; tf: string };

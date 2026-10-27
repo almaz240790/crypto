@@ -9,7 +9,7 @@
 import { createTerminal, tokensFromElement, type Layer as ChartLayer, type LayerContext, type Terminal } from "@platform/charts";
 import { LineSeries, createSeriesMarkers, type IPriceLine, type ISeriesApi, type ISeriesMarkersPluginApi, type SeriesMarker, type Time, type UTCTimestamp } from "lightweight-charts";
 import { useEffect, useRef, useState } from "react";
-import { PATTERN_GLYPH, type PatternOnChart } from "@/lib/chart";
+import { PATTERN_LABEL, type PatternOnChart } from "@/lib/chart";
 import { BoxPrimitive } from "./BoxPrimitive";
 import s from "./SignalChart.module.css";
 import { useT } from "@/i18n/client";
@@ -210,14 +210,16 @@ export function SignalChart({ candles, tf, signal, analysis, events, patterns = 
       markers.push({ time: t, position: sw.kind === "high" ? "aboveBar" : "belowBar", shape: "circle", color: c.text3, text: sw.kind === "high" ? "H" : "L", size: 0 });
     });
     analysis?.sweeps.forEach((sw) => {
-      const t = snap(ts(sw.time), step);
-      if (!inRange(t)) return;
-      markers.push({ time: t, position: sw.kind === "low" ? "belowBar" : "aboveBar", shape: "square", color: c.warn, text: "sweep", size: 0 });
+      const at = snap(ts(sw.time), step);
+      if (!inRange(at)) return;
+      markers.push({ time: at, position: sw.kind === "low" ? "belowBar" : "aboveBar", shape: "square", color: c.warn, text: t("снятие"), size: 0 });
     });
+    // на карточке — только значимые паттерны, понятными словами
     patterns.forEach((p) => {
-      const t = snap(p.t as UTCTimestamp, step);
-      if (!inRange(t)) return;
-      markers.push({ time: t, position: p.direction === "up" ? "belowBar" : "aboveBar", shape: p.direction === "up" ? "arrowUp" : p.direction === "down" ? "arrowDown" : "square", color: p.significant ? c.accent : alpha(c.text3, 0.7), text: PATTERN_GLYPH[p.type] ?? "•", size: 0 });
+      if (!p.significant) return;
+      const at = snap(p.t as UTCTimestamp, step);
+      if (!inRange(at)) return;
+      markers.push({ time: at, position: p.direction === "up" ? "belowBar" : "aboveBar", shape: p.direction === "up" ? "arrowUp" : p.direction === "down" ? "arrowDown" : "square", color: c.accent, text: t(PATTERN_LABEL[p.type] ?? p.title), size: 0 });
     });
     markers.push({ time: sigTime, position: signal.direction === "long" ? "belowBar" : "aboveBar", shape: signal.direction === "long" ? "arrowUp" : "arrowDown", color: c.accent, text: t("сигнал"), size: 1 });
     events
@@ -256,10 +258,10 @@ export function SignalChart({ candles, tf, signal, analysis, events, patterns = 
     if (box && box.boxes.length) box.setBoxes(box.boxes.map((b) => ({ ...b, highlighted: highlight === "zone", fill: alpha(c.accent, highlight === "zone" ? 0.22 : 0.12) })));
     const mk = markersRef.current;
     if (mk) {
-      const glyphs = new Set(Object.values(PATTERN_GLYPH));
+      const glyphs = new Set(Object.values(PATTERN_LABEL).map((x) => t(x)));
       mk.setMarkers(baseMarkersRef.current.map((m) => (glyphs.has(m.text ?? "") ? { ...m, size: highlight === "patterns" ? 1 : 0, color: highlight === "patterns" ? c.warn : m.color } : m)));
     }
-  }, [highlight, ready, themeKey]);
+  }, [highlight, ready, themeKey, t]);
 
   // живая цена
   useEffect(() => {

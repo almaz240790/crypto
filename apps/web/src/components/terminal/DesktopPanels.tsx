@@ -9,21 +9,22 @@ import { TEMPLATES } from "./templates";
 import type { FigureOnChart, FigureStat, PatternOnChart, PatternStat } from "@/lib/chart";
 import type { LayerKey, PanelKey } from "./TerminalView";
 import { useT } from "@/i18n/client";
+import { ToolIcon } from "./ToolIcon";
 
-const TOOLS: { t: DrawingType; k: string; key?: string }[] = [
-  { t: "hline", k: "—", key: "Alt+H" },
-  { t: "hray", k: "—›" },
-  { t: "vline", k: "|" },
-  { t: "trend", k: "╱", key: "Alt+T" },
-  { t: "ray", k: "╱›" },
-  { t: "extended", k: "‹╱›" },
-  { t: "channel", k: "═" },
-  { t: "rect", k: "▭" },
-  { t: "fib", k: "Fib" },
-  { t: "position-long", k: "L" },
-  { t: "position-short", k: "S" },
-  { t: "note", k: "T" },
-  { t: "ruler", k: "⟷" },
+const TOOLS: { t: DrawingType; key?: string }[] = [
+  { t: "hline", key: "Alt+H" },
+  { t: "hray" },
+  { t: "vline" },
+  { t: "trend", key: "Alt+T" },
+  { t: "ray" },
+  { t: "extended" },
+  { t: "channel" },
+  { t: "rect" },
+  { t: "fib" },
+  { t: "position-long" },
+  { t: "position-short" },
+  { t: "note" },
+  { t: "ruler" },
 ];
 
 /** Левая панель инструментов (десктоп, план 3.17 / 2A.8). */
@@ -33,18 +34,18 @@ export function DrawToolbar({ tool, onTool, magnet, onMagnet, canUndo, canRedo, 
     <div className={s.toolbar} role="toolbar" aria-label={t("панель рисования")}>
       {TOOLS.map((x) => (
         <button key={x.t} type="button" className={s.tool} aria-pressed={tool === x.t} title={`${TOOL_TITLES[x.t]}${x.key ? ` (${x.key})` : ""}`} aria-label={TOOL_TITLES[x.t]} onClick={() => onTool(tool === x.t ? null : x.t)}>
-          {x.k}
+          <ToolIcon name={x.t} />
         </button>
       ))}
       <span className={s.toolSep} />
       <button type="button" className={s.tool} aria-pressed={magnet} title={t("Магнит к OHLC")} aria-label={t("магнит")} onClick={() => onMagnet(!magnet)}>
-        ◎
+        <ToolIcon name="magnet" />
       </button>
       <button type="button" className={s.tool} disabled={!canUndo} title={t("Отменить (Ctrl+Z)")} aria-label={t("отменить")} onClick={onUndo}>
-        ↶
+        <ToolIcon name="undo" />
       </button>
       <button type="button" className={s.tool} disabled={!canRedo} title={t("Повторить (Ctrl+Y)")} aria-label={t("повторить")} onClick={onRedo}>
-        ↷
+        <ToolIcon name="redo" />
       </button>
     </div>
   );
