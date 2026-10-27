@@ -85,3 +85,35 @@ test("телефон: long-press включает липкое перекрес�
   });
   await expect(sheet).toHaveAttribute("data-height", "90");
 });
+
+test("телефон: не больше трёх раскрытых панелей, свайп вниз сворачивает", async ({ page }) => {
+  const calls: string[] = [];
+  await mock(page, calls, true);
+  await page.goto("/chart/BTCUSDT/4h");
+  const term = page.getByTestId("terminal");
+  await expect(term.locator("canvas").first()).toBeVisible();
+  await page.getByRole("button", { name: /Индикаторы/ }).tap();
+  const dlg = page.getByRole("dialog", { name: "Индикаторы" });
+  for (const name of [/RSI/, /MACD/, /Stochastic/, /Funding/]) await dlg.getByLabel(name).check();
+  await page.getByRole("button", { name: "Готово" }).tap();
+  await expect(page.getByRole("button", { name: "Индикаторы (5)" })).toBeVisible();
+  const expanded = page.locator('[data-testid^="pane-"] button[aria-expanded="true"]');
+  const collapsed = page.locator('[data-testid^="pane-"] button[aria-expanded="false"]');
+  await expect(expanded).toHaveCount(3);
+  await expect(collapsed).toHaveCount(1);
+  // свайп вниз по заголовку раскрытой панели сворачивает её
+  const head = page.getByTestId("pane-funding");
+  await expect(head.getByRole("button", { name: "свернуть панель Funding" })).toBeVisible();
+  const box = (await head.boundingBox())!;
+  await page.evaluate(
+    ({ x, y }) => {
+      const el = document.querySelector('[data-testid="pane-funding"]')!;
+      const t = (cy: number) => new Touch({ identifier: 1, target: el, clientX: x, clientY: cy });
+      el.dispatchEvent(new TouchEvent("touchstart", { bubbles: true, touches: [t(y)], changedTouches: [t(y)] }));
+      el.dispatchEvent(new TouchEvent("touchend", { bubbles: true, touches: [], changedTouches: [t(y + 60)] }));
+    },
+    { x: box.x + 10, y: box.y + 10 },
+  );
+  await expect(head.getByRole("button", { name: "развернуть панель Funding" })).toBeVisible();
+  await expect(collapsed).toHaveCount(2);
+});

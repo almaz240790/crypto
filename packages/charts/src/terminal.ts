@@ -1,5 +1,5 @@
 import type { IChartApi, ISeriesApi, LogicalRange, SeriesType, Time, UTCTimestamp } from "lightweight-charts";
-import { BarSeries, CandlestickSeries, HistogramSeries, LineSeries, createChart } from "lightweight-charts";
+import { BarSeries, CandlestickSeries, HistogramSeries, LineSeries, createChart, type IPaneApi } from "lightweight-charts";
 import { createBuffer, needsNewer, needsOlder, prependOlder, pushLatest, replaceNewest, type BufferState } from "./buffer";
 import { heikinAshi } from "./heikin";
 import { LayerManager } from "./layers";
@@ -23,6 +23,8 @@ export type PaneSeries = ISeriesApi<"Line" | "Histogram">;
  * объём внизу основной панели, дополнительные панели для индикаторов, буфер свечей с ленивой подгрузкой,
  * тема из токенов, слои. Без React — его обёртка живёт в apps/web.
  */
+const MIN_STRETCH = 0.01;
+
 export class Terminal {
   readonly chart: IChartApi;
   readonly layers = new LayerManager();
@@ -131,6 +133,23 @@ export class Terminal {
     const pane = this.chart.panes()[idx] ?? this.chart.addPane();
     pane.setHeight(height);
     return idx;
+  }
+
+  /**
+   * Высота панели в пикселях без ограничения LWC (setHeight не опускает ниже 30 px):
+   * через stretch-факторы, разницу забирает главная панель.
+   */
+  setPaneHeight(pane: IPaneApi<Time>, px: number): void {
+    const panes = this.chart.panes();
+    const main = panes[0];
+    if (!main || main === pane) return;
+    const totalStretch = panes.reduce((acc, p) => acc + p.getStretchFactor(), 0);
+    const totalHeight = panes.reduce((acc, p) => acc + p.getHeight(), 0);
+    if (totalHeight <= 0 || totalStretch <= 0) return;
+    const next = (px * totalStretch) / totalHeight;
+    const delta = pane.getStretchFactor() - next;
+    pane.setStretchFactor(next);
+    main.setStretchFactor(Math.max(MIN_STRETCH, main.getStretchFactor() + delta));
   }
 
   addLine(paneIndex: number, color: string, lineWidth: 1 | 2 = 1): ISeriesApi<"Line"> {
