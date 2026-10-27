@@ -15,7 +15,7 @@ const SCREEN = (sym: string, zoneAtr: string | null) => ({
   atr_pct: "1.2", atr_percentile: "48", beta_btc: sym === "BTCUSDT" ? "1" : "1.3", funding: "0.01", funding_pct: "55", oi_change_24h: "2.1", liq_long_24h: "1200000", liq_short_24h: "800000",
 });
 
-async function mock(page: Page, calls: string[], state: { watch: string[]; journal: Record<string, unknown>[]; twoFactor?: boolean; screens?: Record<string, unknown>[]; alerts?: Record<string, unknown>[] }) {
+async function mock(page: Page, calls: string[], state: { watch: string[]; journal: Record<string, unknown>[]; twoFactor?: boolean; screens?: Record<string, unknown>[]; alerts?: Record<string, unknown>[]; apiKeys?: { id: number; name: string; prefix: string; created_at: string; last_used_at: string | null }[] }) {
   state.screens ??= [];
   state.alerts ??= [];
   await page.context().addCookies([{ name: "pl_auth", value: "1", url: "http://localhost:3101" }]);
@@ -92,6 +92,17 @@ async function mock(page: Page, calls: string[], state: { watch: string[]; journ
       return route.fulfill({ status: 204 });
     }
     if (p === "/v1/me/identities") return json(200, [{ provider: "password", label: ME.email, connected_at: null }]);
+    if (p === "/v1/me/api-keys" && req.method() === "GET") return json(200, { items: state.apiKeys ?? [], limit: 5 });
+    if (p === "/v1/me/api-keys" && req.method() === "POST") {
+      const b = req.postDataJSON() as { name: string };
+      const k = { id: (state.apiKeys?.length ?? 0) + 1, name: b.name, prefix: "pk_abc1234", created_at: "2026-10-27T10:00:00Z", last_used_at: null };
+      state.apiKeys = [...(state.apiKeys ?? []), k];
+      return json(201, { ...k, key: "pk_abc1234SECRETSECRETSECRETSECRET" });
+    }
+    if (p.startsWith("/v1/me/api-keys/") && req.method() === "DELETE") {
+      state.apiKeys = (state.apiKeys ?? []).filter((k) => String(k.id) !== p.split("/").pop());
+      return route.fulfill({ status: 204 });
+    }
     if (p === "/v1/me/2fa") return json(200, { enabled: state.twoFactor ?? false, backup_codes_left: state.twoFactor ? 10 : 0 });
     if (p === "/v1/me/2fa/setup") return json(200, { secret: "JBSWY3DPEHPK3PXP", otpauth_url: "otpauth://totp/Platform:trader%40example.com?secret=JBSWY3DPEHPK3PXP&issuer=Platform" });
     if (p === "/v1/me/2fa/enable") {
@@ -303,4 +314,19 @@ test("журнал: импорт сделок с биржи", async ({ page }) =
   await expect(page.getByRole("cell", { name: "BTCUSDT short" })).toBeVisible();
   await expect(page.getByRole("cell", { name: "binance:1 импорт" })).toBeVisible();
   expect(calls).toContain("POST /v1/journal/import");
+});
+
+test("настройки: API-ключ создаётся, показывается один раз и отзывается", async ({ page }) => {
+  const calls: string[] = [];
+  await mock(page, calls, { watch: [], journal: [] });
+  await page.goto("/settings");
+  const panel = page.getByTestId("api-keys");
+  await panel.getByLabel("Название ключа").fill("мой скрипт");
+  await panel.getByRole("button", { name: "Создать ключ" }).click();
+  await expect(panel.getByRole("region", { name: "новый ключ" })).toContainText("pk_abc1234SECRET");
+  await expect(panel).toContainText("мой скрипт");
+  page.once("dialog", (d) => d.accept());
+  await panel.getByRole("button", { name: "отозвать ключ мой скрипт" }).click();
+  await expect(panel).not.toContainText("мой скрипт");
+  expect(calls).toContain("DELETE /v1/me/api-keys/1");
 });

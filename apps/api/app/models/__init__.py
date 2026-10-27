@@ -27,6 +27,7 @@ from app.models.support import SupportTicket
 from app.models.tracking import SignalTracking
 from app.models.users import (
     AdminAudit,
+    ApiKey,
     AuthIdentity,
     EmailToken,
     Incident,
@@ -47,6 +48,7 @@ __all__ = [
     "AdminAudit",
     "Alert",
     "AlertTrigger",
+    "ApiKey",
     "AuthIdentity",
     "BacktestRun",
     "BalanceEntry",

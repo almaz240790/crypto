@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 
 from sqlalchemy import select
@@ -43,6 +43,8 @@ class Entitlements:
     layouts_limit: int | None = None
     """Именованных раскладок (раздел 4: 0 / 5 / 20)."""
     alerts_limit: int | None = None
+    api_access: bool = False
+    """API-ключи для чтения (план 3.10) — Premium."""
     """Активных алертов (план 2A.6, лимит по тарифу: 3 / 50 / без лимита — на утверждение)."""
 
 
@@ -53,6 +55,9 @@ ENTITLEMENTS: dict[str, Entitlements] = {
         PREMIUM, None, 0, True, True, True, True, None, None, True, None, True, 20, None
     ),
 }
+
+
+ENTITLEMENTS[PREMIUM] = replace(ENTITLEMENTS[PREMIUM], api_access=True)
 
 
 def entitlements(plan: str) -> Entitlements:
@@ -115,4 +120,5 @@ def restrictions_dict(ent: Entitlements) -> dict[str, object]:
         "drawings_sync": ent.drawings_sync,
         "layouts_limit": ent.layouts_limit,
         "alerts_limit": ent.alerts_limit,
+        "api_access": ent.api_access,
     }
