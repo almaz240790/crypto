@@ -247,6 +247,15 @@ def current_user(request: Request, db: Session = Depends(get_db)) -> User:
     return user
 
 
+def promote_owner(user: User, owner_emails: set[str]) -> bool:
+    """Роль owner для адресов из OWNER_EMAILS. Вызывается при входе, обновлении токена и /auth/me,
+    чтобы владелец получил права, даже если адрес добавили в настройки уже после его входа."""
+    if user.role == "user" and user.email.strip().lower() in owner_emails:
+        user.role = "owner"
+        return True
+    return False
+
+
 def require_role(*roles: str) -> Any:
     def dep(user: User = Depends(current_user)) -> User:
         if user.role not in roles:

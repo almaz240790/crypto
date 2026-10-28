@@ -97,8 +97,7 @@ def _set_refresh_cookie(response: Response, raw: str) -> None:
 def _issue(
     db: Session, user: User, request: Request, response: Response, *, verified: bool = False
 ) -> TokenOut:
-    if user.role == "user" and user.email.lower() in settings.owner_email_set:
-        user.role = "owner"
+    if auth.promote_owner(user, settings.owner_email_set):
         db.commit()
     if not verified and twofactor.is_enabled(db.get(TwoFactor, user.id)):
         # пароль/ссылка/соцвход прошли, но включена 2FA: короткий билет на второй шаг
@@ -192,6 +191,8 @@ def refresh(request: Request, response: Response, db: Session = Depends(auth.get
     if not raw:
         raise HTTPException(401, "нет сессии")
     user, new_raw = auth.rotate_refresh(db, raw, request.headers.get("user-agent"))
+    if auth.promote_owner(user, settings.owner_email_set):
+        db.commit()
     _set_refresh_cookie(response, new_raw)
     return TokenOut(access_token=auth.make_access_token(user))
 
@@ -207,6 +208,8 @@ def logout(request: Request, response: Response, db: Session = Depends(auth.get_
 
 @router.get("/me", response_model=UserOut)
 def me(user: User = Depends(auth.current_user), db: Session = Depends(auth.get_db)) -> UserOut:
+    if auth.promote_owner(user, settings.owner_email_set):
+        db.commit()
     return _user_out(user, db.get(RiskProfile, user.id))
 
 
