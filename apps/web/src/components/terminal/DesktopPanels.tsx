@@ -10,6 +10,7 @@ import type { FigureOnChart, FigureStat, PatternOnChart, PatternStat } from "@/l
 import type { LayerKey, PanelKey } from "./TerminalView";
 import { useT } from "@/i18n/client";
 import { ToolIcon } from "./ToolIcon";
+import type { ZoneGroup } from "@/lib/zones";
 
 const TOOLS: { t: DrawingType; key?: string }[] = [
   { t: "hline", key: "Alt+H" },
@@ -70,7 +71,7 @@ type Props = {
   layoutsLimit: number | null;
   /** Перетаскивание левого края панели (ширина хранится в TerminalPage). */
   onResize?: { start: (e: React.PointerEvent<HTMLElement>) => void; step: (delta: number) => void; active: boolean };
-  found: { count?: number; items: PatternOnChart[]; stats: Record<string, PatternStat>; selected: number | null; onSelect: (id: number | null) => void; tf: string; symbol: string; canExplain: boolean; askAccess: "guest" | "plan" | "ok" | null; sr: SrLevel[]; liq: LiqMap | null; tick: string | null; figures: FigureOnChart[]; figureStats: Record<string, FigureStat>; selectedFigure: number | null; onSelectFigure: (id: number | null) => void };
+  found: { count?: number; items: PatternOnChart[]; stats: Record<string, PatternStat>; selected: number | null; onSelect: (id: number | null) => void; tf: string; symbol: string; canExplain: boolean; askAccess: "guest" | "plan" | "ok" | null; sr: SrLevel[]; liq: LiqMap | null; tick: string | null; zones: ZoneGroup[]; figures: FigureOnChart[]; figureStats: Record<string, FigureStat>; selectedFigure: number | null; onSelectFigure: (id: number | null) => void };
 };
 
 const LAYER_LABEL: Record<LayerKey, string> = { structure: "Структура", zones: "Зоны", levels: "Макс./мин. дня и недели", signals: "Сигналы", patterns: "Паттерны", figures: "Фигуры", volume_profile: "Профиль объёма", sr: "Поддержка и сопротивление", liq_map: "Карта ликвидаций (оценка)" };
@@ -111,7 +112,7 @@ export function ObjectsPanel(p: Props) {
       {tab === "found" && (
         <div className={s.objScroll}>
           <AskBox symbol={p.found.symbol} tf={p.found.tf} access={p.found.askAccess} />
-          <LevelsList sr={p.found.sr} liq={p.found.liq} tick={p.found.tick} />
+          <LevelsList sr={p.found.sr} liq={p.found.liq} tick={p.found.tick} zones={p.found.zones} />
           <strong className={s.objHead}>{t("Фигуры")}</strong>
           <FiguresList items={p.found.figures} stats={p.found.figureStats} selected={p.found.selectedFigure} onSelect={p.found.onSelectFigure} />
           <strong className={s.objHead}>{t("Свечные паттерны")}</strong>

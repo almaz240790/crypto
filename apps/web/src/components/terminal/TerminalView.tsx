@@ -9,6 +9,7 @@ import { LevelsPrimitive, type HLine } from "@/components/chart/LevelsPrimitive"
 import { VolumeProfilePrimitive, type VpTokens } from "@/components/chart/VolumeProfilePrimitive";
 import { STATUS_LABEL } from "@/components/ui/Badge";
 import { formatUsdCompact } from "@/lib/format";
+import { mergeZones } from "@/lib/zones";
 import { PATTERN_LABEL, type Derivatives, type FigureOnChart, type LayersResponse, type PatternOnChart } from "@/lib/chart";
 import s from "./terminal.module.css";
 import { useT } from "@/i18n/client";
@@ -619,12 +620,11 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
     const boxes = [];
     const markers: SeriesMarker<Time>[] = [];
     if (st && layersOn.zones) {
-      // только активные зоны, ближайшие к текущей цене; отработанные не рисуем
+      // только активные зоны, пересекающиеся склеены в одну, две ближайшие к цене; спрос — зелёный, предложение — красный
       const price = candles[candles.length - 1]!.close;
-      const dist = (z: { top: string; bottom: string }) => Math.max(0, Number(z.bottom) - price, price - Number(z.top));
-      const nearest = st.zones.filter((z) => z.status === "active").sort((a, b) => dist(a) - dist(b)).slice(0, ZONES_MAX);
-      for (const z of nearest) {
-        boxes.push({ id: `${z.kind}-${z.from_t}`, from: Math.max(snap(z.from_t), first) as Time, to: null, top: Number(z.top), bottom: Number(z.bottom), fill: alpha(tokens.accent, 0.1), stroke: alpha(tokens.accent, 0.6), label: z.kind.toUpperCase() });
+      for (const g of mergeZones(st.zones, price).slice(0, ZONES_MAX)) {
+        const c = g.dir === "up" ? tokens.up : g.dir === "down" ? tokens.down : tokens.accent;
+        boxes.push({ id: `z-${g.fromT}-${g.bottom}`, from: Math.max(snap(g.fromT), first) as Time, to: null, top: g.top, bottom: g.bottom, fill: alpha(c, 0.08), stroke: alpha(c, 0.55), label: g.names.map((n) => t(n)).join(" + "), labelAlign: "right" as const, labelBg: tokens.surface, labelColor: c });
       }
     }
     if (st && layersOn.structure) {

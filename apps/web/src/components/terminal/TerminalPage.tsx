@@ -24,6 +24,7 @@ import { getCandles, toCandle } from "@/lib/chart";
 import { useTerminalData } from "./useTerminalData";
 import { useT } from "@/i18n/client";
 import { getBillingMe } from "@/lib/billing";
+import { mergeZones } from "@/lib/zones";
 import { liquidationMap, supportResistance } from "@platform/charts";
 
 const TYPE_LABEL: Record<ChartType, string> = { candles: "Свечи", bars: "Бары", line: "Линия", heikin: "Heikin Ashi" };
@@ -145,6 +146,11 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
   // «Найдено» — по видимой части графика, а не по всей загруженной истории
   // поддержка/сопротивление и карта ликвидаций: по закрытым свечам, пересчёт раз в свечу
   const srLevels = useMemo(() => supportResistance(data.candles ?? []), [data.candles]);
+  const zoneGroups = useMemo(() => {
+    const cs = data.candles ?? [];
+    const st = data.layers?.structure;
+    return st && cs.length ? mergeZones(st.zones, cs[cs.length - 1]!.close).slice(0, 2) : [];
+  }, [data.candles, data.layers]);
   const liqMap = useMemo(() => liquidationMap(data.candles ?? [], data.derivatives?.oi.map((x) => ({ t: x.t, v: Number(x.v) })) ?? null), [data.candles, data.derivatives]);
   // «Найдено»: значимые паттерны и неотменённые фигуры на видимом участке
   const foundCount = (data.patterns?.items ?? []).filter((p) => p.significant && (visibleFrom === null || p.t >= visibleFrom)).length + (data.figures?.items ?? []).filter((f) => f.status !== "invalidated" && (visibleFrom === null || f.end_t >= visibleFrom)).length;
@@ -605,7 +611,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
             {sheet === "ask" && <AskBox symbol={symbol} tf={tf} access={askAccess} heading={false} />}
             {sheet === "found" && (
               <>
-                <LevelsList sr={srLevels} liq={liqMap} tick={data.tick} />
+                <LevelsList sr={srLevels} liq={liqMap} tick={data.tick} zones={zoneGroups} />
                 <strong className={s.objHead}>{t("Фигуры")}</strong>
                 <FiguresList items={data.figures?.items ?? []} stats={data.figures?.stats ?? {}} selected={figureSel} onSelect={setFigureSel} />
                 <strong className={s.objHead}>{t("Свечные паттерны")}</strong>
@@ -700,7 +706,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
           onDeleteLayout={removeLayout}
           authed={!!user}
           layoutsLimit={user ? null : 0}
-          found={{ count: foundCount, items: data.patterns?.items ?? [], stats: data.patterns?.stats ?? {}, selected: foundSel, onSelect: setFoundSel, tf, symbol, canExplain: !!user, askAccess, sr: srLevels, liq: liqMap, tick: data.tick, figures: data.figures?.items ?? [], figureStats: data.figures?.stats ?? {}, selectedFigure: figureSel, onSelectFigure: setFigureSel }}
+          found={{ count: foundCount, items: data.patterns?.items ?? [], stats: data.patterns?.stats ?? {}, selected: foundSel, onSelect: setFoundSel, tf, symbol, canExplain: !!user, askAccess, sr: srLevels, liq: liqMap, tick: data.tick, zones: zoneGroups, figures: data.figures?.items ?? [], figureStats: data.figures?.stats ?? {}, selectedFigure: figureSel, onSelectFigure: setFigureSel }}
         />
       </div>
       <div className={s.bottom}>

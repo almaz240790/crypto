@@ -1013,5 +1013,11 @@
   "закрыть карточку": "close card",
   "скрыть индикаторы": "hide indicators",
   "индикаторы ({n})": "indicators ({n})",
-  "Platform. Данные: Binance (публичные). График:": "Platform. Data: Binance (public). Charts:"
+  "Platform. Данные: Binance (публичные). График:": "Platform. Data: Binance (public). Charts:",
+  "ордер-блок покупок": "buy order block",
+  "ордер-блок продаж": "sell order block",
+  "зона спроса": "demand zone",
+  "зона предложения": "supply zone",
+  "разрыв цены вверх": "price gap up",
+  "разрыв цены вниз": "price gap down"
 }

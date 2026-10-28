@@ -9,6 +9,7 @@ import s from "./terminal.module.css";
 import { useT } from "@/i18n/client";
 import type { T } from "@/i18n";
 import type { LiqMap, SrLevel } from "@platform/charts";
+import type { ZoneGroup } from "@/lib/zones";
 
 /** Панель «Найдено на графике» (план 3.17, 2A.10): свечные паттерны с контекстом и исторической
  * отработкой. Тексты — только разрешённые формулировки 2A.10.6. */
@@ -180,11 +181,11 @@ export function FiguresList({ items, stats, selected, onSelect }: { items: Figur
 
 /** Поле вопроса о графике (план 3.17, 4B.7): Premium; остальным — пояснение из ответа сервера. */
 /** Уровни списком (план 2A.4, 2A.6): на графике подписи могут скрываться при наложении, здесь видны все. */
-export function LevelsList({ sr, liq, tick }: { sr: SrLevel[]; liq: LiqMap | null; tick: string | null }) {
+export function LevelsList({ sr, liq, tick, zones = [] }: { sr: SrLevel[]; liq: LiqMap | null; tick: string | null; zones?: ZoneGroup[] }) {
   const t = useT();
   const dec = tick && tick.includes(".") ? tick.replace(/0+$/, "").split(".")[1]!.length : 0;
   const px = (p: number) => formatPrice(p.toFixed(tick ? dec : 2));
-  if (sr.length === 0 && !liq) return null;
+  if (sr.length === 0 && !liq && zones.length === 0) return null;
   const res = sr.filter((l) => l.side === "resistance").sort((a, b) => b.price - a.price);
   const sup = sr.filter((l) => l.side === "support").sort((a, b) => b.price - a.price);
   return (
@@ -199,6 +200,11 @@ export function LevelsList({ sr, liq, tick }: { sr: SrLevel[]; liq: LiqMap | nul
         {res.map((l) => (
           <li key={`r${l.price}`}>
             <span className="down">{t("Сопротивление")}</span> <span className="num">{px(l.price)}</span> <span className="caption">{t("касаний: {n}", { n: l.touches })}</span>
+          </li>
+        ))}
+        {zones.map((z) => (
+          <li key={`z${z.bottom}`}>
+            <span className={z.dir === "up" ? "up" : z.dir === "down" ? "down" : ""}>{z.names.map((n) => t(n)).join(" + ")}</span> <span className="num">{px(z.bottom)}–{px(z.top)}</span>
           </li>
         ))}
         {sup.map((l) => (
