@@ -5,6 +5,7 @@ from __future__ import annotations
 import random
 from datetime import UTC, datetime
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -329,3 +330,12 @@ def test_ask_chart_flow_and_injection(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "question.v1" in llm.load_prompt(
         llm.QUESTION_PROMPT_VERSION
     ) or "USER_TEXT" in llm.load_prompt(llm.QUESTION_PROMPT_VERSION)
+
+
+def test_dockerfile_ships_llm_prompts() -> None:
+    """Образ API содержит промпты: иначе load_prompt падает и пользователь видит «не удалось»."""
+    root = Path(__file__).resolve().parents[3]
+    docker = (root / "Dockerfile").read_text(encoding="utf-8")
+    assert "COPY apps/llm-gateway/prompts apps/llm-gateway/prompts" in docker
+    for version in (llm.PROMPT_VERSION, llm.QUESTION_PROMPT_VERSION):
+        assert (root / "apps" / "llm-gateway" / "prompts" / f"{version}.md").exists()
