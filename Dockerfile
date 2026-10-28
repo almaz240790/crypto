@@ -12,6 +12,8 @@ RUN uv sync --all-packages --no-dev --frozen --no-install-workspace
 COPY packages/engine packages/engine
 COPY apps/api apps/api
 COPY scripts scripts
+# промпты LLM (план 2A.10.3): без них «Объяснить» и «Спросить» падают с FileNotFoundError
+COPY apps/llm-gateway/prompts apps/llm-gateway/prompts
 RUN uv sync --all-packages --no-dev --frozen
 
 WORKDIR /srv/apps/api
