@@ -249,6 +249,8 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
     });
     // LWC с vertTouchDrag=false отдаёт браузеру любой жест круче ~27° — и график «не реагирует»
     term.chart.applyOptions({ handleScroll: { vertTouchDrag: true } });
+    // после загрузки веб-шрифта шкалу нужно перемерить: иначе ширина подписей посчитана по запасному шрифту
+    void document.fonts?.ready.then(() => termRef.current?.chart.applyOptions({ layout: { fontFamily: tokensFromElement(el).fontMono } }));
     termRef.current = term;
     onReadyRef.current?.({ zoom: (f) => term.zoom(f), reset: () => term.resetView(150) });
     (el as HTMLElement & { __chart?: unknown }).__chart = term.chart;
