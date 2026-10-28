@@ -39,6 +39,8 @@ export type ThemeTokens = {
   down: string;
   accent: string;
   warn: string;
+  /** Палитра индикаторов --ind-1…--ind-6 (план 5.3): у каждого индикатора свой цвет. */
+  ind: string[];
   fontSans: string;
   fontMono: string;
 };

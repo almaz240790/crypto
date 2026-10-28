@@ -77,6 +77,15 @@ export function formatTimeUTC(
   return `${date} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())} UTC`;
 }
 
+/** Сумма в долларах коротко: $850K, $12.4M, $1.2B (суммы ликвидаций, план 2A.6). */
+export function formatUsdCompact(v: number): string {
+  const a = Math.abs(v);
+  if (a >= 1e9) return `$${(v / 1e9).toFixed(1)}B`;
+  if (a >= 1e6) return `$${(v / 1e6).toFixed(1)}M`;
+  if (a >= 1e3) return `$${Math.round(v / 1e3)}K`;
+  return `$${Math.round(v)}`;
+}
+
 /** Длительность в часах → "2 ч 14 мин", "3 д 5 ч", "40 мин". */
 export function formatDuration(hours: number | string | null | undefined): string {
   if (hours === null || hours === undefined || hours === "") return "—";

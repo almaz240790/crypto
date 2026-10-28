@@ -86,7 +86,7 @@ test("телефон: long-press включает липкое перекрес�
   await expect(sheet).toHaveAttribute("data-height", "90");
 });
 
-test("телефон: не больше трёх раскрытых панелей, свайп вниз сворачивает", async ({ page }) => {
+test("телефон: раскрыта одна панель — последняя добавленная, свайп вниз сворачивает", async ({ page }) => {
   const calls: string[] = [];
   await mock(page, calls, true);
   await page.goto("/chart/BTCUSDT/4h");
@@ -99,8 +99,8 @@ test("телефон: не больше трёх раскрытых панеле
   await expect(page.getByRole("button", { name: "Индикаторы (5)" })).toBeVisible();
   const expanded = page.locator('[data-testid^="pane-"] button[aria-expanded="true"]');
   const collapsed = page.locator('[data-testid^="pane-"] button[aria-expanded="false"]');
-  await expect(expanded).toHaveCount(3);
-  await expect(collapsed).toHaveCount(1);
+  await expect(expanded).toHaveCount(1);
+  await expect(collapsed).toHaveCount(3);
   // свайп вниз по заголовку раскрытой панели сворачивает её
   const head = page.getByTestId("pane-funding");
   await expect(head.getByRole("button", { name: "свернуть панель Funding" })).toBeVisible();
@@ -115,7 +115,7 @@ test("телефон: не больше трёх раскрытых панеле
     { x: box.x + 10, y: box.y + 10 },
   );
   await expect(head.getByRole("button", { name: "развернуть панель Funding" })).toBeVisible();
-  await expect(collapsed).toHaveCount(2);
+  await expect(collapsed).toHaveCount(4);
 });
 
 test("телефон: мультичарт недоступен, есть ссылка в терминал", async ({ page }) => {
@@ -151,4 +151,28 @@ test("вопрос о графике без Premium: понятное объяс
   await expect(sheet).toContainText("доступны на тарифе Premium");
   await expect(sheet.getByRole("link", { name: "Тарифы" })).toBeVisible();
   await expect(sheet.getByLabel("текст вопроса")).toHaveCount(0);
+});
+
+test("карточка значений на телефоне: индикаторы свёрнуты, крестик закрывает", async ({ page }) => {
+  const calls: string[] = [];
+  await mock(page, calls, true);
+  await page.goto("/chart/BTCUSDT/4h");
+  const term = page.getByTestId("terminal");
+  await expect(term.locator("canvas").first()).toBeVisible();
+  const box = (await term.boundingBox())!;
+  const x = box.x + box.width * 0.5, y = box.y + box.height * 0.5;
+  // долгое касание: перекрестие LWC включается после 240 мс
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
+  await page.waitForTimeout(500);
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  const ohlc = page.getByTestId("ohlc");
+  await expect(ohlc).toBeVisible();
+  await expect(ohlc).toContainText("O ");
+  // значения индикаторов — по кнопке
+  await expect(ohlc.getByText("EMA", { exact: false })).toBeHidden();
+  await ohlc.getByRole("button", { name: /индикаторы \(\d+\)/ }).tap();
+  await expect(ohlc.getByText("EMA", { exact: false })).toBeVisible();
+  await ohlc.getByRole("button", { name: "закрыть карточку" }).tap();
+  await expect(ohlc).toBeHidden();
 });

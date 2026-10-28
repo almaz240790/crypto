@@ -476,6 +476,83 @@
   pointer-events: none;
 }
 
+.ohlc {
+  padding-right: 32px;
+}
+
+.ohlcClose,
+.ohlcMore {
+  /* карточка прозрачна для жестов графика, а её кнопки — нет */
+  pointer-events: auto;
+}
+
+.ohlcClose {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.ohlcClose:hover {
+  color: var(--text);
+}
+
+.ohlcMore {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+/* на телефоне значения индикаторов скрыты, пока не нажать «индикаторы (n)» */
+@media (max-width: 899px) {
+  .ohlc:not([data-more]) .ohlcVal {
+    display: none;
+  }
+}
+
+.indRow {
+  display: grid;
+  gap: 4px;
+}
+
+.indDot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-left: 24px;
+}
+
+.swatch {
+  width: 24px;
+  height: 24px;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.swatch[aria-checked="true"] {
+  border-color: var(--text);
+  box-shadow: inset 0 0 0 2px var(--surface);
+}
+
 .ohlc strong {
   color: var(--text);
   font-weight: 500;

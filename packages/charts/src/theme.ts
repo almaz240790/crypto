@@ -64,6 +64,7 @@ export function tokensFromElement(el: HTMLElement): ThemeTokens {
     down: v("--down", "#c93c3c"),
     accent: v("--accent", "#2d5bd7"),
     warn: v("--warn", "#b7791f"),
+    ind: [1, 2, 3, 4, 5, 6].map((i) => v(`--ind-${i}`, "#4a6fa5")),
     fontSans: v("--font-sans", "system-ui"),
     fontMono: v("--font-mono", "ui-monospace"),
   };

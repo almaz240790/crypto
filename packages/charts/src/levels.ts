@@ -67,8 +67,18 @@ export function supportResistance(candles: readonly Candle[], opts: Partial<SrOp
   return [...below.map((l) => ({ ...l, side: "support" as const })), ...above.map((l) => ({ ...l, side: "resistance" as const }))];
 }
 
+/** long/short — оценка суммы позиций под ликвидацией в этой цене, USDT. */
 export type LiqBucket = { price: number; long: number; short: number };
-export type LiqMap = { step: number; buckets: LiqBucket[]; max: number; topLong: LiqBucket | null; topShort: LiqBucket | null };
+export type LiqMap = {
+  step: number;
+  buckets: LiqBucket[];
+  max: number;
+  topLong: LiqBucket | null;
+  topShort: LiqBucket | null;
+  /** Крупнейшие скопления по каждой стороне, по убыванию суммы. */
+  topLongs: LiqBucket[];
+  topShorts: LiqBucket[];
+};
 export type LiqOptions = {
   lookback: number;
   /** Плечи и их доли в оценке: чем больше плечо, тем меньше позиций. */
@@ -78,6 +88,8 @@ export type LiqOptions = {
   buckets: number;
   /** Окно карты вокруг цены, доля от цены. */
   range: number;
+  /** Сколько крупнейших скоплений на сторону отдавать для подписей. */
+  top: number;
 };
 export const LIQ_DEFAULTS: LiqOptions = {
   lookback: 300,
@@ -90,11 +102,12 @@ export const LIQ_DEFAULTS: LiqOptions = {
   mmr: 0.005,
   buckets: 80,
   range: 0.15,
+  top: 3,
 };
 
 /**
  * Расчётная карта ликвидаций — оценка, не данные биржи. Позиции «открываются» по типичной цене свечи
- * с весом прироста открытого интереса (если OI нет — объёма), по половине в лонг и шорт. Для каждого плеча
+ * с весом прироста открытого интереса в USDT (если OI нет — объёма × цена), по половине в лонг и шорт. Для каждого плеча
  * считается цена ликвидации; уровни, до которых цена уже доходила после открытия, считаются сработавшими.
  */
 export function liquidationMap(candles: readonly Candle[], oi: readonly { t: number; v: number }[] | null, opts: Partial<LiqOptions> = {}): LiqMap | null {
@@ -119,14 +132,15 @@ export function liquidationMap(candles: readonly Candle[], oi: readonly { t: num
   let prevOi: number | null = null;
   for (let i = 0; i < n; i++) {
     const c = cs[i]!;
-    let w: number;
+    let w = 0;
     if (useOi) {
       const v = oiAt.get(c.time);
       w = v != null && prevOi != null ? Math.max(0, v - prevOi) : 0;
       if (v != null) prevOi = v;
-    } else w = c.volume;
-    if (w <= 0) continue;
+    }
     const entry = (c.high + c.low + c.close) / 3;
+    if (!useOi) w = c.volume * entry;
+    if (w <= 0) continue;
     for (const [lev, share] of o.leverages) {
       const half = (w * share) / 2;
       const longLiq = entry * (1 - 1 / lev + o.mmr);
@@ -143,5 +157,7 @@ export function liquidationMap(candles: readonly Candle[], oi: readonly { t: num
     if (b.long > 0 && (!topLong || b.long > topLong.long)) topLong = b;
     if (b.short > 0 && (!topShort || b.short > topShort.short)) topShort = b;
   }
-  return max > 0 ? { step, buckets, max, topLong, topShort } : null;
+  const topLongs = buckets.filter((b) => b.long > 0).sort((a, b) => b.long - a.long).slice(0, o.top);
+  const topShorts = buckets.filter((b) => b.short > 0).sort((a, b) => b.short - a.short).slice(0, o.top);
+  return max > 0 ? { step, buckets, max, topLong, topShort, topLongs, topShorts } : null;
 }

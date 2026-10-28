@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { askChart, explainPattern, type Explanation, type FigureOnChart, type FigureStat, type PatternOnChart, type PatternStat } from "@/lib/chart";
-import { formatPrice } from "@/lib/format";
+import { formatPrice, formatUsdCompact } from "@/lib/format";
 import type { Timeframe } from "@/lib/timeframes";
 import s from "./terminal.module.css";
 import { useT } from "@/i18n/client";
@@ -191,11 +191,11 @@ export function LevelsList({ sr, liq, tick }: { sr: SrLevel[]; liq: LiqMap | nul
     <>
       <strong className={s.objHead}>{t("Уровни")}</strong>
       <ul className={s.levelList} aria-label={t("уровни поддержки и сопротивления")}>
-        {liq?.topShort && (
-          <li title={t("Оценка по объёму и открытому интересу для плеч 10–100×, не данные биржи.")}>
-            <span className={s.levelLiq}>{t("Ликвидации шортов ≈")}</span> <span className="num">{px(liq.topShort.price)}</span>
+        {[...(liq?.topShorts ?? [])].sort((a, b) => b.price - a.price).map((b) => (
+          <li key={`ls${b.price}`} title={t("Оценка по объёму и открытому интересу для плеч 10–100×, не данные биржи.")}>
+            <span className={s.levelLiq}>{t("Ликвидации шортов")}</span> <span className="num">{px(b.price)}</span> <strong className={`num ${s.levelLiq}`}>≈ {formatUsdCompact(b.short)}</strong>
           </li>
-        )}
+        ))}
         {res.map((l) => (
           <li key={`r${l.price}`}>
             <span className="down">{t("Сопротивление")}</span> <span className="num">{px(l.price)}</span> <span className="caption">{t("касаний: {n}", { n: l.touches })}</span>
@@ -206,13 +206,13 @@ export function LevelsList({ sr, liq, tick }: { sr: SrLevel[]; liq: LiqMap | nul
             <span className="up">{t("Поддержка")}</span> <span className="num">{px(l.price)}</span> <span className="caption">{t("касаний: {n}", { n: l.touches })}</span>
           </li>
         ))}
-        {liq?.topLong && (
-          <li title={t("Оценка по объёму и открытому интересу для плеч 10–100×, не данные биржи.")}>
-            <span className={s.levelLiq}>{t("Ликвидации лонгов ≈")}</span> <span className="num">{px(liq.topLong.price)}</span>
+        {[...(liq?.topLongs ?? [])].sort((a, b) => b.price - a.price).map((b) => (
+          <li key={`ll${b.price}`} title={t("Оценка по объёму и открытому интересу для плеч 10–100×, не данные биржи.")}>
+            <span className={s.levelLiq}>{t("Ликвидации лонгов")}</span> <span className="num">{px(b.price)}</span> <strong className={`num ${s.levelLiq}`}>≈ {formatUsdCompact(b.long)}</strong>
           </li>
-        )}
+        ))}
       </ul>
-      {liq && <p className={`caption ${s.levelNote}`}>{t("Карта ликвидаций — расчётная оценка по объёму и открытому интересу для плеч 10–100×, а не данные биржи.")}</p>}
+      {liq && <p className={`caption ${s.levelNote}`}>{t("Карта ликвидаций — расчётная оценка: суммы позиций с плечом 10–100×, которые закроются принудительно при подходе цены. Считается по приросту открытого интереса и объёму, а не по данным биржи.")}</p>}
     </>
   );
 }
