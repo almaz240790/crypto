@@ -18,6 +18,7 @@ export type CrosshairInfo = { candle: Candle; values: { label: string; value: nu
 /** Управление видом снаружи (кнопки «+/−», горячие клавиши). */
 export type TerminalControls = { zoom: (factor: number) => void; reset: () => void };
 const LONG_PRESS_MS = 300;
+const VISIBLE_DEBOUNCE_MS = 200;
 export const PANELS: { id: PanelKey; title: string }[] = [
   { id: "funding", title: "Funding" },
   { id: "oi", title: "Open interest" },
@@ -141,6 +142,9 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
   const visibleFromRef = useRef<number | null>(null);
   const valuesRef = useRef<Map<string, { label: string; values: (number | null)[] }>>(new Map());
   const stickyRef = useRef(false);
+  // слои зависят от времени текущей свечи (меняется раз в свечу) и содержимого линий алертов, а не от каждого тика
+  const lastT = current?.time ?? null;
+  const alertKey = JSON.stringify(alertLines ?? []);
   const [heads, setHeads] = useState<PaneHead[]>([]);
   const collapsedRef = useRef<Set<string>>(new Set());
   const paneObsRef = useRef<ResizeObserver | null>(null);
@@ -209,6 +213,7 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
+    let visibleTimer: ReturnType<typeof setTimeout> | undefined;
     const term = createTerminal(el, {
       tokens: tokensFromElement(el),
       type,
@@ -224,9 +229,13 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
         const t = i >= 0 ? (all[i]?.time ?? null) : null;
         if (t === visibleFromRef.current) return;
         visibleFromRef.current = t;
-        onVisibleFromRef.current?.(t);
+        // счётчик «Найдено» обновляем после паузы, а не на каждой свече во время перетаскивания
+        clearTimeout(visibleTimer);
+        visibleTimer = setTimeout(() => onVisibleFromRef.current?.(visibleFromRef.current), VISIBLE_DEBOUNCE_MS);
       },
     });
+    // LWC с vertTouchDrag=false отдаёт браузеру любой жест круче ~27° — и график «не реагирует»
+    term.chart.applyOptions({ handleScroll: { vertTouchDrag: true } });
     termRef.current = term;
     onReadyRef.current?.({ zoom: (f) => term.zoom(f), reset: () => term.resetView(150) });
     (el as HTMLElement & { __chart?: unknown }).__chart = term.chart;
@@ -290,7 +299,6 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
     term.chart.subscribeCrosshairMove((p) => emit(typeof p.time === "number" ? p.time : null));
     let pressTimer: ReturnType<typeof setTimeout> | undefined;
     let pressStart: { x: number; y: number } | null = null;
-    const scrollOpts = (on: boolean) => term.chart.applyOptions({ handleScroll: { horzTouchDrag: on, vertTouchDrag: false }, handleScale: { pinch: on } });
     const onPDown = (e: PointerEvent) => {
       if (e.pointerType !== "touch" || drawingsRef.current?.tool) return;
       pressStart = { x: e.clientX, y: e.clientY };
@@ -298,7 +306,6 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
         stickyRef.current = true;
         el.dataset.sticky = "1";
         el.dataset.stickyArmed = "1"; // первое отпускание после long-press режим не выключает
-        scrollOpts(false);
         if (navigator.vibrate) navigator.vibrate(10);
       }, LONG_PRESS_MS);
     };
@@ -313,7 +320,6 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
       const wasTap = pressStart !== null && Math.hypot(e.clientX - pressStart.x, e.clientY - pressStart.y) < 8;
       pressStart = null;
       if (stickyRef.current) {
-        scrollOpts(true);
         if (wasTap && !el.dataset.stickyArmed) {
           // короткий тап в липком режиме — выход
           stickyRef.current = false;
@@ -342,6 +348,7 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
       el.removeEventListener("pointerup", onPUp);
       el.removeEventListener("pointercancel", onPUp);
       clearTimeout(pressTimer);
+      clearTimeout(visibleTimer);
       panes.clear();
       auxRef.current = [];
       boxRef.current = null;
@@ -513,7 +520,7 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
     auxRef.current = [];
     if (!boxRef.current) return;
     const first = candles[0]!.time;
-    const last = (current ?? candles[candles.length - 1]!).time;
+    const last = lastT ?? candles[candles.length - 1]!.time;
     const step = (candles[1]?.time ?? first + 1) - first;
     const snap = (t: number) => Math.floor(t / step) * step;
     const seg = (from: number, to: number | null, price: number, c: string, style: number, width: 1 | 2 = 1) => {
@@ -529,7 +536,7 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
     const markers: SeriesMarker<Time>[] = [];
     if (st && layersOn.zones) {
       // только активные зоны, ближайшие к текущей цене; отработанные не рисуем
-      const price = (current ?? candles[candles.length - 1]!).close;
+      const price = candles[candles.length - 1]!.close;
       const dist = (z: { top: string; bottom: string }) => Math.max(0, Number(z.bottom) - price, price - Number(z.top));
       const nearest = st.zones.filter((z) => z.status === "active").sort((a, b) => dist(a) - dist(b)).slice(0, ZONES_MAX);
       for (const z of nearest) {
@@ -607,7 +614,7 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
           }
       }
     }
-    for (const al of alertLines ?? []) {
+    for (const al of JSON.parse(alertKey) as NonNullable<Props["alertLines"]>) {
       seg(first, null, al.price, tokens.warn, 3, 1);
       markers.push({ time: last as Time, position: "inBar", shape: "circle", color: tokens.warn, text: `${t("алерт")} ${al.label}`, size: 0 });
     }
@@ -615,7 +622,7 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
     markers.sort((a, b) => (a.time as number) - (b.time as number));
     if (!markersRef.current) markersRef.current = createSeriesMarkers(main, markers);
     else markersRef.current.setMarkers(markers);
-  }, [layers, layersOn, candles, current, tf, type, patterns, highlight, figures, highlightFigure, alertLines, t]);
+  }, [layers, layersOn, candles, lastT, tf, type, patterns, highlight, figures, highlightFigure, alertKey, t]);
 
   return (
     <div className={s.chart}>

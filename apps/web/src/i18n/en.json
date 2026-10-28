@@ -871,7 +871,6 @@
   "найденные паттерны": "found patterns",
   "найденные фигуры": "found figures",
   "наложение": "overlay",
-  "например: почему зона считается активной?": "e.g.: why is the zone considered active?",
   "не вошёл": "not entered",
   "не удалось отписаться": "could not unsubscribe",
   "не является сигналом или рекомендацией": "not a signal or a recommendation",
@@ -981,5 +980,14 @@
   "Скрыть отменённые": "Hide invalidated",
   "Показать отменённые ({n})": "Show invalidated ({n})",
   "Индикаторы ({n})": "Indicators ({n})",
-  "Алерт": "Alert"
+  "Алерт": "Alert",
+  "Какой сейчас тренд на старших таймфреймах?": "What is the trend on the higher timeframes?",
+  "Где ближайшая зона и далеко ли до неё цена?": "Where is the nearest zone and how far is price from it?",
+  "Что за паттерн на последних свечах и как он отрабатывал раньше?": "What pattern is on the latest candles and how did it play out before?",
+  "Где проходят важные уровни выше и ниже цены?": "Where are the key levels above and below price?",
+  "чтобы задавать вопросы о графике.": "to ask questions about the chart.",
+  "Вопросы о графике доступны на тарифе Premium: ответ составляется только по данным этого графика — тренд, зоны, уровни, паттерны.": "Chart questions are available on the Premium plan: the answer uses only this chart's data — trend, zones, levels, patterns.",
+  "или напишите свой вопрос": "or type your own question",
+  "Составляю ответ…": "Composing the answer…",
+  "Только по данным графика: без рекомендаций и прогнозов.": "Chart data only: no recommendations or forecasts."
 }

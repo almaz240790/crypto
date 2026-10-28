@@ -126,3 +126,29 @@ test("телефон: мультичарт недоступен, есть ссы
   await expect(page.getByRole("link", { name: "Открыть терминал" })).toHaveAttribute("href", "/chart/BTCUSDT/4h");
   expect(calls.some((c) => c.startsWith("/v1/chart/candles"))).toBe(false);
 });
+
+test("вопрос о графике на телефоне: отдельная кнопка, готовый вопрос, ответ виден сразу", async ({ page }) => {
+  const calls: string[] = [];
+  await mock(page, calls, true);
+  await page.goto("/chart/BTCUSDT/4h");
+  await expect(page.getByTestId("terminal").locator("canvas").first()).toBeVisible();
+  await page.getByRole("button", { name: "Спросить", exact: true }).tap();
+  const sheet = page.getByRole("dialog", { name: "Вопрос о графике" });
+  await sheet.getByRole("button", { name: "Какой сейчас тренд на старших таймфреймах?" }).tap();
+  const answer = sheet.getByTestId("ask-answer");
+  await expect(answer).toContainText("тренд D1 восходящий");
+  await expect(answer).toBeInViewport();
+  expect(calls.some((c) => c.startsWith("/v1/chart/ask"))).toBe(true);
+});
+
+test("вопрос о графике без Premium: понятное объяснение и ссылка на тарифы вместо формы", async ({ page }) => {
+  const calls: string[] = [];
+  await mock(page, calls, true, { drawings: [], layout: null, plan: "pro" });
+  await page.goto("/chart/BTCUSDT/4h");
+  await expect(page.getByTestId("terminal").locator("canvas").first()).toBeVisible();
+  await page.getByRole("button", { name: "Спросить", exact: true }).tap();
+  const sheet = page.getByRole("dialog", { name: "Вопрос о графике" });
+  await expect(sheet).toContainText("доступны на тарифе Premium");
+  await expect(sheet.getByRole("link", { name: "Тарифы" })).toBeVisible();
+  await expect(sheet.getByLabel("текст вопроса")).toHaveCount(0);
+});

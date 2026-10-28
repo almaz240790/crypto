@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { askChart, explainPattern, type Explanation, type FigureOnChart, type FigureStat, type PatternOnChart, type PatternStat } from "@/lib/chart";
 import { formatPrice } from "@/lib/format";
 import type { Timeframe } from "@/lib/timeframes";
@@ -178,38 +178,95 @@ export function FiguresList({ items, stats, selected, onSelect }: { items: Figur
 
 
 /** Поле вопроса о графике (план 3.17, 4B.7): Premium; остальным — пояснение из ответа сервера. */
-export function AskBox({ symbol, tf }: { symbol: string; tf: string }) {
+/** Готовые вопросы: человеку без опыта проще начать с примера. */
+const ASK_EXAMPLES = [
+  "Какой сейчас тренд на старших таймфреймах?",
+  "Где ближайшая зона и далеко ли до неё цена?",
+  "Что за паттерн на последних свечах и как он отрабатывал раньше?",
+  "Где проходят важные уровни выше и ниже цены?",
+];
+/** Ответы-заглушки сервера (нет тарифа, выключено, лимит) — показываем как уведомление, а не как ответ. */
+const ASK_NOTICE = new Set(["plan", "disabled", "limit", "budget", "empty"]);
+
+/**
+ * Вопрос о графике (план 2A.10.3, 4B.7): Premium; текст ≤ 500 символов уходит как данные.
+ * access: null — ещё неизвестно, "guest" — не вошёл, "plan" — тариф ниже Premium, "ok" — можно спрашивать.
+ */
+export function AskBox({ symbol, tf, access, heading = true }: { symbol: string; tf: string; access: "guest" | "plan" | "ok" | null; heading?: boolean }) {
   const t = useT();
   const [q, setQ] = useState("");
   const [state, setState] = useState<Explanation | "loading" | { error: string } | null>(null);
-  const submit = (e: React.FormEvent) => {
-    e.preventDefault();
-    const text = q.trim().slice(0, 500);
+  const answerRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (state && state !== "loading") answerRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [state]);
+  const send = (question: string) => {
+    const text = question.trim().slice(0, 500);
     if (!text) return;
+    setQ(text);
     setState("loading");
     askChart(symbol, tf as Timeframe, text)
       .then((r) => setState(r))
       .catch((err: Error) => setState({ error: err.message }));
   };
-  return (
-    <form className={s.ask} onSubmit={submit} aria-label={t("вопрос о графике")}>
-      <label>{t("Вопрос о графике")}<textarea aria-label={t("текст вопроса")} maxLength={500} rows={2} placeholder={t("например: почему зона считается активной?")} value={q} onChange={(e) => setQ(e.target.value)} />
-      </label>
-      <div className={s.askRow}>
-        <span className="caption">{q.length}/500 · только по фактам графика, без рекомендаций и прогнозов</span>
-        <button type="submit" className={s.chip} disabled={state === "loading" || !q.trim()}>{t("Спросить")}</button>
+  if (access === "guest")
+    return (
+      <div className={s.ask}>
+        {heading && <strong>{t("Вопрос о графике")}</strong>}
+        <p className={s.askNote}>
+          <Link href="/login">{t("Войдите")}</Link>, {t("чтобы задавать вопросы о графике.")}
+        </p>
       </div>
-      {state === "loading" && <p className="caption">{t("составляю ответ по данным графика…")}</p>}
-      {state !== null && typeof state === "object" && "error" in state && <p className="caption">{state.error}</p>}
-      {state !== null && typeof state === "object" && "text" in state && (
-        <div data-testid="ask-answer">
-          <p>{state.text}</p>
-          <p className="caption">
-            {state.footer}
-            {state.source === "template" ? "" : t(" Ответ прошёл проверку: все числа — из данных графика.")}
-          </p>
-        </div>
-      )}
+    );
+  if (access === "plan")
+    return (
+      <div className={s.ask}>
+        {heading && <strong>{t("Вопрос о графике")}</strong>}
+        <p className={s.askNote}>
+          {t("Вопросы о графике доступны на тарифе Premium: ответ составляется только по данным этого графика — тренд, зоны, уровни, паттерны.")}{" "}
+          <Link href="/billing">{t("Тарифы")}</Link>
+        </p>
+      </div>
+    );
+  const busy = state === "loading";
+  const notice = state !== null && typeof state === "object" && "text" in state && state.source === "template" && ASK_NOTICE.has(state.reason ?? "");
+  return (
+    <form
+      className={s.ask}
+      onSubmit={(e) => {
+        e.preventDefault();
+        send(q);
+      }}
+      aria-label={t("вопрос о графике")}
+    >
+      {heading && <strong>{t("Вопрос о графике")}</strong>}
+      <div className={s.askExamples}>
+        {ASK_EXAMPLES.map((x) => (
+          <button key={x} type="button" className={s.askExample} disabled={busy} onClick={() => send(t(x))}>
+            {t(x)}
+          </button>
+        ))}
+      </div>
+      <textarea aria-label={t("текст вопроса")} maxLength={500} rows={2} placeholder={t("или напишите свой вопрос")} value={q} onChange={(e) => setQ(e.target.value)} />
+      <button type="submit" className={s.askSubmit} disabled={busy || !q.trim()}>
+        {busy ? t("Составляю ответ…") : t("Спросить")}
+      </button>
+      <span className="caption">{t("Только по данным графика: без рекомендаций и прогнозов.")}</span>
+      <div ref={answerRef} aria-live="polite">
+        {busy && <p className={s.askNote}>{t("составляю ответ по данным графика…")}</p>}
+        {state !== null && typeof state === "object" && "error" in state && <p className={s.askError}>{state.error}</p>}
+        {state !== null && typeof state === "object" && "text" in state && (
+          <div data-testid="ask-answer" className={notice ? s.askNote : s.askAnswer}>
+            <p>{state.text}</p>
+            {!notice && (
+              <p className="caption">
+                {state.footer}
+                {state.source === "template" ? "" : t(" Ответ прошёл проверку: все числа — из данных графика.")}
+              </p>
+            )}
+          </div>
+        )}
+      </div>
     </form>
   );
 }
