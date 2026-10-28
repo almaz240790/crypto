@@ -3,6 +3,9 @@ import { ColorType, CrosshairMode, LineStyle } from "lightweight-charts";
 import type { ThemeTokens } from "./types";
 
 /** Прозрачность для hex-цвета #rrggbb → rgba(). Токены задаются в hex (план 5.3). */
+/** Ширина ценовой шкалы не меньше этой: «81 118.0» моноширинным 12 px. */
+const PRICE_SCALE_MIN_PX = 64;
+
 export function alpha(hex: string, a: number): string {
   const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex.trim());
   if (!m) return hex;
@@ -25,7 +28,8 @@ export function chartOptions(t: ThemeTokens): DeepPartial<ChartOptions> {
       vertLine: { color: t.text3, width: 1, style: LineStyle.Dashed, labelBackgroundColor: t.text },
       horzLine: { color: t.text3, width: 1, style: LineStyle.Dashed, labelBackgroundColor: t.text },
     },
-    rightPriceScale: { borderColor: t.border, scaleMargins: { top: 0.08, bottom: 0.2 } },
+    // минимальная ширина шкалы — страховка: если браузер неверно измерит текст, цены всё равно не обрежутся
+    rightPriceScale: { borderColor: t.border, scaleMargins: { top: 0.08, bottom: 0.2 }, minimumWidth: PRICE_SCALE_MIN_PX },
     timeScale: { borderColor: t.border, timeVisible: true, secondsVisible: false, rightOffset: 5, barSpacing: 7, minBarSpacing: 2 },
     // колесо и трекпад обрабатывает Terminal сам (см. onWheel): горизонтальный жест — прокрутка,
     // вертикальный и pinch — масштаб вокруг курсора; встроенная обработка слишком резкая на трекпаде

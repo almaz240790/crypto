@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { formatPriceLabel, formatTicks, tickDecimals } from "../format";
 
-const T = " ";
+const T = " ";
 
 describe("подписи цен", () => {
   it("разряды и точность инструмента", () => {
