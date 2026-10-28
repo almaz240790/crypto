@@ -37,6 +37,14 @@ export function formatPriceLabel(p: number, precision: number): string {
   return compact(p) ?? fixed(p, precision);
 }
 
+/** Значения от этого порога пишем без дробной части на телефоне: «80 724» вместо «80 723.7». */
+const SHORT_INT_FROM = 10_000;
+
+/** Цена для узкой шкалы (телефон): крупные значения — целым числом, чтобы шкала занимала меньше места. */
+export function formatPriceShort(p: number, precision: number): string {
+  return compact(p) ?? fixed(p, Math.abs(p) >= SHORT_INT_FROM ? 0 : precision);
+}
+
 /** Сколько знаков нужно, чтобы все деления записались точно (91 000, а не 91 000.0). */
 export function tickDecimals(prices: readonly number[]): number {
   for (let d = 0; d < MAX_DECIMALS; d++) {

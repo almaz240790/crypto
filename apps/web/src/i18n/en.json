@@ -20,7 +20,6 @@
   "Live-сигналов пока нет. Результаты форвард-теста и бэктеста открыты на странице статистики с явной пометкой типа данных — мы не выдаём их за реальный результат.": "There are no live signals yet. Forward-test and backtest results are open on the statistics page and clearly labelled by data type — we do not present them as real results.",
   "Live-сигналов пока нет: текущая версия стратегии проходит форвард-тест на живых данных. Статистика появится с первой закрытой сделкой.": "No live signals yet: the current strategy version is in a forward test on live data. Statistics will appear with the first closed trade.",
   "Live-статистика за 90 дней": "Live statistics, 90 days",
-  "Platform. Данные: Binance (публичные). График: TradingView Lightweight Charts.": "Platform. Data: Binance (public). Chart: TradingView Lightweight Charts.",
   "TP1 — ближайшая ликвидность, TP2 — не менее 2.5 R, TP3 — следующий структурный уровень. После TP1 стоп переносится в безубыток.": "TP1 — the nearest liquidity, TP2 — at least 2.5 R, TP3 — the next structural level. After TP1 the stop moves to breakeven.",
   "Telegram, push, email — сразу": "Telegram, push, email — instantly",
   "Telegram-бот — после запуска": "Telegram bot — after launch",
@@ -1013,5 +1012,6 @@
   "цвет: {name}": "color: {name}",
   "закрыть карточку": "close card",
   "скрыть индикаторы": "hide indicators",
-  "индикаторы ({n})": "indicators ({n})"
+  "индикаторы ({n})": "indicators ({n})",
+  "Platform. Данные: Binance (публичные). График:": "Platform. Data: Binance (public). Charts:"
 }

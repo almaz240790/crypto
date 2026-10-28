@@ -3,8 +3,8 @@ import { ColorType, CrosshairMode, LineStyle } from "lightweight-charts";
 import type { ThemeTokens } from "./types";
 
 /** Прозрачность для hex-цвета #rrggbb → rgba(). Токены задаются в hex (план 5.3). */
-/** Ширина ценовой шкалы не меньше этой: «81 118.0» моноширинным 12 px. */
-const PRICE_SCALE_MIN_PX = 64;
+/** Ширина ценовой шкалы не меньше этой: «81 118» моноширинным 11 px. */
+const PRICE_SCALE_MIN_PX = 48;
 
 export function alpha(hex: string, a: number): string {
   const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex.trim());
@@ -20,6 +20,8 @@ export function chartOptions(t: ThemeTokens): DeepPartial<ChartOptions> {
       textColor: t.text2,
       fontFamily: t.fontMono,
       fontSize: 11,
+      // логотип TradingView в углу графика выключен; атрибуция по лицензии — ссылкой в подвале сайта
+      attributionLogo: false,
       panes: { separatorColor: t.border, separatorHoverColor: alpha(t.accent, 0.2), enableResize: true },
     },
     grid: { vertLines: { color: alpha(t.border, 0.6) }, horzLines: { color: alpha(t.border, 0.6) } },
