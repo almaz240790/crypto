@@ -42,7 +42,12 @@ export function Footer({ status }: { status?: string }) {
           </ul>
         </div>
         <div className={s.meta}>
-          <span>{t("Platform. Данные: Binance (публичные). График: TradingView Lightweight Charts.")}</span>
+          <span>
+            {t("Platform. Данные: Binance (публичные). График:")}{" "}
+            <a href="https://www.tradingview.com/" target="_blank" rel="noopener noreferrer">
+              TradingView Lightweight Charts™
+            </a>
+          </span>
           <span>{status ?? ""}</span>
         </div>
       </div>

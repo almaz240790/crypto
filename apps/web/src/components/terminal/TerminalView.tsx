@@ -1,6 +1,6 @@
 "use client";
 
-import { createTerminal, formatPriceLabel, formatTicks, tokensFromElement, type LiqMap, type SrLevel, type Candle, type ChartType, type ScaleMode, type Terminal, type Timeframe } from "@platform/charts";
+import { createTerminal, formatPriceLabel, formatPriceShort, formatTicks, tokensFromElement, type LiqMap, type SrLevel, type Candle, type ChartType, type ScaleMode, type Terminal, type Timeframe } from "@platform/charts";
 import { DrawingController, DrawingsPrimitive, INDICATORS, defaultParams, indicatorById, visibleOn, type Drawing, type DrawingType, type DrawingsState, type IndicatorSpec, type Layer, type LayerContext, type Point, TF_SECONDS } from "@platform/charts";
 import { LineSeries, createSeriesMarkers, type ISeriesApi, type ISeriesMarkersPluginApi, type SeriesMarker, type Time, type UTCTimestamp } from "lightweight-charts";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -22,7 +22,7 @@ export const autoIndColor = (i: number): IndColor => IND_COLORS[i % 6]!;
 export type ActiveIndicator = { id: string; params: Record<string, number>; color?: IndColor };
 export type LayerKey = "structure" | "zones" | "levels" | "signals" | "patterns" | "figures" | "volume_profile" | "sr" | "liq_map";
 export type PanelKey = "funding" | "oi" | "liq" | "ls";
-export type CrosshairInfo = { candle: Candle; values: { label: string; value: number | null }[] };
+export type CrosshairInfo = { candle: Candle; values: { label: string; value: number | null; color: string }[] };
 /** Управление видом снаружи (кнопки «+/−», горячие клавиши). */
 export type TerminalControls = { zoom: (factor: number) => void; reset: () => void; clearCrosshair: () => void };
 const LONG_PRESS_MS = 300;
@@ -112,7 +112,7 @@ function precisionOf(tick: string | null): { precision: number; minMove: number 
   return { precision: i < 0 ? 0 : t.length - i - 1, minMove: Number(tick) || 0.01 };
 }
 
-type Pane = { spec: IndicatorSpec; paneIndex: number | null; series: Record<string, ISeriesApi<"Line" | "Histogram">>; colorKey: string };
+type Pane = { spec: IndicatorSpec; paneIndex: number | null; series: Record<string, ISeriesApi<"Line" | "Histogram">>; colorKey: string; base?: string };
 const OVERLAY_SECONDARY_ALPHA = 0.55;
 /** Полупрозрачный вариант токена (hex → rgba). */
 function fade(hex: string, a: number): string {
@@ -122,7 +122,7 @@ function fade(hex: string, a: number): string {
   return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`; // color-ok: из токена
 }
 /** Заголовок панели под графиком (план 2A.7): панели сворачиваются до 24 px, на телефоне раскрыто не больше трёх. */
-type PaneHead = { key: string; title: string; top: number; collapsed: boolean };
+type PaneHead = { key: string; title: string; top: number; collapsed: boolean; color?: string };
 /** Чистый график по умолчанию: сколько объектов каждого слоя рисуем поверх свечей. */
 const ZONES_MAX = 2;
 const STRUCTURE_EVENTS_MAX = 4;
@@ -145,6 +145,8 @@ const PANE_CRYPTO_PX = 80;
 /** На телефоне раскрыта одна панель индикатора (последняя добавленная), остальные свёрнуты до заголовка. */
 const MAX_EXPANDED_MOBILE = 1;
 const MOBILE_QUERY = "(max-width: 899px)";
+const MOBILE_SCALE_FONT_PX = 10;
+const DESKTOP_SCALE_FONT_PX = 11;
 const SWIPE_PX = 24;
 
 /** Обёртка React над Terminal из packages/charts: данные, индикаторы, слои, тема. */
@@ -169,7 +171,7 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
   const onVisibleFromRef = useRef(onVisibleFrom);
   const onReadyRef = useRef(onReady);
   const visibleFromRef = useRef<number | null>(null);
-  const valuesRef = useRef<Map<string, { label: string; values: (number | null)[] }>>(new Map());
+  const valuesRef = useRef<Map<string, { label: string; values: (number | null)[]; color: string }>>(new Map());
   const stickyRef = useRef(false);
   // слои зависят от времени текущей свечи (меняется раз в свечу) и содержимого линий алертов, а не от каждого тика
   const lastT = current?.time ?? null;
@@ -183,9 +185,9 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
 
   // панели под графиком в порядке сверху вниз: индикаторы в отдельных панелях и крипто-панели
   const paneEntries = useCallback(() => {
-    const out: { key: string; title: string; series: ISeriesApi<"Line" | "Histogram">[]; height: number }[] = [];
+    const out: { key: string; title: string; series: ISeriesApi<"Line" | "Histogram">[]; height: number; color?: string }[] = [];
     for (const [id, p] of panesRef.current) {
-      if (p.paneIndex !== null) out.push({ key: id, title: p.spec.title, series: Object.values(p.series), height: PANE_INDICATOR_PX });
+      if (p.paneIndex !== null) out.push({ key: id, title: p.spec.title, series: Object.values(p.series), height: PANE_INDICATOR_PX, color: p.base });
     }
     for (const [k, p] of cryptoRef.current) out.push({ key: k, title: t(PANELS.find((x) => x.id === k)?.title ?? k), series: p.series, height: PANE_CRYPTO_PX });
     return out.filter((e) => e.series.length > 0).sort((a, b) => a.series[0]!.getPane().paneIndex() - b.series[0]!.getPane().paneIndex());
@@ -197,9 +199,9 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
     const r0 = el.getBoundingClientRect();
     const next = paneEntries().map((e) => {
       const r = e.series[0]!.getPane().getHTMLElement()?.getBoundingClientRect();
-      return { key: e.key, title: e.title, top: r ? Math.round(r.top - r0.top) : 0, collapsed: collapsedRef.current.has(e.key) };
+      return { key: e.key, title: e.title, top: r ? Math.round(r.top - r0.top) : 0, collapsed: collapsedRef.current.has(e.key), color: e.color };
     });
-    setHeads((prev) => (prev.length === next.length && prev.every((h, i) => h.key === next[i]!.key && h.top === next[i]!.top && h.collapsed === next[i]!.collapsed) ? prev : next));
+    setHeads((prev) => (prev.length === next.length && prev.every((h, i) => h.key === next[i]!.key && h.top === next[i]!.top && h.collapsed === next[i]!.collapsed && h.color === next[i]!.color) ? prev : next));
   }, [paneEntries]);
 
   // все панели раскладываются разом: свёрнутые — 24 px, раскрытые — своя высота, свечам — остаток (не меньше половины)
@@ -348,7 +350,7 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
       const all = candlesRef.current;
       const i = all.findIndex((c) => c.time === time);
       if (i < 0) return;
-      const values = [...valuesRef.current.values()].map((v) => ({ label: v.label, value: v.values[i] ?? null }));
+      const values = [...valuesRef.current.values()].map((v) => ({ label: v.label, value: v.values[i] ?? null, color: v.color }));
       onCrosshairRef.current?.({ candle: all[i]!, values });
     };
     term.chart.subscribeCrosshairMove((p) => emit(typeof p.time === "number" ? p.time : null));
@@ -433,7 +435,12 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
     drawPrimRef.current?.projector?.setBars(all.map((c) => c.time), TF_SECONDS[tf]);
     drawPrimRef.current?.update({});
     const { precision, minMove } = precisionOf(tick);
-    term.chart.applyOptions({ localization: { priceFormatter: (p: number) => formatPriceLabel(p, precision), tickmarksPriceFormatter: (ps: number[]) => formatTicks(ps) } });
+    // на телефоне крупные цены без дробной части и шрифт мельче — шкала занимает меньше места
+    const narrow = window.matchMedia(MOBILE_QUERY).matches;
+    term.chart.applyOptions({
+      layout: { fontSize: narrow ? MOBILE_SCALE_FONT_PX : DESKTOP_SCALE_FONT_PX },
+      localization: { priceFormatter: (p: number) => (narrow ? formatPriceShort(p, precision) : formatPriceLabel(p, precision)), tickmarksPriceFormatter: (ps: number[]) => formatTicks(ps) },
+    });
     void minMove;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [candles, tick]);
@@ -517,14 +524,15 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
         if (paneIndex !== null && first) paneAdded(ind.id, first);
       }
       const ck = ind.color ?? autoIndColor(indicators.indexOf(ind));
+      const base = indColor(ck);
       if (pane.colorKey !== ck) {
-        const base = indColor(ck);
         spec.series.forEach((sp, i) => pane!.series[sp.key]?.applyOptions({ color: seriesColor(spec, i, base) }));
         pane.colorKey = ck;
+        pane.base = base;
       }
       const out = spec.compute(all, { ...defaultParams(spec), ...ind.params });
       const short = SHORT_TITLE[spec.id] ?? spec.title;
-      for (const sp of spec.series) valuesRef.current.set(`${ind.id}.${sp.key}`, { label: spec.series.length === 1 || sp.label === spec.title || sp.label === short ? short : `${short} ${sp.label}`, values: out[sp.key] ?? [] });
+      spec.series.forEach((sp, i) => valuesRef.current.set(`${ind.id}.${sp.key}`, { label: spec.series.length === 1 || sp.label === spec.title || sp.label === short ? short : `${short} ${sp.label}`, values: out[sp.key] ?? [], color: seriesColor(spec, i, base) }));
       for (const sp of spec.series) {
         const values = out[sp.key] ?? [];
         const data = all.map((c, i) => ({ time: c.time as UTCTimestamp, value: values[i] })).filter((d) => d.value != null) as { time: UTCTimestamp; value: number }[];
@@ -599,7 +607,8 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
     // все горизонтальные линии — в одном canvas-слое; подпись справа, приоритет решает при наложении
     const hlines: HLine[] = [];
     const { precision } = precisionOf(tick);
-    const fp = (p: number) => formatPriceLabel(p, precision);
+    const short = window.matchMedia(MOBILE_QUERY).matches;
+    const fp = (p: number) => (short ? formatPriceShort(p, precision) : formatPriceLabel(p, precision));
     const seg = (from: number, to: number | null, price: number, c: string, style: 0 | 1 | 2 | 3, width: 1 | 2 = 1, label?: string, priority = 0) => {
       const a = Math.max(snap(from), first);
       if (a > last) return;
@@ -736,7 +745,9 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
             else if (dy < -SWIPE_PX && h.collapsed) applyCollapsed(h.key, false);
           }}
         >
-          <span className={s.paneTitle}>{h.title}</span>
+          <span className={s.paneTitle} style={h.color ? { color: h.color } : undefined}>
+            {h.title}
+          </span>
           <button type="button" className={s.paneToggle} aria-expanded={!h.collapsed} aria-label={`${h.collapsed ? t("развернуть") : t("свернуть")} панель ${h.title}`} onClick={() => togglePane(h.key)}>
             {h.collapsed ? "▴" : "▾"}
           </button>

@@ -486,7 +486,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
           )}
           {cross.values.map((v) => (
             <span key={v.label} className={s.ohlcVal}>
-              {v.label} <strong>{fmtV(v.value)}</strong>
+              <span style={{ color: v.color }}>{v.label}</span> <strong>{fmtV(v.value)}</strong>
             </span>
           ))}
           {cross.candle.open_ && <span className="caption">{t("свеча не закрыта")}</span>}
