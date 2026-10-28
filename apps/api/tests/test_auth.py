@@ -35,6 +35,17 @@ def test_access_token_roundtrip_and_rejection() -> None:
         auth.decode_access_token(token + "x")
 
 
+def test_promote_owner_by_email_case_and_spaces() -> None:
+    owners = {"boss@example.com"}
+    u = User(id=1, email=" Boss@Example.com", role="user")
+    assert auth.promote_owner(u, owners) and u.role == "owner"
+    assert not auth.promote_owner(u, owners)  # уже владелец
+    admin = User(id=2, email="boss@example.com", role="admin")
+    assert not auth.promote_owner(admin, owners) and admin.role == "admin"
+    other = User(id=3, email="user@example.com", role="user")
+    assert not auth.promote_owner(other, owners) and other.role == "user"
+
+
 def test_telegram_signature() -> None:
     bot = "123:ABC"
     data = {"id": 7, "first_name": "Al", "auth_date": int(datetime.now(tz=UTC).timestamp())}
