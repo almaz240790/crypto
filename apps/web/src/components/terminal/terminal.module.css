@@ -644,7 +644,7 @@
 .ask textarea {
   width: 100%;
   font: inherit;
-  font-size: 13px;
+  font-size: 16px;
   padding: 6px 8px;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -662,6 +662,79 @@
 
 .ask p {
   margin: 0;
+}
+
+.askExamples {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.askExample {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg);
+  color: var(--text-2);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.askExample:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.askSubmit {
+  height: 40px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--text-on-accent);
+  font: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.askSubmit:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* ответ — крупно и на своей подложке, чтобы его было видно сразу */
+.askAnswer {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  background: var(--surface-raised);
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.askNote {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--accent-fill);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.askError {
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--down);
+  background: var(--down-fill);
+  color: var(--down);
+  font-size: 14px;
 }
 
 /* мультичарт (план 3.17 v2): 2 или 4 графика, десктоп */

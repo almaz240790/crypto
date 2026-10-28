@@ -23,6 +23,7 @@ import { createAlert, getAlerts, type Alert } from "@/lib/alerts";
 import { getCandles, toCandle } from "@/lib/chart";
 import { useTerminalData } from "./useTerminalData";
 import { useT } from "@/i18n/client";
+import { getBillingMe } from "@/lib/billing";
 
 const TYPE_LABEL: Record<ChartType, string> = { candles: "Свечи", bars: "Бары", line: "Линия", heikin: "Heikin Ashi" };
 const LAYER_LABEL: Record<LayerKey, string> = { structure: "Структура", zones: "Зоны", levels: "Уровни", signals: "Сигналы", patterns: "Паттерны", figures: "Фигуры", volume_profile: "Профиль объёма" };
@@ -74,7 +75,16 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
   const { user } = useAuth();
   const [saved, setSaved] = useState<Saved | null>(null);
   const [instruments, setInstruments] = useState<Instrument[]>([]);
-  const [sheet, setSheet] = useState<"indicators" | "layers" | "draw" | "found" | "alert" | null>(null);
+  const [sheet, setSheet] = useState<"indicators" | "layers" | "draw" | "found" | "alert" | "ask" | null>(null);
+  // вопросы о графике — Premium (админы и владелец — всегда); тариф узнаём один раз после входа
+  const [plan, setPlan] = useState<string | null>(null);
+  useEffect(() => {
+    if (!user || user.role === "admin" || user.role === "owner") return;
+    getBillingMe()
+      .then((b) => setPlan(b.plan))
+      .catch(() => setPlan("free"));
+  }, [user]);
+  const askAccess: "guest" | "plan" | "ok" | null = !user ? "guest" : user.role === "admin" || user.role === "owner" || plan === "premium" ? "ok" : plan === null ? null : "plan";
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [alertDraft, setAlertDraft] = useState<{ price: string; op: "cross_up" | "cross_down" | "enter_range"; price2: string; frequency: "once" | "every" | "once_per_bar" }>({ price: "", op: "cross_up", price2: "", frequency: "once" });
   const [foundSel, setFoundSel] = useState<number | null>(null);
@@ -540,7 +550,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
           </p>
         )}
         {sheet && (
-          <BottomSheet title={sheet === "indicators" ? t("Индикаторы") : sheet === "layers" ? t("Слои") : sheet === "found" ? t("Найдено на графике") : sheet === "alert" ? t("Алерт по цене") : t("Рисование")} onClose={closeSheet}>
+          <BottomSheet title={sheet === "indicators" ? t("Индикаторы") : sheet === "layers" ? t("Слои") : sheet === "found" ? t("Найдено на графике") : sheet === "ask" ? t("Вопрос о графике") : sheet === "alert" ? t("Алерт по цене") : t("Рисование")} onClose={closeSheet}>
             {sheet === "alert" && (
               <form
                 aria-label={t("новый алерт по цене")}
@@ -573,13 +583,13 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
                 </p>
               </form>
             )}
+            {sheet === "ask" && <AskBox symbol={symbol} tf={tf} access={askAccess} heading={false} />}
             {sheet === "found" && (
               <>
                 <strong className={s.objHead}>{t("Фигуры")}</strong>
                 <FiguresList items={data.figures?.items ?? []} stats={data.figures?.stats ?? {}} selected={figureSel} onSelect={setFigureSel} />
                 <strong className={s.objHead}>{t("Свечные паттерны")}</strong>
                 <FoundList items={data.patterns?.items ?? []} stats={data.patterns?.stats ?? {}} selected={foundSel} onSelect={setFoundSel} tf={tf} symbol={symbol} canExplain={!!user} />
-                {user && <AskBox symbol={symbol} tf={tf} />}
               </>
             )}
             {sheet === "draw" &&
@@ -613,7 +623,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
                 >{t("удалить все")}</button>
               </>
             )}
-            {sheet === "found" || sheet === "alert"
+            {sheet === "found" || sheet === "alert" || sheet === "ask"
               ? null
               : sheet === "indicators"
               ? [
@@ -656,7 +666,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
           onDeleteLayout={removeLayout}
           authed={!!user}
           layoutsLimit={user ? null : 0}
-          found={{ count: foundCount, items: data.patterns?.items ?? [], stats: data.patterns?.stats ?? {}, selected: foundSel, onSelect: setFoundSel, tf, symbol, canExplain: !!user, figures: data.figures?.items ?? [], figureStats: data.figures?.stats ?? {}, selectedFigure: figureSel, onSelectFigure: setFigureSel }}
+          found={{ count: foundCount, items: data.patterns?.items ?? [], stats: data.patterns?.stats ?? {}, selected: foundSel, onSelect: setFoundSel, tf, symbol, canExplain: !!user, askAccess, figures: data.figures?.items ?? [], figureStats: data.figures?.stats ?? {}, selectedFigure: figureSel, onSelectFigure: setFigureSel }}
         />
       </div>
       <div className={s.bottom}>
@@ -664,6 +674,9 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
           {t("Индикаторы ({n})", { n: st.indicators.length + st.panels.length })}
         </button>
         <button type="button" className={s.chip} aria-pressed={sheet === "layers"} onClick={() => setSheet(sheet === "layers" ? null : "layers")}>{t("Слои")}</button>
+        <button type="button" className={`${s.chip} ${s.mobileOnly}`} aria-pressed={sheet === "ask"} onClick={() => setSheet(sheet === "ask" ? null : "ask")}>
+          {t("Спросить")}
+        </button>
         <button type="button" className={`${s.chip} ${s.mobileOnly}`} aria-pressed={sheet === "found"} onClick={() => setSheet(sheet === "found" ? null : "found")}>
           {t("Найдено ({n})", { n: foundCount })}
         </button>

@@ -8,7 +8,7 @@ const candle = (i: number) => {
   return { t: T0 + i * 14400, o: o.toFixed(2), h: (Math.max(o, c) + 1).toFixed(2), l: (Math.min(o, c) - 1).toFixed(2), c: c.toFixed(2), v: "1000", open: false };
 };
 
-export type MockServer = { drawings: Record<string, unknown>[]; layout: Record<string, unknown> | null; layouts?: Record<string, Record<string, unknown>>; alerts?: Record<string, unknown>[] };
+export type MockServer = { drawings: Record<string, unknown>[]; layout: Record<string, unknown> | null; layouts?: Record<string, Record<string, unknown>>; alerts?: Record<string, unknown>[]; plan?: "free" | "pro" | "premium" };
 
 export async function mock(page: Page, calls: string[], authed = false, server: MockServer = { drawings: [], layout: null }) {
   server.layouts ??= {};
@@ -21,6 +21,7 @@ export async function mock(page: Page, calls: string[], authed = false, server: 
     const json = (status: number, body: unknown) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
     if (p === "/v1/auth/refresh") return json(authed ? 200 : 401, authed ? { access_token: "t" } : { detail: "нет" });
     if (p === "/v1/auth/me") return json(200, { id: 7, email: "t@example.com", name: null, email_verified: true, role: "user", locale: "ru", timezone: "UTC", theme: "system", risk: {} });
+    if (p === "/v1/billing/me") return json(200, { plan: server.plan ?? "premium", billing_enabled: false, balance_usd: "0", subscription: null });
     if (p === "/v1/instruments") return json(200, [{ symbol: "BTCUSDT", tick_size: "0.1" }, { symbol: "ETHUSDT", tick_size: "0.01" }]);
     if (p === "/v1/chart/candles") {
       const tf = u.searchParams.get("tf");

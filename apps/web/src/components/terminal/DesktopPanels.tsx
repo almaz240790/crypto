@@ -70,7 +70,7 @@ type Props = {
   layoutsLimit: number | null;
   /** Перетаскивание левого края панели (ширина хранится в TerminalPage). */
   onResize?: { start: (e: React.PointerEvent<HTMLElement>) => void; step: (delta: number) => void; active: boolean };
-  found: { count?: number; items: PatternOnChart[]; stats: Record<string, PatternStat>; selected: number | null; onSelect: (id: number | null) => void; tf: string; symbol: string; canExplain: boolean; figures: FigureOnChart[]; figureStats: Record<string, FigureStat>; selectedFigure: number | null; onSelectFigure: (id: number | null) => void };
+  found: { count?: number; items: PatternOnChart[]; stats: Record<string, PatternStat>; selected: number | null; onSelect: (id: number | null) => void; tf: string; symbol: string; canExplain: boolean; askAccess: "guest" | "plan" | "ok" | null; figures: FigureOnChart[]; figureStats: Record<string, FigureStat>; selectedFigure: number | null; onSelectFigure: (id: number | null) => void };
 };
 
 const LAYER_LABEL: Record<LayerKey, string> = { structure: "Структура", zones: "Зоны", levels: "Уровни", signals: "Сигналы", patterns: "Паттерны", figures: "Фигуры", volume_profile: "Профиль объёма" };
@@ -110,11 +110,11 @@ export function ObjectsPanel(p: Props) {
       </div>
       {tab === "found" && (
         <>
+          <AskBox symbol={p.found.symbol} tf={p.found.tf} access={p.found.askAccess} />
           <strong className={s.objHead}>{t("Фигуры")}</strong>
           <FiguresList items={p.found.figures} stats={p.found.figureStats} selected={p.found.selectedFigure} onSelect={p.found.onSelectFigure} />
           <strong className={s.objHead}>{t("Свечные паттерны")}</strong>
           <FoundList items={p.found.items} stats={p.found.stats} selected={p.found.selected} onSelect={p.found.onSelect} tf={p.found.tf} symbol={p.found.symbol} canExplain={p.found.canExplain} />
-          {p.found.canExplain && <AskBox symbol={p.found.symbol} tf={p.found.tf} />}
         </>
       )}
       {tab === "drawings" && (
