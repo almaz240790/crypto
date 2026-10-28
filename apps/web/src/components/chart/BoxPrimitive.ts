@@ -28,6 +28,8 @@ export type Box = {
   labelBg?: string;
   /** Цвет подписи; по умолчанию — цвет рамки. */
   labelColor?: string;
+  /** Размер подписи, px (по умолчанию 11). */
+  labelSize?: number;
   highlighted?: boolean;
 };
 
@@ -49,7 +51,7 @@ class BoxRenderer implements IPrimitivePaneRenderer {
         const height = Math.max(1, Math.round(Math.abs(y2 - y1) * v));
         if (this.part === "labels") {
           if (!box.label) continue;
-          ctx.font = `${11 * r}px ui-monospace, monospace`;
+          ctx.font = `${(box.labelSize ?? 11) * r}px ui-monospace, monospace`;
           ctx.textBaseline = "top";
           const tw = ctx.measureText(box.label).width;
           const pad = 4 * r;

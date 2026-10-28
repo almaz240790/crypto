@@ -12,7 +12,7 @@ describe("зоны", () => {
   it("пересекающиеся склеиваются, отработанные отброшены, ближайшая к цене первая", () => {
     const g = mergeZones([z("ob", "up", 100, 110), z("sd", "up", 105, 115), z("fvg", "down", 130, 135), z("ob", "down", 90, 95, "touched")], 112);
     expect(g).toHaveLength(2);
-    expect(g[0]).toMatchObject({ bottom: 100, top: 115, dir: "up", names: ["ордер-блок покупок", "зона спроса"] });
+    expect(g[0]).toMatchObject({ bottom: 100, top: 115, dir: "up", names: ["ордер-блок покупок", "зона спроса"], codes: ["OB", "SD"] });
     expect(g[1]!.names).toEqual(["разрыв цены вниз"]);
   });
   it("разные направления в одной группе — mixed", () => {
