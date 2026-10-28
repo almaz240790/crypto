@@ -826,3 +826,40 @@
     display: inline;
   }
 }
+
+/* список уровней в «Найдено»: от верхних к нижним, как на шкале */
+.levelList {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0 8px 4px;
+  list-style: none;
+  font-size: 13px;
+}
+
+.levelList li {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  padding: 3px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.levelLiq {
+  color: var(--warn);
+}
+
+.levelNote {
+  margin: 4px 8px 8px;
+}
+
+/* вкладка «Найдено» прокручивается целиком: вопрос, уровни, фигуры и паттерны не сжимают друг друга */
+.objScroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.objScroll .objList {
+  overflow: visible;
+}

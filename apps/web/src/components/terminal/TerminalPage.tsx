@@ -13,7 +13,7 @@ import { getInstruments, type Instrument } from "@/lib/user";
 import s from "./terminal.module.css";
 import { BottomSheet } from "./BottomSheet";
 import { DrawToolbar, ObjectsPanel } from "./DesktopPanels";
-import { AskBox, FiguresList, FoundList } from "./FoundPanel";
+import { AskBox, FiguresList, FoundList, LevelsList } from "./FoundPanel";
 import { download, snapshotPng } from "./snapshot";
 import { TEMPLATES } from "./templates";
 import { PANELS, TerminalView, type ActiveIndicator, type CrosshairInfo, type LayerKey, type PanelKey, type TerminalControls } from "./TerminalView";
@@ -24,9 +24,10 @@ import { getCandles, toCandle } from "@/lib/chart";
 import { useTerminalData } from "./useTerminalData";
 import { useT } from "@/i18n/client";
 import { getBillingMe } from "@/lib/billing";
+import { liquidationMap, supportResistance } from "@platform/charts";
 
 const TYPE_LABEL: Record<ChartType, string> = { candles: "Свечи", bars: "Бары", line: "Линия", heikin: "Heikin Ashi" };
-const LAYER_LABEL: Record<LayerKey, string> = { structure: "Структура", zones: "Зоны", levels: "Уровни", signals: "Сигналы", patterns: "Паттерны", figures: "Фигуры", volume_profile: "Профиль объёма" };
+const LAYER_LABEL: Record<LayerKey, string> = { structure: "Структура", zones: "Зоны", levels: "Макс./мин. дня и недели", signals: "Сигналы", patterns: "Паттерны", figures: "Фигуры", volume_profile: "Профиль объёма", sr: "Поддержка и сопротивление", liq_map: "Карта ликвидаций (оценка)" };
 const DEFAULT_INDICATORS: ActiveIndicator[] = [{ id: "ema", params: { period: 50 } }];
 const TOOLS: DrawingType[] = ["hline", "hray", "vline", "trend", "ray", "extended", "channel", "rect", "fib", "position-long", "position-short", "note", "ruler"];
 const STORAGE = "pl-terminal";
@@ -38,8 +39,8 @@ const clampW = (w: number) => Math.round(Math.min(OBJECTS_W_MAX, Math.max(OBJECT
 
 type Saved = { type: ChartType; indicators: ActiveIndicator[]; layers: Record<LayerKey, boolean>; layers_v?: number; panels: PanelKey[]; scale: ScaleMode; overlay: string | null; updated_at?: number };
 /** Версия набора слоёв по умолчанию: при смене старые сохранённые слои сбрасываются на чистый график. */
-const LAYERS_VERSION = 2;
-const DEFAULT_LAYERS: Record<LayerKey, boolean> = { structure: false, zones: true, levels: true, signals: true, patterns: false, figures: true, volume_profile: false };
+const LAYERS_VERSION = 3;
+const DEFAULT_LAYERS: Record<LayerKey, boolean> = { structure: false, zones: true, levels: false, signals: true, patterns: false, figures: true, volume_profile: false, sr: true, liq_map: true };
 
 /** Слои из сохранённого состояния: старую версию заменяем чистым набором. */
 function migrate(p: Partial<Saved>): Partial<Saved> {
@@ -140,6 +141,9 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
   const data = useTerminalData(symbol, tf, user ? getAccessToken() : null);
   // «Найдено» — по видимой части графика, а не по всей загруженной истории
+  // поддержка/сопротивление и карта ликвидаций: по закрытым свечам, пересчёт раз в свечу
+  const srLevels = useMemo(() => supportResistance(data.candles ?? []), [data.candles]);
+  const liqMap = useMemo(() => liquidationMap(data.candles ?? [], data.derivatives?.oi.map((x) => ({ t: x.t, v: Number(x.v) })) ?? null), [data.candles, data.derivatives]);
   // «Найдено»: значимые паттерны и неотменённые фигуры на видимом участке
   const foundCount = (data.patterns?.items ?? []).filter((p) => p.significant && (visibleFrom === null || p.t >= visibleFrom)).length + (data.figures?.items ?? []).filter((f) => f.status !== "invalidated" && (visibleFrom === null || f.end_t >= visibleFrom)).length;
 
@@ -481,7 +485,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
           <div className={s.empty}>{t("Таймфреймы 1m–15m доступны после входа на тарифе Pro.")}{" "}<Link href="/pricing">{t("Тарифы")}</Link>
           </div>
         ) : (
-          <TerminalView candles={data.candles ?? []} current={data.current} tf={tf} type={st.type} indicators={st.indicators} layersOn={st.layers} layers={data.layers} patterns={data.patterns?.items} highlight={foundSel} figures={data.figures?.items} highlightFigure={figureSel} alertLines={alerts.filter((a) => a.type === "price" && typeof a.condition.price === "string").map((a) => ({ id: a.id, price: Number(a.condition.price), label: a.condition.op === "cross_up" ? "↑" : a.condition.op === "cross_down" ? "↓" : "↔" }))} derivatives={data.derivatives} panels={st.panels} tick={data.tick} onNeedOlder={data.loadOlder} drawings={drawingsProps} onCrosshair={setCross} onVisibleFrom={setVisibleFrom} onReady={(c) => { controls.current = c; }} scale={st.scale} overlay={overlayCandles} />
+          <TerminalView sr={srLevels} liq={liqMap} candles={data.candles ?? []} current={data.current} tf={tf} type={st.type} indicators={st.indicators} layersOn={st.layers} layers={data.layers} patterns={data.patterns?.items} highlight={foundSel} figures={data.figures?.items} highlightFigure={figureSel} alertLines={alerts.filter((a) => a.type === "price" && typeof a.condition.price === "string").map((a) => ({ id: a.id, price: Number(a.condition.price), label: a.condition.op === "cross_up" ? "↑" : a.condition.op === "cross_down" ? "↓" : "↔" }))} derivatives={data.derivatives} panels={st.panels} tick={data.tick} onNeedOlder={data.loadOlder} drawings={drawingsProps} onCrosshair={setCross} onVisibleFrom={setVisibleFrom} onReady={(c) => { controls.current = c; }} scale={st.scale} overlay={overlayCandles} />
         )}
         {sel && (
           <div className={s.card} role="region" aria-label={t("выбранный рисунок")}>
@@ -586,6 +590,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
             {sheet === "ask" && <AskBox symbol={symbol} tf={tf} access={askAccess} heading={false} />}
             {sheet === "found" && (
               <>
+                <LevelsList sr={srLevels} liq={liqMap} tick={data.tick} />
                 <strong className={s.objHead}>{t("Фигуры")}</strong>
                 <FiguresList items={data.figures?.items ?? []} stats={data.figures?.stats ?? {}} selected={figureSel} onSelect={setFigureSel} />
                 <strong className={s.objHead}>{t("Свечные паттерны")}</strong>
@@ -666,7 +671,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
           onDeleteLayout={removeLayout}
           authed={!!user}
           layoutsLimit={user ? null : 0}
-          found={{ count: foundCount, items: data.patterns?.items ?? [], stats: data.patterns?.stats ?? {}, selected: foundSel, onSelect: setFoundSel, tf, symbol, canExplain: !!user, askAccess, figures: data.figures?.items ?? [], figureStats: data.figures?.stats ?? {}, selectedFigure: figureSel, onSelectFigure: setFigureSel }}
+          found={{ count: foundCount, items: data.patterns?.items ?? [], stats: data.patterns?.stats ?? {}, selected: foundSel, onSelect: setFoundSel, tf, symbol, canExplain: !!user, askAccess, sr: srLevels, liq: liqMap, tick: data.tick, figures: data.figures?.items ?? [], figureStats: data.figures?.stats ?? {}, selectedFigure: figureSel, onSelectFigure: setFigureSel }}
         />
       </div>
       <div className={s.bottom}>

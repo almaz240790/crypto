@@ -8,6 +8,7 @@ import type { Timeframe } from "@/lib/timeframes";
 import s from "./terminal.module.css";
 import { useT } from "@/i18n/client";
 import type { T } from "@/i18n";
+import type { LiqMap, SrLevel } from "@platform/charts";
 
 /** Панель «Найдено на графике» (план 3.17, 2A.10): свечные паттерны с контекстом и исторической
  * отработкой. Тексты — только разрешённые формулировки 2A.10.6. */
@@ -178,6 +179,44 @@ export function FiguresList({ items, stats, selected, onSelect }: { items: Figur
 
 
 /** Поле вопроса о графике (план 3.17, 4B.7): Premium; остальным — пояснение из ответа сервера. */
+/** Уровни списком (план 2A.4, 2A.6): на графике подписи могут скрываться при наложении, здесь видны все. */
+export function LevelsList({ sr, liq, tick }: { sr: SrLevel[]; liq: LiqMap | null; tick: string | null }) {
+  const t = useT();
+  const dec = tick && tick.includes(".") ? tick.replace(/0+$/, "").split(".")[1]!.length : 0;
+  const px = (p: number) => formatPrice(p.toFixed(tick ? dec : 2));
+  if (sr.length === 0 && !liq) return null;
+  const res = sr.filter((l) => l.side === "resistance").sort((a, b) => b.price - a.price);
+  const sup = sr.filter((l) => l.side === "support").sort((a, b) => b.price - a.price);
+  return (
+    <>
+      <strong className={s.objHead}>{t("Уровни")}</strong>
+      <ul className={s.levelList} aria-label={t("уровни поддержки и сопротивления")}>
+        {liq?.topShort && (
+          <li title={t("Оценка по объёму и открытому интересу для плеч 10–100×, не данные биржи.")}>
+            <span className={s.levelLiq}>{t("Ликвидации шортов ≈")}</span> <span className="num">{px(liq.topShort.price)}</span>
+          </li>
+        )}
+        {res.map((l) => (
+          <li key={`r${l.price}`}>
+            <span className="down">{t("Сопротивление")}</span> <span className="num">{px(l.price)}</span> <span className="caption">{t("касаний: {n}", { n: l.touches })}</span>
+          </li>
+        ))}
+        {sup.map((l) => (
+          <li key={`s${l.price}`}>
+            <span className="up">{t("Поддержка")}</span> <span className="num">{px(l.price)}</span> <span className="caption">{t("касаний: {n}", { n: l.touches })}</span>
+          </li>
+        ))}
+        {liq?.topLong && (
+          <li title={t("Оценка по объёму и открытому интересу для плеч 10–100×, не данные биржи.")}>
+            <span className={s.levelLiq}>{t("Ликвидации лонгов ≈")}</span> <span className="num">{px(liq.topLong.price)}</span>
+          </li>
+        )}
+      </ul>
+      {liq && <p className={`caption ${s.levelNote}`}>{t("Карта ликвидаций — расчётная оценка по объёму и открытому интересу для плеч 10–100×, а не данные биржи.")}</p>}
+    </>
+  );
+}
+
 /** Готовые вопросы: человеку без опыта проще начать с примера. */
 const ASK_EXAMPLES = [
   "Какой сейчас тренд на старших таймфреймах?",
