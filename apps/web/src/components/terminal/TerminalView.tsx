@@ -8,16 +8,23 @@ import { BoxPrimitive } from "@/components/chart/BoxPrimitive";
 import { LevelsPrimitive, type HLine } from "@/components/chart/LevelsPrimitive";
 import { VolumeProfilePrimitive, type VpTokens } from "@/components/chart/VolumeProfilePrimitive";
 import { STATUS_LABEL } from "@/components/ui/Badge";
+import { formatUsdCompact } from "@/lib/format";
 import { PATTERN_LABEL, type Derivatives, type FigureOnChart, type LayersResponse, type PatternOnChart } from "@/lib/chart";
 import s from "./terminal.module.css";
 import { useT } from "@/i18n/client";
 
-export type ActiveIndicator = { id: string; params: Record<string, number> };
+/** Цвет индикатора — только токен дизайн-системы (план 5.3): палитра --ind-1…6 и смысловые цвета. */
+export type IndColor = "ind1" | "ind2" | "ind3" | "ind4" | "ind5" | "ind6" | "accent" | "up" | "down" | "warn";
+export const IND_COLORS: IndColor[] = ["ind1", "ind2", "ind3", "ind4", "ind5", "ind6", "accent", "up", "down", "warn"];
+export const IND_COLOR_VAR: Record<IndColor, string> = { ind1: "--ind-1", ind2: "--ind-2", ind3: "--ind-3", ind4: "--ind-4", ind5: "--ind-5", ind6: "--ind-6", accent: "--accent", up: "--up", down: "--down", warn: "--warn" };
+/** Цвет по умолчанию — по порядку в списке, чтобы соседние индикаторы не совпадали. */
+export const autoIndColor = (i: number): IndColor => IND_COLORS[i % 6]!;
+export type ActiveIndicator = { id: string; params: Record<string, number>; color?: IndColor };
 export type LayerKey = "structure" | "zones" | "levels" | "signals" | "patterns" | "figures" | "volume_profile" | "sr" | "liq_map";
 export type PanelKey = "funding" | "oi" | "liq" | "ls";
 export type CrosshairInfo = { candle: Candle; values: { label: string; value: number | null }[] };
 /** Управление видом снаружи (кнопки «+/−», горячие клавиши). */
-export type TerminalControls = { zoom: (factor: number) => void; reset: () => void };
+export type TerminalControls = { zoom: (factor: number) => void; reset: () => void; clearCrosshair: () => void };
 const LONG_PRESS_MS = 300;
 const VISIBLE_DEBOUNCE_MS = 200;
 export const PANELS: { id: PanelKey; title: string }[] = [
@@ -105,7 +112,15 @@ function precisionOf(tick: string | null): { precision: number; minMove: number 
   return { precision: i < 0 ? 0 : t.length - i - 1, minMove: Number(tick) || 0.01 };
 }
 
-type Pane = { spec: IndicatorSpec; paneIndex: number | null; series: Record<string, ISeriesApi<"Line" | "Histogram">> };
+type Pane = { spec: IndicatorSpec; paneIndex: number | null; series: Record<string, ISeriesApi<"Line" | "Histogram">>; colorKey: string };
+const OVERLAY_SECONDARY_ALPHA = 0.55;
+/** Полупрозрачный вариант токена (hex → rgba). */
+function fade(hex: string, a: number): string {
+  const m = /^#([0-9a-f]{6})$/i.exec(hex);
+  if (!m) return hex;
+  const n = parseInt(m[1]!, 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`; // color-ok: из токена
+}
 /** Заголовок панели под графиком (план 2A.7): панели сворачиваются до 24 px, на телефоне раскрыто не больше трёх. */
 type PaneHead = { key: string; title: string; top: number; collapsed: boolean };
 /** Чистый график по умолчанию: сколько объектов каждого слоя рисуем поверх свечей. */
@@ -124,8 +139,11 @@ const LEVEL_LABEL: Record<string, string> = { pdh: "макс. дня", pdl: "м�
 const CLOSED = ["closed_sl", "closed_be", "closed_tp3", "closed_time", "expired", "cancelled"];
 const PANE_COLLAPSED_PX = 24;
 const PANE_INDICATOR_PX = 90;
+/** Короткие имена в карточке значений: «BB Верхняя» вместо «Bollinger Bands Верхняя». */
+const SHORT_TITLE: Record<string, string> = { bb: "BB", keltner: "KC", vwap: "VWAP", stoch: "Stoch", supertrend: "Supertrend", ichimoku: "Ichimoku" };
 const PANE_CRYPTO_PX = 80;
-const MAX_EXPANDED_MOBILE = 3;
+/** На телефоне раскрыта одна панель индикатора (последняя добавленная), остальные свёрнуты до заголовка. */
+const MAX_EXPANDED_MOBILE = 1;
 const MOBILE_QUERY = "(max-width: 899px)";
 const SWIPE_PX = 24;
 
@@ -184,6 +202,14 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
     setHeads((prev) => (prev.length === next.length && prev.every((h, i) => h.key === next[i]!.key && h.top === next[i]!.top && h.collapsed === next[i]!.collapsed) ? prev : next));
   }, [paneEntries]);
 
+  // все панели раскладываются разом: свёрнутые — 24 px, раскрытые — своя высота, свечам — остаток (не меньше половины)
+  const layoutAll = useCallback(() => {
+    const term = termRef.current;
+    if (!term) return;
+    const want = new Map(paneEntries().map((e) => [e.series[0]!.getPane(), collapsedRef.current.has(e.key) ? PANE_COLLAPSED_PX : e.height] as const));
+    term.layoutPanes(want);
+  }, [paneEntries]);
+
   const applyCollapsed = useCallback(
     (key: string, collapsed: boolean) => {
       const e = paneEntries().find((x) => x.key === key);
@@ -192,10 +218,10 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
       else collapsedRef.current.delete(key);
       // в свёрнутой панели прячем и метки последнего значения на шкале (иначе «0.0» и огромные числа OI)
       e.series.forEach((sr) => sr.applyOptions({ visible: !collapsed, lastValueVisible: !collapsed && sr.seriesType() === "Line" }));
-      termRef.current?.setPaneHeight(e.series[0]!.getPane(), collapsed ? PANE_COLLAPSED_PX : e.height);
+      layoutAll();
       requestAnimationFrame(relayout);
     },
-    [paneEntries, relayout],
+    [paneEntries, relayout, layoutAll],
   );
 
   // новая панель: наблюдаем её размер; на телефоне раскрытых не больше трёх — старшие сворачиваются
@@ -207,9 +233,10 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
         const open = paneEntries().filter((e) => e.key !== key && !collapsedRef.current.has(e.key));
         for (const e of open.slice(0, Math.max(0, open.length + 1 - MAX_EXPANDED_MOBILE))) applyCollapsed(e.key, true);
       }
+      layoutAll();
       requestAnimationFrame(relayout);
     },
-    [paneEntries, applyCollapsed, relayout],
+    [paneEntries, applyCollapsed, relayout, layoutAll],
   );
 
   const togglePane = useCallback((key: string) => applyCollapsed(key, !collapsedRef.current.has(key)), [applyCollapsed]);
@@ -252,7 +279,16 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
     // после загрузки веб-шрифта шкалу нужно перемерить: иначе ширина подписей посчитана по запасному шрифту
     void document.fonts?.ready.then(() => termRef.current?.chart.applyOptions({ layout: { fontFamily: tokensFromElement(el).fontMono } }));
     termRef.current = term;
-    onReadyRef.current?.({ zoom: (f) => term.zoom(f), reset: () => term.resetView(150) });
+    onReadyRef.current?.({
+      zoom: (f) => term.zoom(f),
+      reset: () => term.resetView(150),
+      clearCrosshair: () => {
+        stickyRef.current = false;
+        delete el.dataset.sticky;
+        term.chart.clearCrosshairPosition();
+        onCrosshairRef.current?.(null);
+      },
+    });
     (el as HTMLElement & { __chart?: unknown }).__chart = term.chart;
     const box = new BoxPrimitive();
     boxRef.current = box;
@@ -445,6 +481,14 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
     if (!term) return;
     const tokens = tokensFromElement(ref.current!);
     const color = (k: string) => (({ accent: tokens.accent, up: tokens.up, down: tokens.down, warn: tokens.warn, text2: tokens.text2, text3: tokens.text3 }) as Record<string, string>)[k] ?? tokens.accent;
+    const indColor = (c: IndColor) => (c.startsWith("ind") ? (tokens.ind[Number(c.slice(3)) - 1] ?? tokens.accent) : color(c));
+    // первая линия — цвет индикатора; остальные линии наложения — тот же цвет бледнее, у панелей — свои смысловые
+    const seriesColor = (spec: IndicatorSpec, i: number, base: string) => {
+      if (i === 0) return base;
+      if (spec.pane === "overlay") return fade(base, OVERLAY_SECONDARY_ALPHA);
+      // на панели вторая линия нейтральная, чтобы не сливаться с цветом индикатора; гистограмма — свои цвета
+      return spec.series[i]!.kind === "histogram" ? color(spec.series[i]!.color) : tokens.text2;
+    };
     const want = new Map(indicators.map((i) => [i.id, i]));
     for (const [id, pane] of panesRef.current) {
       if (!want.has(id)) {
@@ -464,14 +508,23 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
         const series: Pane["series"] = {};
         for (const sp of spec.series) {
           series[sp.key] = sp.kind === "histogram" ? term.addHistogram(paneIndex ?? 0, color(sp.color)) : term.addLine(paneIndex ?? 0, color(sp.color), sp.width ?? 1);
+          // у линий на графике цены метки на шкале не нужны: их значения есть в карточке, а шкала остаётся читаемой
+          if (spec.pane === "overlay") series[sp.key]!.applyOptions({ lastValueVisible: false });
         }
-        pane = { spec, paneIndex, series };
+        pane = { spec, paneIndex, series, colorKey: "" };
         panesRef.current.set(ind.id, pane);
         const first = Object.values(series)[0];
         if (paneIndex !== null && first) paneAdded(ind.id, first);
       }
+      const ck = ind.color ?? autoIndColor(indicators.indexOf(ind));
+      if (pane.colorKey !== ck) {
+        const base = indColor(ck);
+        spec.series.forEach((sp, i) => pane!.series[sp.key]?.applyOptions({ color: seriesColor(spec, i, base) }));
+        pane.colorKey = ck;
+      }
       const out = spec.compute(all, { ...defaultParams(spec), ...ind.params });
-      for (const sp of spec.series) valuesRef.current.set(`${ind.id}.${sp.key}`, { label: `${spec.title} ${sp.label}`.replace(/ (EMA|SMA|RSI|VWAP|ATR)$/, ""), values: out[sp.key] ?? [] });
+      const short = SHORT_TITLE[spec.id] ?? spec.title;
+      for (const sp of spec.series) valuesRef.current.set(`${ind.id}.${sp.key}`, { label: spec.series.length === 1 || sp.label === spec.title || sp.label === short ? short : `${short} ${sp.label}`, values: out[sp.key] ?? [] });
       for (const sp of spec.series) {
         const values = out[sp.key] ?? [];
         const data = all.map((c, i) => ({ time: c.time as UTCTimestamp, value: values[i] })).filter((d) => d.value != null) as { time: UTCTimestamp; value: number }[];
@@ -650,8 +703,9 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
       const m = liqMap;
       heat = { step: m.step, bars: m.buckets.map((b) => ({ price: b.price, weight: (b.long + b.short) / m.max })), fill: (w: number) => alpha(tokens.warn, 0.08 + 0.42 * w) };
       const near = Math.max(first, last - LIQ_LINE_BARS * step);
-      if (m.topLong) seg(near, null, m.topLong.price, tokens.warn, 1, 1, t("ликвидации лонгов ≈"), 2);
-      if (m.topShort) seg(near, null, m.topShort.price, tokens.warn, 1, 1, t("ликвидации шортов ≈"), 2);
+      // крупнейшие скопления с суммой: самое большое на сторону — важнее при наложении подписей
+      m.topLongs.forEach((b, i) => seg(near, null, b.price, tokens.warn, 1, 1, t("ликв. лонгов {usd} · {p}", { usd: formatUsdCompact(b.long) }), i === 0 ? 2 : 1));
+      m.topShorts.forEach((b, i) => seg(near, null, b.price, tokens.warn, 1, 1, t("ликв. шортов {usd} · {p}", { usd: formatUsdCompact(b.short) }), i === 0 ? 2 : 1));
     }
     levelsRef.current?.set(hlines, heat, { surface: tokens.surface, font: tokens.fontMono });
     boxRef.current.setBoxes(boxes);

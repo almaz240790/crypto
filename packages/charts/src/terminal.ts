@@ -29,6 +29,8 @@ export type PaneSeries = ISeriesApi<"Line" | "Histogram">;
  * тема из токенов, слои. Без React — его обёртка живёт в apps/web.
  */
 const MIN_STRETCH = 0.01;
+/** Главной панели (свечам) — не меньше половины высоты, сколько бы индикаторов ни добавили. */
+const MAIN_MIN_SHARE = 0.5;
 /** Масштаб колесом: множитель на пиксель deltaY (300 px ≈ ×2.1); с Ctrl/⌘ (pinch) — втрое сильнее. */
 const WHEEL_ZOOM = 0.0025;
 /** Прокрутка горизонтальным жестом: доля «один пиксель — один бар». */
@@ -150,6 +152,26 @@ export class Terminal {
     const pane = this.chart.panes()[idx] ?? this.chart.addPane();
     pane.setHeight(height);
     return idx;
+  }
+
+  /**
+   * Раскладка всех панелей сразу (план 2A.7): желаемые высоты дополнительных панелей в пикселях,
+   * главная получает остаток, но не меньше MAIN_MIN_SHARE высоты. Высоты задаются stretch-факторами
+   * в пикселях — так панели не «плывут» после сворачивания и добавления.
+   */
+  layoutPanes(heights: Map<IPaneApi<Time>, number>): void {
+    const panes = this.chart.panes();
+    if (panes.length < 2) return;
+    const total = panes.reduce((acc, p) => acc + p.getHeight(), 0);
+    if (total <= 0) return;
+    const want = panes.slice(1).map((p) => Math.max(1, heights.get(p) ?? p.getHeight()));
+    const sum = want.reduce((a, b) => a + b, 0);
+    const room = total * (1 - MAIN_MIN_SHARE);
+    const k = sum > room ? room / sum : 1;
+    const others = want.map((h) => h * k);
+    const main = total - others.reduce((a, b) => a + b, 0);
+    panes[0]!.setStretchFactor(main);
+    panes.slice(1).forEach((p, i) => p.setStretchFactor(others[i]!));
   }
 
   /**

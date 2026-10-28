@@ -16,7 +16,7 @@ import { DrawToolbar, ObjectsPanel } from "./DesktopPanels";
 import { AskBox, FiguresList, FoundList, LevelsList } from "./FoundPanel";
 import { download, snapshotPng } from "./snapshot";
 import { TEMPLATES } from "./templates";
-import { PANELS, TerminalView, type ActiveIndicator, type CrosshairInfo, type LayerKey, type PanelKey, type TerminalControls } from "./TerminalView";
+import { IND_COLORS, IND_COLOR_VAR, PANELS, TerminalView, autoIndColor, type ActiveIndicator, type CrosshairInfo, type IndColor, type LayerKey, type PanelKey, type TerminalControls } from "./TerminalView";
 import { useDrawings } from "./useDrawings";
 import { deleteLayout, getLayout, listLayouts, putLayout } from "@/lib/drawings";
 import { createAlert, getAlerts, type Alert } from "@/lib/alerts";
@@ -79,6 +79,8 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
   const [sheet, setSheet] = useState<"indicators" | "layers" | "draw" | "found" | "alert" | "ask" | null>(null);
   // вопросы о графике — Premium (админы и владелец — всегда); тариф узнаём один раз после входа
   const [plan, setPlan] = useState<string | null>(null);
+  // карточка значений под перекрестием: на телефоне индикаторы свёрнуты, чтобы не закрывать график
+  const [ohlcMore, setOhlcMore] = useState(false);
   useEffect(() => {
     if (!user || user.role === "admin" || user.role === "owner") return;
     getBillingMe()
@@ -331,6 +333,11 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
       const spec = INDICATORS.find((i) => i.id === id)!;
       return { ...cur, indicators: has ? cur.indicators.filter((i) => i.id !== id) : [...cur.indicators, { id, params: defaultParams(spec) }], updated_at: Date.now() };
     });
+  const setIndicatorColor = (id: string, color: IndColor) =>
+    setSaved((p) => {
+      const cur = p ?? load();
+      return { ...cur, indicators: cur.indicators.map((i) => (i.id === id ? { ...i, color } : i)), updated_at: Date.now() };
+    });
   const togglePanel = (k: PanelKey) =>
     setSaved((p) => {
       const cur = p ?? load();
@@ -452,7 +459,10 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
         <DrawToolbar tool={dr.tool} onTool={(t) => dr.setTool(t)} magnet={dr.magnet} onMagnet={dr.setMagnet} canUndo={dr.canUndo} canRedo={dr.canRedo} onUndo={dr.actions.undo} onRedo={dr.actions.redo} />
         <div className={s.chartCol}>
       {cross && (
-        <div className={s.ohlc} data-testid="ohlc" aria-live="polite">
+        <div className={s.ohlc} data-testid="ohlc" aria-live="polite" data-more={ohlcMore || undefined}>
+          <button type="button" className={s.ohlcClose} aria-label={t("закрыть карточку")} onClick={() => { controls.current?.clearCrosshair(); setCross(null); }}>
+            ×
+          </button>
           <span>{new Date(cross.candle.time * 1000).toLocaleString("ru-RU", { timeZone: "UTC", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })} UTC</span>
           <span>
             O <strong>{fmtV(cross.candle.open)}</strong>
@@ -469,8 +479,13 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
           <span>
             V <strong>{fmtV(cross.candle.volume)}</strong>
           </span>
+          {cross.values.length > 0 && (
+            <button type="button" className={`${s.ohlcMore} ${s.mobileOnly}`} aria-expanded={ohlcMore} onClick={() => setOhlcMore(!ohlcMore)}>
+              {ohlcMore ? t("скрыть индикаторы") : t("индикаторы ({n})", { n: cross.values.length })}
+            </button>
+          )}
           {cross.values.map((v) => (
-            <span key={v.label}>
+            <span key={v.label} className={s.ohlcVal}>
               {v.label} <strong>{fmtV(v.value)}</strong>
             </span>
           ))}
@@ -632,12 +647,26 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
               ? null
               : sheet === "indicators"
               ? [
-                  ...INDICATORS.map((i) => (
-                    <label key={i.id}>
-                      <input type="checkbox" checked={indicatorIds.has(i.id)} onChange={() => toggleIndicator(i.id)} /> {i.title}
-                      <span className="caption">{i.pane === "overlay" ? t("на графике") : t("панель")}</span>
-                    </label>
-                  )),
+                  ...INDICATORS.map((i) => {
+                    const idx = st.indicators.findIndex((x) => x.id === i.id);
+                    const cur = idx >= 0 ? (st.indicators[idx]!.color ?? autoIndColor(idx)) : null;
+                    return (
+                      <div key={i.id} className={s.indRow}>
+                        <label>
+                          <input type="checkbox" checked={indicatorIds.has(i.id)} onChange={() => toggleIndicator(i.id)} />
+                          {cur && <span className={s.indDot} style={{ background: `var(${IND_COLOR_VAR[cur]})` }} aria-hidden="true" />} {i.title}
+                          <span className="caption">{i.pane === "overlay" ? t("на графике") : t("панель")}</span>
+                        </label>
+                        {cur && (
+                          <div className={s.swatches} role="radiogroup" aria-label={t("цвет: {name}", { name: i.title })}>
+                            {IND_COLORS.map((c) => (
+                              <button key={c} type="button" role="radio" aria-checked={c === cur} aria-label={c} className={s.swatch} style={{ background: `var(${IND_COLOR_VAR[c]})` }} onClick={() => setIndicatorColor(i.id, c)} />
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  }),
                   ...PANELS.map((pn) => (
                     <label key={pn.id}>
                       <input type="checkbox" checked={st.panels.includes(pn.id)} onChange={() => togglePanel(pn.id)} /> {pn.title}

@@ -310,7 +310,7 @@ test("панели индикаторов: заголовок 24 px, свора�
   expect(await lastLabel()).toMatchObject({ visible: true, lastValueVisible: true });
   // удаление индикатора убирает заголовок
   await page.getByRole("button", { name: /Индикаторы/ }).click();
-  await page.getByRole("dialog", { name: "Индикаторы" }).getByLabel(/RSI/).uncheck();
+  await page.getByRole("dialog", { name: "Индикаторы" }).getByRole("checkbox", { name: /RSI/ }).uncheck();
   await page.getByRole("button", { name: "Готово" }).click();
   await expect(head).toHaveCount(0);
 });
@@ -459,4 +459,19 @@ test("уровни: поддержка, сопротивление и карта
   await expect(objects.getByLabel("Карта ликвидаций (оценка)")).toBeChecked();
   await objects.getByLabel("Карта ликвидаций (оценка)").uncheck();
   await expect(objects.getByLabel("Карта ликвидаций (оценка)")).not.toBeChecked();
+});
+
+test("цвет индикатора: выбор из палитры дизайн-системы сохраняется", async ({ page }) => {
+  const calls: string[] = [];
+  await mock(page, calls);
+  await page.goto("/chart/BTCUSDT/4h");
+  await expect(page.getByTestId("terminal").locator("canvas").first()).toBeVisible();
+  await page.getByRole("button", { name: /Индикаторы/ }).click();
+  const sheet = page.getByRole("dialog", { name: "Индикаторы" });
+  const palette = sheet.getByRole("radiogroup", { name: "цвет: EMA" });
+  await expect(palette.getByRole("radio", { checked: true })).toHaveAccessibleName("ind1");
+  await palette.getByRole("radio", { name: "up" }).click();
+  await expect(palette.getByRole("radio", { name: "up" })).toHaveAttribute("aria-checked", "true");
+  const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("pl-terminal") ?? "{}") as { indicators: { id: string; color?: string }[] });
+  expect(saved.indicators.find((i) => i.id === "ema")?.color).toBe("up");
 });

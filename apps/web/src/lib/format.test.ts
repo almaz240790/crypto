@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   decimalsFromTick,
   formatDuration,
+  formatUsdCompact,
   formatPct,
   formatPrice,
   formatR,
@@ -51,6 +52,15 @@ describe("formatTimeUTC", () => {
     expect(formatTimeUTC("2026-10-25T18:00:00+02:00", { now })).toBe("25.10 16:00 UTC");
     expect(formatTimeUTC("2025-03-01T04:00:00Z", { now })).toBe("01.03.2025 04:00 UTC");
     expect(formatTimeUTC("nope")).toBe("—");
+  });
+});
+
+describe("formatUsdCompact", () => {
+  it("коротко в долларах", () => {
+    expect(formatUsdCompact(12_400_000)).toBe("$12.4M");
+    expect(formatUsdCompact(850_400)).toBe("$850K");
+    expect(formatUsdCompact(1_230_000_000)).toBe("$1.2B");
+    expect(formatUsdCompact(120.4)).toBe("$120");
   });
 });
 

@@ -59,6 +59,17 @@ describe("карта ликвидаций", () => {
     expect(near).toBe(0);
   });
 
+  it("суммы в USDT: без OI — объём × цена, крупнейшие скопления по убыванию", () => {
+    const cs = Array.from({ length: 10 }, (_, i) => mk(i, 100, 100.5, 99.5, 100, 2));
+    const m = liquidationMap(cs, null)!;
+    const total = m.buckets.reduce((s, b) => s + b.long + b.short, 0);
+    // 10 свечей × 2 монеты × ~100 USDT; часть 100× лонгов (≈99.5) уже задета минимумами следующих свечей
+    expect(total).toBeLessThanOrEqual(10 * 2 * 100);
+    expect(total).toBeGreaterThan(10 * 2 * 100 * 0.9);
+    expect(m.topLongs[0]!.long).toBeGreaterThanOrEqual(m.topLongs.at(-1)!.long);
+    expect(m.topShorts.length).toBeLessThanOrEqual(3);
+  });
+
   it("с открытым интересом вес — только прирост OI", () => {
     const cs = Array.from({ length: 20 }, (_, i) => mk(i, 100, 100.5, 99.5, 100));
     const flat = cs.map((c) => ({ t: c.time, v: 1000 }));
