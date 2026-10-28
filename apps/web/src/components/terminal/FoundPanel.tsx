@@ -199,17 +199,17 @@ export function LevelsList({ sr, liq, tick, zones = [] }: { sr: SrLevel[]; liq: 
         ))}
         {res.map((l) => (
           <li key={`r${l.price}`}>
-            <span className="down">{t("Сопротивление")}</span> <span className="num">{px(l.price)}</span> <span className="caption">{t("касаний: {n}", { n: l.touches })}</span>
+            <strong className="down">R</strong> <span className="caption">{t("сопротивление")}</span> <span className="num">{px(l.price)}</span> <span className="caption">{t("касаний: {n}", { n: l.touches })}</span>
           </li>
         ))}
         {zones.map((z) => (
           <li key={`z${z.bottom}`}>
-            <span className={z.dir === "up" ? "up" : z.dir === "down" ? "down" : ""}>{z.names.map((n) => t(n)).join(" + ")}</span> <span className="num">{px(z.bottom)}–{px(z.top)}</span>
+            <strong className={z.dir === "up" ? "up" : z.dir === "down" ? "down" : ""}>{z.codes.join("+")}</strong> <span className="caption">{z.names.map((n) => t(n)).join(" + ")}</span> <span className="num">{px(z.bottom)}–{px(z.top)}</span>
           </li>
         ))}
         {sup.map((l) => (
           <li key={`s${l.price}`}>
-            <span className="up">{t("Поддержка")}</span> <span className="num">{px(l.price)}</span> <span className="caption">{t("касаний: {n}", { n: l.touches })}</span>
+            <strong className="up">S</strong> <span className="caption">{t("поддержка")}</span> <span className="num">{px(l.price)}</span> <span className="caption">{t("касаний: {n}", { n: l.touches })}</span>
           </li>
         ))}
         {[...(liq?.topLongs ?? [])].sort((a, b) => b.price - a.price).map((b) => (

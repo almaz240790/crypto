@@ -137,12 +137,14 @@ const SWEEPS_MAX = 2;
 const EQUAL_LEVELS_MAX = 3;
 /** Паттерны: только значимые и только на последних N свечах (выбранный в списке — всегда). */
 const PATTERN_RECENT_BARS = 60;
-/** Уровень с таким числом касаний рисуется сплошной линией; линии кластеров ликвидаций — на последних N свечах. */
+/** Уровень с таким числом касаний рисуется сплошной линией. */
 const SR_STRONG_TOUCHES = 5;
+const SR_LINE_ALPHA = 0.6;
+/** Заливка зон без рамки — свечи читаются сквозь неё. */
+const ZONE_FILL_ALPHA = 0.1;
+/** Размер кодов зон (OB, FVG, SD) — мельче шкалы. */
+const TAG_PX = 9;
 const NO_LEVELS: SrLevel[] = [];
-const LIQ_LINE_BARS = 40;
-/** Подписи дневных и недельных экстремумов. */
-const LEVEL_LABEL: Record<string, string> = { pdh: "макс. дня", pdl: "мин. дня", pwh: "макс. недели", pwl: "мин. недели" };
 const CLOSED = ["closed_sl", "closed_be", "closed_tp3", "closed_time", "expired", "cancelled"];
 const PANE_COLLAPSED_PX = 24;
 const PANE_INDICATOR_PX = 90;
@@ -303,7 +305,7 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
     boxRef.current = box;
     term.layers.add(new PrimitiveLayer("zones", box));
     const tk0 = tokensFromElement(el);
-    const levels = new LevelsPrimitive({ surface: tk0.surface, font: tk0.fontMono });
+    const levels = new LevelsPrimitive({ font: tk0.fontMono });
     levelsRef.current = levels;
     term.layers.add(new PrimitiveLayer("hlines", levels));
     const vp = new VolumeProfilePrimitive(vpTokens(tokensFromElement(el)));
@@ -611,42 +613,44 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
     const last = lastT ?? candles[candles.length - 1]!.time;
     const step = (candles[1]?.time ?? first + 1) - first;
     const snap = (t: number) => Math.floor(t / step) * step;
-    // все горизонтальные линии — в одном canvas-слое; подпись справа, приоритет решает при наложении
+    // все горизонтальные линии — в одном canvas-слое: на графике тонкая линия и короткий код (R, S, SL, TP1…),
+    // цена — меткой на шкале; длинных надписей поверх свечей нет
     const hlines: HLine[] = [];
     const { precision } = precisionOf(tick);
     const short = window.matchMedia(MOBILE_QUERY).matches;
     const fp = (p: number) => (short ? formatPriceShort(p, precision) : formatPriceLabel(p, precision));
-    const seg = (from: number, to: number | null, price: number, c: string, style: 0 | 1 | 2 | 3, width: 1 | 2 = 1, label?: string, priority = 0) => {
+    // axis — цвет метки на шкале (сплошной токен) или false, если метка не нужна
+    const seg = (from: number, to: number | null, price: number, c: string, style: 0 | 1 | 2 | 3, width: 1 | 2 = 1, tag?: string, priority = 0, axis: string | false = false) => {
       const a = Math.max(snap(from), first);
       if (a > last) return;
       const b = to === null ? null : Math.min(Math.max(snap(to), a + step), last);
-      hlines.push({ from: a as Time, to: b === null ? null : (b as Time), price, color: c, style, width, label: label ? (label.includes("{p}") ? label.replace("{p}", fp(price)) : `${label} ${fp(price)}`) : undefined, priority });
+      hlines.push({ from: a as Time, to: b === null ? null : (b as Time), price, color: c, style, width, tag, priority, axis: axis ? { text: fp(price), textColor: tokens.surface, backColor: axis } : undefined });
     };
     const st = layers?.structure;
     const boxes = [];
     const markers: SeriesMarker<Time>[] = [];
     if (st && layersOn.zones) {
-      // только активные зоны, пересекающиеся склеены в одну, две ближайшие к цене; спрос — зелёный, предложение — красный
+      // только активные зоны, пересекающиеся склеены; заливка без рамки, как FVG в терминалах; спрос — зелёный, предложение — красный
       const price = candles[candles.length - 1]!.close;
       for (const g of mergeZones(st.zones, price).slice(0, ZONES_MAX)) {
         const c = g.dir === "up" ? tokens.up : g.dir === "down" ? tokens.down : tokens.accent;
-        boxes.push({ id: `z-${g.fromT}-${g.bottom}`, from: Math.max(snap(g.fromT), first) as Time, to: null, top: g.top, bottom: g.bottom, fill: alpha(c, 0.08), stroke: alpha(c, 0.55), label: g.names.map((n) => t(n)).join(" + "), labelAlign: "right" as const, labelBg: tokens.surface, labelColor: c });
+        boxes.push({ id: `z-${g.fromT}-${g.bottom}`, from: Math.max(snap(g.fromT), first) as Time, to: null, top: g.top, bottom: g.bottom, fill: alpha(c, ZONE_FILL_ALPHA), stroke: "transparent", label: g.codes.join("+"), labelColor: alpha(c, 0.8), labelSize: TAG_PX });
       }
     }
     if (st && layersOn.structure) {
-      for (const e of st.events.slice(-STRUCTURE_EVENTS_MAX)) seg(e.from_t, e.t, Number(e.level), e.type === "bos" ? tokens.accent : tokens.warn, 1);
+      for (const e of st.events.slice(-STRUCTURE_EVENTS_MAX)) seg(e.from_t, e.t, Number(e.level), e.type === "bos" ? tokens.accent : tokens.warn, 1, 1, e.type === "bos" ? "BOS" : "CHoCH", 2);
       // свинги маркерами не рисуем: на телефоне LWC делает их крупными кружками и они перекрывают свечи
       for (const sw of st.sweeps.slice(-SWEEPS_MAX)) {
         const at = snap(sw.t);
         if (at < first) continue;
-        markers.push({ time: at as Time, position: sw.kind === "low" ? "belowBar" : "aboveBar", shape: "square", color: tokens.warn, text: t("снятие"), size: 0 });
+        markers.push({ time: at as Time, position: sw.kind === "low" ? "belowBar" : "aboveBar", shape: "square", color: tokens.warn, text: "sweep", size: 0 });
       }
-      for (const e of st.equal_levels.filter((x) => !x.swept).slice(-EQUAL_LEVELS_MAX)) seg(e.from_t, e.to_t, Number(e.p), tokens.text3, 2);
+      for (const e of st.equal_levels.filter((x) => !x.swept).slice(-EQUAL_LEVELS_MAX)) seg(e.from_t, e.to_t, Number(e.p), tokens.text3, 2, 1, e.kind === "low" ? "EQL" : "EQH", 1);
     }
     if (st && layersOn.levels) {
       for (const k of ["pdh", "pdl", "pwh", "pwl"]) {
         const v = st.levels[k];
-        if (v) seg(first, null, Number(v), tokens.text3, 3, 1, t(LEVEL_LABEL[k] ?? k), 1);
+        if (v) seg(first, null, Number(v), tokens.text3, 3, 1, k.toUpperCase(), 1);
       }
     }
     if (layers && layersOn.signals) {
@@ -655,10 +659,10 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
         if (at < first) continue;
         const open = !CLOSED.includes(sg.status);
         const label = STATUS_LABEL[sg.status]?.text;
-        markers.push({ time: at as Time, position: sg.dir === "long" ? "belowBar" : "aboveBar", shape: sg.dir === "long" ? "arrowUp" : "arrowDown", color: open ? tokens.accent : tokens.text3, text: `${sg.dir === "long" ? t("лонг") : t("шорт")} ${sg.grade}${open || !label ? "" : " · " + t(label)}`, size: 1 });
-        if (open && sg.entry) seg(at, null, Number(sg.entry), tokens.accent, 0, 1, t("вход"), 6);
-        if (open && sg.sl) seg(at, null, Number(sg.sl), tokens.down, 1, 1, t("стоп"), 6);
-        if (open) sg.tp.forEach((tp, i) => tp && seg(at, null, Number(tp), tokens.up, 1, 1, `TP${i + 1}`, 5));
+        markers.push({ time: at as Time, position: sg.dir === "long" ? "belowBar" : "aboveBar", shape: sg.dir === "long" ? "arrowUp" : "arrowDown", color: open ? tokens.accent : tokens.text3, text: `${sg.dir === "long" ? "L" : "S"} ${sg.grade}${open || !label ? "" : " · " + t(label)}`, size: 1 });
+        if (open && sg.entry) seg(at, null, Number(sg.entry), tokens.accent, 0, 1, "Entry", 6, tokens.accent);
+        if (open && sg.sl) seg(at, null, Number(sg.sl), tokens.down, 1, 1, "SL", 6, tokens.down);
+        if (open) sg.tp.forEach((tp, i) => tp && seg(at, null, Number(tp), tokens.up, 1, 1, `TP${i + 1}`, 5, tokens.up));
       }
     }
     if (patterns && layersOn.patterns) {
@@ -695,8 +699,8 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
           ls.setData([{ time: Math.max(a, first) as UTCTimestamp, value: Number(ln.a[1]) + ((Number(ln.b[1]) - Number(ln.a[1])) * (Math.max(a, first) - a)) / Math.max(1, b - a) }, { time: Math.min(b, last + step) as UTCTimestamp, value: Number(ln.b[1]) }]);
           auxRef.current.push(ls);
         }
-        if (f.status === "confirmed" && f.target && f.confirm_t) seg(f.confirm_t, null, Number(f.target), tokens.up, 1, 1, t("цель фигуры"), 2);
-        if (f.status === "confirmed" && f.invalidation && f.confirm_t) seg(f.confirm_t, null, Number(f.invalidation), tokens.down, 1, 1, t("отмена фигуры"), 2);
+        if (f.status === "confirmed" && f.target && f.confirm_t) seg(f.confirm_t, null, Number(f.target), tokens.up, 1, 1, "TGT", 2);
+        if (f.status === "confirmed" && f.invalidation && f.confirm_t) seg(f.confirm_t, null, Number(f.invalidation), tokens.down, 1, 1, "INV", 2);
         if (hl)
           for (const [pt0] of f.points) {
             const pt = snap(pt0);
@@ -705,24 +709,21 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
       }
     }
     for (const al of JSON.parse(alertKey) as NonNullable<Props["alertLines"]>) {
-      seg(first, null, al.price, tokens.warn, 3, 1, t("алерт"), 4);
-      markers.push({ time: last as Time, position: "inBar", shape: "circle", color: tokens.warn, text: `${t("алерт")} ${al.label}`, size: 0 });
+      seg(first, null, al.price, tokens.warn, 3, 1, `ALERT ${al.label}`, 4, tokens.warn);
     }
     if (layersOn.sr)
       for (const l of srLevels) {
         const sup = l.side === "support";
-        seg(l.firstT, null, l.price, alpha(sup ? tokens.up : tokens.down, 0.85), l.touches >= SR_STRONG_TOUCHES ? 0 : 2, 1, sup ? t("поддержка") : t("сопротивление"), 3);
+        seg(l.firstT, null, l.price, alpha(sup ? tokens.up : tokens.down, SR_LINE_ALPHA), l.touches >= SR_STRONG_TOUCHES ? 0 : 2, 1, sup ? "S" : "R", 3, sup ? tokens.up : tokens.down);
       }
     let heat = null;
     if (layersOn.liq_map && liqMap) {
       const m = liqMap;
-      heat = { step: m.step, bars: m.buckets.map((b) => ({ price: b.price, weight: (b.long + b.short) / m.max })), fill: (w: number) => alpha(tokens.warn, 0.08 + 0.42 * w) };
-      const near = Math.max(first, last - LIQ_LINE_BARS * step);
-      // крупнейшие скопления с суммой: самое большое на сторону — важнее при наложении подписей
-      m.topLongs.forEach((b, i) => seg(near, null, b.price, tokens.warn, 1, 1, t("ликв. лонгов {usd} · {p}", { usd: formatUsdCompact(b.long) }), i === 0 ? 2 : 1));
-      m.topShorts.forEach((b, i) => seg(near, null, b.price, tokens.warn, 1, 1, t("ликв. шортов {usd} · {p}", { usd: formatUsdCompact(b.short) }), i === 0 ? 2 : 1));
+      // сумма — мелко у крупнейших полос; отдельных линий и подписей поверх свечей нет
+      const top = new Map([...m.topLongs.map((b) => [b, b.long] as const), ...m.topShorts.map((b) => [b, b.short] as const)]);
+      heat = { step: m.step, textColor: tokens.warn, bars: m.buckets.map((b) => ({ price: b.price, weight: (b.long + b.short) / m.max, text: top.has(b) ? formatUsdCompact(top.get(b)!) : undefined })), fill: (w: number) => alpha(tokens.warn, 0.08 + 0.42 * w) };
     }
-    levelsRef.current?.set(hlines, heat, { surface: tokens.surface, font: tokens.fontMono });
+    levelsRef.current?.set(hlines, heat, { font: tokens.fontMono });
     boxRef.current.setBoxes(boxes);
     markers.sort((a, b) => (a.time as number) - (b.time as number));
     if (!markersRef.current) markersRef.current = createSeriesMarkers(main, markers);

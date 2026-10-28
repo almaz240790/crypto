@@ -448,8 +448,9 @@ test("уровни: поддержка, сопротивление и карта
   await expect(page.getByTestId("terminal").locator("canvas").first()).toBeVisible();
   const objects = page.getByRole("complementary", { name: "панель объектов" });
   const levels = objects.getByRole("list", { name: "уровни поддержки и сопротивления" });
-  await expect(levels).toContainText("Поддержка");
-  await expect(levels).toContainText("Сопротивление");
+  await expect(levels).toContainText("S поддержка");
+  await expect(levels).toContainText("R сопротивление");
+  await expect(levels).toContainText("OB");
   await expect(levels).toContainText("касаний:");
   await expect(levels).toContainText("Ликвидации");
   await expect(objects).toContainText("расчётная оценка");
