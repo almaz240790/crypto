@@ -39,11 +39,15 @@ def test_promote_owner_by_email_case_and_spaces() -> None:
     owners = {"boss@example.com"}
     u = User(id=1, email=" Boss@Example.com", role="user")
     assert auth.promote_owner(u, owners) and u.role == "owner"
+    assert u.email_verified_at is not None  # адрес владельца подтверждён настройками сервера
     assert not auth.promote_owner(u, owners)  # уже владелец
-    admin = User(id=2, email="boss@example.com", role="admin")
+    admin = User(
+        id=2, email="boss@example.com", role="admin", email_verified_at=datetime.now(tz=UTC)
+    )
     assert not auth.promote_owner(admin, owners) and admin.role == "admin"
     other = User(id=3, email="user@example.com", role="user")
     assert not auth.promote_owner(other, owners) and other.role == "user"
+    assert other.email_verified_at is None
 
 
 def test_telegram_signature() -> None:

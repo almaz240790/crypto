@@ -249,11 +249,18 @@ def current_user(request: Request, db: Session = Depends(get_db)) -> User:
 
 def promote_owner(user: User, owner_emails: set[str]) -> bool:
     """Роль owner для адресов из OWNER_EMAILS. Вызывается при входе, обновлении токена и /auth/me,
-    чтобы владелец получил права, даже если адрес добавили в настройки уже после его входа."""
-    if user.role == "user" and user.email.strip().lower() in owner_emails:
+    чтобы владелец получил права, даже если адрес добавили в настройки уже после его входа.
+    Адрес владельца считается подтверждённым: его вписал в настройки сервера сам владелец."""
+    if user.email.strip().lower() not in owner_emails:
+        return False
+    changed = False
+    if user.role == "user":
         user.role = "owner"
-        return True
-    return False
+        changed = True
+    if user.email_verified_at is None:
+        user.email_verified_at = datetime.now(tz=UTC)
+        changed = True
+    return changed
 
 
 def require_role(*roles: str) -> Any:
