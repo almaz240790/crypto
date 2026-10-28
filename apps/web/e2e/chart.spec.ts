@@ -440,3 +440,23 @@ test("шкала: логарифмическая и процентная, нал
   await expect(page.getByTestId("terminal").locator("canvas").first()).toBeVisible();
   await expect(page.getByLabel("шкала")).toHaveValue("percent");
 });
+
+test("уровни: поддержка, сопротивление и карта ликвидаций — слоями и списком в «Найдено»", async ({ page }) => {
+  const calls: string[] = [];
+  await mock(page, calls, true);
+  await page.goto("/chart/BTCUSDT/4h");
+  await expect(page.getByTestId("terminal").locator("canvas").first()).toBeVisible();
+  const objects = page.getByRole("complementary", { name: "панель объектов" });
+  const levels = objects.getByRole("list", { name: "уровни поддержки и сопротивления" });
+  await expect(levels).toContainText("Поддержка");
+  await expect(levels).toContainText("Сопротивление");
+  await expect(levels).toContainText("касаний:");
+  await expect(levels).toContainText("Ликвидации");
+  await expect(objects).toContainText("расчётная оценка");
+  // слои включены по умолчанию и выключаются
+  await objects.getByRole("tab", { name: "Слои" }).click();
+  await expect(objects.getByLabel("Поддержка и сопротивление")).toBeChecked();
+  await expect(objects.getByLabel("Карта ликвидаций (оценка)")).toBeChecked();
+  await objects.getByLabel("Карта ликвидаций (оценка)").uncheck();
+  await expect(objects.getByLabel("Карта ликвидаций (оценка)")).not.toBeChecked();
+});

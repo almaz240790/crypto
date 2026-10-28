@@ -1,10 +1,10 @@
 "use client";
 
-import { TOOL_TITLES, type Drawing, type DrawingType } from "@platform/charts";
+import { TOOL_TITLES, type Drawing, type DrawingType, type LiqMap, type SrLevel } from "@platform/charts";
 import type React from "react";
 import { useState } from "react";
 import s from "./terminal.module.css";
-import { AskBox, FiguresList, FoundList } from "./FoundPanel";
+import { AskBox, FiguresList, FoundList, LevelsList } from "./FoundPanel";
 import { TEMPLATES } from "./templates";
 import type { FigureOnChart, FigureStat, PatternOnChart, PatternStat } from "@/lib/chart";
 import type { LayerKey, PanelKey } from "./TerminalView";
@@ -70,10 +70,10 @@ type Props = {
   layoutsLimit: number | null;
   /** Перетаскивание левого края панели (ширина хранится в TerminalPage). */
   onResize?: { start: (e: React.PointerEvent<HTMLElement>) => void; step: (delta: number) => void; active: boolean };
-  found: { count?: number; items: PatternOnChart[]; stats: Record<string, PatternStat>; selected: number | null; onSelect: (id: number | null) => void; tf: string; symbol: string; canExplain: boolean; askAccess: "guest" | "plan" | "ok" | null; figures: FigureOnChart[]; figureStats: Record<string, FigureStat>; selectedFigure: number | null; onSelectFigure: (id: number | null) => void };
+  found: { count?: number; items: PatternOnChart[]; stats: Record<string, PatternStat>; selected: number | null; onSelect: (id: number | null) => void; tf: string; symbol: string; canExplain: boolean; askAccess: "guest" | "plan" | "ok" | null; sr: SrLevel[]; liq: LiqMap | null; tick: string | null; figures: FigureOnChart[]; figureStats: Record<string, FigureStat>; selectedFigure: number | null; onSelectFigure: (id: number | null) => void };
 };
 
-const LAYER_LABEL: Record<LayerKey, string> = { structure: "Структура", zones: "Зоны", levels: "Уровни", signals: "Сигналы", patterns: "Паттерны", figures: "Фигуры", volume_profile: "Профиль объёма" };
+const LAYER_LABEL: Record<LayerKey, string> = { structure: "Структура", zones: "Зоны", levels: "Макс./мин. дня и недели", signals: "Сигналы", patterns: "Паттерны", figures: "Фигуры", volume_profile: "Профиль объёма", sr: "Поддержка и сопротивление", liq_map: "Карта ликвидаций (оценка)" };
 const PANEL_LABEL: Record<PanelKey, string> = { funding: "Funding", oi: "Open interest", liq: "Ликвидации", ls: "L/S ratio" };
 
 /** Правая панель объектов (десктоп): рисунки, слои, раскладки и шаблоны. */
@@ -109,13 +109,14 @@ export function ObjectsPanel(p: Props) {
         ))}
       </div>
       {tab === "found" && (
-        <>
+        <div className={s.objScroll}>
           <AskBox symbol={p.found.symbol} tf={p.found.tf} access={p.found.askAccess} />
+          <LevelsList sr={p.found.sr} liq={p.found.liq} tick={p.found.tick} />
           <strong className={s.objHead}>{t("Фигуры")}</strong>
           <FiguresList items={p.found.figures} stats={p.found.figureStats} selected={p.found.selectedFigure} onSelect={p.found.onSelectFigure} />
           <strong className={s.objHead}>{t("Свечные паттерны")}</strong>
           <FoundList items={p.found.items} stats={p.found.stats} selected={p.found.selected} onSelect={p.found.onSelect} tf={p.found.tf} symbol={p.found.symbol} canExplain={p.found.canExplain} />
-        </>
+        </div>
       )}
       {tab === "drawings" && (
         <ul className={s.objList}>

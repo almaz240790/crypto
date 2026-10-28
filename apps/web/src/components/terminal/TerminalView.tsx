@@ -1,10 +1,11 @@
 "use client";
 
-import { createTerminal, formatPriceLabel, formatTicks, tokensFromElement, type Candle, type ChartType, type ScaleMode, type Terminal, type Timeframe } from "@platform/charts";
+import { createTerminal, formatPriceLabel, formatTicks, tokensFromElement, type LiqMap, type SrLevel, type Candle, type ChartType, type ScaleMode, type Terminal, type Timeframe } from "@platform/charts";
 import { DrawingController, DrawingsPrimitive, INDICATORS, defaultParams, indicatorById, visibleOn, type Drawing, type DrawingType, type DrawingsState, type IndicatorSpec, type Layer, type LayerContext, type Point, TF_SECONDS } from "@platform/charts";
 import { LineSeries, createSeriesMarkers, type ISeriesApi, type ISeriesMarkersPluginApi, type SeriesMarker, type Time, type UTCTimestamp } from "lightweight-charts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { BoxPrimitive } from "@/components/chart/BoxPrimitive";
+import { LevelsPrimitive, type HLine } from "@/components/chart/LevelsPrimitive";
 import { VolumeProfilePrimitive, type VpTokens } from "@/components/chart/VolumeProfilePrimitive";
 import { STATUS_LABEL } from "@/components/ui/Badge";
 import { PATTERN_LABEL, type Derivatives, type FigureOnChart, type LayersResponse, type PatternOnChart } from "@/lib/chart";
@@ -12,7 +13,7 @@ import s from "./terminal.module.css";
 import { useT } from "@/i18n/client";
 
 export type ActiveIndicator = { id: string; params: Record<string, number> };
-export type LayerKey = "structure" | "zones" | "levels" | "signals" | "patterns" | "figures" | "volume_profile";
+export type LayerKey = "structure" | "zones" | "levels" | "signals" | "patterns" | "figures" | "volume_profile" | "sr" | "liq_map";
 export type PanelKey = "funding" | "oi" | "liq" | "ls";
 export type CrosshairInfo = { candle: Candle; values: { label: string; value: number | null }[] };
 /** Управление видом снаружи (кнопки «+/−», горячие клавиши). */
@@ -42,6 +43,9 @@ type Props = {
   highlightFigure?: number | null;
   /** Активные ценовые алерты: линия с подписью (план 2A.6). */
   alertLines?: { id: number; price: number; label: string }[];
+  /** Поддержка/сопротивление и карта ликвидаций — считаются в TerminalPage по закрытым свечам. */
+  sr?: SrLevel[];
+  liq?: LiqMap | null;
   derivatives: Derivatives | null;
   panels: PanelKey[];
   tick: string | null;
@@ -111,6 +115,12 @@ const SWEEPS_MAX = 2;
 const EQUAL_LEVELS_MAX = 3;
 /** Паттерны: только значимые и только на последних N свечах (выбранный в списке — всегда). */
 const PATTERN_RECENT_BARS = 60;
+/** Уровень с таким числом касаний рисуется сплошной линией; линии кластеров ликвидаций — на последних N свечах. */
+const SR_STRONG_TOUCHES = 5;
+const NO_LEVELS: SrLevel[] = [];
+const LIQ_LINE_BARS = 40;
+/** Подписи дневных и недельных экстремумов. */
+const LEVEL_LABEL: Record<string, string> = { pdh: "макс. дня", pdl: "мин. дня", pwh: "макс. недели", pwl: "мин. недели" };
 const CLOSED = ["closed_sl", "closed_be", "closed_tp3", "closed_time", "expired", "cancelled"];
 const PANE_COLLAPSED_PX = 24;
 const PANE_INDICATOR_PX = 90;
@@ -120,7 +130,7 @@ const MOBILE_QUERY = "(max-width: 899px)";
 const SWIPE_PX = 24;
 
 /** Обёртка React над Terminal из packages/charts: данные, индикаторы, слои, тема. */
-export function TerminalView({ candles, current, tf, type, indicators, layersOn, layers, patterns, highlight, figures, highlightFigure, alertLines, derivatives, panels, tick, onNeedOlder, drawings, onCrosshair, onVisibleFrom, onReady, scale = "linear", overlay = null }: Props) {
+export function TerminalView({ candles, current, tf, type, indicators, layersOn, layers, patterns, highlight, figures, highlightFigure, alertLines, sr, liq, derivatives, panels, tick, onNeedOlder, drawings, onCrosshair, onVisibleFrom, onReady, scale = "linear", overlay = null }: Props) {
   const t = useT();
   const ref = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -129,6 +139,7 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
   const cryptoRef = useRef<Map<PanelKey, { paneIndex: number; series: ISeriesApi<"Line" | "Histogram">[] }>>(new Map());
   const auxRef = useRef<ISeriesApi<"Line">[]>([]);
   const boxRef = useRef<BoxPrimitive | null>(null);
+  const levelsRef = useRef<LevelsPrimitive | null>(null);
   const vpRef = useRef<VolumeProfilePrimitive | null>(null);
   const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const drawPrimRef = useRef<DrawingsPrimitive | null>(null);
@@ -145,6 +156,8 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
   // слои зависят от времени текущей свечи (меняется раз в свечу) и содержимого линий алертов, а не от каждого тика
   const lastT = current?.time ?? null;
   const alertKey = JSON.stringify(alertLines ?? []);
+  const srLevels = sr ?? NO_LEVELS;
+  const liqMap = liq ?? null;
   const [heads, setHeads] = useState<PaneHead[]>([]);
   const collapsedRef = useRef<Set<string>>(new Set());
   const paneObsRef = useRef<ResizeObserver | null>(null);
@@ -242,6 +255,10 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
     const box = new BoxPrimitive();
     boxRef.current = box;
     term.layers.add(new PrimitiveLayer("zones", box));
+    const tk0 = tokensFromElement(el);
+    const levels = new LevelsPrimitive({ surface: tk0.surface, font: tk0.fontMono });
+    levelsRef.current = levels;
+    term.layers.add(new PrimitiveLayer("hlines", levels));
     const vp = new VolumeProfilePrimitive(vpTokens(tokensFromElement(el)));
     vpRef.current = vp;
     term.layers.add(new PrimitiveLayer("volume_profile", vp));
@@ -352,6 +369,7 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
       panes.clear();
       auxRef.current = [];
       boxRef.current = null;
+      levelsRef.current = null;
       vpRef.current = null;
       markersRef.current = null;
       ctrl.destroy();
@@ -523,13 +541,15 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
     const last = lastT ?? candles[candles.length - 1]!.time;
     const step = (candles[1]?.time ?? first + 1) - first;
     const snap = (t: number) => Math.floor(t / step) * step;
-    const seg = (from: number, to: number | null, price: number, c: string, style: number, width: 1 | 2 = 1) => {
+    // все горизонтальные линии — в одном canvas-слое; подпись справа, приоритет решает при наложении
+    const hlines: HLine[] = [];
+    const { precision } = precisionOf(tick);
+    const fp = (p: number) => formatPriceLabel(p, precision);
+    const seg = (from: number, to: number | null, price: number, c: string, style: 0 | 1 | 2 | 3, width: 1 | 2 = 1, label?: string, priority = 0) => {
       const a = Math.max(snap(from), first);
-      const b = to === null ? last : Math.min(Math.max(snap(to), a + step), last);
       if (a > last) return;
-      const ls = term.chart.addSeries(LineSeries, { color: c, lineWidth: width, lineStyle: style, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
-      ls.setData([{ time: a as UTCTimestamp, value: price }, { time: b as UTCTimestamp, value: price }]);
-      auxRef.current.push(ls);
+      const b = to === null ? null : Math.min(Math.max(snap(to), a + step), last);
+      hlines.push({ from: a as Time, to: b === null ? null : (b as Time), price, color: c, style, width, label: label ? (label.includes("{p}") ? label.replace("{p}", fp(price)) : `${label} ${fp(price)}`) : undefined, priority });
     };
     const st = layers?.structure;
     const boxes = [];
@@ -556,7 +576,7 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
     if (st && layersOn.levels) {
       for (const k of ["pdh", "pdl", "pwh", "pwl"]) {
         const v = st.levels[k];
-        if (v) seg(first, null, Number(v), tokens.text3, 3);
+        if (v) seg(first, null, Number(v), tokens.text3, 3, 1, t(LEVEL_LABEL[k] ?? k), 1);
       }
     }
     if (layers && layersOn.signals) {
@@ -566,9 +586,9 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
         const open = !CLOSED.includes(sg.status);
         const label = STATUS_LABEL[sg.status]?.text;
         markers.push({ time: at as Time, position: sg.dir === "long" ? "belowBar" : "aboveBar", shape: sg.dir === "long" ? "arrowUp" : "arrowDown", color: open ? tokens.accent : tokens.text3, text: `${sg.dir === "long" ? t("лонг") : t("шорт")} ${sg.grade}${open || !label ? "" : " · " + t(label)}`, size: 1 });
-        if (open && sg.entry) seg(at, null, Number(sg.entry), tokens.accent, 0, 1);
-        if (open && sg.sl) seg(at, null, Number(sg.sl), tokens.down, 1);
-        if (open) for (const tp of sg.tp) if (tp) seg(at, null, Number(tp), tokens.up, 1);
+        if (open && sg.entry) seg(at, null, Number(sg.entry), tokens.accent, 0, 1, t("вход"), 6);
+        if (open && sg.sl) seg(at, null, Number(sg.sl), tokens.down, 1, 1, t("стоп"), 6);
+        if (open) sg.tp.forEach((tp, i) => tp && seg(at, null, Number(tp), tokens.up, 1, 1, `TP${i + 1}`, 5));
       }
     }
     if (patterns && layersOn.patterns) {
@@ -605,8 +625,8 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
           ls.setData([{ time: Math.max(a, first) as UTCTimestamp, value: Number(ln.a[1]) + ((Number(ln.b[1]) - Number(ln.a[1])) * (Math.max(a, first) - a)) / Math.max(1, b - a) }, { time: Math.min(b, last + step) as UTCTimestamp, value: Number(ln.b[1]) }]);
           auxRef.current.push(ls);
         }
-        if (f.status === "confirmed" && f.target && f.confirm_t) seg(f.confirm_t, null, Number(f.target), tokens.up, 1, 1);
-        if (f.status === "confirmed" && f.invalidation && f.confirm_t) seg(f.confirm_t, null, Number(f.invalidation), tokens.down, 1, 1);
+        if (f.status === "confirmed" && f.target && f.confirm_t) seg(f.confirm_t, null, Number(f.target), tokens.up, 1, 1, t("цель фигуры"), 2);
+        if (f.status === "confirmed" && f.invalidation && f.confirm_t) seg(f.confirm_t, null, Number(f.invalidation), tokens.down, 1, 1, t("отмена фигуры"), 2);
         if (hl)
           for (const [pt0] of f.points) {
             const pt = snap(pt0);
@@ -615,14 +635,28 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
       }
     }
     for (const al of JSON.parse(alertKey) as NonNullable<Props["alertLines"]>) {
-      seg(first, null, al.price, tokens.warn, 3, 1);
+      seg(first, null, al.price, tokens.warn, 3, 1, t("алерт"), 4);
       markers.push({ time: last as Time, position: "inBar", shape: "circle", color: tokens.warn, text: `${t("алерт")} ${al.label}`, size: 0 });
     }
+    if (layersOn.sr)
+      for (const l of srLevels) {
+        const sup = l.side === "support";
+        seg(l.firstT, null, l.price, alpha(sup ? tokens.up : tokens.down, 0.85), l.touches >= SR_STRONG_TOUCHES ? 0 : 2, 1, sup ? t("поддержка") : t("сопротивление"), 3);
+      }
+    let heat = null;
+    if (layersOn.liq_map && liqMap) {
+      const m = liqMap;
+      heat = { step: m.step, bars: m.buckets.map((b) => ({ price: b.price, weight: (b.long + b.short) / m.max })), fill: (w: number) => alpha(tokens.warn, 0.08 + 0.42 * w) };
+      const near = Math.max(first, last - LIQ_LINE_BARS * step);
+      if (m.topLong) seg(near, null, m.topLong.price, tokens.warn, 1, 1, t("ликвидации лонгов ≈"), 2);
+      if (m.topShort) seg(near, null, m.topShort.price, tokens.warn, 1, 1, t("ликвидации шортов ≈"), 2);
+    }
+    levelsRef.current?.set(hlines, heat, { surface: tokens.surface, font: tokens.fontMono });
     boxRef.current.setBoxes(boxes);
     markers.sort((a, b) => (a.time as number) - (b.time as number));
     if (!markersRef.current) markersRef.current = createSeriesMarkers(main, markers);
     else markersRef.current.setMarkers(markers);
-  }, [layers, layersOn, candles, lastT, tf, type, patterns, highlight, figures, highlightFigure, alertKey, t]);
+  }, [layers, layersOn, candles, lastT, tf, type, patterns, highlight, figures, highlightFigure, alertKey, t, tick, srLevels, liqMap]);
 
   return (
     <div className={s.chart}>

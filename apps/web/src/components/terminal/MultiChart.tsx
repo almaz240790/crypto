@@ -27,7 +27,7 @@ const DEFAULT: Saved = {
     { symbol: "BNBUSDT", tf: "1d" },
   ],
 };
-const LAYERS: Record<LayerKey, boolean> = { structure: true, zones: true, levels: true, signals: true, patterns: false, figures: true, volume_profile: false };
+const LAYERS: Record<LayerKey, boolean> = { structure: true, zones: true, levels: true, signals: true, patterns: false, figures: true, volume_profile: false, sr: false, liq_map: false };
 const DESKTOP = "(min-width: 900px)";
 
 function load(): Saved {
