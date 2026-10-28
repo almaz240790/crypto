@@ -1009,7 +1009,6 @@
   "Ликвидации шортов": "Short liquidations",
   "Ликвидации лонгов": "Long liquidations",
   "Карта ликвидаций — расчётная оценка: суммы позиций с плечом 10–100×, которые закроются принудительно при подходе цены. Считается по приросту открытого интереса и объёму, а не по данным биржи.": "The liquidation map is an estimate: amounts of 10–100× leveraged positions that would be force-closed if price gets there. Computed from open-interest growth and volume, not exchange data.",
-  "цвет: {name}": "color: {name}",
   "закрыть карточку": "close card",
   "скрыть индикаторы": "hide indicators",
   "индикаторы ({n})": "indicators ({n})",

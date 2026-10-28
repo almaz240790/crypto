@@ -14,13 +14,19 @@ import { PATTERN_LABEL, type Derivatives, type FigureOnChart, type LayersRespons
 import s from "./terminal.module.css";
 import { useT } from "@/i18n/client";
 
-/** Цвет индикатора — только токен дизайн-системы (план 5.3): палитра --ind-1…6 и смысловые цвета. */
+/** Цвет индикатора — токен дизайн-системы (план 5.3): палитра --ind-1…6 и смысловые цвета. */
 export type IndColor = "ind1" | "ind2" | "ind3" | "ind4" | "ind5" | "ind6" | "accent" | "up" | "down" | "warn";
-export const IND_COLORS: IndColor[] = ["ind1", "ind2", "ind3", "ind4", "ind5", "ind6", "accent", "up", "down", "warn"];
 export const IND_COLOR_VAR: Record<IndColor, string> = { ind1: "--ind-1", ind2: "--ind-2", ind3: "--ind-3", ind4: "--ind-4", ind5: "--ind-5", ind6: "--ind-6", accent: "--accent", up: "--up", down: "--down", warn: "--warn" };
-/** Цвет по умолчанию — по порядку в списке, чтобы соседние индикаторы не совпадали. */
-export const autoIndColor = (i: number): IndColor => IND_COLORS[i % 6]!;
-export type ActiveIndicator = { id: string; params: Record<string, number>; color?: IndColor };
+/**
+ * Постоянный цвет каждого индикатора (решение владельца: цвета не настраиваются). Индикаторы на графике цены
+ * не повторяют друг друга; у индикаторов на отдельных панелях цвет может совпасть с наложением — они не пересекаются.
+ */
+export const INDICATOR_COLOR: Record<string, IndColor> = {
+  ema: "ind1", sma: "ind2", vwap: "ind3", bb: "ind4", supertrend: "ind5", ichimoku: "ind6", keltner: "warn",
+  rsi: "ind1", macd: "ind2", stoch: "ind3", atr: "ind4", volume: "ind5", cci: "ind6", obv: "accent",
+};
+export const indicatorColor = (id: string): IndColor => INDICATOR_COLOR[id] ?? "accent";
+export type ActiveIndicator = { id: string; params: Record<string, number> };
 export type LayerKey = "structure" | "zones" | "levels" | "signals" | "patterns" | "figures" | "volume_profile" | "sr" | "liq_map";
 export type PanelKey = "funding" | "oi" | "liq" | "ls";
 export type CrosshairInfo = { candle: Candle; values: { label: string; value: number | null; color: string }[] };
@@ -524,7 +530,7 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
         const first = Object.values(series)[0];
         if (paneIndex !== null && first) paneAdded(ind.id, first);
       }
-      const ck = ind.color ?? autoIndColor(indicators.indexOf(ind));
+      const ck = indicatorColor(ind.id);
       const base = indColor(ck);
       if (pane.colorKey !== ck) {
         spec.series.forEach((sp, i) => pane!.series[sp.key]?.applyOptions({ color: seriesColor(spec, i, base) }));
