@@ -1,17 +1,25 @@
+/* Шапка: чёрная при любой теме; токены переопределены внутри, чтобы вложенные элементы (язык) были светлыми. */
 .header {
-  position: sticky;
-  top: 0;
+  --text: var(--lp-white);
+  --text-2: var(--lp-mute);
+  --border: var(--lp-sky-2);
+  --row-hover: var(--lp-sky-2);
+  position: relative;
   z-index: 20;
-  border-bottom: 1px solid var(--border);
-  background: color-mix(in srgb, var(--bg) 85%, transparent);
-  backdrop-filter: saturate(160%) blur(12px);
+  background: var(--lp-black);
+  color: var(--lp-white);
 }
 
 .inner {
   display: flex;
   align-items: center;
-  gap: 36px;
-  height: 68px;
+  gap: 72px;
+  height: 64px;
+  padding: 0 24px 0 36px;
+}
+
+.brand {
+  color: var(--lp-white);
 }
 
 .brand:hover {
@@ -20,17 +28,17 @@
 
 .nav {
   display: flex;
-  gap: 28px;
-  font-size: 15px;
-  font-weight: 600;
+  gap: 36px;
+  font-size: 16px;
+  letter-spacing: -0.25px;
 }
 
 .nav a {
-  color: var(--text-2);
+  color: var(--lp-white);
 }
 
 .nav a:hover {
-  color: var(--text);
+  color: var(--lp-lime);
   text-decoration: none;
 }
 
@@ -38,18 +46,23 @@
   margin-left: auto;
   display: flex;
   align-items: center;
-  gap: var(--gap-3);
+  gap: 12px;
+}
+
+.lang {
+  margin-right: 12px;
 }
 
 .pill {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  height: 42px;
-  padding: 0 22px;
-  border-radius: var(--radius-pill);
-  font-size: 15px;
-  font-weight: 700;
+  height: 44px;
+  padding: 0 32px;
+  border: 1px solid var(--lp-lime);
+  border-radius: 36px;
+  font-size: 16px;
+  letter-spacing: -0.25px;
   white-space: nowrap;
 }
 
@@ -58,42 +71,95 @@
 }
 
 .acc {
-  background: var(--accent-solid);
-  color: var(--text-on-accent);
-}
-
-.acc:hover {
-  background: color-mix(in srgb, var(--accent-solid) 88%, var(--text));
+  background: var(--lp-lime);
+  color: var(--lp-ink);
 }
 
 .line {
-  box-shadow: inset 0 0 0 1.5px var(--border);
-  color: var(--text);
+  background: transparent;
+  color: var(--lp-lime);
 }
 
-.line:hover {
-  box-shadow: inset 0 0 0 1.5px var(--text-3);
+.burger {
+  display: none;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
 }
 
-@media (max-width: 960px) {
+.burger span {
+  display: block;
+  width: 22px;
+  height: 2px;
+  margin: 6px auto;
+  background: var(--lp-white);
+  transition: transform 0.2s;
+}
+
+.header[data-open] .burger span:first-child {
+  transform: translateY(4px) rotate(45deg);
+}
+
+.header[data-open] .burger span:last-child {
+  transform: translateY(-4px) rotate(-45deg);
+}
+
+.menu {
+  display: grid;
+  gap: 24px;
+  padding: 24px 20px 32px;
+  border-top: 1px solid var(--lp-sky-2);
+  background: var(--lp-black);
+}
+
+.menu nav {
+  display: grid;
+}
+
+.menu nav a {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--lp-sky-2);
+  color: var(--lp-white);
+  font-size: 22px;
+  letter-spacing: -0.3px;
+}
+
+@media (max-width: 1180px) {
+  .inner {
+    gap: 40px;
+  }
+
   .nav {
-    display: none;
+    gap: 24px;
   }
 }
 
-@media (max-width: 560px) {
+@media (max-width: 1024px) {
+  .nav,
+  .lang,
   .desktopOnly {
     display: none;
   }
 
+  .burger {
+    display: block;
+  }
+
   .inner {
-    height: 60px;
-    gap: var(--gap-3);
+    padding: 0 12px 0 20px;
   }
 
   .pill {
-    height: 38px;
-    padding: 0 16px;
+    padding: 0 22px;
     font-size: 14px;
+  }
+}
+
+@media (min-width: 1025px) {
+  .menu {
+    display: none;
   }
 }

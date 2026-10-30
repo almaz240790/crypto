@@ -193,6 +193,14 @@ export async function getMonthPrices(): Promise<Record<string, string> | null> {
   return r ? Object.fromEntries(r.plans.map((p) => [p.code, p.price_month])) : null;
 }
 
+/** Закрытия последних дневных свечей (только закрытые) — для фоновой линии на главной; null, если API недоступен. */
+export async function getDailyCloses(symbol = "BTCUSDT", count = 240): Promise<number[] | null> {
+  const r = await get<{ candles: { c: string; open?: boolean }[] }>(`/v1/chart/candles?symbol=${symbol}&tf=1d&limit=500`, 3600);
+  if (!r) return null;
+  const closes = r.candles.filter((c) => !c.open).map((c) => Number(c.c));
+  return closes.length > 10 ? closes.slice(-count) : null;
+}
+
 export function getHealth(): Promise<Health | null> {
   return get<Health>("/health", 30);
 }

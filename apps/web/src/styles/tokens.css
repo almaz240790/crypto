@@ -30,6 +30,32 @@
   --accent-solid: #c6f432;
   --warn: #a16207;
 
+  /* Маркетинговые страницы (ADR-0006, сетка по образцу robinhood.com): цвета блоков не зависят от темы */
+  --lp-black: #000000;
+  --lp-white: #ffffff;
+  --lp-ink: #0e0d08;
+  --lp-ink-2: #3a3832;
+  --lp-mute: #d6d6d2;
+  --lp-mute-2: #8f8d86;
+  --lp-lime: #c6f432;
+  --lp-lime-line: #0e0d0833;
+  --lp-olive: #1b190f;
+  --lp-sky-1: #0c0d10;
+  --lp-sky-2: #2c2e34;
+  --lp-sky-3: #6e6a64;
+  --lp-sky-4: #3c3934;
+  --lp-ledge: #060607;
+  --lp-bezel: #0b0b0d;
+  --lp-slate-1: #93a5bf;
+  --lp-slate-2: #c3cddb;
+  --lp-night-2: #3d4458;
+  --lp-night-3: #9aa1b3;
+  --lp-card: #ffffff;
+  --lp-card-2: #6b6862;
+  --lp-thumb: #111111;
+  --lp-art: #f1efe8;
+  --lp-glow: rgb(198 244 50 / 35%);
+
   /* Индикаторы на графике — 6 нейтральных оттенков */
   --ind-1: #4a6fa5;
   --ind-2: #8b6f3e;
