@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { Logo } from "./Logo";
 import s from "./Header.module.css";
@@ -12,6 +12,13 @@ export function Header() {
   const t = useT();
   const { user } = useAuth();
   const [open, setOpen] = useState(false);
+  // меню закрывается клавишей Esc
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
   const nav = [
     { href: "/chart", label: t("График") },
     { href: "/#features", label: t("Возможности") },

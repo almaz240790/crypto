@@ -30,7 +30,7 @@ const COLUMNS: { title: string; links: { href: string; label: string }[] }[] = [
   {
     title: "Аккаунт",
     links: [
-      { href: "/login", label: "Вход" },
+      { href: "/login", label: "Войти" },
       { href: "/register", label: "Регистрация" },
       { href: "/settings", label: "Настройки" },
       { href: "/billing", label: "Оплата" },
@@ -79,14 +79,14 @@ export function Footer({ status }: { status?: string }) {
             <b>{t("Карта ликвидаций")}</b> {t("— расчётная оценка по приросту открытого интереса и объёму, а не данные биржи.")}
           </p>
           <p>
-            <b>{t("Разметка графика")}</b> {t("строится по детерминированным правилам только по закрытым свечам и не перерисовывается задним числом.")}
+            <b>{t("Структура, зоны и паттерны")}</b> {t("строятся по детерминированным правилам только по закрытым свечам и не перерисовываются задним числом. Уровни поддержки и сопротивления и карта ликвидаций пересчитываются с каждой новой свечой.")}
           </p>
           {status && <p>{status}</p>}
           <p>© 2026 PlatformSol · 18+</p>
         </div>
       </div>
-      <svg className={s.word} viewBox="0 0 1000 170" role="img" aria-label="PlatformSol">
-        <text x="0" y="140" textLength="1000" lengthAdjust="spacingAndGlyphs">
+      <svg className={s.word} viewBox="0 0 1000 190" role="img" aria-label="PlatformSol">
+        <text x="0" y="158" textLength="1000" lengthAdjust="spacingAndGlyphs">
           PlatformSol
         </text>
       </svg>

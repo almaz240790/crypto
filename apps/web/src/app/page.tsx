@@ -4,19 +4,23 @@ import { Footer, Header } from "@/components/site";
 import { HeroLine } from "@/components/landing/HeroLine";
 import { DeskTools } from "@/components/landing/DeskTools";
 import { LineArt, Thumb } from "@/components/landing/LineArt";
+import { TrustCarousel } from "@/components/landing/TrustCarousel";
 import { getDailyCloses, getHealth, getInstrumentCount } from "@/lib/api";
 import { COUNTS } from "@/lib/capabilities";
+import { plural } from "@/lib/format";
 import s from "./page.module.css";
 import { getT } from "@/i18n/server";
 
 // Рендер на каждый запрос (данные fetch кэшируются): при сборке образа API недоступен.
 export const dynamic = "force-dynamic";
 
-export const metadata: Metadata = {
-  title: "PlatformSol — крипто-график для технического анализа",
-  description:
-    "Индикаторы, инструменты рисования и автоматическая разметка: уровни, зоны OB и FVG, структура рынка и карта ликвидаций. Монеты Binance — в браузере и на телефоне.",
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const t = await getT();
+  return {
+    title: t("PlatformSol — крипто-график для технического анализа"),
+    description: t("Индикаторы, инструменты рисования и автоматическая разметка: уровни, зоны OB и FVG, структура рынка и карта ликвидаций. Монеты Binance — в браузере и на телефоне."),
+  };
+}
 
 /**
  * Главная (ADR-0006): порядок и сетка блоков — по образцу robinhood.com по просьбе владельца,
@@ -24,30 +28,22 @@ export const metadata: Metadata = {
  */
 
 const TRUST = [
-  { art: "candles", t: "Разметка не перерисовывается задним числом." },
+  { art: "candles", t: "Структура, зоны и паттерны не перерисовываются задним числом." },
   { art: "data", t: "Данные напрямую с Binance Futures." },
   { art: "rings", t: "Двухфакторная защита аккаунта." },
   { art: "loupe", t: "Без обещаний доходности — только инструмент анализа." },
 ] as const;
 
 const BASICS = [
-  { thumb: "ob", t: "Что такое ордер-блок?", p: "Зона, откуда цена ушла импульсом и куда часто возвращается" },
-  { thumb: "fvg", t: "Что такое FVG?", p: "Разрыв между свечами, который цена нередко заполняет" },
-  { thumb: "choch", t: "Что такое CHoCH?", p: "Первый признак того, что тренд меняет направление" },
+  { thumb: "ob", t: "Что такое ордер-блок?", p: "Зона, откуда цена ушла импульсом; цена может к ней вернуться" },
+  { thumb: "fvg", t: "Что такое FVG?", p: "Разрыв между свечами, который цена может заполнить" },
+  { thumb: "choch", t: "Что такое CHoCH?", p: "Первый слом структуры против тренда — возможный разворот" },
 ] as const;
-
-function Chevron() {
-  return (
-    <svg width="10" height="16" viewBox="0 0 10 16" aria-hidden="true">
-      <path d="M2 2l6 6-6 6" fill="none" stroke="currentColor" strokeWidth="2" />
-    </svg>
-  );
-}
 
 export default async function Home() {
   const t = await getT();
   const [health, instruments, closes] = await Promise.all([getHealth(), getInstrumentCount(), getDailyCloses()]);
-  const coins = instruments ?? 59;
+  const coins = instruments;
 
   return (
     <>
@@ -56,7 +52,7 @@ export default async function Home() {
         {/* Полоса-объявление */}
         <p className={s.promo}>
           <b>{t("Новое:")}</b>{" "}
-          <Link href="/chart/BTCUSDT/4h">{t("карта ликвидаций с суммами в долларах — прямо на графике")}</Link>. {t("Бесплатно, без регистрации.")}
+          <Link href="/chart/BTCUSDT/4h">{t("расчётная карта ликвидаций с суммами в долларах — прямо на графике")}</Link>. {t("Бесплатно, без регистрации.")}
         </p>
 
         {/* Первый экран */}
@@ -64,12 +60,14 @@ export default async function Home() {
           <HeroLine closes={closes} />
           <div className={s.heroText}>
             <h1 id="h-title" className={s.h1}>
-              {t("Технический анализ")}
+              {t("Технический анализ.")}
               <br />
-              {t("в одном окне")}
+              {t("Без рутины.")}
             </h1>
             <p className={s.heroSub}>
-              {t("{i} индикаторов, {d} инструментов рисования и автоматическая разметка: уровни, зоны, структура рынка и карта ликвидаций. {n} монет Binance — бесплатно.", { i: COUNTS.indicators, d: COUNTS.tools, n: coins })}
+              {t("{i} индикаторов, {d} инструментов рисования, авторазметка: уровни, зоны, структура рынка, ликвидации.", { i: COUNTS.indicators, d: COUNTS.tools })}{" "}
+              {coins !== null &&
+                t(plural(coins, "{n} монета Binance — бесплатно.", "{n} монеты Binance — бесплатно.", "{n} монет Binance — бесплатно."), { n: coins })}
             </p>
             <Link href="/chart/BTCUSDT/4h" className={`${s.pill} ${s.lime}`}>
               {t("Открыть график")}
@@ -84,12 +82,12 @@ export default async function Home() {
               <DeskTools />
               <div className={s.tablet}>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src="/landing/multi.webp" width={1380} height={905} alt={t("Мультичарт PlatformSol: четыре графика с автоматической разметкой")} />
+                <img src="/landing/multi.webp" width={2000} height={1312} alt={t("Мультичарт PlatformSol: четыре графика с автоматической разметкой")} loading="lazy" />
               </div>
             </div>
           </div>
           <div className={`${s.copy} ${s.right}`}>
-            <h3 className={s.kickLime}>{t("Всё для теханализа")}</h3>
+            <div className={s.kickLime}>{t("Всё для теханализа")}</div>
             <h2 id="h-tools" className={s.h2}>
               {t("Разметка, индикаторы и рынок — в одном окне")}
             </h2>
@@ -110,7 +108,7 @@ export default async function Home() {
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img className={s.cardLv} src="/landing/levels.webp" width={600} height={1200} alt={t("Список уровней, зон и ликвидаций с ценами")} loading="lazy" />
           </div>
-          <div className={`${s.copy} ${s.right} ${s.dark}`}>
+          <div className={`${s.copy} ${s.right}`}>
             <p className={s.lockup}>
               <span className={s.mark} aria-hidden="true" />
               <b>PlatformSol</b> {t("Разметка")}
@@ -118,7 +116,7 @@ export default async function Home() {
             <h2 id="h-auto" className={s.h2}>
               {t("Уровни, зоны и ликвидации — сами")}
             </h2>
-            <p>{t("Поддержка и сопротивление по касаниям, ордер-блоки, FVG, зоны спроса и предложения, сломы структуры и карта ликвидаций с суммами. Всё найденное — в списке с ценами.")}</p>
+            <p>{t("Уровни по касаниям, ордер-блоки, FVG, сломы структуры и карта ликвидаций — со списком цен.")}</p>
             <p className={s.info}>
               <span aria-hidden="true">i</span>
               {t("Карта ликвидаций — расчётная оценка, а не данные биржи")}
@@ -126,7 +124,7 @@ export default async function Home() {
             <Link href="/chart/BTCUSDT/4h" className={`${s.pill} ${s.ink}`}>
               {t("Посмотреть на BTC")}
             </Link>
-            <p className={s.fine}>{t("Разметка строится только по закрытым свечам.")}</p>
+            <p className={s.fine}>{t("Структура и зоны строятся только по закрытым свечам.")}</p>
           </div>
         </section>
 
@@ -143,7 +141,7 @@ export default async function Home() {
             <p>{t("Масштаб двумя пальцами, перекрестие по удержанию пальца, рисование и индикаторы из нижней панели. Ничего не нужно устанавливать — сайт можно добавить на главный экран.")}</p>
             <p>{t("Работает в любом современном браузере.")}</p>
             <Link href="/chart/BTCUSDT/4h" className={`${s.pill} ${s.lime}`}>
-              {t("Открыть на телефоне")}
+              {t("Открыть график")}
             </Link>
             <p className={s.fine}>{t("На скриншоте — BTCUSDT, 4 часа, с картой ликвидаций и структурой рынка.")}</p>
           </div>
@@ -163,18 +161,18 @@ export default async function Home() {
         {/* 4. Доверие — тёмный блок, 2×2 */}
         <section className={s.trust} aria-labelledby="h-trust">
           <h2 id="h-trust" className={s.h2c}>
-            {t("Честный инструмент")}
+            {t("Честный инструмент —")}
             <br />
-            {t("без перерисовки")}
+            {t("структура без перерисовки")}
           </h2>
-          <ul>
+          <TrustCarousel dotsClassName={s.dots} labelledBy="h-trust">
             {TRUST.map((i) => (
               <li key={i.art}>
                 <LineArt name={i.art} />
                 <p>{t(i.t)}</p>
               </li>
             ))}
-          </ul>
+          </TrustCarousel>
         </section>
 
         {/* 5. Основы — салатовый блок с карточкой */}
@@ -198,7 +196,6 @@ export default async function Home() {
                     <b>{t(b.t)}</b>
                     <span>{t(b.p)}</span>
                   </div>
-                  <Chevron />
                 </li>
               ))}
             </ul>

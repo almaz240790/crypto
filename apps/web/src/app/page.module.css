@@ -1,6 +1,6 @@
 /*
  * Главная (ADR-0006): сетка, размеры и ритм — по образцу robinhood.com (замеры при ширине 1440 и 390),
- * содержание и изображения — свои. Цвета — только токены --lp-* (не зависят от темы сайта).
+ * образы, изображения и тексты — свои. Цвета — только токены --lp-* (не зависят от темы сайта).
  */
 
 .page {
@@ -43,8 +43,9 @@
   color: var(--lp-white);
 }
 
-/* Полоса-объявление */
+/* Полоса-объявление; на салатовом фоне рамка фокуса — тёмная */
 .promo {
+  --focus: var(--lp-ink);
   padding: 10px 24px;
   background: var(--lp-lime);
   color: var(--lp-ink);
@@ -75,20 +76,22 @@
   text-align: center;
 }
 
+/* 110/110 от 1310 px; уже — плавно меньше, чтобы заголовок оставался в две строки над линией графика */
 .h1 {
   margin: 0;
   font-family: var(--font-serif), Georgia, serif;
-  font-size: 110px;
+  font-size: clamp(60px, 8.4vw, 110px);
   font-weight: 400;
-  line-height: 110px;
+  line-height: 1;
   letter-spacing: -0.5px;
 }
 
 .heroSub {
-  max-width: 800px;
+  max-width: 778px;
   margin-top: 27px !important;
   font-size: 22px;
   line-height: 28px;
+  text-wrap: balance;
 }
 
 .heroText .pill {
@@ -115,22 +118,27 @@
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  padding: 221px 0 52px;
+  padding: 221px 0 34px;
 }
 
+/* колонка 440 px; на узких экранах сжимается и не уходит за край */
 .copy.right {
   left: calc(50% + 52px);
-  width: 440px;
+  width: min(440px, calc(50% - 76px));
 }
 
 .copy.left {
-  left: calc(50% - 508px);
-  width: 440px;
+  left: max(24px, calc(50% - 508px));
+  width: min(440px, calc(50% - 76px));
   padding-top: 150px;
 }
 
 .copy > p {
   margin-top: 15px !important;
+}
+
+.copy > .lockup {
+  margin-top: 0 !important;
 }
 
 .copy .pill {
@@ -207,6 +215,7 @@
 .info span {
   display: inline-grid;
   place-items: center;
+  flex: none;
   width: 16px;
   height: 16px;
   border: 1px solid currentColor;
@@ -224,10 +233,12 @@
 
 .desk {
   position: absolute;
-  left: calc(50% - 660px);
-  top: 90px;
+  left: calc(50% - 670px);
+  top: 96px;
   width: 720px;
   height: 600px;
+  transform: scale(0.9);
+  transform-origin: 0 0;
 }
 
 .tablet {
@@ -249,10 +260,14 @@
   height: auto;
 }
 
-/* 2. «Слои» на светлом камне */
+/* 2. «Слои» на светлом камне: карточки уходят за верхний и нижний край полосы */
 .stone {
   background: linear-gradient(160deg, var(--lp-stone-2) 0%, var(--lp-stone) 100%);
   color: var(--lp-ink);
+}
+
+.stone .copy {
+  padding-top: 227px;
 }
 
 .stone .copy .fine {
@@ -268,28 +283,44 @@
 }
 
 .cardLiq {
-  left: calc(50% - 560px);
-  top: 70px;
-  width: 340px;
+  left: calc(50% - 600px);
+  top: -40px;
+  width: 360px;
   transform: rotate(-4deg);
 }
 
 .cardLv {
-  left: calc(50% - 300px);
-  top: 200px;
-  width: 270px;
+  left: calc(50% - 330px);
+  top: 300px;
+  width: 280px;
   transform: rotate(3deg);
 }
 
 .beam {
   position: absolute;
-  left: calc(50% - 330px);
+  left: calc(50% - 340px);
   top: 0;
   bottom: 0;
   width: 2px;
   background: linear-gradient(180deg, transparent, var(--lp-lime) 30%, var(--lp-lime) 70%, transparent);
   box-shadow: 0 0 18px var(--lp-lime);
   opacity: 0.85;
+}
+
+/* 901–1279: картинки полос сжимаются к колонке текста и остаются целыми */
+@media (min-width: 901px) and (max-width: 1279px) {
+  .mat > .visual,
+  .cards {
+    transform: scale(0.86);
+    transform-origin: calc(50% + 52px) 45%;
+  }
+}
+
+@media (min-width: 901px) and (max-width: 1099px) {
+  .mat > .visual,
+  .cards {
+    transform: scale(0.74);
+  }
 }
 
 /* 3. «Рассвет»: горизонт, салатовое солнце и телефон */
@@ -330,7 +361,7 @@
 }
 
 .phoneWrap {
-  left: calc(50% + 230px);
+  left: min(calc(50% + 230px), calc(100% - 354px));
   right: auto;
   top: 190px;
   width: 330px;
@@ -351,9 +382,24 @@
   border-radius: 42px;
 }
 
+/* Полоса с текстом слева: заголовок отделён от текста, как в образце */
+@media (min-width: 901px) {
+  .copy.left > h2 + p {
+    margin-top: 30px !important;
+  }
+
+  .copy.left > p + p {
+    margin-top: 25px !important;
+  }
+
+  .copy.left .pill {
+    margin-top: 25px;
+  }
+}
+
 /* ── 4. Доверие: глубокий зелёно-чёрный, 2×2 ─────────────── */
 .trust {
-  padding: 68px 24px 230px;
+  padding: 74px 24px 196px;
   background: var(--lp-forest);
   text-align: center;
 }
@@ -371,7 +417,7 @@
   grid-template-columns: repeat(2, 300px);
   justify-content: center;
   column-gap: 48px;
-  row-gap: 110px;
+  row-gap: 149px;
   margin: 176px 0 0;
   padding: 0;
   list-style: none;
@@ -390,8 +436,14 @@
   letter-spacing: -0.3px;
 }
 
+/* точки листалки — только на телефоне */
+.dots {
+  display: none;
+}
+
 /* ── 5. Основы: салатовый, карточка обрезана снизу ────────── */
 .learn {
+  --focus: var(--lp-ink);
   overflow: hidden;
   padding: 65px 24px 0;
   background: var(--lp-lime);
@@ -414,8 +466,8 @@
 
 .card {
   width: 442px;
-  margin: 70px auto -96px;
-  padding: 36px 32px 40px;
+  margin: 82px auto -51px;
+  padding: 44px 32px 40px;
   border-radius: 28px;
   background: var(--lp-card);
   box-shadow: 0 10px 40px color-mix(in srgb, var(--lp-ink) 14%, transparent);
@@ -423,7 +475,7 @@
 }
 
 .card h3 {
-  margin: 0 0 22px;
+  margin: 0 0 28px;
   font-size: 16px;
   font-weight: 400;
 }
@@ -458,7 +510,7 @@
   color: var(--lp-card-2);
 }
 
-/* ── 6. Призыв: чёрный, «фитили» ─────────────────────────── */
+/* ── 6. Призыв: «Восход» ─────────────────────────────────── */
 .final {
   position: relative;
   overflow: hidden;
@@ -572,11 +624,6 @@
 
 /* ── Телефон и узкие экраны: текст сверху, картинка снизу ─ */
 @media (max-width: 900px) {
-  .promo {
-    font-size: 14px;
-    line-height: 18px;
-  }
-
   .hero {
     height: 725px;
   }
@@ -585,8 +632,9 @@
     padding-top: 72px;
   }
 
+  /* «Технический» ≈ 6,45 em: заполняет колонку с полями 24 px, 60 px — от 444 px */
   .h1 {
-    font-size: min(60px, 12vw);
+    font-size: min(60px, calc((100vw - 48px) / 6.6));
     line-height: 1.05;
   }
 
@@ -599,6 +647,13 @@
     display: flex;
     flex-direction: column;
     height: auto;
+    padding-bottom: 0;
+  }
+
+  /* полоса под подписью: подпись не ложится на карточки и телефон */
+  .band.stone,
+  .band.dawn {
+    padding-bottom: 96px;
   }
 
   .visual {
@@ -610,7 +665,8 @@
 
   .copy,
   .copy.right,
-  .copy.left {
+  .copy.left,
+  .stone .copy {
     position: relative;
     left: auto;
     order: 1;
@@ -631,17 +687,13 @@
     position: absolute;
     left: 20px;
     right: 20px;
-    bottom: 24px;
+    bottom: 28px;
     top: auto;
     z-index: 2;
   }
 
   .band > .copy {
     position: static;
-  }
-
-  .band {
-    padding-bottom: 0;
   }
 
   .kickLime {
@@ -705,21 +757,31 @@
     left: 6%;
     top: 40px;
     width: 52%;
+    max-width: 300px;
   }
 
   .cardLv {
     left: 44%;
     top: 110px;
     width: 46%;
+    max-width: 230px;
   }
 
+  /* телефон показан верхней частью и растворяется, как в образце */
   .phoneWrap {
     position: relative;
     left: auto;
     top: auto;
+    width: auto;
+    height: 420px;
+    margin: 72px 0 0;
+    -webkit-mask-image: linear-gradient(180deg, var(--lp-black) 65%, transparent);
+    mask-image: linear-gradient(180deg, var(--lp-black) 65%, transparent);
+  }
+
+  .phone {
     width: 250px;
-    height: 520px;
-    margin: 40px auto 0;
+    margin: 0 auto;
   }
 
   .trust {
@@ -733,21 +795,12 @@
     letter-spacing: -1px;
   }
 
+  /* планшет: сетка 2×2 помещается */
   .trust ul {
-    display: flex;
-    justify-content: flex-start;
-    gap: 26px;
-    margin-top: 70px;
-    padding: 0 calc(50% - 100px);
-    overflow-x: auto;
-    scroll-snap-type: x mandatory;
-    scrollbar-width: none;
-  }
-
-  .trust li {
-    flex: none;
-    width: 200px;
-    scroll-snap-align: center;
+    grid-template-columns: repeat(2, 260px);
+    column-gap: 40px;
+    row-gap: 64px;
+    margin-top: 96px;
   }
 
   .trust li p {
@@ -764,7 +817,7 @@
   }
 
   .learn > .pill {
-    margin-top: 24px;
+    margin-top: 37px;
     max-width: 100%;
     white-space: normal;
   }
@@ -772,8 +825,26 @@
   .card {
     width: auto;
     max-width: 358px;
-    margin-top: 48px;
-    padding: 28px 22px 40px;
+    margin: 80px auto -56px;
+    padding: 28px 20px 40px;
+  }
+
+  .card h3 {
+    margin-bottom: 22px;
+  }
+
+  .card li {
+    gap: 14px;
+  }
+
+  .card li > svg:first-child {
+    width: 72px;
+    height: 56px;
+  }
+
+  .card li span {
+    margin-top: 2px;
+    line-height: 18px;
   }
 
   .final {
@@ -783,5 +854,59 @@
   .final .h1 {
     font-size: 44px;
     line-height: 48px;
+  }
+}
+
+/* планшет 641–900: стол крупнее */
+@media (min-width: 641px) and (max-width: 900px) {
+  .desk {
+    transform: scale(0.8);
+  }
+
+  .mat > .visual {
+    height: 560px;
+  }
+}
+
+/* телефон: «доверие» — листалка с точками */
+@media (max-width: 640px) {
+  .trust ul {
+    display: flex;
+    justify-content: flex-start;
+    gap: 26px;
+    margin-top: 70px;
+    padding: 0 calc(50% - 100px);
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+    scrollbar-width: none;
+  }
+
+  .trust ul:focus-visible {
+    outline: 2px solid var(--lp-lime);
+    outline-offset: 4px;
+  }
+
+  .trust li {
+    flex: none;
+    width: 200px;
+    scroll-snap-align: center;
+  }
+
+  .dots {
+    display: flex;
+    justify-content: center;
+    gap: 10px;
+    margin-top: 48px;
+  }
+
+  .dots i {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--lp-graphite);
+  }
+
+  .dots i[data-active] {
+    background: var(--lp-white);
   }
 }

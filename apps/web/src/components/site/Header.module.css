@@ -149,12 +149,43 @@
   }
 
   .inner {
+    gap: 16px;
     padding: 0 12px 0 20px;
   }
 
   .pill {
-    padding: 0 22px;
-    font-size: 14px;
+    padding: 0 20px;
+    font-size: 16px;
+  }
+
+  .burger span {
+    width: 30px;
+    height: 3px;
+    margin: 10px auto;
+    border-radius: 2px;
+  }
+
+  .header[data-open] .burger span:first-child {
+    transform: translateY(6.5px) rotate(45deg);
+  }
+
+  .header[data-open] .burger span:last-child {
+    transform: translateY(-6.5px) rotate(-45deg);
+  }
+}
+
+@media (max-width: 389px) {
+  .inner {
+    gap: 12px;
+    padding: 0 8px 0 16px;
+  }
+
+  .right {
+    gap: 4px;
+  }
+
+  .pill {
+    padding: 0 16px;
   }
 }
 

@@ -137,15 +137,20 @@ export type Health = {
   env: string;
 };
 
+/** Предел ожидания API при рендере страниц: зависший API не должен держать страницу. */
+const API_TIMEOUT_MS = 5000;
+
 async function get<T>(path: string, revalidate = 60): Promise<T | null> {
   try {
     const res = await fetch(`${API_URL}${path}`, {
       next: { revalidate },
       headers: { accept: "application/json" },
+      signal: AbortSignal.timeout(API_TIMEOUT_MS),
     });
     if (!res.ok) return null;
     return (await res.json()) as T;
   } catch {
+    // в том числе таймаут (TimeoutError)
     return null;
   }
 }
