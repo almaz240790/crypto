@@ -9,7 +9,7 @@ export const metadata: Metadata = {
   description: "Публичный API Platform для тарифа Premium: сигналы, статистика, свечи, скринер — только чтение, по ключу в заголовке X-API-Key.",
 };
 
-const BASE = "https://crypto-production-6763.up.railway.app";
+const BASE = "https://api.platformsol.com";
 
 const ENDPOINTS: { path: string; what: string; params: string }[] = [
   { path: "/v1/signals", what: "Лента сигналов с фильтрами и пагинацией", params: "status, symbol, grade, direction, days, sort, order, limit, offset" },
