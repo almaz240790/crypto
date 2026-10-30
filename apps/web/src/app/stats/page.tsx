@@ -21,7 +21,7 @@ export const dynamic = "force-dynamic";
 export const metadata: Metadata = {
   title: "Статистика сигналов",
   description:
-    "Открытая статистика торговых сигналов Platform: live, форвард-тест и бэктест помечены отдельно, полная история сделок, просадки и распределение результата в R.",
+    "Открытая статистика торговых сигналов PlatformSol: live, форвард-тест и бэктест помечены отдельно, полная история сделок, просадки и распределение результата в R.",
 };
 
 const SCOPES: { key: "live" | "forward" | "backtest"; label: string; note: string }[] = [

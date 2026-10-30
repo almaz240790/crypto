@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
   title: "Статус системы",
-  description: "Состояние данных с биржи, движка сигналов, трекера и уведомлений Platform. Инциденты за 7 дней.",
+  description: "Состояние данных с биржи, движка сигналов, трекера и уведомлений PlatformSol. Инциденты за 7 дней.",
 };
 
 type Status = {

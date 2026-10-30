@@ -15,7 +15,7 @@ export function snapshotPng(chart: IChartApi, title: string, link: string, token
   ctx.font = `13px ${tokens.fontMono}`;
   ctx.textBaseline = "middle";
   ctx.fillText(title, 10, pad / 2);
-  const foot = `Platform · ${link} · не является инвестиционной рекомендацией`;
+  const foot = `PlatformSol · ${link} · не является инвестиционной рекомендацией`;
   ctx.fillText(foot, 10, out.height - pad / 2);
   return out.toDataURL("image/png");
 }

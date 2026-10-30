@@ -1,20 +1,9 @@
 import type { Metadata } from "next";
-import Link from "next/link";
 import { FAQ } from "@/content/faq";
-import { DISCLAIMER, EquityChart, Footer, Header } from "@/components/site";
-import {
-  Button,
-  DirectionBadge,
-  EmptyState,
-  GradeBadge,
-  Panel,
-  StatusBadge,
-  Table,
-  Td,
-  Th,
-} from "@/components/ui";
-import { getClosedSignals, getHealth, getStats, type Metrics } from "@/lib/api";
-import { formatDuration, formatPct, formatR, formatTimeUTC, plural } from "@/lib/format";
+import { EquityChart, Footer, Header } from "@/components/site";
+import { Button } from "@/components/ui";
+import { getHealth, getInstrumentCount, getStats, type Metrics } from "@/lib/api";
+import { formatPct, formatR, formatTimeUTC } from "@/lib/format";
 import s from "./page.module.css";
 import { getT } from "@/i18n/server";
 
@@ -22,348 +11,269 @@ import { getT } from "@/i18n/server";
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
-  title: "Platform — сигналы на H4 с публичной статистикой каждой сделки",
+  title: "PlatformSol — уровни, зоны и ликвидации на одном графике",
   description:
-    "Торговые сигналы на 4-часовом таймфрейме по крипторынку. Одна система правил, закрытые свечи, статистика каждой сделки открыта.",
+    "Крипто-график с поддержкой и сопротивлением, зонами OB и FVG и картой ликвидаций. Сигналы на H4 по строгим правилам с открытой статистикой каждой сделки.",
 };
 
-const STEPS = [
-  {
-    t: "Свеча H4 закрылась",
-    p: "Через 60 секунд после закрытия движок проверяет каждый инструмент по одним и тем же правилам. Незакрытые свечи не участвуют.",
-  },
-  {
-    t: "Сигнал или его отсутствие",
-    p: "Если все условия выполнены — публикуется сигнал с входом, стопом и тремя целями. Если нет — ничего не публикуется. В среднем 0–3 сигнала в день на 30 инструментов.",
-  },
-  {
-    t: "Трекер ведёт сделку",
-    p: "Касание входа, стопа и целей фиксируется автоматически по минутным свечам биржи. Сигнал нельзя отредактировать после публикации.",
-  },
-  {
-    t: "Результат попадает в статистику",
-    p: "Каждая сделка в R (отношение к риску) видна всем, включая убыточные. Статистика считается тем же кодом, что и бэктест.",
-  },
+/** Иконки возможностей: линия currentColor, 24 px. */
+const ICON: Record<string, string> = {
+  levels: "M3 7h18M3 12h18M3 17h18M15 4v16",
+  signal: "M4 17l5-5 4 4 7-8M15 8h5v5",
+  screener: "M4 5h16l-6 7v6l-4 2v-8z",
+  alert: "M6 16V11a6 6 0 0 1 12 0v5l2 2H4zM10 20a2 2 0 0 0 4 0",
+  journal: "M6 3h10l3 3v15H6zM9 9h7M9 13h7M9 17h4",
+  ask: "M4 5h16v11H9l-5 4zM9 9h6M9 12h4",
+};
+
+const FEATURES = [
+  { icon: "levels", t: "Уровни и карта ликвидаций", p: "Поддержка и сопротивление по касаниям, зоны OB, FVG и SD, оценка ликвидаций с суммами — без шума поверх свечей." },
+  { icon: "signal", t: "Сигналы по правилам", p: "Тренд → зона → ретест: вход, стоп и три цели. Одна версия правил для всех монет, без ручных правок." },
+  { icon: "screener", t: "Скринер", p: "Какие монеты ближе всего к зоне входа: фильтры по тренду, волатильности, funding и открытому интересу." },
+  { icon: "alert", t: "Алерты", p: "Цена, индикаторы, зоны, структура и паттерны. Push и письмо в течение минуты." },
+  { icon: "journal", t: "Журнал сделок", p: "Результат в R, винрейт, типовые ошибки и импорт сделок с Binance." },
+  { icon: "ask", t: "Вопрос о графике", p: "Ответ по данным графика: тренд, зоны, уровни. Без прогнозов и советов." },
 ];
 
+const STEPS = [
+  { t: "Свеча H4 закрылась", p: "Через 60 секунд после закрытия движок проверяет каждый инструмент по одним и тем же правилам. Незакрытые свечи не участвуют." },
+  { t: "Сигнал или его отсутствие", p: "Если все условия выполнены — публикуется сигнал с входом, стопом и тремя целями. Если нет — ничего не публикуется. В среднем 0–3 сигнала в день на 30 инструментов." },
+  { t: "Трекер ведёт сделку", p: "Касание входа, стопа и целей фиксируется автоматически по минутным свечам биржи. Сигнал нельзя отредактировать после публикации." },
+  { t: "Результат попадает в статистику", p: "Каждая сделка в R (отношение к риску) видна всем, включая убыточные. Статистика считается тем же кодом, что и бэктест." },
+];
 
-function num(v: number | null | undefined, f: (n: number) => string): string {
-  return v === null || v === undefined ? "—" : f(v);
+const RULES = [
+  { t: "Контекст", p: "Направление тренда на D1 и W1 по структуре и EMA50. Сделки только по тренду старшего таймфрейма; при расхождении D1 и W1 сигнала нет." },
+  { t: "Структура", p: "Свинги, слом структуры (BOS) и смена характера (CHoCH) на H4. Вход — только после подтверждённого слома в сторону тренда." },
+  { t: "Зона", p: "Ордер-блок или имбаланс (FVG), образовавшие слом. Вход — на возврате цены в зону, не на пробое." },
+  { t: "Ликвидность", p: "Снятие равных максимумов/минимумов, дневных и недельных уровней до входа повышает оценку сигнала." },
+  { t: "Фильтры", p: "Волатильность (ATR в границах), объём, расстояние до стопа, funding и открытый интерес, макрособытия, корреляция с BTC. Любой невыполненный фильтр отменяет сигнал." },
+  { t: "Стоп и цели", p: "Стоп за границей зоны с запасом по ATR. TP1 — ближайшая ликвидность, TP2 — не менее 2.5 R, TP3 — следующий структурный уровень. После TP1 стоп переносится в безубыток." },
+];
+
+const PLANS = [
+  { name: "Free", price: "$0", per: "", year: "", cta: "Начать бесплатно", href: "/register", hot: false, items: ["Сигналы градации A с задержкой 12 часов", "BTC, ETH + 3 инструмента на выбор", "Email-дайджест раз в день", "Публичная статистика"] },
+  { name: "Pro", price: "$29", per: "/ мес", year: "или $249 в год", cta: "Попробовать Pro", href: "/register", hot: true, items: ["Все сигналы сразу", "Все инструменты, уровни и карта ликвидаций", "Алерты: Telegram, push, email", "Скринер, журнал без ограничений, CSV"] },
+  { name: "Premium", price: "$79", per: "/ мес", year: "или $690 в год", cta: "Выбрать Premium", href: "/pricing", hot: false, items: ["Всё из Pro", "Вопросы о графике", "Экспериментальные стратегии", "API-ключ и вебхуки"] },
+];
+
+function Icon({ name }: { name: string }) {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d={ICON[name]} />
+    </svg>
+  );
 }
 
-async function MetricsRow({ m, updated }: { m: Metrics; updated: string }) {
+async function LiveStats({ m, equity, updated }: { m: Metrics; equity: { t: string; r: number }[]; updated: string }) {
   const t = await getT();
+  const num = (v: number | null | undefined, f: (n: number) => string) => (v == null ? "—" : f(v));
   return (
-    <dl className={s.metrics} aria-label={`live-статистика за 90 дней, обновлено ${updated}`}>
-      <div className={s.metric}>
-        <dt>{t("сделок за 90 дней")}</dt>
-        <dd>{m.closed}</dd>
-      </div>
-      <div className={s.metric}>
-        <dt>{t("винрейт")}</dt>
-        <dd>{num(m.winrate, (n) => formatPct(n * 100, { signed: false }))}</dd>
-      </div>
-      <div className={s.metric}>
-        <dt>{t("средний R")}</dt>
-        <dd>{num(m.avg_r, (n) => formatR(n))}</dd>
-      </div>
-      <div className={s.metric}>
-        <dt>{t("макс. просадка")}</dt>
-        <dd>{m.closed ? formatR(-m.max_drawdown_r) : "—"}</dd>
-      </div>
-    </dl>
+    <div className={s.liveCard}>
+      <dl className={s.liveNums} aria-label={t("live-статистика за 90 дней, обновлено {u}", { u: updated })}>
+        <div>
+          <dt>{t("сделок за 90 дней")}</dt>
+          <dd>{m.closed}</dd>
+        </div>
+        <div>
+          <dt>{t("винрейт")}</dt>
+          <dd>{num(m.winrate, (n) => formatPct(n * 100, { signed: false }))}</dd>
+        </div>
+        <div>
+          <dt>{t("средний R")}</dt>
+          <dd>{num(m.avg_r, (n) => formatR(n))}</dd>
+        </div>
+        <div>
+          <dt>{t("макс. просадка")}</dt>
+          <dd>{formatR(-m.max_drawdown_r)}</dd>
+        </div>
+      </dl>
+      <EquityChart points={equity} />
+    </div>
   );
 }
 
 export default async function Home() {
   const t = await getT();
-  const [stats, recent, health] = await Promise.all([getStats(90), getClosedSignals(5), getHealth()]);
+  const [stats, health, instruments] = await Promise.all([getStats(90), getHealth(), getInstrumentCount()]);
   const m = stats?.metrics;
   const hasLive = !!m && m.closed > 0;
-  const updated = stats ? formatTimeUTC(stats.generated_at) : "—";
-  const months = stats ? Object.entries(stats.by_month).sort(([a], [b]) => (a < b ? 1 : -1)) : [];
+  const candles = health ? Number(health.candles) : null;
+  const candlesText = candles ? `${(candles / 1e6).toFixed(1).replace(".", ",")} ${t("млн")}` : "1,5+ " + t("млн");
 
   return (
     <>
       <Header />
-      <main className={`container ${s.main}`}>
+      <main>
         {/* Первый экран */}
         <section className={s.hero} aria-labelledby="h-title">
-          <div className={s.lead}>
-            <h1 id="h-title">{t("Сигналы на H4 с публичной статистикой каждой сделки")}</h1>
-            <p>{t("Одна система правил для всех инструментов. Сигнал публикуется через 60 секунд после закрытия 4-часовой свечи и не меняется задним числом. Результат каждой сделки, включая убыточные, виден всем.")}</p>
-            <div className={s.cta}>
-              <Button href="/login" variant="primary">{t("Создать аккаунт")}</Button>
-              <Button href="/stats">{t("Открытая статистика")}</Button>
+          <div className={`container ${s.heroInner}`}>
+            <div className={s.heroText}>
+              <span className={s.eyebrow}>{t("Крипто · Binance · только закрытые свечи")}</span>
+              <h1 id="h-title">{t("Уровни, зоны и ликвидации на одном чистом графике")}</h1>
+              <p className={s.sub}>{t("PlatformSol сам размечает поддержку и сопротивление, зоны OB и FVG и карту ликвидаций с суммами. Сигналы на H4 строятся по строгим правилам, и результат каждой сделки открыт.")}</p>
+              <div className={s.cta}>
+                <Button href="/chart/BTCUSDT/4h" variant="primary" size="lg">
+                  {t("Открыть график")}
+                </Button>
+                <Button href="/register" size="lg">
+                  {t("Создать аккаунт")}
+                </Button>
+              </div>
+              <p className={s.note}>{t("Пока оплата не включена, все новые пользователи получают уровень Pro. Не является инвестиционной рекомендацией.")}</p>
             </div>
-            <p className={s.fine}>{DISCLAIMER}</p>
-          </div>
-          <div className={s.section}>
-            {hasLive && m ? (
-              <MetricsRow m={m} updated={updated} />
-            ) : (
-              <Panel title={t("Live-статистика за 90 дней")}>
-                <EmptyState text={t("Live-сигналов пока нет: текущая версия стратегии проходит форвард-тест на живых данных. Статистика появится с первой закрытой сделкой.")} />
-              </Panel>
-            )}
-            <Panel
-              title={t("Последние закрытые сигналы")}
-              actions={<span>{t("обновляется раз в минуту")}</span>}
-              flush
-            >
-              {recent.length === 0 ? (
-                <EmptyState text={t("Закрытых live-сигналов пока нет.")} />
-              ) : (
-                <Table compact>
-                  <thead>
-                    <tr>
-                      <Th>{t("Время")}</Th>
-                      <Th>{t("Инструмент")}</Th>
-                      <Th>{t("Статус")}</Th>
-                      <Th num>{t("Результат")}</Th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {recent.map((r) => {
-                      const rr = r.result?.realized_r ? Number(r.result.realized_r) : null;
-                      return (
-                        <tr key={r.id}>
-                          <Td mobile="secondary" className="text-2">
-                            {formatTimeUTC(r.candle_close_time)}
-                          </Td>
-                          <Td>
-                            <strong>{r.symbol}</strong> <DirectionBadge direction={r.direction} />{" "}
-                            <GradeBadge grade={r.grade} />
-                          </Td>
-                          <Td mobile="secondary">
-                            <StatusBadge status={r.status} />
-                          </Td>
-                          <Td num mobile="right" className={rr == null ? "" : rr > 0 ? "up" : rr < 0 ? "down" : ""}>
-                            {rr == null ? "—" : formatR(rr)}
-                          </Td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </Table>
-              )}
-            </Panel>
+            <figure className={s.shot}>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img className={s.shotDark} src="/landing/chart-dark.png" width={1240} height={729} alt={t("График BTCUSDT H4 с уровнями, зонами и картой ликвидаций")} />
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img className={s.shotLight} src="/landing/chart-light.png" width={1240} height={729} alt="" aria-hidden="true" />
+            </figure>
           </div>
         </section>
 
-        {/* Как это работает */}
-        <section id="signals" className={s.section} aria-labelledby="h-how">
-          <div className={s.sectionHead}>
-            <h2 id="h-how">{t("Как это работает")}</h2>
+        {/* Цифры */}
+        <section className="container" aria-label={t("цифры")}>
+          <dl className={s.numbers}>
+            <div>
+              <dd>{instruments ?? 60}</dd>
+              <dt>{t("монет Binance в работе")}</dt>
+            </div>
+            <div>
+              <dd>{candlesText}</dd>
+              <dt>{t("свечей в истории")}</dt>
+            </div>
+            <div>
+              <dd>60 {t("с")}</dd>
+              <dt>{t("от закрытия свечи до сигнала")}</dt>
+            </div>
+            <div>
+              <dd>0</dd>
+              <dt>{t("правок задним числом")}</dt>
+            </div>
+          </dl>
+        </section>
+
+        {/* Возможности */}
+        <section id="features" className={`container ${s.section}`} aria-labelledby="h-features">
+          <header className={s.head}>
+            <h2 id="h-features">{t("Всё для решения — на одном экране")}</h2>
+            <p>{t("Инструменты профессионального терминала без лишнего: только то, что помогает читать рынок.")}</p>
+          </header>
+          <ul className={s.features}>
+            {FEATURES.map((f) => (
+              <li key={f.t}>
+                <span className={s.icon}>
+                  <Icon name={f.icon} />
+                </span>
+                <h3>{t(f.t)}</h3>
+                <p>{t(f.p)}</p>
+              </li>
+            ))}
+          </ul>
+        </section>
+
+        {/* Как работает сигнал */}
+        <section id="signals" className={`container ${s.section}`} aria-labelledby="h-how">
+          <header className={s.head}>
+            <h2 id="h-how">{t("Как работает сигнал")}</h2>
             <p>{t("Четыре шага от закрытия свечи до строки в статистике. Без ручного вмешательства.")}</p>
-          </div>
-          <ol className={s.steps} style={{ listStyle: "none", margin: 0, padding: 0 }}>
+          </header>
+          <ol className={s.steps}>
             {STEPS.map((st, i) => (
-              <li key={st.t} className={s.step}>
-                <span className={s.n}>0{i + 1}</span>
-                <h3>{st.t}</h3>
-                <p>{st.p}</p>
+              <li key={st.t}>
+                <span className={s.stepN}>{i + 1}</span>
+                <h3>{t(st.t)}</h3>
+                <p>{t(st.p)}</p>
               </li>
             ))}
           </ol>
         </section>
 
-        {/* Правила системы */}
-        <section id="rules" className={s.section} aria-labelledby="h-rules">
-          <div className={s.sectionHead}>
-            <h2 id="h-rules">{t("Правила системы")}</h2>
-            <p>{t("Стратегия «тренд → зона → ретест». Все параметры зафиксированы в версии стратегии; изменение любого числа — это новая версия с новым бэктестом и форвард-тестом.")}</p>
+        {/* Открытая статистика и правила */}
+        <section id="rules" className={`container ${s.section} ${s.split}`} aria-labelledby="h-open">
+          <div className={s.open}>
+            <h2 id="h-open">{t("Статистика без подтасовок")}</h2>
+            <p>{t("Каждая сделка — в R, включая убыточные. Бэктест, форвард-тест и live показаны раздельно и подписаны. Сигнал нельзя изменить после публикации: запись в базе только дописывается.")}</p>
+            {hasLive && stats && m ? (
+              <LiveStats m={m} equity={stats.equity} updated={formatTimeUTC(stats.generated_at)} />
+            ) : (
+              <p className={s.status}>
+                <span className={s.dot} aria-hidden="true" />
+                {t("Текущая версия стратегии проходит проверку на живом рынке. Её результаты — на странице статистики с пометкой «форвард».")}
+              </p>
+            )}
+            <Button href="/stats">{t("Смотреть статистику")}</Button>
           </div>
           <div className={s.rules}>
-            <Panel title={t("Что проверяется на каждой свече H4")}>
-              <dl>
-                <dt>{t("Контекст")}</dt>
-                <dd>{t("Направление тренда на D1 и W1 по структуре и EMA50. Сделки только по тренду старшего таймфрейма; при расхождении D1 и W1 сигнала нет.")}</dd>
-                <dt>{t("Структура")}</dt>
-                <dd>{t("Свинги, слом структуры (BOS) и смена характера (CHoCH) на H4. Вход — только после подтверждённого слома в сторону тренда.")}</dd>
-                <dt>{t("Зона")}</dt>
-                <dd>{t("Ордер-блок или имбаланс (FVG), образовавшие слом. Вход — на возврате цены в зону, не на пробое.")}</dd>
-                <dt>{t("Ликвидность")}</dt>
-                <dd>{t("Снятие равных максимумов/минимумов, дневных и недельных уровней до входа повышает оценку сигнала.")}</dd>
-                <dt>{t("Фильтры")}</dt>
-                <dd>{t("Волатильность (ATR в границах), объём, расстояние до стопа, funding и открытый интерес, макрособытия, корреляция с BTC. Любой невыполненный фильтр отменяет сигнал.")}</dd>
-              </dl>
-            </Panel>
-            <Panel title={t("Параметры сделки и оценка")}>
-              <dl>
-                <dt>{t("Вход")}</dt>
-                <dd>{t("Лимитный ордер в зоне; срок жизни — 6 свечей H4, потом сигнал истекает без сделки.")}</dd>
-                <dt>{t("Стоп")}</dt>
-                <dd>{t("За границей зоны с запасом по ATR. Стоп не двигается против позиции.")}</dd>
-                <dt>{t("Цели")}</dt>
-                <dd>{t("TP1 — ближайшая ликвидность, TP2 — не менее 2.5 R, TP3 — следующий структурный уровень. После TP1 стоп переносится в безубыток.")}</dd>
-                <dt>{t("Оценка")}</dt>
-                <dd>{t("0–100 баллов по восьми компонентам; градации A (≥ 75), B (60–74), C (45–59). Градация — это не «сила» сигнала, а статистическая группа с собственным винрейтом.")}</dd>
-                <dt>{t("Без перерисовки")}</dt>
-                <dd>{t("Только закрытые свечи, запись сигнала неизменяема, каждый сигнал воспроизводим по хэшу входных данных.")}</dd>
-              </dl>
-            </Panel>
+            <h3>{t("Правила системы")}</h3>
+            {RULES.map((r) => (
+              <details key={r.t}>
+                <summary>{t(r.t)}</summary>
+                <p>{t(r.p)}</p>
+              </details>
+            ))}
           </div>
-        </section>
-
-        {/* Статистика */}
-        <section id="stats" className={s.section} aria-labelledby="h-stats">
-          <div className={s.sectionHead}>
-            <h2 id="h-stats">{t("Статистика")}</h2>
-            <p>
-              Считается автоматически по закрытым live-сигналам тем же кодом, что бэктест. Ручного
-              ввода нет. Период: 90 дней, обновлено {updated}.
-            </p>
-          </div>
-          {hasLive && stats && m ? (
-            <div className={s.statsGrid}>
-              <Panel
-                title={t("Накопленный результат, R")}
-                actions={
-                  <span>
-                    {m.closed} {plural(m.closed, t("сделка"), t("сделки"), t("сделок"))}, итог {formatR(m.sum_r)}
-                  </span>
-                }
-              >
-                <EquityChart points={stats.equity} />
-                <p className="caption" style={{ marginTop: 8 }}>
-                  Профит-фактор {num(m.profit_factor, (n) => n.toFixed(2))}, серия убытков до{" "}
-                  {m.max_losing_streak}, средняя длительность {formatDuration(m.avg_duration_hours)}.
-                  {stats.worst_drawdowns[0] &&
-                    ` Худшая просадка ${formatR(-stats.worst_drawdowns[0].depth_r)} с ${formatTimeUTC(stats.worst_drawdowns[0].start)}.`}
-                </p>
-              </Panel>
-              <Panel title={t("По месяцам")} flush>
-                <Table compact stack={false}>
-                  <thead>
-                    <tr>
-                      <Th>{t("Месяц")}</Th>
-                      <Th num>{t("Сделок")}</Th>
-                      <Th num>{t("Винрейт")}</Th>
-                      <Th num>{t("Итог, R")}</Th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {months.slice(0, 6).map(([k, v]) => (
-                      <tr key={k}>
-                        <Td>{k}</Td>
-                        <Td num>{v.closed}</Td>
-                        <Td num>{num(v.winrate, (n) => formatPct(n * 100, { signed: false }))}</Td>
-                        <Td num className={v.sum_r > 0 ? "up" : v.sum_r < 0 ? "down" : ""}>
-                          {formatR(v.sum_r)}
-                        </Td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </Table>
-              </Panel>
-            </div>
-          ) : (
-            <Panel title={t("Статистика live-сигналов")} actions={<Link href="/stats">{t("вся статистика")}</Link>}>
-              <EmptyState
-                text={t("Live-сигналов пока нет. Результаты форвард-теста и бэктеста открыты на странице статистики с явной пометкой типа данных — мы не выдаём их за реальный результат.")}
-                action={<Button href="/stats?scope=forward" size="sm">{t("Форвард и бэктест")}</Button>}
-              />
-            </Panel>
-          )}
         </section>
 
         {/* Тарифы */}
-        <section id="pricing" className={s.section} aria-labelledby="h-pricing">
-          <div className={s.sectionHead}>
+        <section id="pricing" className={`container ${s.section}`} aria-labelledby="h-pricing">
+          <header className={s.head}>
             <h2 id="h-pricing">{t("Тарифы")}</h2>
-            <p>{t("Логика сигналов одинакова на всех тарифах. Различаются скорость доступа, набор инструментов и глубина инструментов. Оплата только криптовалютой, без автопродления.")}</p>
+            <p>{t("Логика сигналов одинакова на всех тарифах. Различаются скорость доступа и набор инструментов.")}</p>
+          </header>
+          <div className={s.plans}>
+            {PLANS.map((p) => (
+              <article key={p.name} className={s.plan} data-hot={p.hot || undefined}>
+                {p.hot && <span className={s.badge}>{t("Популярный")}</span>}
+                <h3>{p.name}</h3>
+                <p className={s.price}>
+                  <span>{p.price}</span> {p.per && t(p.per)}
+                </p>
+                <p className={s.year}>{p.year ? t(p.year) : " "}</p>
+                <ul>
+                  {p.items.map((it) => (
+                    <li key={it}>{t(it)}</li>
+                  ))}
+                </ul>
+                <Button href={p.href} variant={p.hot ? "primary" : "default"} block>
+                  {t(p.cta)}
+                </Button>
+              </article>
+            ))}
           </div>
-          <Panel flush className={s.pricing}>
-            <table>
-              <thead>
-                <tr>
-                  <th />
-                  <th>Free</th>
-                  <th>Pro</th>
-                  <th>Premium</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <th scope="row">{t("Цена")}</th>
-                  <td>
-                    <span className={s.price}>0</span>
-                  </td>
-                  <td>
-                    <span className={s.price}>29 USD</span>{" "}{t("/ мес")}<br />
-                    <span className="caption">{t("249 USD / год")}</span>
-                  </td>
-                  <td>
-                    <span className={s.price}>79 USD</span>{" "}{t("/ мес")}<br />
-                    <span className="caption">{t("690 USD / год")}</span>
-                  </td>
-                </tr>
-                <tr>
-                  <th scope="row">{t("Сигналы")}</th>
-                  <td>{t("Градация A, с задержкой 12 часов")}</td>
-                  <td>{t("Все градации, сразу")}</td>
-                  <td>{t("Все + экспериментальные стратегии (форвард)")}</td>
-                </tr>
-                <tr>
-                  <th scope="row">{t("Инструменты")}</th>
-                  <td>{t("BTC, ETH + 3 на выбор")}</td>
-                  <td>{t("Все")}</td>
-                  <td>{t("Все + расширенный список")}</td>
-                </tr>
-                <tr>
-                  <th scope="row">{t("Уведомления")}</th>
-                  <td>{t("Email-дайджест раз в день")}</td>
-                  <td>{t("Telegram, push, email — сразу")}</td>
-                  <td>{t("То же + вебхуки")}</td>
-                </tr>
-                <tr>
-                  <th scope="row">{t("Статистика")}</th>
-                  <td>{t("Публичная")}</td>
-                  <td>{t("Полная история, CSV")}</td>
-                  <td>{t("То же + API-ключ")}</td>
-                </tr>
-                <tr>
-                  <th scope="row">{t("Журнал, вотчлист")}</th>
-                  <td>{t("20 записей, 5 инструментов")}</td>
-                  <td>{t("Без ограничений, 50 инструментов")}</td>
-                  <td>{t("Без ограничений")}</td>
-                </tr>
-                <tr>
-                  <th scope="row">{t("Пробный период")}</th>
-                  <td>—</td>
-                  <td>{t("7 дней без оплаты")}</td>
-                  <td>—</td>
-                </tr>
-              </tbody>
-            </table>
-          </Panel>
-          <p className="caption">
-            Оплата появится после запуска: USDT, USDC, BTC, ETH, TON. До этого все
-            зарегистрированные пользователи получают доступ уровня Pro. Подробнее — на{" "}
-            <Link href="/pricing">{t("странице тарифов")}</Link>.
-          </p>
+          <p className={s.payNote}>{t("Оплата криптовалютой: USDT, USDC, BTC, ETH, TON, без автопродления. Пока оплата не включена, все зарегистрированные пользователи получают уровень Pro.")}</p>
         </section>
 
-        {/* FAQ */}
-        <section id="faq" className={s.section} aria-labelledby="h-faq">
-          <div className={s.sectionHead}>
+        {/* Вопросы */}
+        <section id="faq" className={`container ${s.section} ${s.faqSection}`} aria-labelledby="h-faq">
+          <header className={s.head}>
             <h2 id="h-faq">{t("Вопросы и ответы")}</h2>
-          </div>
+          </header>
           <div className={s.faq}>
             {FAQ.map((f) => (
               <details key={f.q}>
-                <summary>{f.q}</summary>
-                <div className={s.a}>{f.a}</div>
+                <summary>{t(f.q)}</summary>
+                <p>{t(f.a)}</p>
               </details>
             ))}
+          </div>
+        </section>
+
+        {/* Призыв */}
+        <section className="container">
+          <div className={s.final}>
+            <h2>{t("Откройте график BTC прямо сейчас")}</h2>
+            <p>{t("Регистрация не нужна: уровни, зоны и карта ликвидаций доступны сразу.")}</p>
+            <Button href="/chart/BTCUSDT/4h" variant="primary" size="lg">
+              {t("Открыть график")}
+            </Button>
           </div>
         </section>
       </main>
       <Footer
         status={
           health
-            ? `Движок: ${health.status === "ok" ? t("работает") : t("сбой")}, свечей в базе: ${Number(health.candles).toLocaleString("ru-RU")}`
+            ? `${t("Движок")}: ${health.status === "ok" ? t("работает") : t("сбой")}`
             : t("Движок: нет связи с API")
         }
       />

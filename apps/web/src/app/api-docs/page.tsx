@@ -6,7 +6,7 @@ import { getT } from "@/i18n/server";
 
 export const metadata: Metadata = {
   title: "API для чтения",
-  description: "Публичный API Platform для тарифа Premium: сигналы, статистика, свечи, скринер — только чтение, по ключу в заголовке X-API-Key.",
+  description: "Публичный API PlatformSol для тарифа Premium: сигналы, статистика, свечи, скринер — только чтение, по ключу в заголовке X-API-Key.",
 };
 
 const BASE = "https://api.platformsol.com";

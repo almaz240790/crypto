@@ -63,7 +63,7 @@ export function LanguageSwitch() {
           type="button"
           onClick={() => setLocale(l)}
           aria-pressed={locale === l}
-          style={{ font: "inherit", fontSize: 12, padding: "2px 6px", border: "1px solid var(--border)", borderRadius: 6, background: locale === l ? "var(--bg-2)" : "transparent", color: locale === l ? "var(--text)" : "var(--text-2)", cursor: "pointer" }}
+          style={{ font: "inherit", fontSize: 12, padding: "2px 6px", border: "1px solid var(--border)", borderRadius: 6, background: locale === l ? "var(--row-hover)" : "transparent", color: locale === l ? "var(--text)" : "var(--text-2)", cursor: "pointer" }}
         >
           {l.toUpperCase()}
         </button>

@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { Logo } from "./Logo";
 import s from "./Footer.module.css";
 import { useT } from "@/i18n/client";
 
@@ -13,42 +14,54 @@ export function Footer({ status }: { status?: string }) {
     <footer className={s.footer}>
       <div className="container">
         <div className={s.cols}>
-          <p className={s.disclaimer}>{DISCLAIMER}</p>
-          <ul>
-            <li>
-              <Link href="/#rules">{t("Правила системы")}</Link>
-            </li>
-            <li>
-              <Link href="/stats">{t("Статистика")}</Link>
-            </li>
-            <li>
-              <Link href="/pricing">{t("Тарифы")}</Link>
-            </li>
-            <li>
-              <Link href="/#faq">{t("Вопросы и ответы")}</Link>
-            </li>
-            <li>
-              <Link href="/status">{t("Статус системы")}</Link>
-            </li>
-            <li>
-              <Link href="/support">{t("Поддержка")}</Link>
-            </li>
-          </ul>
-          <ul>
-            <li>{t("Условия использования — готовятся")}</li>
-            <li>{t("Политика конфиденциальности — готовится")}</li>
-            <li>{t("Telegram-бот — после запуска")}</li>
-            <li>18+</li>
-          </ul>
+          <div className={s.about}>
+            <Logo />
+            <p>{t(DISCLAIMER)}</p>
+          </div>
+          <div>
+            <h3>{t("Продукт")}</h3>
+            <ul>
+              <li>
+                <Link href="/chart">{t("График")}</Link>
+              </li>
+              <li>
+                <Link href="/screener">{t("Скринер")}</Link>
+              </li>
+              <li>
+                <Link href="/stats">{t("Статистика")}</Link>
+              </li>
+              <li>
+                <Link href="/pricing">{t("Тарифы")}</Link>
+              </li>
+            </ul>
+          </div>
+          <div>
+            <h3>{t("Помощь")}</h3>
+            <ul>
+              <li>
+                <Link href="/#faq">{t("Вопросы и ответы")}</Link>
+              </li>
+              <li>
+                <Link href="/support">{t("Поддержка")}</Link>
+              </li>
+              <li>
+                <Link href="/status">{t("Статус системы")}</Link>
+              </li>
+              <li>
+                <Link href="/api-docs">{t("Документация API")}</Link>
+              </li>
+            </ul>
+          </div>
         </div>
         <div className={s.meta}>
           <span>
-            {t("Platform. Данные: Binance (публичные). График:")}{" "}
+            © 2026 PlatformSol · {t("Данные: Binance")} · {t("Графики:")}{" "}
             <a href="https://www.tradingview.com/" target="_blank" rel="noopener noreferrer">
               TradingView Lightweight Charts™
-            </a>
+            </a>{" "}
+            · 18+
           </span>
-          <span>{status ?? ""}</span>
+          {status && <span>{status}</span>}
         </div>
       </div>
     </footer>

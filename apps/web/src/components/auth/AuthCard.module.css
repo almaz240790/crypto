@@ -1,11 +1,68 @@
 .main {
-  padding: var(--gap-5) 0 var(--gap-6);
   display: grid;
-  justify-content: center;
+  justify-items: center;
+  padding-top: 64px;
+  padding-bottom: 96px;
+  background: radial-gradient(ellipse 50% 40% at 50% 0%, color-mix(in srgb, var(--accent) 12%, transparent), transparent 70%);
 }
 
 .card {
   width: min(100%, 420px);
+  padding: var(--gap-6);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+}
+
+.title {
+  margin-bottom: var(--gap-5);
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+}
+
+/* Поля и кнопки формы входа крупнее, чем в таблицах кабинета. */
+.card input:not([type="checkbox"]) {
+  height: 42px;
+  padding: 0 var(--gap-3);
+  background: var(--bg);
+  font-size: 15px;
+}
+
+.card input:not([type="checkbox"]):focus {
+  border-color: var(--accent);
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-fill);
+}
+
+.form > button[type="submit"],
+.social > a,
+.social > button {
+  height: 42px;
+  border-radius: var(--radius-lg);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.foot {
+  margin-top: var(--gap-5);
+  padding-top: var(--gap-4);
+  border-top: 1px solid var(--border);
+  color: var(--text-2);
+  font-size: 14px;
+  text-align: center;
+}
+
+@media (max-width: 560px) {
+  .main {
+    padding-top: 32px;
+    padding-bottom: 64px;
+  }
+
+  .card {
+    padding: var(--gap-5) var(--gap-4);
+  }
 }
 
 .form {

@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Pricing } from "@/components/billing/Pricing";
 import { Footer, Header } from "@/components/site";
 import { getT } from "@/i18n/server";
+import s from "./page.module.css";
 
 export const metadata: Metadata = {
   title: "Тарифы",
@@ -13,13 +14,13 @@ export default async function PricingPage() {
   return (
     <>
       <Header />
-      <main className="container" style={{ padding: "24px 0", display: "grid", gap: 16 }}>
-        <div>
+      <main className={`container ${s.main}`}>
+        <header className={s.head}>
           <h1>{t("Тарифы")}</h1>
-          <p className="text-2">{t("Логика сигналов одинакова на всех тарифах. Различаются скорость доступа, набор инструментов и глубина инструментов.")}</p>
-        </div>
+          <p>{t("Логика сигналов одинакова на всех тарифах. Различаются скорость доступа, набор инструментов и глубина инструментов.")}</p>
+        </header>
         <Pricing />
-        <p className="caption">{t("Оплата только криптовалютой: USDT (TRC20, ERC20, BEP20, TON), USDC, BTC, ETH, TON. Возврат первой оплаты — в течение 7 дней по правилам оферты. Информация не является инвестиционной рекомендацией.")}</p>
+        <p className={s.note}>{t("Оплата только криптовалютой: USDT (TRC20, ERC20, BEP20, TON), USDC, BTC, ETH, TON. Возврат первой оплаты — в течение 7 дней по правилам оферты. Информация не является инвестиционной рекомендацией.")}</p>
       </main>
       <Footer />
     </>

@@ -29,13 +29,13 @@
 }
 
 .primary {
-  background: var(--accent);
-  border-color: var(--accent);
+  background: var(--accent-solid);
+  border-color: var(--accent-solid);
   color: var(--text-on-accent);
 }
 
 .primary:hover {
-  background: color-mix(in srgb, var(--accent) 88%, var(--text));
+  background: color-mix(in srgb, var(--accent-solid) 86%, var(--text));
 }
 
 .ghost {

@@ -27,7 +27,7 @@ export function Unsubscribe({ token }: { token: string | null }) {
           {msg}
         </div>
       )}
-      <p className="text-2">{t("Отписаться от всех писем Platform? Письма о входе и восстановлении пароля продолжат приходить.")}</p>
+      <p className="text-2">{t("Отписаться от всех писем PlatformSol? Письма о входе и восстановлении пароля продолжат приходить.")}</p>
       <Button
         variant="primary"
         block

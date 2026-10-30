@@ -75,7 +75,9 @@ export function Pricing() {
     }
   }
 
-  const perMonth = (p: PlanInfo) => (Number(p.prices[String(months)]) / months).toFixed(months === 1 ? 0 : 1);
+  // Цена без «.00»: $29, $249, $20.75.
+  const usd = (v: number) => `$${v.toFixed(2).replace(/\.00$/, "")}`;
+  const perMonth = (p: PlanInfo) => usd(Number(p.prices[String(months)]) / months);
 
   return (
     <div className={s.wrap}>
@@ -91,9 +93,9 @@ export function Pricing() {
               setChosen(null);
             }}
           >
-            {PERIOD_LABEL[m]}
-            {m === 3 && <span className="caption"> −10 %</span>}
-            {m === 12 && <span className="caption"> −28 %</span>}
+            {t(PERIOD_LABEL[m])}
+            {m === 3 && <span className={s.save}>−10 %</span>}
+            {m === 12 && <span className={s.save}>−28 %</span>}
           </button>
         ))}
       </div>
@@ -101,9 +103,12 @@ export function Pricing() {
         <p className="text-2">{t("Загрузка…")}</p>
       ) : (
         <div className={s.cards}>
-          <div className={s.card} data-current={me?.plan === "free"}>
+          <article className={s.card} data-current={me?.plan === "free" || undefined}>
             <h3>Free</h3>
-            <div className={s.amount}>0</div>
+            <p className={s.amount}>
+              <span>$0</span>
+            </p>
+            <p className={s.per}>{t("навсегда")}</p>
             <ul>
               <li>{t("Сигналы градации A с задержкой 12 часов")}</li>
               <li>{t("BTC, ETH + 3 инструмента на выбор")}</li>
@@ -111,33 +116,46 @@ export function Pricing() {
               <li>{t("Публичная статистика")}</li>
               <li>{t("Журнал 20 записей, вотчлист 5")}</li>
             </ul>
-            {me?.plan === "free" && <Badge tone="muted">{t("ваш тариф")}</Badge>}
-          </div>
+            {me?.plan === "free" ? (
+              <Badge tone="muted">{t("ваш тариф")}</Badge>
+            ) : (
+              !user && (
+                <Button href="/register" block>
+                  {t("Начать бесплатно")}
+                </Button>
+              )
+            )}
+          </article>
           {plans.map((p) => (
-            <div key={p.code} className={s.card} data-current={me?.plan === p.code}>
+            <article key={p.code} className={s.card} data-hot={p.code === "pro" || undefined} data-current={me?.plan === p.code || undefined}>
+              {p.code === "pro" && <span className={s.badge}>{t("Популярный")}</span>}
               <h3>{p.title}</h3>
-              <div className={s.amount}>
-                {p.prices[String(months)]} <small>USD за {PERIOD_LABEL[months]}</small>
-                <br />
-                <small>≈ {perMonth(p)} USD / мес</small>
-              </div>
+              <p className={s.amount}>
+                <span>{perMonth(p)}</span> {t("/ мес")}
+              </p>
+              <p className={s.per}>
+                {months === 1 ? t("оплата за 1 месяц") : t("{a} за {n}", { a: usd(Number(p.prices[String(months)])), n: t(PERIOD_LABEL[months]) })}
+              </p>
               <ul>
                 {FEATURES[p.code].map((f) => (
-                  <li key={f}>{f}</li>
+                  <li key={f}>{t(f)}</li>
                 ))}
               </ul>
               {me?.plan === p.code ? (
-                <Badge tone="up">ваш тариф{me.subscription ? ` до ${new Date(me.subscription.current_period_end).toLocaleDateString("ru-RU")}` : ""}</Badge>
+                <Badge tone="up">
+                  {t("ваш тариф")}
+                  {me.subscription ? ` ${t("до")} ${new Date(me.subscription.current_period_end).toLocaleDateString("ru-RU")}` : ""}
+                </Badge>
               ) : null}
-              <Button variant={p.code === "pro" ? "primary" : "default"} onClick={() => pick(p.code)} disabled={!enabled && !!user}>
-                {user ? (me?.plan === p.code ? t("Продлить") : `Выбрать ${p.title}`) : t("Зарегистрироваться")}
+              <Button variant={p.code === "pro" ? "primary" : "default"} block onClick={() => pick(p.code)} disabled={!enabled && !!user}>
+                {user ? (me?.plan === p.code ? t("Продлить") : `${t("Выбрать")} ${p.title}`) : t("Зарегистрироваться")}
               </Button>
-            </div>
+            </article>
           ))}
         </div>
       )}
       {!enabled && (
-        <p className="caption">{t("Оплата пока не включена: до запуска все зарегистрированные пользователи получают уровень Pro. Первые 7 дней Pro — бесплатно при регистрации.")}</p>
+        <p className={s.off}>{t("Оплата пока не включена: до запуска все зарегистрированные пользователи получают уровень Pro. Первые 7 дней Pro — бесплатно при регистрации.")}</p>
       )}
       {user && chosen && (
         <Panel title={`Заказ: ${PLAN_TITLE[chosen]} на ${PERIOD_LABEL[months]}`}>

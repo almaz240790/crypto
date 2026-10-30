@@ -1,0 +1,45 @@
+.main {
+  display: grid;
+  gap: var(--gap-6);
+  max-width: 1120px;
+  padding-top: 64px;
+  padding-bottom: 96px;
+}
+
+.head {
+  max-width: 640px;
+  margin: 0 auto;
+  text-align: center;
+}
+
+.head h1 {
+  font-size: clamp(30px, 4vw, 44px);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.head p {
+  margin-top: var(--gap-3);
+  color: var(--text-2);
+  font-size: 17px;
+  line-height: 1.55;
+}
+
+.note {
+  max-width: 720px;
+  margin: 0 auto;
+  color: var(--text-3);
+  font-size: 13px;
+  text-align: center;
+}
+
+@media (max-width: 560px) {
+  .main {
+    padding-top: 40px;
+    padding-bottom: 64px;
+  }
+
+  .head p {
+    font-size: 15px;
+  }
+}

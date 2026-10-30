@@ -54,9 +54,10 @@ test("тарифы: срок, промокод, переход к оплате",
   await mock(page, calls, state);
   await page.goto("/pricing");
   await expect(page.getByRole("heading", { name: "Тарифы" })).toBeVisible();
-  await expect(page.getByText("249.00")).toBeVisible();
+  await expect(page.getByText("$249 за 12 месяцев")).toBeVisible();
+  await expect(page.getByText("$20.75", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "1 месяц" }).click();
-  await expect(page.getByText("29.00")).toBeVisible();
+  await expect(page.getByText("$29", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "12 месяцев" }).click();
   await page.getByRole("button", { name: "Выбрать Pro" }).click();
   await expect(page.getByText(/^К оплате/)).toBeVisible();

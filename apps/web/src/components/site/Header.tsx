@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { Button, ThemeToggle } from "@/components/ui";
+import { Logo } from "./Logo";
 import s from "./Header.module.css";
 import { LanguageSwitch, useT } from "@/i18n/client";
 
@@ -10,21 +11,27 @@ export function Header() {
   return (
     <header className={s.header}>
       <div className={`container ${s.inner}`}>
-        <Link href="/" className={s.brand}>
-          Platform
+        <Link href="/" className={s.brand} aria-label="PlatformSol">
+          <Logo />
         </Link>
         <nav className={s.nav} aria-label={t("разделы")}>
-          <Link href="/#signals">{t("Сигналы")}</Link>
-          <Link href="/stats">{t("Статистика")}</Link>
+          <Link href="/#features">{t("Возможности")}</Link>
           <Link href="/chart">{t("График")}</Link>
-          <Link href="/#rules">{t("Правила")}</Link>
+          <Link href="/stats">{t("Статистика")}</Link>
           <Link href="/#pricing">{t("Тарифы")}</Link>
           <Link href="/#faq">{t("Вопросы")}</Link>
         </nav>
         <div className={s.right}>
-          <LanguageSwitch />
-            <ThemeToggle />
-          <Button href="/login" variant="primary" size="sm">{t("Войти")}</Button>
+          <span className={s.desktopOnly}>
+            <LanguageSwitch />
+          </span>
+          <ThemeToggle />
+          <Link href="/login" className={s.login}>
+            {t("Войти")}
+          </Link>
+          <Button href="/register" variant="primary" className={s.cta}>
+            {t("Начать")}
+          </Button>
         </div>
       </div>
     </header>

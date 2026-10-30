@@ -263,7 +263,7 @@ export default function SettingsPage() {
   async function saveProfile(e: FormEvent) {
     e.preventDefault();
     try {
-      const theme = p("theme") as "light" | "dark" | "system";
+      const theme = p("theme") === "light" ? "light" : "dark";
       await patchProfile({ name: p("name") || null, locale: p("locale"), timezone: p("timezone"), theme });
       applyTheme(theme);
       await reload();
@@ -343,8 +343,7 @@ export default function SettingsPage() {
               <Input label="Email" value={user.email} disabled hint={user.email_verified ? t("подтверждён") : t("не подтверждён — проверьте почту")} />
               <Input label={t("Имя")} value={p("name")} onChange={(e) => setProfile((x) => ({ ...(x ?? {}), name: e.target.value }))} maxLength={100} />
               <div className={s.row}>
-                <Select label={t("Тема")} value={p("theme") || "system"} onChange={(e) => setProfile((x) => ({ ...(x ?? {}), theme: e.target.value }))}>
-                  <option value="system">{t("как в системе")}</option>
+                <Select label={t("Тема")} value={p("theme") === "light" ? "light" : "dark"} onChange={(e) => setProfile((x) => ({ ...(x ?? {}), theme: e.target.value }))}>
                   <option value="light">{t("светлая")}</option>
                   <option value="dark">{t("тёмная")}</option>
                 </Select>

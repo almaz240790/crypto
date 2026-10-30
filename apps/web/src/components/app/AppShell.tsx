@@ -7,6 +7,7 @@ import { useAuth } from "@/components/auth/AuthProvider";
 import { Button, ThemeToggle } from "@/components/ui";
 import s from "./AppShell.module.css";
 import { LanguageSwitch, useT } from "@/i18n/client";
+import { Logo } from "@/components/site/Logo";
 
 const NAV: { href: string; label: string }[] = [
   { href: "/signals", label: "Сигналы" },
@@ -39,8 +40,8 @@ export function AppShell({ title, actions, children, flush = false }: { title: s
   return (
     <div className={s.shell}>
       <aside className={s.side}>
-        <Link href="/" className={s.brand}>
-          Platform
+        <Link href="/" className={s.brand} aria-label="PlatformSol">
+          <Logo />
         </Link>
         <nav className={s.nav} aria-label={t("разделы")}>
           {links}
@@ -71,8 +72,8 @@ export function AppShell({ title, actions, children, flush = false }: { title: s
       </aside>
       <div className={s.body}>
         <div className={s.mobileBar}>
-          <Link href="/" className={s.brand} style={{ border: 0, height: "auto", padding: 0 }}>
-            Platform
+          <Link href="/" className={s.brand} style={{ border: 0, height: "auto", padding: 0 }} aria-label="PlatformSol">
+            <Logo compact />
           </Link>
           {links}
           <span style={{ marginLeft: "auto" }}>

@@ -181,6 +181,12 @@ export async function getClosedSignals(limit = 5): Promise<SignalRow[]> {
   return r?.items ?? [];
 }
 
+/** Число инструментов в работе — для цифр на главной. */
+export async function getInstrumentCount(): Promise<number | null> {
+  const list = await get<unknown[]>("/v1/instruments", 3600);
+  return list ? list.length : null;
+}
+
 export function getHealth(): Promise<Health | null> {
   return get<Health>("/health", 30);
 }
