@@ -905,6 +905,11 @@
   color: var(--warn);
 }
 
+/* диапазон зоны переносится после тире, а не обрезается краем панели */
+.levelList .levelRange {
+  white-space: normal;
+}
+
 .levelNote {
   margin: 4px 8px 8px;
 }

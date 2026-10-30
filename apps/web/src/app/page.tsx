@@ -7,7 +7,7 @@ import { LineArt, Thumb } from "@/components/landing/LineArt";
 import { TrustCarousel } from "@/components/landing/TrustCarousel";
 import { getDailyCloses, getHealth, getInstrumentCount } from "@/lib/api";
 import { COUNTS } from "@/lib/capabilities";
-import { plural } from "@/lib/format";
+import { nb, plural } from "@/lib/format";
 import s from "./page.module.css";
 import { getT } from "@/i18n/server";
 
@@ -28,7 +28,7 @@ export async function generateMetadata(): Promise<Metadata> {
  */
 
 const TRUST = [
-  { art: "candles", t: "Структура, зоны и паттерны не перерисовываются задним числом." },
+  { art: "candles", t: "Структура, зоны и паттерны не перерисовываются." },
   { art: "data", t: "Данные напрямую с Binance Futures." },
   { art: "rings", t: "Двухфакторная защита аккаунта." },
   { art: "loupe", t: "Без обещаний доходности — только инструмент анализа." },
@@ -65,9 +65,9 @@ export default async function Home() {
               {t("Без рутины.")}
             </h1>
             <p className={s.heroSub}>
-              {t("{i} индикаторов, {d} инструментов рисования, авторазметка: уровни, зоны, структура рынка, ликвидации.", { i: COUNTS.indicators, d: COUNTS.tools })}{" "}
+              {nb(t("{i} индикаторов, {d} инструментов рисования, авторазметка: уровни, зоны, структура рынка, ликвидации.", { i: COUNTS.indicators, d: COUNTS.tools }))}{" "}
               {coins !== null &&
-                t(plural(coins, "{n} монета Binance — бесплатно.", "{n} монеты Binance — бесплатно.", "{n} монет Binance — бесплатно."), { n: coins })}
+                nb(t(plural(coins, "{n} монета Binance — бесплатно.", "{n} монеты Binance — бесплатно.", "{n} монет Binance — бесплатно."), { n: coins }))}
             </p>
             <Link href="/chart/BTCUSDT/4h" className={`${s.pill} ${s.lime}`}>
               {t("Открыть график")}
@@ -89,9 +89,9 @@ export default async function Home() {
           <div className={`${s.copy} ${s.right}`}>
             <div className={s.kickLime}>{t("Всё для теханализа")}</div>
             <h2 id="h-tools" className={s.h2}>
-              {t("Разметка, индикаторы и рынок — в одном окне")}
+              {nb(t("Разметка, индикаторы и рынок — в одном окне"))}
             </h2>
-            <p>{t("{i} индикаторов, {d} инструментов рисования, мультичарт на 4 графика и алерты прямо с графика.", { i: COUNTS.indicators, d: COUNTS.tools })}</p>
+            <p>{nb(t("{i} индикаторов, {d} инструментов рисования, мультичарт на 4 графика и алерты прямо с графика.", { i: COUNTS.indicators, d: COUNTS.tools }))}</p>
             <Link href="/chart/BTCUSDT/4h" className={`${s.pill} ${s.lime}`}>
               {t("Открыть график")}
             </Link>
@@ -114,12 +114,12 @@ export default async function Home() {
               <b>PlatformSol</b> {t("Разметка")}
             </p>
             <h2 id="h-auto" className={s.h2}>
-              {t("Уровни, зоны и ликвидации — сами")}
+              {nb(t("Уровни, зоны и ликвидации — сами"))}
             </h2>
-            <p>{t("Уровни по касаниям, ордер-блоки, FVG, сломы структуры и карта ликвидаций — со списком цен.")}</p>
+            <p>{nb(t("Уровни по касаниям, ордер-блоки, FVG, сломы структуры и карта ликвидаций — со списком цен."))}</p>
             <p className={s.info}>
               <span aria-hidden="true">i</span>
-              {t("Карта ликвидаций — расчётная оценка, а не данные биржи")}
+              {nb(t("Карта ликвидаций — расчётная оценка, а не данные биржи"))}
             </p>
             <Link href="/chart/BTCUSDT/4h" className={`${s.pill} ${s.ink}`}>
               {t("Посмотреть на BTC")}
@@ -136,9 +136,9 @@ export default async function Home() {
               <b>PlatformSol</b> {t("Мобильный")}
             </p>
             <h2 id="h-phone" className={s.h2}>
-              {t("Полноценный график в кармане")}
+              {nb(t("Полноценный график в кармане"))}
             </h2>
-            <p>{t("Масштаб двумя пальцами, перекрестие по удержанию пальца, рисование и индикаторы из нижней панели. Ничего не нужно устанавливать — сайт можно добавить на главный экран.")}</p>
+            <p>{nb(t("Масштаб двумя пальцами, перекрестие по удержанию пальца, рисование и индикаторы из нижней панели. Ничего не нужно устанавливать — сайт можно добавить на главный экран."))}</p>
             <p>{t("Работает в любом современном браузере.")}</p>
             <Link href="/chart/BTCUSDT/4h" className={`${s.pill} ${s.lime}`}>
               {t("Открыть график")}
@@ -161,7 +161,7 @@ export default async function Home() {
         {/* 4. Доверие — тёмный блок, 2×2 */}
         <section className={s.trust} aria-labelledby="h-trust">
           <h2 id="h-trust" className={s.h2c}>
-            {t("Честный инструмент —")}
+            {nb(t("Честный инструмент —"))}
             <br />
             {t("структура без перерисовки")}
           </h2>
@@ -169,7 +169,7 @@ export default async function Home() {
             {TRUST.map((i) => (
               <li key={i.art}>
                 <LineArt name={i.art} />
-                <p>{t(i.t)}</p>
+                <p>{nb(t(i.t))}</p>
               </li>
             ))}
           </TrustCarousel>
@@ -178,11 +178,11 @@ export default async function Home() {
         {/* 5. Основы — салатовый блок с карточкой */}
         <section className={s.learn} aria-labelledby="h-learn">
           <h2 id="h-learn" className={s.h2c}>
-            {t("Читайте график увереннее —")}
+            {nb(t("Читайте график увереннее —"))}
             <br />
             {t("прямо на графике")}
           </h2>
-          <p>{t("Найденные паттерны и фигуры — с пояснением и историей отработки. Вот с чего начать.")}</p>
+          <p>{nb(t("Найденные паттерны и фигуры — с пояснением и историей отработки. Вот с чего начать."))}</p>
           <Link href="/register" className={`${s.pill} ${s.ink}`}>
             {t("Зарегистрироваться")}
           </Link>
@@ -194,7 +194,7 @@ export default async function Home() {
                   <Thumb name={b.thumb} />
                   <div>
                     <b>{t(b.t)}</b>
-                    <span>{t(b.p)}</span>
+                    <span>{nb(t(b.p))}</span>
                   </div>
                 </li>
               ))}
@@ -205,7 +205,7 @@ export default async function Home() {
         {/* 6. Призыв — «Восход»: солнце встаёт из-за горизонта, проявляются линии уровней */}
         <section className={s.final} aria-labelledby="h-final">
           <div className={s.rise} aria-hidden="true">
-            {[18, 34, 52, 66].map((top, i) => (
+            {[12, 22, 71, 79].map((top, i) => (
               <span key={top} className={s.line} style={{ top: `${top}%`, animationDelay: `${i * 1.6}s` }} />
             ))}
             <span className={s.ground} />

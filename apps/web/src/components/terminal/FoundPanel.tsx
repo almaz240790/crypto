@@ -204,7 +204,7 @@ export function LevelsList({ sr, liq, tick, zones = [] }: { sr: SrLevel[]; liq: 
         ))}
         {zones.map((z) => (
           <li key={`z${z.bottom}`}>
-            <strong className={z.dir === "up" ? "up" : z.dir === "down" ? "down" : ""}>{z.codes.join("+")}</strong> <span className="caption">{z.names.map((n) => t(n)).join(" + ")}</span> <span className="num">{px(z.bottom)}–{px(z.top)}</span>
+            <strong className={z.dir === "up" ? "up" : z.dir === "down" ? "down" : ""}>{z.codes.join("+")}</strong> <span className="caption">{z.names.map((n) => t(n)).join(" + ")}</span> <span className={`num ${s.levelRange}`}>{px(z.bottom)}–{px(z.top)}</span>
           </li>
         ))}
         {sup.map((l) => (

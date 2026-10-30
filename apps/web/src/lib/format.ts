@@ -109,3 +109,8 @@ export function plural(n: number, one: string, few: string, many: string): strin
   if (b === 1) return one;
   return many;
 }
+
+/** Неразрывные пробелы для заголовков и абзацев: тире не начинает строку, короткие слова (1–2 буквы) и числа не висят в конце строки. */
+export function nb(s: string): string {
+  return s.replace(/ —/g, NBSP + "—").replace(/(?<=^|[\s(])([А-Яа-яЁё]{1,2}|\d+) /g, "$1" + NBSP);
+}

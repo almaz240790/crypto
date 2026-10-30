@@ -80,6 +80,11 @@
   color: var(--lp-lime);
 }
 
+/* короткая подпись кнопки «График» — только на узком телефоне */
+.labelShort {
+  display: none;
+}
+
 .burger {
   display: none;
   width: 44px;
@@ -186,6 +191,28 @@
 
   .pill {
     padding: 0 16px;
+  }
+}
+
+@media (max-width: 359px) {
+  .inner {
+    gap: 8px;
+    padding: 0 4px 0 12px;
+  }
+
+  .pill {
+    padding: 0 12px;
+    font-size: 14px;
+  }
+}
+
+@media (max-width: 419px) {
+  .labelLong {
+    display: none;
+  }
+
+  .labelShort {
+    display: inline;
   }
 }
 

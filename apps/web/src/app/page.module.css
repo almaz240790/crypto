@@ -168,6 +168,7 @@
   font-weight: 400;
   line-height: 48px;
   letter-spacing: -1px;
+  text-wrap: balance;
 }
 
 .lockup {
@@ -307,6 +308,19 @@
   opacity: 0.85;
 }
 
+/* компьютер: салатовый луч — курсором поверх графика ликвидаций, в стороне от карточки уровней */
+@media (min-width: 901px) {
+  .beam {
+    left: calc(50% - 420px);
+    z-index: 1;
+    background: linear-gradient(180deg, transparent, var(--lp-lime) 12%, var(--lp-lime) 88%, transparent);
+  }
+
+  .cardLv {
+    z-index: 2;
+  }
+}
+
 /* 901–1279: картинки полос сжимаются к колонке текста и остаются целыми */
 @media (min-width: 901px) and (max-width: 1279px) {
   .mat > .visual,
@@ -320,6 +334,17 @@
   .mat > .visual,
   .cards {
     transform: scale(0.74);
+  }
+}
+
+/* при сжатии 0,86 карточки по-прежнему уходят за верхний и нижний край полосы */
+@media (min-width: 1100px) and (max-width: 1279px) {
+  .cardLiq {
+    top: -100px;
+  }
+
+  .cardLv {
+    top: 370px;
   }
 }
 
@@ -339,7 +364,8 @@
 
 .sun {
   position: absolute;
-  left: calc(50% + 120px);
+  /* на 110 px левее телефона; на узких экранах сдвигается вместе с ним */
+  left: min(calc(50% + 120px), calc(100% - 464px));
   top: calc(74% - 22px);
   width: 44px;
   height: 22px;
@@ -350,7 +376,7 @@
 
 .glint {
   position: absolute;
-  left: calc(50% + 70px);
+  left: min(calc(50% + 70px), calc(100% - 514px));
   top: calc(74% + 14px);
   width: 144px;
   height: 2px;
@@ -517,7 +543,7 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 218px 24px 320px;
+  padding: 218px 24px 255px;
   background: var(--lp-black);
   text-align: center;
 }
@@ -557,7 +583,7 @@
   position: absolute;
   left: 0;
   right: 0;
-  bottom: 120px;
+  bottom: 90px;
   height: 1px;
   background: color-mix(in srgb, var(--lp-mute) 30%, transparent);
 }
@@ -565,7 +591,7 @@
 .rise .halo {
   position: absolute;
   left: 50%;
-  bottom: 121px;
+  bottom: 91px;
   width: 900px;
   height: 300px;
   margin-left: -450px;
@@ -575,7 +601,7 @@
 .rise .disc {
   position: absolute;
   left: 50%;
-  bottom: 121px;
+  bottom: 91px;
   width: 200px;
   height: 100px;
   margin-left: -100px;
@@ -651,9 +677,13 @@
   }
 
   /* полоса под подписью: подпись не ложится на карточки и телефон */
-  .band.stone,
   .band.dawn {
     padding-bottom: 96px;
+  }
+
+  /* карточка уровней свисает под картинку — подписи нужен больший зазор */
+  .band.stone {
+    padding-bottom: 124px;
   }
 
   .visual {
@@ -745,12 +775,14 @@
     height: 560px;
   }
 
+  /* солнце справа от телефона (250 px по центру; правая рамка у горизонта ≈ 50% + 116 px) */
   .sun {
-    left: 9%;
+    left: calc(50% + 128px);
   }
 
   .glint {
-    left: 3%;
+    left: calc(50% + 120px);
+    width: 96px;
   }
 
   .cardLiq {
@@ -764,7 +796,7 @@
     left: 44%;
     top: 110px;
     width: 46%;
-    max-width: 230px;
+    max-width: 200px;
   }
 
   /* телефон показан верхней частью и растворяется, как в образце */
@@ -851,6 +883,15 @@
     padding: 200px 24px 300px;
   }
 
+  .rise .ground {
+    bottom: 120px;
+  }
+
+  .rise .halo,
+  .rise .disc {
+    bottom: 121px;
+  }
+
   .final .h1 {
     font-size: 44px;
     line-height: 48px;
@@ -895,15 +936,16 @@
   .dots {
     display: flex;
     justify-content: center;
-    gap: 10px;
-    margin-top: 48px;
+    gap: 8px;
+    margin-top: 82px;
   }
 
   .dots i {
-    width: 7px;
-    height: 7px;
+    width: 6px;
+    height: 6px;
     border-radius: 50%;
-    background: var(--lp-graphite);
+    background: var(--lp-mute-2);
+    transition: background-color 0.2s;
   }
 
   .dots i[data-active] {

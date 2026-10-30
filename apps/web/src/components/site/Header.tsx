@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { Logo } from "./Logo";
 import s from "./Header.module.css";
@@ -12,10 +12,17 @@ export function Header() {
   const t = useT();
   const { user } = useAuth();
   const [open, setOpen] = useState(false);
-  // меню закрывается клавишей Esc
+  const burgerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  // меню закрывается клавишей Esc; фокус из меню возвращается на кнопку меню
   useEffect(() => {
     if (!open) return;
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      const focusInMenu = menuRef.current?.contains(document.activeElement) ?? false;
+      setOpen(false);
+      if (focusInMenu) burgerRef.current?.focus();
+    };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [open]);
@@ -44,7 +51,8 @@ export function Header() {
           </span>
           {user ? (
             <Link href="/chart" className={`${s.pill} ${s.acc}`}>
-              {t("Открыть график")}
+              <span className={s.labelLong}>{t("Открыть график")}</span>
+              <span className={s.labelShort}>{t("График")}</span>
             </Link>
           ) : (
             <>
@@ -56,14 +64,14 @@ export function Header() {
               </Link>
             </>
           )}
-          <button type="button" className={s.burger} aria-expanded={open} aria-controls="site-menu" aria-label={open ? t("закрыть меню") : t("открыть меню")} onClick={() => setOpen(!open)}>
+          <button ref={burgerRef} type="button" className={s.burger} aria-expanded={open} aria-controls="site-menu" aria-label={open ? t("закрыть меню") : t("открыть меню")} onClick={() => setOpen(!open)}>
             <span />
             <span />
           </button>
         </div>
       </div>
       {open && (
-        <div id="site-menu" className={s.menu}>
+        <div ref={menuRef} id="site-menu" className={s.menu}>
           <nav aria-label={t("меню")}>
             {nav.map((n) => (
               <Link key={n.href} href={n.href} onClick={() => setOpen(false)}>
