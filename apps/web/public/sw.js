@@ -31,7 +31,7 @@ self.addEventListener("fetch", (event) => {
 });
 
 self.addEventListener("push", (event) => {
-  let data = { title: "Platform", body: "", url: "/signals", tag: "platform" };
+  let data = { title: "PlatformSol", body: "", url: "/alerts", tag: "platform" };
   try {
     data = { ...data, ...event.data.json() };
   } catch {
@@ -51,7 +51,7 @@ self.addEventListener("push", (event) => {
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
-  const url = (event.notification.data && event.notification.data.url) || "/signals";
+  const url = (event.notification.data && event.notification.data.url) || "/alerts";
   event.waitUntil(
     self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((list) => {
       for (const c of list) {

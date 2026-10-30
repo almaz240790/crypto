@@ -67,7 +67,7 @@ test("вход по email и паролю", async ({ page }) => {
   await expect(page.getByRole("alert").filter({ hasText: "неверный" })).toBeVisible();
   await page.getByLabel("Пароль").fill("correct-horse-battery");
   await page.getByRole("button", { name: "Войти", exact: true }).click();
-  await expect(page).toHaveURL(/\/signals$/);
+  await expect(page).toHaveURL(/\/chart(\/|$)/);
   await expect(page.getByTitle("trader@example.com")).toBeVisible();
   expect(calls).toContain("POST /v1/auth/login");
   await page.getByRole("button", { name: "Выйти" }).click();
@@ -80,7 +80,7 @@ test("вход по ссылке из письма (magic link)", async ({ page 
   await page.goto("/magic?token=bad");
   await expect(page.getByRole("status")).toContainText("недействительна");
   await page.goto("/magic?token=good");
-  await expect(page).toHaveURL(/\/signals$/);
+  await expect(page).toHaveURL(/\/chart(\/|$)/);
   expect(calls.filter((c) => c === "POST /v1/auth/magic/consume")).toHaveLength(2);
 });
 
@@ -101,8 +101,10 @@ test("регистрация и онбординг", async ({ page }) => {
   await page.getByLabel("Страна").selectOption("DE");
   await page.getByLabel(/Я принимаю условия/).check();
   await page.getByRole("button", { name: "Создать аккаунт" }).click();
-  await expect(page).toHaveURL(/\/onboarding$/);
+  // после регистрации — сразу на график (ADR-0006); онбординг доступен по ссылке
+  await expect(page).toHaveURL(/\/chart(\/|$)/);
   expect(calls).toContain("POST /v1/auth/register");
+  await page.goto("/onboarding");
   // шаг 1 — опыт
   await page.getByLabel("Торгую давно").check();
   await page.getByRole("button", { name: "Дальше" }).click();
@@ -111,8 +113,8 @@ test("регистрация и онбординг", async ({ page }) => {
   await page.getByRole("button", { name: "Дальше" }).click();
   // шаг 3 — уведомления
   await expect(page.getByText("Email-дайджест")).toBeVisible();
-  await page.getByRole("button", { name: "Перейти к сигналам" }).click();
-  await expect(page).toHaveURL(/\/signals$/);
+  await page.getByRole("button", { name: "Открыть график" }).click();
+  await expect(page).toHaveURL(/\/chart(\/|$)/);
   expect(calls.filter((c) => c === "PATCH /v1/me/risk")).toHaveLength(2);
 });
 
@@ -130,7 +132,7 @@ test("вход с 2FA: второй шаг с кодом из приложени
   await expect(form.getByRole("alert")).toContainText("неверный код");
   await form.getByLabel("Код из приложения").fill("123456");
   await form.getByRole("button", { name: "Подтвердить" }).click();
-  await expect(page).toHaveURL(/\/signals$/);
+  await expect(page).toHaveURL(/\/chart(\/|$)/);
   expect(calls).toContain("POST /v1/auth/login/2fa");
 });
 

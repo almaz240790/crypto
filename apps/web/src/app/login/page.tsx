@@ -6,7 +6,7 @@ import { getT } from "@/i18n/server";
 export const metadata: Metadata = { title: "Вход" };
 
 function safeNext(v: string | undefined): string {
-  return v && v.startsWith("/") && !v.startsWith("//") ? v : "/signals";
+  return v && v.startsWith("/") && !v.startsWith("//") ? v : "/chart";
 }
 
 export default async function LoginPage({ searchParams }: { searchParams: Promise<{ next?: string }> }) {

@@ -1,7 +1,7 @@
 .logo {
   display: inline-flex;
   align-items: center;
-  gap: 9px;
+  gap: 10px;
   color: var(--text);
 }
 
@@ -9,28 +9,18 @@
   flex: none;
 }
 
-.markBg {
+.ring {
+  fill: none;
+  stroke: var(--accent-solid);
+  stroke-width: 2.2;
+}
+
+.dot {
   fill: var(--accent-solid);
 }
 
-.sun {
-  fill: var(--warn);
-}
-
-.line {
-  fill: none;
-  stroke: var(--text-on-accent);
-  stroke-width: 2.2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
 .word {
-  font-size: 17px;
-  font-weight: 700;
+  font-size: 19px;
+  font-weight: 800;
   letter-spacing: -0.02em;
-}
-
-.sol {
-  color: var(--accent);
 }

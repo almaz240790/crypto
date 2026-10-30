@@ -40,8 +40,9 @@ const clampW = (w: number) => Math.round(Math.min(OBJECTS_W_MAX, Math.max(OBJECT
 
 type Saved = { type: ChartType; indicators: ActiveIndicator[]; layers: Record<LayerKey, boolean>; layers_v?: number; panels: PanelKey[]; scale: ScaleMode; overlay: string | null; updated_at?: number };
 /** Версия набора слоёв по умолчанию: при смене старые сохранённые слои сбрасываются на чистый график. */
-const LAYERS_VERSION = 3;
-const DEFAULT_LAYERS: Record<LayerKey, boolean> = { structure: false, zones: true, levels: false, signals: true, patterns: false, figures: true, volume_profile: false, sr: true, liq_map: true };
+const LAYERS_VERSION = 4;
+/** График как инструмент теханализа (ADR-0006): структура включена, сигналы — нет. */
+const DEFAULT_LAYERS: Record<LayerKey, boolean> = { structure: true, zones: true, levels: false, signals: false, patterns: false, figures: true, volume_profile: false, sr: true, liq_map: true };
 
 /** Слои из сохранённого состояния: старую версию заменяем чистым набором. */
 function migrate(p: Partial<Saved>): Partial<Saved> {

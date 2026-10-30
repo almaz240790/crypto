@@ -6,7 +6,7 @@ import { getT } from "@/i18n/server";
 export const metadata: Metadata = { title: "Регистрация" };
 
 function safeNext(v: string | undefined): string {
-  return v && v.startsWith("/") && !v.startsWith("//") ? v : "/onboarding";
+  return v && v.startsWith("/") && !v.startsWith("//") ? v : "/chart";
 }
 
 export default async function RegisterPage({ searchParams }: { searchParams: Promise<{ next?: string }> }) {

@@ -15,7 +15,7 @@ body {
 }
 
 html {
-  font-family: var(--font-sans), "IBM Plex Sans", "Source Sans 3", system-ui, sans-serif;
+  font-family: var(--font-sans), system-ui, sans-serif;
   font-size: var(--fs-body);
   line-height: var(--lh);
   -webkit-text-size-adjust: 100%;
@@ -92,6 +92,18 @@ textarea {
 
 ::selection {
   background: var(--accent-fill);
+}
+
+/* Заголовки маркетинговых страниц (ADR-0006) */
+.serif {
+  font-family: var(--font-serif), Georgia, serif;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+}
+
+.serif em {
+  font-style: italic;
+  color: var(--accent);
 }
 
 /* Служебные классы (минимум) */

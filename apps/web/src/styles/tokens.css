@@ -1,6 +1,6 @@
 /*
- * Токены дизайн-системы PlatformSol (план, раздел 5.3–5.6; редизайн 30.10.2026 по решению владельца:
- * тёмная тема по умолчанию, фирменный синий, скругления 6/10 px, шрифт Inter).
+ * Токены дизайн-системы PlatformSol (план, раздел 5.3–5.6; ADR-0006, редизайн 30.10.2026 по решению владельца):
+ * тёмная тема по умолчанию, почти чёрный фон, один салатовый акцент для действий, шрифты Manrope и Source Serif 4.
  * Единственное место в apps/web, где разрешены литералы цветов.
  * Проверка: `npm run lint:colors`.
  */
@@ -9,24 +9,25 @@
   color-scheme: light;
 
   /* Поверхности */
-  --bg: #f5f7fa;
+  --bg: #f6f7f5;
   --surface: #ffffff;
   --surface-raised: #ffffff;
-  --border: #e2e6ec;
-  --row-hover: #eef1f5;
+  --border: #e1e5e2;
+  --row-hover: #eef1ee;
 
   /* Текст */
-  --text: #0f172a;
-  --text-2: #475569;
-  --text-3: #64748b;
-  --text-on-accent: #ffffff;
+  --text: #0c0f0e;
+  --text-2: #4a524f;
+  --text-3: #66706c;
+  --text-on-accent: #0a0c05;
 
   /* Семантика (только направление и результат) */
-  --up: #047857;
-  --down: #c81e1e;
-  --accent: #1d4ed8;
-  /* Заливка кнопок: контраст белого текста не ниже 4.5:1 */
-  --accent-solid: #1d4ed8;
+  --up: #0a7f55;
+  --down: #c8283a;
+  /* Ссылки и выделение: на светлом фоне салатовый нечитаем — тёмно-зелёный */
+  --accent: #3f6212;
+  /* Заливка кнопок: салатовый с тёмным текстом (контраст выше 12:1) */
+  --accent-solid: #c6f432;
   --warn: #a16207;
 
   /* Индикаторы на графике — 6 нейтральных оттенков */
@@ -45,11 +46,14 @@
   --focus: var(--accent);
   --shadow: 0 1px 2px rgb(15 23 42 / 6%);
   --shadow-lg: 0 24px 64px rgb(15 23 42 / 12%);
+  /* Свечение под скриншотом продукта на главной (бирюзовое, только для маркетинговых страниц) */
+  --glow: rgb(22 199 154 / 18%);
 
   /* Геометрия */
-  --radius: 6px;
-  --radius-lg: 10px;
-  --radius-xl: 16px;
+  --radius: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 20px;
+  --radius-pill: 999px;
   --row-h: 36px;
   --panel-head-h: 32px;
   --sidebar-w: 220px;
@@ -74,19 +78,19 @@
 
 [data-theme="dark"] {
   color-scheme: dark;
-  --bg: #0b0f14;
-  --surface: #11161d;
-  --surface-raised: #171d26;
-  --border: #232b36;
-  --row-hover: #1a212b;
-  --text: #e8edf3;
-  --text-2: #a3aebb;
-  --text-3: #808b98;
-  --text-on-accent: #ffffff;
-  --up: #2bc48a;
+  --bg: #050607;
+  --surface: #0b0e10;
+  --surface-raised: #111518;
+  --border: #1d2327;
+  --row-hover: #14191c;
+  --text: #eef1f0;
+  --text-2: #a2aaa8;
+  --text-3: #7c8582;
+  --text-on-accent: #0a0c05;
+  --up: #22c58b;
   --down: #f2555c;
-  --accent: #5b9dff;
-  --accent-solid: #2563eb;
+  --accent: #c6f432;
+  --accent-solid: #c6f432;
   --warn: #f0b429;
   --ind-1: #7fa3d6;
   --ind-2: #c9a66b;
@@ -96,24 +100,25 @@
   --ind-6: #c98b72;
   --shadow: 0 1px 2px rgb(0 0 0 / 40%);
   --shadow-lg: 0 24px 64px rgb(0 0 0 / 45%);
+  --glow: rgb(22 199 154 / 30%);
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     color-scheme: dark;
-    --bg: #0b0f14;
-    --surface: #11161d;
-    --surface-raised: #171d26;
-    --border: #232b36;
-    --row-hover: #1a212b;
-    --text: #e8edf3;
-    --text-2: #a3aebb;
-    --text-3: #808b98;
-    --text-on-accent: #ffffff;
-    --up: #2bc48a;
+    --bg: #050607;
+    --surface: #0b0e10;
+    --surface-raised: #111518;
+    --border: #1d2327;
+    --row-hover: #14191c;
+    --text: #eef1f0;
+    --text-2: #a2aaa8;
+    --text-3: #7c8582;
+    --text-on-accent: #0a0c05;
+    --up: #22c58b;
     --down: #f2555c;
-    --accent: #5b9dff;
-    --accent-solid: #2563eb;
+    --accent: #c6f432;
+    --accent-solid: #c6f432;
     --warn: #f0b429;
     --ind-1: #7fa3d6;
     --ind-2: #c9a66b;
@@ -123,5 +128,6 @@
     --ind-6: #c98b72;
     --shadow: 0 1px 2px rgb(0 0 0 / 40%);
     --shadow-lg: 0 24px 64px rgb(0 0 0 / 45%);
+    --glow: rgb(22 199 154 / 30%);
   }
 }

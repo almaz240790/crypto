@@ -1,16 +1,25 @@
 import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
-import { IBM_Plex_Mono, Inter } from "next/font/google";
+import { IBM_Plex_Mono, Manrope, Source_Serif_4 } from "next/font/google";
 import { AuthProvider } from "@/components/auth/AuthProvider";
 import { LocaleProvider } from "@/i18n/client";
 import { getLocale } from "@/i18n/server";
 import { RegisterSW } from "@/components/pwa/Register";
 import "./globals.css";
 
-const sans = Inter({
+const sans = Manrope({
   variable: "--font-sans",
   subsets: ["latin", "cyrillic"],
-  weight: ["400", "500", "600", "700"],
+  weight: ["400", "500", "600", "700", "800"],
+  display: "swap",
+});
+
+// Заголовки маркетинговых страниц (ADR-0006); в интерфейсе графика не используется.
+const serif = Source_Serif_4({
+  variable: "--font-serif",
+  subsets: ["latin", "cyrillic"],
+  weight: ["400", "500", "600"],
+  style: ["normal", "italic"],
   display: "swap",
 });
 
@@ -23,7 +32,7 @@ const mono = IBM_Plex_Mono({
 
 export const metadata: Metadata = {
   title: { default: "PlatformSol", template: "%s — PlatformSol" },
-  description: "Крипто-график с уровнями, зонами и картой ликвидаций; сигналы на H4 по правилам с открытой статистикой.",
+  description: "Крипто-график для технического анализа: индикаторы, инструменты рисования, автоматическая разметка уровней, зон и ликвидаций.",
   applicationName: "PlatformSol",
   metadataBase: new URL("https://platformsol.com"),
   appleWebApp: { capable: true, title: "PlatformSol", statusBarStyle: "black-translucent" },
@@ -35,8 +44,8 @@ export const viewport: Viewport = {
   initialScale: 1,
   viewportFit: "cover",
   themeColor: [
-    { media: "(prefers-color-scheme: light)", color: "#0b0f14" }, // color-ok: токен --bg тёмной темы (она по умолчанию)
-    { media: "(prefers-color-scheme: dark)", color: "#0b0f14" }, // color-ok: токен --bg
+    { media: "(prefers-color-scheme: light)", color: "#050607" }, // color-ok: токен --bg тёмной темы (она по умолчанию)
+    { media: "(prefers-color-scheme: dark)", color: "#050607" }, // color-ok: токен --bg
   ],
 };
 
@@ -46,7 +55,7 @@ const themeScript = `(function(){var t="dark";try{if(localStorage.getItem("theme
 export default async function RootLayout({ children }: { children: ReactNode }) {
   const locale = await getLocale();
   return (
-    <html lang={locale} className={`${sans.variable} ${mono.variable}`} suppressHydrationWarning>
+    <html lang={locale} className={`${sans.variable} ${serif.variable} ${mono.variable}`} suppressHydrationWarning>
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>

@@ -22,7 +22,7 @@ export function GoogleCallback({ code, state, error }: { code: string | null; st
       try {
         await loginGoogle(code, `${window.location.origin}/auth/google`);
         await reload();
-        const next = state && state.startsWith("/") && !state.startsWith("//") ? state : "/signals";
+        const next = state && state.startsWith("/") && !state.startsWith("//") ? state : "/chart";
         router.replace(next);
       } catch (e) {
         if (e instanceof TwoFactorRequired) {
