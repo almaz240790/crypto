@@ -1,34 +1,47 @@
 # Промты для Higgsfield: фото, 3D, видео и логотип PlatformSol
 
-Для главной (сетка по образцу robinhood.com, ADR-0006). Промты на английском: модели понимают его лучше.
-Каждый файл генерируйте в 4 вариантах, выбирайте лучший и скачивайте в максимальном качестве (PNG или MP4).
-Готовые файлы присылайте в чат — сайт под них подстроит Fable.
+Для главной (ADR-0006). Расположение блоков — по образцу robinhood.com по просьбе владельца, **образы — свои**:
+ничего не повторяет их фото и видео (монитор на закате, цепь, телефон на градиенте, «дождь» из линий).
+
+## Идея: «Солнце над рынком»
+
+Sol — солнце. Свет размечает рынок, как PlatformSol размечает график:
+
+- рынок — это **рельеф**, гребень которого повторяет линию цены;
+- **уровни** — тонкие световые линии поперёк пейзажа;
+- **рисование** — инструменты чертёжника;
+- **слои** автоматической разметки — стеклянные пластины;
+- **салатовое солнце** — единственный яркий акцент.
+
+Палитра: чёрный #050607, графит #15171A, тёплый светлый камень #D9D6CE, глубокий зелёно-чёрный #0D1310,
+салатовый #C6F432.
 
 ## Общие правила
 
 - **Без текста, цифр и логотипов на картинках.** Модели искажают буквы; чужие логотипы (Apple, Binance, TradingView)
   использовать нельзя.
-- **Экраны монитора и телефона — сплошной ярко-зелёный (#00FF00).** На этот зелёный Fable вставит настоящий скриншот
-  нашего графика с правильной перспективой.
-- **Без лиц людей**, чтобы не было вопросов о правах на внешность.
+- **Экраны планшета и телефона — сплошной ярко-зелёный (#00FF00).** На этот зелёный Fable вставит настоящий
+  скриншот нашего графика с правильной перспективой.
+- **Без лиц и рук людей.**
+- Каждую картинку генерируйте в 4 вариантах, выбирайте лучший и скачивайте в максимальном качестве (PNG или MP4).
+  Готовые файлы присылайте в чат.
 - **Права:** перед публикацией проверьте, что ваш тариф Higgsfield разрешает коммерческое использование.
-- **Цвета бренда:** чёрный #050607, салатовый #C6F432, графит, тёмно-оливковый #1B190F, серо-голубой #A9B6C8.
 
 **Стиль — добавляйте в конец каждого промта фото и 3D:**
 
 ```
-premium fintech brand imagery, minimal, cinematic soft light, deep black and graphite tones with a single acid-lime (#C6F432) accent, high detail, no text, no letters, no numbers, no logos, no watermark
+quiet premium editorial imagery, minimal, precise, cinematic natural light, deep black and graphite with warm stone tones and a single acid-lime (#C6F432) accent, high detail, no text, no letters, no numbers, no logos, no watermark
 ```
 
 **Негативный промт (если есть поле «negative»):**
 
 ```
-text, letters, numbers, logo, watermark, brand names, Apple logo, Binance, TradingView, people, faces, hands, extra fingers, clutter, cyberpunk, purple, blue neon, oversaturated, low quality, blurry, distorted
+text, letters, numbers, logo, watermark, brand names, Apple logo, Binance, TradingView, people, faces, hands, chains, monitors on stands, rain, cyberpunk, neon city, purple, blue neon, oversaturated, clutter, low quality, blurry, distorted
 ```
 
 ---
 
-## 1. Видео первого экрана (фон под заголовком)
+## 1. Видео первого экрана — «Рассвет над графиком»
 
 Компьютер **16:9** (1920×1080), телефон **9:16** (1080×1920). Длина 6–10 с, бесшовный повтор.
 Сначала сгенерируйте картинку, потом сделайте из неё видео (Image to Video).
@@ -36,43 +49,43 @@ text, letters, numbers, logo, watermark, brand names, Apple logo, Binance, Tradi
 Картинка:
 
 ```
-Abstract 3D scene in pure black space: a single glowing acid-lime light trail draws the silhouette of a rising and falling price chart from left to right across the lower half of the frame, thin and elegant like a neon filament, soft bloom, faint reflection on a black glossy floor, tiny floating dust particles, the whole upper half of the frame is empty black space for a headline, minimal, cinematic
+Cinematic aerial view at night over a vast dark volcanic landscape whose mountain ridgeline forms the jagged silhouette of a price chart running from left to right; a small intense acid-lime sun sits low on the horizon behind the ridge and draws a thin rim of light along the ridgeline; three faint horizontal acid-lime light lines cross the whole landscape at different heights, like support and resistance levels; soft mist in the valleys; the upper half of the frame is an empty deep black sky for a headline; minimal, vast, quiet
 ```
 
 Движение для видео:
 
 ```
-slow camera dolly forward, the lime light line keeps drawing itself from left to right and flowing, particles drift gently, calm and premium, seamless loop, no cuts
+very slow forward drone flight along the ridge, the lime sun rises slightly, mist drifts, the level lines shimmer faintly, calm, seamless loop, no cuts
 ```
 
-Для телефона: тот же промт и добавьте `vertical composition, chart line in the lower third`.
+Для телефона: тот же промт и добавьте `vertical composition, ridge and sun in the lower third`.
 
-## 2. Монитор на закате (блок «Всё для теханализа»)
+## 2. «Стол картографа» (блок «Всё для теханализа»)
 
 Компьютер **16:9** (2880×1620), телефон **3:4** (1170×1560).
 
 ```
-Photorealistic product photo: a sleek frameless desktop monitor on a slim graphite stand standing on a dark matte concrete ledge, monitor turned about 30 degrees to the right, placed in the left half of the frame; the screen is solid flat chroma-key green (#00FF00), evenly lit, no reflections; background is a calm dusk sky with soft warm-grey clouds fading to deep graphite at the top; the ledge runs diagonally across the bottom of the frame; the right half of the frame is empty sky for text; shallow depth of field, cinematic, minimal
+Top-down flat lay photograph on a dark graphite drafting mat with a fine grid: a frameless tablet lies slightly rotated in the left half of the frame, its screen is solid flat chroma-key green (#00FF00), evenly lit; around it precise drawing instruments — a matte black steel ruler, a clear acrylic set square, a brass compass, a mechanical pencil with an acid-lime clip — and a sheet of tracing paper with hand-drawn straight trend lines and arcs in thin graphite pencil, no numbers; the right half of the frame is empty dark mat for text; soft directional light from the top left, crisp long shadows, editorial still life
 ```
 
-Для телефона: `vertical composition, monitor in the lower half, the upper 45% is empty sky for text`.
+Для телефона: `vertical composition, tablet and instruments in the lower half, the upper half is empty dark mat`.
 
-## 3. 3D-свечи из хрома (блок «Уровни, зоны и ликвидации — сами»)
+## 3. «Слои» (блок «Уровни, зоны и ликвидации — сами»)
 
 Компьютер **16:9**, телефон **3:4**.
 
 ```
-3D render: a sculptural arrangement of five polished chrome candlestick bars of different heights with thin chrome wicks, floating at a slight angle, one bar made of frosted acid-lime glass (#C6F432) glowing softly from inside, placed in the left 45% of the frame and partly cropped by the left and bottom edges; smooth matte slate blue-grey background (gradient #A9B6C8 to #C3CDDB), soft studio light, gentle shadows, the right half is empty for text, minimal, premium, octane render
+3D render: five thin frosted glass plates stacked horizontally with even gaps, floating in isometric view in the left half of the frame; each plate carries a different fine etched pattern — parallel horizontal lines, rectangular zones, a zigzag line, scattered small dots, a soft gradient band; a single narrow beam of acid-lime light passes down through the whole stack and projects a sharp lime line shaped like a price chart onto the pale surface below; smooth warm light-stone background (#D9D6CE), soft daylight, delicate shadows, the right half is empty for text, minimal, architectural, premium
 ```
 
-Для телефона: `vertical composition, object in the lower half, the upper half is empty background`.
+Для телефона: `vertical composition, the stack in the lower half, the upper half is empty background`.
 
-## 4. Телефон (блок «Полноценный график в кармане»)
+## 4. «Рассвет» с телефоном (блок «Полноценный график в кармане»)
 
 Компьютер **16:9**, телефон **3:4**.
 
 ```
-Photorealistic 3D render of a modern frameless smartphone with no logos and no buttons visible, tilted about 15 degrees, standing on the right side of the frame and cropped by the bottom edge; the screen is solid flat chroma-key green (#00FF00); background is a vertical gradient from pure black at the top to cool blue-grey at the bottom; soft rim light along the phone edges, subtle reflection; the left half of the frame is empty for text; minimal, premium
+Photorealistic still life at dawn: a modern frameless smartphone with no logos rests at a slight angle on a smooth black basalt stone in calm shallow water, placed in the right half of the frame and cropped by the bottom edge; its screen is solid flat chroma-key green (#00FF00); far behind, a small acid-lime sun is rising over a flat horizon and leaves a thin glowing line on the water; the sky fades from black at the top to deep green-grey near the horizon; the left half of the frame is empty for text; calm, minimal, cinematic
 ```
 
 ## 5. Четыре рисунка для блока «Честный инструмент без перерисовки»
@@ -80,7 +93,7 @@ Photorealistic 3D render of a modern frameless smartphone with no logos and no b
 Квадрат **1:1** (1024×1024). Начало промта одинаковое, конец — свой для каждого рисунка.
 
 ```
-Minimal isometric line illustration, single hairline off-white stroke (#F1EFE8) on flat dark olive background (#1B190F), no fill, no shading, centered, generous empty margins, elegant technical drawing,
+Minimal isometric line illustration, single hairline warm off-white stroke (#F1EFE8) on a flat deep green-black background (#0D1310), no fill, no shading, centered, generous empty margins, elegant technical drawing,
 ```
 
 - **а)** `three isometric candlestick bars of different heights with thin wicks standing on a baseline`
@@ -90,12 +103,12 @@ Minimal isometric line illustration, single hairline off-white stroke (#F1EFE8) 
 
 Сейчас на сайте стоят нарисованные Fable векторные версии. Эти промты нужны, только если захотите живее.
 
-## 6. Видео финального блока («Откройте график прямо сейчас»)
+## 6. Видео финального блока — «Восход»
 
 Компьютер **16:9**, телефон **9:16**. Длина 8 с, бесшовный повтор.
 
 ```
-Pure black background filled with many thin white vertical hairlines of different lengths, like candlestick wicks, scattered evenly across the whole frame; they slowly rise and fall at different speeds, a few of them briefly glow acid-lime (#C6F432); very subtle and elegant, the center of the frame slightly darker for a headline; seamless loop
+Minimal abstract animation: a perfect acid-lime sun slowly rises from behind a thin straight horizon line at the bottom center of a pure black frame; as it rises, faint thin horizontal lines appear across the black sky at different heights, like price levels, and gently fade; soft glow, lots of empty black space in the center for a headline; seamless loop
 ```
 
 ## 7. Логотип — три направления
@@ -121,7 +134,7 @@ Flat vector logo mark, geometric, minimal, bold, no text, no letters, centered o
 
 ## 8. Картинка для ссылок в соцсетях и мессенджерах (по желанию)
 
-**1200×630.** Fable может собрать её сам из кадра первого экрана и логотипа, отдельный промт не обязателен.
+**1200×630.** Fable соберёт её сам из кадра первого экрана и логотипа.
 
 ---
 
@@ -130,9 +143,9 @@ Flat vector logo mark, geometric, minimal, bold, no text, no letters, centered o
 | № | Файл | Место на сайте |
 |---|---|---|
 | 1 | видео 16:9 и 9:16 | фон первого экрана под заголовком «Технический анализ в одном окне» |
-| 2 | фото 16:9 и 3:4 | блок «Всё для теханализа» — на экран монитора встанет мультичарт |
+| 2 | фото 16:9 и 3:4 | блок «Всё для теханализа» — на экран планшета встанет мультичарт |
 | 3 | 3D 16:9 и 3:4 | блок «Уровни, зоны и ликвидации — сами» |
-| 4 | 3D 16:9 и 3:4 | блок «Полноценный график в кармане» — на экран встанет наш график с телефона |
+| 4 | фото 16:9 и 3:4 | блок «Полноценный график в кармане» — на экран встанет наш график с телефона |
 | 5 | 4 рисунка 1:1 | блок «Честный инструмент без перерисовки» |
 | 6 | видео 16:9 и 9:16 | фон финального блока |
 | 7 | эскиз логотипа | шапка, подвал, значок вкладки, иконка на телефоне |

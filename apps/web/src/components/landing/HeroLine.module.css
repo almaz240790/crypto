@@ -9,7 +9,7 @@
 }
 
 .grid {
-  stroke: var(--lp-sky-2);
+  stroke: var(--lp-graphite);
   stroke-width: 1;
   vector-effect: non-scaling-stroke;
 }

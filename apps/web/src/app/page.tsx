@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { Footer, Header } from "@/components/site";
 import { HeroLine } from "@/components/landing/HeroLine";
+import { DeskTools } from "@/components/landing/DeskTools";
 import { LineArt, Thumb } from "@/components/landing/LineArt";
 import { getDailyCloses, getHealth, getInstrumentCount } from "@/lib/api";
 import { COUNTS } from "@/lib/capabilities";
@@ -76,16 +77,15 @@ export default async function Home() {
           </div>
         </section>
 
-        {/* 1. График на мониторе — текст справа */}
-        <section id="features" className={`${s.band} ${s.sky}`} aria-labelledby="h-tools">
+        {/* 1. «Стол картографа» — текст справа */}
+        <section id="features" className={`${s.band} ${s.mat}`} aria-labelledby="h-tools">
           <div className={s.visual}>
-            <div className={s.monitor}>
-              <div className={s.screen}>
+            <div className={s.desk}>
+              <DeskTools />
+              <div className={s.tablet}>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img src="/landing/multi.webp" width={1380} height={905} alt={t("Мультичарт PlatformSol: четыре графика с автоматической разметкой")} />
               </div>
-              <span className={s.neck} />
-              <span className={s.foot} />
             </div>
           </div>
           <div className={`${s.copy} ${s.right}`}>
@@ -101,9 +101,10 @@ export default async function Home() {
           </div>
         </section>
 
-        {/* 2. Автоматическая разметка — светлый блок, текст справа */}
-        <section className={`${s.band} ${s.slate}`} aria-labelledby="h-auto">
+        {/* 2. «Слои» на светлом камне — текст справа */}
+        <section className={`${s.band} ${s.stone}`} aria-labelledby="h-auto">
           <div className={`${s.visual} ${s.cards}`}>
+            <span className={s.beam} aria-hidden="true" />
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img className={s.cardLiq} src="/landing/liq.webp" width={900} height={1340} alt={t("Карта ликвидаций с суммами на графике BTCUSDT")} loading="lazy" />
             {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -129,8 +130,8 @@ export default async function Home() {
           </div>
         </section>
 
-        {/* 3. Телефон — текст слева */}
-        <section className={`${s.band} ${s.night}`} aria-labelledby="h-phone">
+        {/* 3. «Рассвет» с телефоном — текст слева */}
+        <section className={`${s.band} ${s.dawn}`} aria-labelledby="h-phone">
           <div className={`${s.copy} ${s.left}`}>
             <p className={s.lockup}>
               <span className={s.mark} aria-hidden="true" />
@@ -145,6 +146,11 @@ export default async function Home() {
               {t("Открыть на телефоне")}
             </Link>
             <p className={s.fine}>{t("На скриншоте — BTCUSDT, 4 часа, с картой ликвидаций и структурой рынка.")}</p>
+          </div>
+          <div className={`${s.visual} ${s.deco}`} aria-hidden="true">
+            <span className={s.horizon} />
+            <span className={s.sun} />
+            <span className={s.glint} />
           </div>
           <div className={`${s.visual} ${s.phoneWrap}`}>
             <div className={s.phone}>
@@ -199,12 +205,15 @@ export default async function Home() {
           </div>
         </section>
 
-        {/* 6. Призыв — чёрный блок с «фитилями» */}
+        {/* 6. Призыв — «Восход»: солнце встаёт из-за горизонта, проявляются линии уровней */}
         <section className={s.final} aria-labelledby="h-final">
-          <div className={s.wicks} aria-hidden="true">
-            {Array.from({ length: 48 }, (_, i) => (
-              <i key={i} style={{ left: `${(i * 2.08 + ((i * 7) % 5) * 0.3).toFixed(2)}%`, top: `${(i * 37) % 90}%`, height: `${18 + ((i * 13) % 40)}px`, animationDelay: `${-((i * 0.37) % 6).toFixed(2)}s` }} />
+          <div className={s.rise} aria-hidden="true">
+            {[18, 34, 52, 66].map((top, i) => (
+              <span key={top} className={s.line} style={{ top: `${top}%`, animationDelay: `${i * 1.6}s` }} />
             ))}
+            <span className={s.ground} />
+            <span className={s.halo} />
+            <span className={s.disc} />
           </div>
           <h2 id="h-final" className={s.h1}>
             {t("Откройте график")}

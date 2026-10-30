@@ -2,8 +2,8 @@
 .header {
   --text: var(--lp-white);
   --text-2: var(--lp-mute);
-  --border: var(--lp-sky-2);
-  --row-hover: var(--lp-sky-2);
+  --border: var(--lp-graphite);
+  --row-hover: var(--lp-graphite);
   position: relative;
   z-index: 20;
   background: var(--lp-black);
@@ -111,7 +111,7 @@
   display: grid;
   gap: 24px;
   padding: 24px 20px 32px;
-  border-top: 1px solid var(--lp-sky-2);
+  border-top: 1px solid var(--lp-graphite);
   background: var(--lp-black);
 }
 
@@ -121,7 +121,7 @@
 
 .menu nav a {
   padding: 12px 0;
-  border-bottom: 1px solid var(--lp-sky-2);
+  border-bottom: 1px solid var(--lp-graphite);
   color: var(--lp-white);
   font-size: 22px;
   letter-spacing: -0.3px;

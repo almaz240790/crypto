@@ -39,17 +39,17 @@
   --lp-mute-2: #8f8d86;
   --lp-lime: #c6f432;
   --lp-lime-line: #0e0d0833;
-  --lp-olive: #1b190f;
-  --lp-sky-1: #0c0d10;
-  --lp-sky-2: #2c2e34;
-  --lp-sky-3: #6e6a64;
-  --lp-sky-4: #3c3934;
-  --lp-ledge: #060607;
+  --lp-graphite: #2c2e34;
   --lp-bezel: #0b0b0d;
-  --lp-slate-1: #93a5bf;
-  --lp-slate-2: #c3cddb;
-  --lp-night-2: #3d4458;
-  --lp-night-3: #9aa1b3;
+  /* «Стол картографа»: графитовый коврик с сеткой */
+  --lp-mat: #15171a;
+  --lp-mat-line: rgb(255 255 255 / 5%);
+  /* «Слои»: тёплый светлый камень */
+  --lp-stone: #d9d6ce;
+  --lp-stone-2: #ece9e2;
+  /* «Рассвет»: глубокий зелёно-чёрный */
+  --lp-forest: #0d1310;
+  --lp-dawn-3: #1d2a22;
   --lp-card: #ffffff;
   --lp-card-2: #6b6862;
   --lp-thumb: #111111;

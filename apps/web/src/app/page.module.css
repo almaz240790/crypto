@@ -215,67 +215,47 @@
   font-style: normal;
 }
 
-/* 1. Сумерки и монитор */
-.sky {
-  background: linear-gradient(180deg, var(--lp-sky-1) 0%, var(--lp-sky-2) 42%, var(--lp-sky-3) 66%, var(--lp-sky-4) 80%);
+/* 1. «Стол картографа»: графитовый коврик с сеткой, планшет и инструменты (свой образ, docs/brand) */
+.mat {
+  background-color: var(--lp-mat);
+  background-image: linear-gradient(var(--lp-mat-line) 1px, transparent 1px), linear-gradient(90deg, var(--lp-mat-line) 1px, transparent 1px);
+  background-size: 32px 32px;
 }
 
-.sky::after {
-  content: "";
+.desk {
   position: absolute;
-  inset: 0;
-  background: var(--lp-ledge);
-  clip-path: polygon(0 79%, 100% 94%, 100% 100%, 0 100%);
+  left: calc(50% - 660px);
+  top: 90px;
+  width: 720px;
+  height: 600px;
 }
 
-.monitor {
+.tablet {
   position: absolute;
-  z-index: 1;
-  left: calc(50% - 630px);
-  top: 104px;
-  width: 700px;
-  transform: perspective(1100px) rotateY(30deg) rotateX(3deg);
-  transform-origin: left center;
-}
-
-.screen {
+  left: 60px;
+  top: 70px;
+  width: 560px;
   overflow: hidden;
-  border: 10px solid var(--lp-bezel);
-  border-radius: 14px;
+  border: 12px solid var(--lp-bezel);
+  border-radius: 22px;
   background: var(--lp-bezel);
-  box-shadow: 0 40px 80px color-mix(in srgb, var(--lp-black) 60%, transparent);
+  box-shadow: 18px 30px 50px color-mix(in srgb, var(--lp-black) 70%, transparent);
+  transform: rotate(-6deg);
 }
 
-.screen img {
+.tablet img {
   display: block;
   width: 100%;
   height: auto;
 }
 
-.neck {
-  display: block;
-  width: 64px;
-  height: 92px;
-  margin: 0 auto;
-  background: linear-gradient(90deg, var(--lp-bezel), var(--lp-sky-2), var(--lp-bezel));
-}
-
-.foot {
-  display: block;
-  width: 240px;
-  height: 14px;
-  margin: 0 auto;
-  border-radius: 3px;
-  background: var(--lp-bezel);
-}
-
-/* 2. Светлый блок и карточки */
-.slate {
-  background: linear-gradient(155deg, var(--lp-slate-2) 0%, var(--lp-slate-1) 100%);
+/* 2. «Слои» на светлом камне */
+.stone {
+  background: linear-gradient(160deg, var(--lp-stone-2) 0%, var(--lp-stone) 100%);
   color: var(--lp-ink);
 }
 
-.slate .copy .fine {
+.stone .copy .fine {
   color: var(--lp-ink-2);
 }
 
@@ -284,7 +264,7 @@
   display: block;
   height: auto;
   border-radius: 16px;
-  box-shadow: 0 30px 70px color-mix(in srgb, var(--lp-ink) 35%, transparent);
+  box-shadow: 0 30px 70px color-mix(in srgb, var(--lp-ink) 30%, transparent);
 }
 
 .cardLiq {
@@ -301,9 +281,52 @@
   transform: rotate(3deg);
 }
 
-/* 3. Ночь и телефон */
-.night {
-  background: linear-gradient(180deg, var(--lp-black) 0%, var(--lp-black) 28%, var(--lp-night-2) 72%, var(--lp-night-3) 100%);
+.beam {
+  position: absolute;
+  left: calc(50% - 330px);
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: linear-gradient(180deg, transparent, var(--lp-lime) 30%, var(--lp-lime) 70%, transparent);
+  box-shadow: 0 0 18px var(--lp-lime);
+  opacity: 0.85;
+}
+
+/* 3. «Рассвет»: горизонт, салатовое солнце и телефон */
+.dawn {
+  background: linear-gradient(180deg, var(--lp-black) 0%, var(--lp-black) 38%, var(--lp-forest) 70%, var(--lp-dawn-3) 100%);
+}
+
+.horizon {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 74%;
+  height: 1px;
+  background: color-mix(in srgb, var(--lp-mute) 22%, transparent);
+}
+
+.sun {
+  position: absolute;
+  left: calc(50% + 120px);
+  top: calc(74% - 22px);
+  width: 44px;
+  height: 22px;
+  border-radius: 44px 44px 0 0;
+  background: var(--lp-lime);
+  box-shadow: 0 0 40px 10px var(--lp-glow);
+}
+
+.glint {
+  position: absolute;
+  left: calc(50% + 70px);
+  top: calc(74% + 14px);
+  width: 144px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--lp-lime);
+  opacity: 0.6;
+  box-shadow: 0 0 12px var(--lp-glow);
 }
 
 .phoneWrap {
@@ -317,7 +340,7 @@
   padding: 11px;
   border-radius: 52px;
   background: var(--lp-bezel);
-  box-shadow: inset 0 0 0 2px var(--lp-sky-2), 0 40px 90px color-mix(in srgb, var(--lp-black) 55%, transparent);
+  box-shadow: inset 0 0 0 2px var(--lp-graphite), 0 40px 90px color-mix(in srgb, var(--lp-black) 55%, transparent);
   transform: perspective(1400px) rotateY(-14deg) rotateZ(4deg);
 }
 
@@ -328,10 +351,10 @@
   border-radius: 42px;
 }
 
-/* ── 4. Доверие: тёмно-оливковый, 2×2 ─────────────────────── */
+/* ── 4. Доверие: глубокий зелёно-чёрный, 2×2 ─────────────── */
 .trust {
   padding: 68px 24px 230px;
-  background: var(--lp-olive);
+  background: var(--lp-forest);
   text-align: center;
 }
 
@@ -442,7 +465,7 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 218px 24px 260px;
+  padding: 218px 24px 320px;
   background: var(--lp-black);
   text-align: center;
 }
@@ -461,24 +484,89 @@
   margin-top: 32px;
 }
 
-.wicks i {
+/* Восход: салатовое солнце встаёт из-за горизонта, в небе проявляются линии уровней */
+.rise {
   position: absolute;
-  width: 1.5px;
-  background: var(--lp-white);
-  opacity: 0.25;
-  animation: drift 6s ease-in-out infinite alternate;
+  inset: 0;
+  pointer-events: none;
 }
 
-@keyframes drift {
+.rise .line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: color-mix(in srgb, var(--lp-lime) 40%, transparent);
+  opacity: 0;
+  animation: level 9s ease-in-out infinite;
+}
+
+.rise .ground {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 120px;
+  height: 1px;
+  background: color-mix(in srgb, var(--lp-mute) 30%, transparent);
+}
+
+.rise .halo {
+  position: absolute;
+  left: 50%;
+  bottom: 121px;
+  width: 900px;
+  height: 300px;
+  margin-left: -450px;
+  background: radial-gradient(ellipse 50% 100% at 50% 100%, var(--lp-glow), transparent 70%);
+}
+
+.rise .disc {
+  position: absolute;
+  left: 50%;
+  bottom: 121px;
+  width: 200px;
+  height: 100px;
+  margin-left: -100px;
+  overflow: hidden;
+}
+
+.rise .disc::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 200px;
+  height: 200px;
+  border-radius: 50%;
+  background: var(--lp-lime);
+  animation: rise 9s ease-in-out infinite alternate;
+}
+
+@keyframes rise {
+  from {
+    transform: translateY(60px);
+  }
+
   to {
-    transform: translateY(44px);
-    opacity: 0.75;
+    transform: translateY(0);
+  }
+}
+
+@keyframes level {
+  40%,
+  60% {
+    opacity: 1;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .wicks i {
+  .rise .line,
+  .rise .disc::before {
     animation: none;
+  }
+
+  .rise .line {
+    opacity: 0.5;
   }
 }
 
@@ -584,20 +672,33 @@
     inset: 4px;
   }
 
-  .monitor {
-    left: 16px;
-    top: 40px;
-    width: 340px;
+  .desk {
+    left: 50%;
+    top: 20px;
+    margin-left: -360px;
+    transform: scale(0.56);
+    transform-origin: top center;
   }
 
-  .neck {
-    height: 56px;
-    width: 40px;
+  .beam {
+    left: 30%;
   }
 
-  .foot {
-    width: 150px;
-    height: 10px;
+  /* горизонт и солнце — фоном за телефоном, а не отдельным блоком */
+  .band > .deco {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 560px;
+  }
+
+  .sun {
+    left: 9%;
+  }
+
+  .glint {
+    left: 3%;
   }
 
   .cardLiq {
@@ -634,6 +735,7 @@
 
   .trust ul {
     display: flex;
+    justify-content: flex-start;
     gap: 26px;
     margin-top: 70px;
     padding: 0 calc(50% - 100px);
@@ -675,7 +777,7 @@
   }
 
   .final {
-    padding: 250px 24px 260px;
+    padding: 200px 24px 300px;
   }
 
   .final .h1 {
