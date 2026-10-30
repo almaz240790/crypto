@@ -13,7 +13,7 @@ export default async function RegisterPage({ searchParams }: { searchParams: Pro
   const t = await getT();
   const { next } = await searchParams;
   return (
-    <AuthCard title={t("Регистрация")} footer={t("7 дней уровня Pro после регистрации, без оплаты.")}>
+    <AuthCard title={t("Регистрация")} footer={t("Бесплатно: все индикаторы, рисование и автоматическая разметка.")}>
       <RegisterForm next={safeNext(next)} />
     </AuthCard>
   );

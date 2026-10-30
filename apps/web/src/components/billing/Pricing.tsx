@@ -63,7 +63,7 @@ export function Pricing() {
     try {
       const r = await checkout(chosen, months, promo);
       if (r.paid_from_balance) {
-        setMsg({ text: t("Оплачено с баланса, тариф активирован"), kind: "ok" });
+        setMsg({ text: t("Оплачено с баланса, подписка активирована"), kind: "ok" });
         router.push("/billing");
       } else if (r.payment.invoice_url) {
         window.location.href = r.payment.invoice_url;
@@ -78,6 +78,12 @@ export function Pricing() {
   // Цена без «.00»: $29, $249, $20.75.
   const usd = (v: number) => `$${v.toFixed(2).replace(/\.00$/, "")}`;
   const perMonth = (p: PlanInfo) => usd(Number(p.prices[String(months)]) / months);
+  // Скидка за срок — из цен API (первый платный тариф), а не числом в коде.
+  const saving = (m: Months) => {
+    const p = plans?.[0];
+    if (!p || m === 1) return 0;
+    return Math.round((1 - Number(p.prices[String(m)]) / (Number(p.prices["1"]) * m)) * 100);
+  };
 
   return (
     <div className={s.wrap}>
@@ -94,8 +100,7 @@ export function Pricing() {
             }}
           >
             {t(PERIOD_LABEL[m])}
-            {m === 3 && <span className={s.save}>−10 %</span>}
-            {m === 12 && <span className={s.save}>−28 %</span>}
+            {saving(m) > 0 && <span className={s.save}>−{saving(m)} %</span>}
           </button>
         ))}
       </div>
@@ -117,7 +122,7 @@ export function Pricing() {
               <li>{t("Журнал 20 записей, вотчлист 5")}</li>
             </ul>
             {me?.plan === "free" ? (
-              <Badge tone="muted">{t("ваш тариф")}</Badge>
+              <Badge tone="muted">{t("ваша подписка")}</Badge>
             ) : (
               !user && (
                 <Button href="/register" block>
@@ -143,7 +148,7 @@ export function Pricing() {
               </ul>
               {me?.plan === p.code ? (
                 <Badge tone="up">
-                  {t("ваш тариф")}
+                  {t("ваша подписка")}
                   {me.subscription ? ` ${t("до")} ${new Date(me.subscription.current_period_end).toLocaleDateString("ru-RU")}` : ""}
                 </Badge>
               ) : null}
@@ -155,7 +160,7 @@ export function Pricing() {
         </div>
       )}
       {!enabled && (
-        <p className={s.off}>{t("Оплата пока не включена: до запуска все зарегистрированные пользователи получают уровень Pro. Первые 7 дней Pro — бесплатно при регистрации.")}</p>
+        <p className={s.off}>{t("Оплата пока не включена: до запуска все зарегистрированные пользователи получают уровень Pro.")}</p>
       )}
       {user && chosen && (
         <Panel title={`Заказ: ${PLAN_TITLE[chosen]} на ${PERIOD_LABEL[months]}`}>

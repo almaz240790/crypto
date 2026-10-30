@@ -28,7 +28,7 @@ export function Footer({ status }: { status?: string }) {
                 <Link href="/screener">{t("Скринер")}</Link>
               </li>
               <li>
-                <Link href="/pricing">{t("Тарифы")}</Link>
+                <Link href="/pricing">{t("Подписка")}</Link>
               </li>
             </ul>
           </div>

@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { FAQ } from "@/content/faq";
 import { Footer, Header } from "@/components/site";
-import { getHealth, getInstrumentCount } from "@/lib/api";
+import { getHealth, getInstrumentCount, getMonthPrices } from "@/lib/api";
 import { COUNTS, DERIVATIVE_PANELS, INDICATOR_LIST, TOOL_GROUPS } from "@/lib/capabilities";
 import s from "./page.module.css";
 import { getT } from "@/i18n/server";
@@ -52,17 +52,19 @@ const MORE = [
 ];
 
 const PLANS = [
-  { name: "Free", price: "$0", per: "", cta: "Начать бесплатно", href: "/register", hot: false, items: ["Все индикаторы и инструменты рисования", "Автоматическая разметка", "Таймфреймы от 1 часа", "10 рисунков на монету, 3 алерта"] },
-  { name: "Pro", price: "$29", per: "/ мес", cta: "Попробовать Pro", href: "/register", hot: true, items: ["Таймфреймы 1, 5 и 15 минут", "100 рисунков на монету и синхронизация", "5 раскладок, 50 алертов", "Экспорт и журнал без ограничений"] },
-  { name: "Premium", price: "$79", per: "/ мес", cta: "Выбрать Premium", href: "/pricing", hot: false, items: ["Всё из Pro", "Вопросы о графике", "Рисунки и алерты без лимита, 20 раскладок", "API и вебхуки"] },
+  { name: "Free", code: "free", per: "", cta: "Начать бесплатно", href: "/register", hot: false, items: ["Все индикаторы и инструменты рисования", "Автоматическая разметка", "Таймфреймы от 1 часа", "10 рисунков на монету, 3 алерта"] },
+  { name: "Pro", code: "pro", per: "/ мес", cta: "Оформить Pro", href: "/register", hot: true, items: ["Таймфреймы 1, 5 и 15 минут", "100 рисунков на монету и синхронизация", "5 раскладок, 50 алертов", "Экспорт и журнал без ограничений"] },
+  { name: "Premium", code: "premium", per: "/ мес", cta: "Выбрать Premium", href: "/pricing", hot: false, items: ["Всё из Pro", "Вопросы о графике", "Рисунки и алерты без лимита, 20 раскладок", "API и вебхуки"] },
 ];
 
 const PANE_LABEL = { overlay: "на графике", separate: "панель", derivatives: "деривативы" } as const;
 
 export default async function Home() {
   const t = await getT();
-  const [health, instruments] = await Promise.all([getHealth(), getInstrumentCount()]);
+  const [health, instruments, prices] = await Promise.all([getHealth(), getInstrumentCount(), getMonthPrices()]);
   const coins = instruments ?? 59;
+  // Цена из API без «.00»: 9.00 → $9; если API недоступен, карточка показывает только название.
+  const priceOf = (code: string) => (code === "free" ? "$0" : prices?.[code] ? `$${Number(prices[code])}` : "");
 
   return (
     <>
@@ -294,7 +296,7 @@ export default async function Home() {
         {/* Тарифы */}
         <section id="pricing" className={`container ${s.sec}`} aria-labelledby="h-pricing">
           <div className={`${s.head} ${s.center}`}>
-            <span className={s.kick}>{t("Тарифы")}</span>
+            <span className={s.kick}>{t("Подписка")}</span>
             <h2 id="h-pricing" className="serif">{t("Начните бесплатно")}</h2>
             <p>{t("Оплата криптовалютой, без автопродления. Пока оплата не включена, все зарегистрированные пользователи получают уровень Pro.")}</p>
           </div>
@@ -306,7 +308,7 @@ export default async function Home() {
                   {p.hot && <span>{t("Популярный")}</span>}
                 </h3>
                 <p className={s.price}>
-                  {p.price} {p.per && <small>{t(p.per)}</small>}
+                  {priceOf(p.code)} {p.per && priceOf(p.code) && <small>{t(p.per)}</small>}
                 </p>
                 <ul>
                   {p.items.map((it) => (

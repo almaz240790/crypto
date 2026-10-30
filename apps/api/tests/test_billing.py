@@ -14,10 +14,11 @@ from app.plans import PLANS, catalog
 
 
 def test_prices_and_discounts() -> None:
-    assert PLANS["pro"].price(1) == Decimal("29.00")
-    assert PLANS["pro"].price(12) == Decimal("249.00")
-    assert PLANS["pro"].price(3) == Decimal("78.30")  # 87 − 10 %
-    assert PLANS["premium"].price(12) == Decimal("690.00")
+    assert PLANS["pro"].price(1) == Decimal("9.00")
+    assert PLANS["pro"].price(12) == Decimal("76.00")
+    assert PLANS["pro"].price(3) == Decimal("24.30")  # 27 − 10 %
+    assert PLANS["premium"].price(1) == Decimal("19.00")
+    assert PLANS["premium"].price(12) == Decimal("160.00")
     with pytest.raises(ValueError):
         PLANS["pro"].price(6)
     assert {p["code"] for p in catalog()} == {"pro", "premium"}
@@ -26,17 +27,17 @@ def test_prices_and_discounts() -> None:
 def test_quote_with_promo_and_balance() -> None:
     q = quote("pro", 1)
     assert (q.price, q.discount, q.amount_due) == (
-        Decimal("29.00"),
+        Decimal("9.00"),
         Decimal("0.00"),
-        Decimal("29.00"),
+        Decimal("9.00"),
     )
     promo = PromoCode(code="WELCOME20", percent=20, fixed_usd=Decimal(0))
     q = quote("pro", 12, promo)
-    assert q.discount == Decimal("49.80") and q.amount_due == Decimal("199.20")
+    assert q.discount == Decimal("15.20") and q.amount_due == Decimal("60.80")
     q = quote("premium", 1, promo=None, balance=Decimal("100"))
-    assert q.balance_applied == Decimal("79.00") and q.amount_due == Decimal("0.00")
+    assert q.balance_applied == Decimal("19.00") and q.amount_due == Decimal("0.00")
     q = quote("premium", 1, promo=None, balance=Decimal("10"))
-    assert q.balance_applied == Decimal("10.00") and q.amount_due == Decimal("69.00")
+    assert q.balance_applied == Decimal("10.00") and q.amount_due == Decimal("9.00")
     with pytest.raises(ValueError):
         quote("pro", 1, PromoCode(code="X", percent=10, fixed_usd=Decimal(0), plan="premium"))
     with pytest.raises(ValueError):

@@ -9,8 +9,8 @@ from decimal import Decimal
 FREE, PRO, PREMIUM = "free", "pro", "premium"
 PAID_PLANS = (PRO, PREMIUM)
 PERIODS = (1, 3, 12)
-"""Срок подписки в месяцах: без автопродления (план 3.13)."""
-TRIAL_DAYS = 7
+"""Срок подписки в месяцах: без автопродления (план 3.13).
+Пробного периода нет (решение владельца 30.10.2026)."""
 GRACE_DAYS = 3
 
 
@@ -36,8 +36,9 @@ class Plan:
 
 
 PLANS: dict[str, Plan] = {
-    PRO: Plan(PRO, "Pro", Decimal("29.00"), Decimal("249.00")),
-    PREMIUM: Plan(PREMIUM, "Premium", Decimal("79.00"), Decimal("690.00")),
+    # Цены снижены по решению владельца 30.10.2026 (план, раздел 4): год — около −30 %.
+    PRO: Plan(PRO, "Pro", Decimal("9.00"), Decimal("76.00")),
+    PREMIUM: Plan(PREMIUM, "Premium", Decimal("19.00"), Decimal("160.00")),
 }
 
 RANK = {FREE: 0, PRO: 1, PREMIUM: 2}

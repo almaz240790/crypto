@@ -23,7 +23,7 @@ const NAV: { href: string; label: string; icon: string }[] = [
 ];
 const ADMIN = { href: "/admin", label: "Админка", icon: "M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z" };
 const ACCOUNT: { href: string; label: string }[] = [
-  { href: "/billing", label: "Тариф" },
+  { href: "/billing", label: "Подписка" },
   { href: "/settings", label: "Настройки" },
   { href: "/support", label: "Поддержка" },
 ];

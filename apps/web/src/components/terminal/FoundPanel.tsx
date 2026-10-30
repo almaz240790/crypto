@@ -268,8 +268,8 @@ export function AskBox({ symbol, tf, access, heading = true }: { symbol: string;
       <div className={s.ask}>
         {heading && <strong>{t("Вопрос о графике")}</strong>}
         <p className={s.askNote}>
-          {t("Вопросы о графике доступны на тарифе Premium: ответ составляется только по данным этого графика — тренд, зоны, уровни, паттерны.")}{" "}
-          <Link href="/billing">{t("Тарифы")}</Link>
+          {t("Вопросы о графике доступны с подпиской Premium: ответ составляется только по данным этого графика — тренд, зоны, уровни, паттерны.")}{" "}
+          <Link href="/billing">{t("Подписка")}</Link>
         </p>
       </div>
     );

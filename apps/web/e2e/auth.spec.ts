@@ -146,7 +146,7 @@ test("язык: переключатель EN переводит шапку и �
   await expect(page.getByLabel("Password")).toBeVisible();
   await expect(page.locator("html")).toHaveAttribute("lang", "en");
   await page.goto("/");
-  await expect(page.getByRole("navigation", { name: "sections" }).getByRole("link", { name: "Pricing" })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "sections" }).getByRole("link", { name: "Subscription" })).toBeVisible();
   const cookies = await page.context().cookies();
   expect(cookies.find((c) => c.name === "pl_locale")?.value).toBe("en");
 });

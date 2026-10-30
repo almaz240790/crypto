@@ -187,6 +187,12 @@ export async function getInstrumentCount(): Promise<number | null> {
   return list ? list.length : null;
 }
 
+/** Цена за месяц по тарифам с сервера (apps/api/app/plans.py) — для главной; null, если API недоступен. */
+export async function getMonthPrices(): Promise<Record<string, string> | null> {
+  const r = await get<{ plans: { code: string; price_month: string }[] }>("/v1/billing/plans", 3600);
+  return r ? Object.fromEntries(r.plans.map((p) => [p.code, p.price_month])) : null;
+}
+
 export function getHealth(): Promise<Health | null> {
   return get<Health>("/health", 30);
 }

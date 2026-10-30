@@ -19,7 +19,7 @@ export function Header() {
         <nav className={s.nav} aria-label={t("разделы")}>
           <Link href="/chart">{t("График")}</Link>
           <Link href="/#features">{t("Возможности")}</Link>
-          <Link href="/pricing">{t("Тарифы")}</Link>
+          <Link href="/pricing">{t("Подписка")}</Link>
           <Link href="/#faq">{t("Вопросы")}</Link>
         </nav>
         <div className={s.right}>

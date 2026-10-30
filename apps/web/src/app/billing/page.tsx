@@ -57,9 +57,9 @@ function Inner() {
       )}
       {error && <EmptyState text={error} />}
       {me && (
-        <Panel title={tr("Текущий тариф")} actions={<Button href="/pricing" size="sm" variant="primary">{me.plan === "free" ? tr("Выбрать тариф") : tr("Продлить")}</Button>}>
+        <Panel title={tr("Текущая подписка")} actions={<Button href="/pricing" size="sm" variant="primary">{me.plan === "free" ? tr("Оформить подписку") : tr("Продлить")}</Button>}>
           <div className={s.strip}>
-            <span>{tr("тариф")}{" "}<strong>{PLAN_TITLE[me.plan]}</strong>
+            <span>{tr("уровень")}{" "}<strong>{PLAN_TITLE[me.plan]}</strong>
             </span>
             {sub && (
               <>
@@ -81,7 +81,7 @@ function Inner() {
         {items === null ? (
           <EmptyState text={tr("Загрузка…")} />
         ) : items.length === 0 ? (
-          <EmptyState text={tr("Платежей пока нет.")} action={<Button href="/pricing" size="sm">{tr("Тарифы")}</Button>} />
+          <EmptyState text={tr("Платежей пока нет.")} action={<Button href="/pricing" size="sm">{tr("Подписка")}</Button>} />
         ) : (
           <Table compact>
             <thead>
@@ -140,7 +140,7 @@ function Inner() {
 export default function BillingPage() {
   const tr = useT();
   return (
-    <AppShell title={tr("Тариф и оплата")}>
+    <AppShell title={tr("Подписка и оплата")}>
       <Suspense fallback={<EmptyState text={tr("Загрузка…")} />}>
         <Inner />
       </Suspense>
