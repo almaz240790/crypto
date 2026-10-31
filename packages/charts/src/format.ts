@@ -153,3 +153,24 @@ export function formatIndicatorValue(v: number): string {
   const d = Math.min(MAX_DECIMALS, Math.max(2, VALUE_SIGNIFICANT - 1 - Math.floor(Math.log10(a))));
   return fixed(v, d);
 }
+
+/** Сумма в долларах компактно: «$285M», «$1.24B», «$54.3K» — суммы ликвидаций на графике и в подсказке. */
+export function formatUsd(v: number): string {
+  return `${v < 0 ? "−" : ""}$${formatCompactValue(Math.abs(v))}`;
+}
+
+/** Время до закрытия свечи: «1:23:45», «12:05», «0:07». */
+export function formatCountdown(sec: number): string {
+  const s = Math.max(0, Math.floor(sec));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const ss = s % 60;
+  return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${String(ss).padStart(2, "0")}` : `${m}:${String(ss).padStart(2, "0")}`;
+}
+
+/** Процент со знаком: «+1.24 %», «−0.50 %», «0.00 %». */
+export function formatSignedPercent(v: number, digits = 2): string {
+  const s = Math.abs(v).toFixed(digits);
+  const sign = Number(s) === 0 ? "" : v > 0 ? "+" : "−";
+  return `${sign}${s} %`;
+}

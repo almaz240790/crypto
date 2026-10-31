@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * Линтер текстов интерфейса (план 2A.10.6, раздел 8): запрещённые формулировки в строках src/**.
+ * Линтер текстов интерфейса (план 2A.10.6, раздел 8): запрещённые формулировки в строках src/** и в
+ * packages/charts/src/** (там русский оригинал подписей графика, scene/text.ts).
  * Ищет в .ts/.tsx/.md обещания доходности, «ИИ предсказывает», «сигнал на покупку» для паттернов и т. п.
  * Исключение для строки: пометка // text-ok (например, сам словарь запретов).
  * Использование: node scripts/check-texts.mjs
@@ -10,6 +11,7 @@ import { join, relative } from "node:path";
 
 const ROOT = new URL("..", import.meta.url).pathname;
 const SRC = join(ROOT, "src");
+const CHARTS_SRC = join(ROOT, "..", "..", "packages", "charts", "src");
 const EXT = [".ts", ".tsx", ".md"];
 const FORBIDDEN = [
   /ии\s+предсказыва/i,
@@ -36,7 +38,7 @@ function walk(dir, out = []) {
 }
 
 const problems = [];
-for (const file of walk(SRC)) {
+for (const file of [...walk(SRC), ...walk(CHARTS_SRC)]) {
   const rel = relative(ROOT, file);
   readFileSync(file, "utf8").split("\n").forEach((line, i) => {
     if (OK.test(line)) return;

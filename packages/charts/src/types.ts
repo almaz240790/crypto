@@ -44,3 +44,38 @@ export type ThemeTokens = {
   fontSans: string;
   fontMono: string;
 };
+
+/**
+ * Класс поверхности графика (план 2B.2): считается по ширине КОНТЕЙНЕРА, а не по media query —
+ * боковая панель и мультичарт меняют ширину области независимо от окна. См. presets.ts deviceFor().
+ */
+export type Device = "desktop" | "phone" | "cell";
+
+/** Слои разметки, которые пользователь включает в «Слоях» (перенесено из TerminalView.tsx). */
+export type LayerKey = "structure" | "zones" | "levels" | "signals" | "patterns" | "figures" | "volume_profile" | "sr" | "liq_map";
+export const LAYER_KEYS: readonly LayerKey[] = ["structure", "zones", "levels", "signals", "patterns", "figures", "volume_profile", "sr", "liq_map"];
+
+/** Панели производных под графиком. */
+export type PanelKey = "funding" | "oi" | "liq" | "ls";
+
+/**
+ * Слой сцены: слой разметки, алерты пользователя и внешние объекты. "topdown" — резерв под «Разбор сверху
+ * вниз» (план 2A.11, ветка docs/razbor-plan): объекты старших таймфреймов с сервера; пока всегда пустой список.
+ */
+export type SceneLayer = LayerKey | "alerts" | "topdown";
+
+/**
+ * Один смысл — один цвет (ADR-0008). Объекты сцены несут тон, а не hex: цвет подставляет отрисовка
+ * из токенов --chart-*, поэтому смена темы — перерисовка без пересборки сцены.
+ */
+export type Tone =
+  | "up" // поддержка, спрос, рост
+  | "down" // сопротивление, предложение, падение
+  | "structure" // пробой, смена, снятие, равные макс./мин. — нейтрально
+  | "liq" // только оценка ликвидаций (охра)
+  | "figure" // графические фигуры: приглушённо, пунктиром
+  | "alert" // ценовые алерты пользователя
+  | "position" // уровни сигнала (только вошедшим)
+  | "selection" // выбранный или наведённый объект; никогда не смысл данных
+  | "muted"; // вторичное: макс./мин. дня и недели, паттерны, профиль объёма
+export const TONES: readonly Tone[] = ["up", "down", "structure", "liq", "figure", "alert", "position", "selection", "muted"];

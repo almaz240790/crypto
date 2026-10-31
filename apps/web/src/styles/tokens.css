@@ -75,6 +75,28 @@
   /* Свечение под скриншотом продукта на главной (бирюзовое, только для маркетинговых страниц) */
   --glow: rgb(22 199 154 / 18%);
 
+  /* График (ADR-0008, план 2B.2): один смысл — один цвет. Только hex или var() от hex — canvas не читает color-mix(). */
+  --chart-up: var(--up); /* поддержка, спрос, рост */
+  --chart-down: var(--down); /* сопротивление, предложение, падение */
+  --chart-structure: var(--text-2); /* пробой, смена, снятие, равные макс./мин. */
+  --chart-liq: var(--warn); /* только карта ликвидаций */
+  --chart-figure: var(--text-3); /* фигуры, пунктир */
+  --chart-alert: var(--text); /* алерты пользователя */
+  --chart-position: var(--text-2); /* вход, стоп, цели сигнала */
+  --chart-selection: var(--accent); /* выбор и наведение; салатовый — только выбор и действия */
+  --chart-muted: var(--text-3); /* макс./мин. вчера и недели, паттерны, профиль объёма */
+  --chart-plaque: var(--surface); /* фон плашки подписи */
+  --chart-zone-alpha: 0.08;
+  --chart-heat-alpha-min: 0.05;
+  --chart-heat-alpha-max: 0.22;
+  --chart-line-alpha: 0.85;
+  --chart-plaque-alpha: 0.88;
+  --chart-dimmed-alpha: 0.4;
+  --chart-halo-alpha: 0.22;
+  --chart-vp-alpha: 0.16;
+  --chart-vp-value-alpha: 0.28;
+  --chart-volume-alpha: 0.35;
+
   /* Геометрия */
   --radius: 8px;
   --radius-lg: 12px;
@@ -127,6 +149,14 @@
   --shadow: 0 1px 2px rgb(0 0 0 / 40%);
   --shadow-lg: 0 24px 64px rgb(0 0 0 / 45%);
   --glow: rgb(22 199 154 / 30%);
+  /* Прозрачности графика в тёмной теме (одинаково в обоих тёмных блоках) */
+  --chart-zone-alpha: 0.1;
+  --chart-heat-alpha-min: 0.06;
+  --chart-heat-alpha-max: 0.35;
+  --chart-line-alpha: 0.75;
+  --chart-halo-alpha: 0.28;
+  --chart-vp-alpha: 0.2;
+  --chart-vp-value-alpha: 0.34;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -155,5 +185,13 @@
     --shadow: 0 1px 2px rgb(0 0 0 / 40%);
     --shadow-lg: 0 24px 64px rgb(0 0 0 / 45%);
     --glow: rgb(22 199 154 / 30%);
+    /* Прозрачности графика в тёмной теме (одинаково в обоих тёмных блоках) */
+    --chart-zone-alpha: 0.1;
+    --chart-heat-alpha-min: 0.06;
+    --chart-heat-alpha-max: 0.35;
+    --chart-line-alpha: 0.75;
+    --chart-halo-alpha: 0.28;
+    --chart-vp-alpha: 0.2;
+    --chart-vp-value-alpha: 0.34;
   }
 }
