@@ -155,3 +155,68 @@ def test_bucket_last_and_sum() -> None:
     liq = [(t0 + timedelta(minutes=m), Decimal(1), Decimal(2)) for m in (0, 1, 240)]
     out2 = bucket_sum(liq, 14400)
     assert out2[0]["long"] == "2" and out2[0]["short"] == "4" and out2[1]["long"] == "1"
+
+
+def test_weekly_derivative_buckets_match_monday_candle_open() -> None:
+    """1w: корзины OI и ликвидаций начинаются в понедельник 00:00 UTC, как open_time недельной свечи
+    (раньше — от эпохи, в четверг, и ни одна точка OI не совпадала со свечой)."""
+    from app.chart_data import bucket_key, bucket_last, bucket_sum
+
+    week = Timeframe.W1.seconds
+    candle_open = bucket_start(Timeframe.W1, datetime(2026, 10, 29, 15, 30, tzinfo=UTC))
+    assert candle_open == datetime(2026, 10, 26, tzinfo=UTC) and candle_open.weekday() == 0
+    rows = [
+        (datetime(2026, 10, 26, 0, 0, tzinfo=UTC), Decimal(1)),  # пн, начало недели
+        (datetime(2026, 10, 29, 12, 0, tzinfo=UTC), Decimal(2)),  # чт
+        (datetime(2026, 11, 1, 23, 59, tzinfo=UTC), Decimal(3)),  # вс, последняя минута недели
+        (datetime(2026, 11, 2, 0, 0, tzinfo=UTC), Decimal(4)),  # пн, следующая неделя
+    ]
+    out = bucket_last(rows, week)
+    assert [(o["t"], o["v"]) for o in out] == [
+        (int(candle_open.timestamp()), "3"),
+        (int((candle_open + timedelta(weeks=1)).timestamp()), "4"),
+    ]
+    liq = [(t, Decimal(1), Decimal(2)) for t, _ in rows]
+    sums = bucket_sum(liq, week)
+    assert [(o["t"], o["long"], o["short"]) for o in sums] == [
+        (int(candle_open.timestamp()), "3", "6"),
+        (int((candle_open + timedelta(weeks=1)).timestamp()), "1", "2"),
+    ]
+    # каждая корзина совпадает с open_time своей недельной свечи на годе данных
+    for d in range(0, 365, 3):
+        t = datetime(2026, 1, 1, 7, tzinfo=UTC) + timedelta(days=d)
+        candle_t = int(bucket_start(Timeframe.W1, t).timestamp())
+        assert bucket_key(int(t.timestamp()), week) == candle_t
+    # остальные таймфреймы — как раньше, от эпохи
+    t = datetime(2026, 10, 29, 15, 30, tzinfo=UTC)
+    for tf in (Timeframe.H1, Timeframe.H4, Timeframe.D1):
+        assert bucket_key(int(t.timestamp()), tf.seconds) == int(bucket_start(tf, t).timestamp())
+
+
+def test_candles_tick_size_in_fixed_point(monkeypatch: pytest.MonkeyPatch) -> None:
+    """tick_size отдаётся обычной записью: str(Decimal('1.000E-7')) дал бы '1.000E-7', и клиент
+    считал 6 знаков вместо 7 — у 1000PEPE шкала без делений и «цена 0.00»."""
+    from types import SimpleNamespace
+
+    from fastapi.testclient import TestClient
+
+    from app import auth
+    from app.main import app
+    from app.routers import chart
+
+    start = datetime(2026, 10, 26, 0, 0, tzinfo=UTC)
+    d = Decimal
+    c = Candle(start, d("0.0049"), d("0.005"), d("0.0048"), d("0.00494"), d(1))
+    for tick, want in (("1.000E-7", "0.0000001"), ("0.10", "0.1"), ("1E+1", "10")):
+        inst = SimpleNamespace(id=1, symbol="1000PEPEUSDT", tick_size=Decimal(tick))
+        monkeypatch.setattr(chart, "_instrument", lambda db, symbol, inst=inst: inst)
+        monkeypatch.setattr(chart, "load_candles", lambda *a, **k: ([c], False))
+        monkeypatch.setattr(chart, "current_candle", lambda *a, **k: None)
+        app.dependency_overrides[auth.get_db] = lambda: object()
+        try:
+            r = TestClient(app).get("/v1/chart/candles?symbol=1000PEPEUSDT&tf=4h")
+        finally:
+            app.dependency_overrides.pop(auth.get_db, None)
+        assert r.status_code == 200, r.text
+        assert r.json()["tick_size"] == want
+        assert r.json()["candles"][0]["c"] == "0.00494"
