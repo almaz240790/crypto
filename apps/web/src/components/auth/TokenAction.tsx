@@ -30,7 +30,7 @@ export function TokenAction({ kind, token }: { kind: "verify" | "magic"; token: 
         } else {
           await consumeMagic(token);
           await reload();
-          router.replace("/signals");
+          router.replace("/chart");
         }
       } catch (e) {
         if (e instanceof TwoFactorRequired) {
@@ -51,7 +51,7 @@ export function TokenAction({ kind, token }: { kind: "verify" | "magic"; token: 
         {msg}
       </div>
       <div className={s.row}>
-        <Button href="/signals">{t("К сигналам")}</Button>
+        <Button href="/chart">{t("К графику")}</Button>
         {state === "error" && <Link href="/login">{t("Войти заново")}</Link>}
       </div>
     </div>

@@ -204,7 +204,7 @@ export function LevelsList({ sr, liq, tick, zones = [] }: { sr: SrLevel[]; liq: 
         ))}
         {zones.map((z) => (
           <li key={`z${z.bottom}`}>
-            <strong className={z.dir === "up" ? "up" : z.dir === "down" ? "down" : ""}>{z.codes.join("+")}</strong> <span className="caption">{z.names.map((n) => t(n)).join(" + ")}</span> <span className="num">{px(z.bottom)}–{px(z.top)}</span>
+            <strong className={z.dir === "up" ? "up" : z.dir === "down" ? "down" : ""}>{z.codes.join("+")}</strong> <span className="caption">{z.names.map((n) => t(n)).join(" + ")}</span> <span className={`num ${s.levelRange}`}>{px(z.bottom)}–{px(z.top)}</span>
           </li>
         ))}
         {sup.map((l) => (
@@ -268,8 +268,8 @@ export function AskBox({ symbol, tf, access, heading = true }: { symbol: string;
       <div className={s.ask}>
         {heading && <strong>{t("Вопрос о графике")}</strong>}
         <p className={s.askNote}>
-          {t("Вопросы о графике доступны на тарифе Premium: ответ составляется только по данным этого графика — тренд, зоны, уровни, паттерны.")}{" "}
-          <Link href="/billing">{t("Тарифы")}</Link>
+          {t("Вопросы о графике доступны с подпиской Premium: ответ составляется только по данным этого графика — тренд, зоны, уровни, паттерны.")}{" "}
+          <Link href="/billing">{t("Подписка")}</Link>
         </p>
       </div>
     );

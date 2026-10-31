@@ -53,10 +53,11 @@ test("тарифы: срок, промокод, переход к оплате",
   const state = { payments: [] as Record<string, unknown>[], enabled: true };
   await mock(page, calls, state);
   await page.goto("/pricing");
-  await expect(page.getByRole("heading", { name: "Тарифы" })).toBeVisible();
-  await expect(page.getByText("249.00")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Подписка" })).toBeVisible();
+  await expect(page.getByText("$249 за 12 месяцев")).toBeVisible();
+  await expect(page.getByText("$20.75", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "1 месяц" }).click();
-  await expect(page.getByText("29.00")).toBeVisible();
+  await expect(page.getByText("$29", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "12 месяцев" }).click();
   await page.getByRole("button", { name: "Выбрать Pro" }).click();
   await expect(page.getByText(/^К оплате/)).toBeVisible();
@@ -88,7 +89,7 @@ test("биллинг: история и ручная сверка", async ({ pag
   await mock(page, calls, { payments: [PAYMENT], enabled: true });
   await page.goto("/billing?paid=pay_abc123");
   await expect(page.getByRole("status").filter({ hasText: "обрабатывается" })).toBeVisible();
-  await expect(page.getByText("Текущий тариф")).toBeVisible();
+  await expect(page.getByText("Текущая подписка")).toBeVisible();
   const row = page.getByRole("row").filter({ hasText: "pay_abc123" });
   await expect(row).toContainText("ожидает оплаты");
   await page.getByLabel("проверить оплату pay_abc123").click();

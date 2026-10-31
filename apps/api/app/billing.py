@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.mail import send_mail
 from app.models import BalanceEntry, Payment, PromoCode, Subscription, User
-from app.plans import FREE, GRACE_DAYS, PAID_PLANS, PERIODS, PLANS, RANK, TRIAL_DAYS
+from app.plans import FREE, GRACE_DAYS, PAID_PLANS, PERIODS, PLANS, RANK
 
 log = logging.getLogger("billing")
 ZERO = Decimal("0.00")
@@ -104,25 +104,6 @@ def plan_for(db: Session, user: User, now: datetime | None = None) -> str:
     if sub.current_period_end + timedelta(days=GRACE_DAYS) >= now:
         return sub.plan
     return FREE
-
-
-def start_trial(db: Session, user: User, now: datetime | None = None) -> Subscription | None:
-    """7 дней Pro при регистрации, один раз на email (план 3.13)."""
-    now = now or datetime.now(tz=UTC)
-    if subscription_of(db, user.id) is not None:
-        return None
-    end = now + timedelta(days=TRIAL_DAYS)
-    sub = Subscription(
-        user_id=user.id,
-        plan="pro",
-        status="trialing",
-        provider="trial",
-        current_period_end=end,
-        trial_end=end,
-    )
-    db.add(sub)
-    db.flush()
-    return sub
 
 
 def new_public_id() -> str:

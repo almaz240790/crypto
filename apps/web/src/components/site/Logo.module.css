@@ -1,0 +1,26 @@
+.logo {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text);
+}
+
+.mark {
+  flex: none;
+}
+
+.ring {
+  fill: none;
+  stroke: var(--accent-solid);
+  stroke-width: 2.2;
+}
+
+.dot {
+  fill: var(--accent-solid);
+}
+
+.word {
+  font-size: 19px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}

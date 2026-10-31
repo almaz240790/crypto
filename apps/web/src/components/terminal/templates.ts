@@ -5,7 +5,7 @@ export type Template = { id: string; title: string; indicators: ActiveIndicator[
 
 export const TEMPLATES: Template[] = [
   { id: "clean", title: "Чистый", indicators: [], panels: [] },
-  { id: "platform", title: "Система Platform", indicators: [{ id: "ema", params: { period: 50 } }], panels: ["funding", "oi"] },
+  { id: "platform", title: "Система PlatformSol", indicators: [{ id: "ema", params: { period: 50 } }], panels: ["funding", "oi"] },
   {
     id: "osc",
     title: "Осцилляторы",

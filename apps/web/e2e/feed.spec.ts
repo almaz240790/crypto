@@ -75,6 +75,6 @@ test("лента: пометка об ограничениях тарифа Free
   await expect(note).toContainText("Тариф free");
   await expect(note).toContainText("задержкой 12 ч");
   await expect(note).toContainText("инструменты вотчлиста");
-  await note.getByRole("link", { name: "Тарифы" }).click();
+  await note.getByRole("link", { name: "Подписка" }).click();
   await expect(page).toHaveURL(/\/pricing$/);
 });

@@ -148,8 +148,8 @@ test("вопрос о графике без Premium: понятное объяс
   await expect(page.getByTestId("terminal").locator("canvas").first()).toBeVisible();
   await page.getByRole("button", { name: "Спросить", exact: true }).tap();
   const sheet = page.getByRole("dialog", { name: "Вопрос о графике" });
-  await expect(sheet).toContainText("доступны на тарифе Premium");
-  await expect(sheet.getByRole("link", { name: "Тарифы" })).toBeVisible();
+  await expect(sheet).toContainText("доступны с подпиской Premium");
+  await expect(sheet.getByRole("link", { name: "Подписка" })).toBeVisible();
   await expect(sheet.getByLabel("текст вопроса")).toHaveCount(0);
 });
 

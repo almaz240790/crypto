@@ -192,7 +192,7 @@ export function ObjectsPanel(p: Props) {
               <button type="submit" className={s.chip} disabled={!name.trim() || (p.layoutsLimit !== null && p.layouts.length >= p.layoutsLimit)}>{t("Сохранить")}</button>
             </form>
           )}
-          {p.layoutsLimit !== null && <span className="caption">лимит тарифа: {p.layoutsLimit}</span>}
+          {p.layoutsLimit !== null && <span className="caption">лимит подписки: {p.layoutsLimit}</span>}
         </div>
       )}
     </aside>

@@ -17,7 +17,7 @@ test("статус: компоненты и инциденты", async ({ page }
 
 test("статус: ссылка из подвала", async ({ page }) => {
   await page.goto("/stats");
-  await page.getByRole("link", { name: "Статус системы" }).click();
+  await page.getByRole("contentinfo").getByRole("link", { name: "Статус системы" }).first().click();
   await expect(page).toHaveURL(/\/status$/);
   await expect(page.getByRole("heading", { name: "Статус системы" })).toBeVisible();
 });

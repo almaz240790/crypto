@@ -12,7 +12,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import auth, ratelimit, twofactor
-from app.billing import start_trial
 from app.config import settings
 from app.mail import send_mail
 from app.models import EmailToken, RiskProfile, TwoFactor, User
@@ -143,7 +142,6 @@ def register(
     user = auth.create_user(db, body.email, body.password, body.name)
     user.country = body.country
     user.marketing_opt_in = body.marketing_opt_in
-    start_trial(db, user)
     db.commit()
     raw = _email_token(db, user, "verify", timedelta(days=3))
     send_mail(

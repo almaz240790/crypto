@@ -1,262 +1,954 @@
-.main {
-  display: grid;
-  gap: var(--gap-6);
-  padding: var(--gap-5) 0 0;
+/*
+ * Главная (ADR-0006): сетка, размеры и ритм — по образцу robinhood.com (замеры при ширине 1440 и 390),
+ * образы, изображения и тексты — свои. Цвета — только токены --lp-* (не зависят от темы сайта).
+ */
+
+.page {
+  background: var(--lp-black);
+  color: var(--lp-white);
+  font-size: 16px;
+  line-height: 24px;
+  letter-spacing: -0.25px;
 }
 
-.section {
-  display: grid;
-  gap: var(--gap-4);
-  scroll-margin-top: 56px;
+.page p {
+  margin: 0;
 }
 
-.sectionHead {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: var(--gap-3);
-  flex-wrap: wrap;
+/* Кнопки: 44 px, скругление 36, отступы 32 */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 44px;
+  padding: 0 32px;
+  border-radius: 36px;
+  font-size: 16px;
+  letter-spacing: -0.25px;
+  white-space: nowrap;
 }
 
-.sectionHead p {
-  color: var(--text-2);
-  max-width: 72ch;
+.pill:hover {
+  text-decoration: none;
+  filter: brightness(0.94);
 }
 
-/* Первый экран: заголовок + метрики + последние сигналы */
+.lime {
+  background: var(--lp-lime);
+  color: var(--lp-ink);
+}
+
+.ink {
+  background: var(--lp-ink);
+  color: var(--lp-white);
+}
+
+/* Полоса-объявление; на салатовом фоне рамка фокуса — тёмная */
+.promo {
+  --focus: var(--lp-ink);
+  padding: 10px 24px;
+  background: var(--lp-lime);
+  color: var(--lp-ink);
+  text-align: center;
+}
+
+.promo a {
+  color: var(--lp-ink);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* ── Первый экран: 900 px ─────────────────────────────────── */
 .hero {
-  display: grid;
-  gap: var(--gap-4);
-  grid-template-columns: minmax(280px, 5fr) minmax(320px, 7fr);
-  align-items: start;
+  position: relative;
+  height: 900px;
+  overflow: hidden;
+  background: var(--lp-black);
 }
 
-.lead {
-  display: grid;
-  gap: var(--gap-3);
-}
-
-.lead h1 {
-  max-width: 24ch;
-}
-
-.lead p {
-  max-width: 60ch;
-  color: var(--text-2);
-}
-
-.cta {
+.heroText {
+  position: relative;
+  z-index: 1;
   display: flex;
-  gap: var(--gap-2);
-  flex-wrap: wrap;
+  flex-direction: column;
+  align-items: center;
+  padding: 96px 24px 0;
+  text-align: center;
 }
 
-.fine {
-  font-size: var(--fs-caption);
-  color: var(--text-3);
-  max-width: 60ch;
-}
-
-.metrics {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--surface);
-}
-
-.metric {
-  padding: var(--gap-3);
-  border-right: 1px solid var(--border);
-  display: grid;
-  gap: 2px;
-}
-
-.metric:last-child {
-  border-right: 0;
-}
-
-.metric dt {
-  font-size: var(--fs-caption);
-  color: var(--text-2);
-}
-
-.metric dd {
+/* 110/110 от 1310 px; уже — плавно меньше, чтобы заголовок оставался в две строки над линией графика */
+.h1 {
   margin: 0;
-  font-family: var(--font-mono), ui-monospace, monospace;
-  font-variant-numeric: tabular-nums;
-  font-size: var(--fs-h2);
-  font-weight: 500;
-}
-
-.steps {
-  display: grid;
-  gap: 0;
-  grid-template-columns: repeat(4, 1fr);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--surface);
-}
-
-.step {
-  padding: var(--gap-4);
-  border-right: 1px solid var(--border);
-  display: grid;
-  gap: var(--gap-2);
-  align-content: start;
-}
-
-.step:last-child {
-  border-right: 0;
-}
-
-.step .n {
-  font-family: var(--font-mono), ui-monospace, monospace;
-  font-size: var(--fs-caption);
-  color: var(--text-3);
-}
-
-.step h3 {
-  font-size: var(--fs-body);
-}
-
-.step p {
-  font-size: var(--fs-table);
-  color: var(--text-2);
-}
-
-.rules {
-  display: grid;
-  gap: var(--gap-4);
-  grid-template-columns: 1fr 1fr;
-}
-
-.rules dl {
-  margin: 0;
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: var(--gap-2) var(--gap-4);
-  font-size: var(--fs-table);
-}
-
-.rules dt {
-  color: var(--text-2);
-  white-space: nowrap;
-}
-
-.rules dd {
-  margin: 0;
-}
-
-.prose {
-  font-size: var(--fs-body);
-  max-width: 72ch;
-}
-
-.statsGrid {
-  display: grid;
-  gap: var(--gap-4);
-  grid-template-columns: 7fr 5fr;
-  align-items: start;
-}
-
-.pricing {
-  overflow-x: auto;
-}
-
-.pricing table {
-  width: 100%;
-  font-size: var(--fs-table);
-}
-
-.pricing th,
-.pricing td {
-  padding: var(--gap-2) var(--gap-3);
-  border-bottom: 1px solid var(--border);
-  text-align: left;
-  vertical-align: top;
-}
-
-.pricing thead th {
-  font-weight: 600;
-}
-
-.pricing tbody th {
+  font-family: var(--font-serif), Georgia, serif;
+  font-size: clamp(60px, 8.4vw, 110px);
   font-weight: 400;
-  color: var(--text-2);
-  white-space: nowrap;
+  line-height: 1;
+  letter-spacing: -0.5px;
 }
 
-.price {
-  font-family: var(--font-mono), ui-monospace, monospace;
-  font-variant-numeric: tabular-nums;
-  font-size: var(--fs-h3);
+.heroSub {
+  max-width: 778px;
+  margin-top: 27px !important;
+  font-size: 22px;
+  line-height: 28px;
+  text-wrap: balance;
 }
 
-.faq {
+.heroText .pill {
+  margin-top: 22px;
+}
+
+/* ── Полосы 800 px: картинка во всю ширину, текст в колонке ─ */
+.band {
+  position: relative;
+  height: 800px;
+  overflow: hidden;
+}
+
+.visual {
+  position: absolute;
+  inset: 0;
+}
+
+.copy {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 221px 0 34px;
+}
+
+/* колонка 440 px; на узких экранах сжимается и не уходит за край */
+.copy.right {
+  left: calc(50% + 52px);
+  width: min(440px, calc(50% - 76px));
+}
+
+.copy.left {
+  left: max(24px, calc(50% - 508px));
+  width: min(440px, calc(50% - 76px));
+  padding-top: 150px;
+}
+
+.copy > p {
+  margin-top: 15px !important;
+}
+
+.copy > .lockup {
+  margin-top: 0 !important;
+}
+
+.copy .pill {
+  margin-top: 32px;
+}
+
+.copy .fine {
+  margin-top: auto !important;
+  font-size: 12px;
+  line-height: 19px;
+  letter-spacing: -0.1px;
+  color: var(--lp-mute);
+}
+
+.kickLime {
+  margin: 0;
+  font-size: 40px;
+  font-weight: 400;
+  line-height: 48px;
+  letter-spacing: -1px;
+  color: var(--lp-lime);
+}
+
+.h2 {
+  margin: 0;
+  font-size: 40px;
+  font-weight: 400;
+  line-height: 48px;
+  letter-spacing: -1px;
+  text-wrap: balance;
+}
+
+.lockup {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 30px !important;
+  font-size: 30px;
+  line-height: 36px;
+  letter-spacing: -0.6px;
+  font-weight: 300;
+}
+
+.lockup b {
+  font-weight: 600;
+  margin-right: -4px;
+}
+
+.mark {
+  position: relative;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border: 2.6px solid currentColor;
+  border-radius: 50%;
+}
+
+.mark::after {
+  content: "";
+  position: absolute;
+  inset: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 19px;
+  color: var(--lp-ink-2);
+}
+
+.info span {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  font-size: 10px;
+  font-style: normal;
+}
+
+/* 1. «Стол картографа»: графитовый коврик с сеткой, планшет и инструменты (свой образ, docs/brand) */
+.mat {
+  background-color: var(--lp-mat);
+  background-image: linear-gradient(var(--lp-mat-line) 1px, transparent 1px), linear-gradient(90deg, var(--lp-mat-line) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+.desk {
+  position: absolute;
+  left: calc(50% - 670px);
+  top: 96px;
+  width: 720px;
+  height: 600px;
+  transform: scale(0.9);
+  transform-origin: 0 0;
+}
+
+.tablet {
+  position: absolute;
+  left: 60px;
+  top: 70px;
+  width: 560px;
+  overflow: hidden;
+  border: 12px solid var(--lp-bezel);
+  border-radius: 22px;
+  background: var(--lp-bezel);
+  box-shadow: 18px 30px 50px color-mix(in srgb, var(--lp-black) 70%, transparent);
+  transform: rotate(-6deg);
+}
+
+.tablet img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+/* 2. «Слои» на светлом камне: карточки уходят за верхний и нижний край полосы */
+.stone {
+  background: linear-gradient(160deg, var(--lp-stone-2) 0%, var(--lp-stone) 100%);
+  color: var(--lp-ink);
+}
+
+.stone .copy {
+  padding-top: 227px;
+}
+
+.stone .copy .fine {
+  color: var(--lp-ink-2);
+}
+
+.cards img {
+  position: absolute;
+  display: block;
+  height: auto;
+  border-radius: 16px;
+  box-shadow: 0 30px 70px color-mix(in srgb, var(--lp-ink) 30%, transparent);
+}
+
+.cardLiq {
+  left: calc(50% - 600px);
+  top: -40px;
+  width: 360px;
+  transform: rotate(-4deg);
+}
+
+.cardLv {
+  left: calc(50% - 330px);
+  top: 300px;
+  width: 280px;
+  transform: rotate(3deg);
+}
+
+.beam {
+  position: absolute;
+  left: calc(50% - 340px);
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: linear-gradient(180deg, transparent, var(--lp-lime) 30%, var(--lp-lime) 70%, transparent);
+  box-shadow: 0 0 18px var(--lp-lime);
+  opacity: 0.85;
+}
+
+/* компьютер: салатовый луч — курсором поверх графика ликвидаций, в стороне от карточки уровней */
+@media (min-width: 901px) {
+  .beam {
+    left: calc(50% - 420px);
+    z-index: 1;
+    background: linear-gradient(180deg, transparent, var(--lp-lime) 12%, var(--lp-lime) 88%, transparent);
+  }
+
+  .cardLv {
+    z-index: 2;
+  }
+}
+
+/* 901–1279: картинки полос сжимаются к колонке текста и остаются целыми */
+@media (min-width: 901px) and (max-width: 1279px) {
+  .mat > .visual,
+  .cards {
+    transform: scale(0.86);
+    transform-origin: calc(50% + 52px) 45%;
+  }
+}
+
+@media (min-width: 901px) and (max-width: 1099px) {
+  .mat > .visual,
+  .cards {
+    transform: scale(0.74);
+  }
+}
+
+/* при сжатии 0,86 карточки по-прежнему уходят за верхний и нижний край полосы */
+@media (min-width: 1100px) and (max-width: 1279px) {
+  .cardLiq {
+    top: -100px;
+  }
+
+  .cardLv {
+    top: 370px;
+  }
+}
+
+/* 3. «Рассвет»: горизонт, салатовое солнце и телефон */
+.dawn {
+  background: linear-gradient(180deg, var(--lp-black) 0%, var(--lp-black) 38%, var(--lp-forest) 70%, var(--lp-dawn-3) 100%);
+}
+
+.horizon {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 74%;
+  height: 1px;
+  background: color-mix(in srgb, var(--lp-mute) 22%, transparent);
+}
+
+.sun {
+  position: absolute;
+  /* на 110 px левее телефона; на узких экранах сдвигается вместе с ним */
+  left: min(calc(50% + 120px), calc(100% - 464px));
+  top: calc(74% - 22px);
+  width: 44px;
+  height: 22px;
+  border-radius: 44px 44px 0 0;
+  background: var(--lp-lime);
+  box-shadow: 0 0 40px 10px var(--lp-glow);
+}
+
+.glint {
+  position: absolute;
+  left: min(calc(50% + 70px), calc(100% - 514px));
+  top: calc(74% + 14px);
+  width: 144px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--lp-lime);
+  opacity: 0.6;
+  box-shadow: 0 0 12px var(--lp-glow);
+}
+
+.phoneWrap {
+  left: min(calc(50% + 230px), calc(100% - 354px));
+  right: auto;
+  top: 190px;
+  width: 330px;
+}
+
+.phone {
+  padding: 11px;
+  border-radius: 52px;
+  background: var(--lp-bezel);
+  box-shadow: inset 0 0 0 2px var(--lp-graphite), 0 40px 90px color-mix(in srgb, var(--lp-black) 55%, transparent);
+  transform: perspective(1400px) rotateY(-14deg) rotateZ(4deg);
+}
+
+.phone img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 42px;
+}
+
+/* Полоса с текстом слева: заголовок отделён от текста, как в образце */
+@media (min-width: 901px) {
+  .copy.left > h2 + p {
+    margin-top: 30px !important;
+  }
+
+  .copy.left > p + p {
+    margin-top: 25px !important;
+  }
+
+  .copy.left .pill {
+    margin-top: 25px;
+  }
+}
+
+/* ── 4. Доверие: глубокий зелёно-чёрный, 2×2 ─────────────── */
+.trust {
+  padding: 74px 24px 196px;
+  background: var(--lp-forest);
+  text-align: center;
+}
+
+.h2c {
+  margin: 0 auto;
+  font-size: 52px;
+  font-weight: 400;
+  line-height: 62px;
+  letter-spacing: -1.5px;
+}
+
+.trust ul {
   display: grid;
-  gap: 0;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--surface);
-}
-
-.faq details {
-  border-bottom: 1px solid var(--border);
-}
-
-.faq details:last-child {
-  border-bottom: 0;
-}
-
-.faq summary {
-  cursor: pointer;
-  padding: var(--gap-3);
-  font-weight: 500;
+  grid-template-columns: repeat(2, 300px);
+  justify-content: center;
+  column-gap: 48px;
+  row-gap: 149px;
+  margin: 176px 0 0;
+  padding: 0;
   list-style: none;
 }
 
-.faq summary::-webkit-details-marker {
+.trust li {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.trust li p {
+  margin-top: 25px !important;
+  font-size: 20px;
+  line-height: 30px;
+  letter-spacing: -0.3px;
+}
+
+/* точки листалки — только на телефоне */
+.dots {
   display: none;
 }
 
-.faq summary::before {
-  content: "+";
-  display: inline-block;
-  width: 16px;
-  color: var(--text-3);
-  font-family: var(--font-mono), ui-monospace, monospace;
+/* ── 5. Основы: салатовый, карточка обрезана снизу ────────── */
+.learn {
+  --focus: var(--lp-ink);
+  overflow: hidden;
+  padding: 65px 24px 0;
+  background: var(--lp-lime);
+  color: var(--lp-ink);
+  text-align: center;
 }
 
-.faq details[open] summary::before {
-  content: "\2212";
+.learn .h2c {
+  max-width: 760px;
+  letter-spacing: -2px;
 }
 
-.faq .a {
-  padding: 0 var(--gap-3) var(--gap-3) calc(var(--gap-3) + 16px);
-  color: var(--text-2);
-  max-width: 72ch;
+.learn > p {
+  margin-top: 23px !important;
 }
 
+.learn > .pill {
+  margin-top: 37px;
+}
+
+.card {
+  width: 442px;
+  margin: 82px auto -51px;
+  padding: 44px 32px 40px;
+  border-radius: 28px;
+  background: var(--lp-card);
+  box-shadow: 0 10px 40px color-mix(in srgb, var(--lp-ink) 14%, transparent);
+  text-align: left;
+}
+
+.card h3 {
+  margin: 0 0 28px;
+  font-size: 16px;
+  font-weight: 400;
+}
+
+.card ul {
+  display: grid;
+  gap: 18px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.card li {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+
+.card li div {
+  flex: 1;
+}
+
+.card li b {
+  display: block;
+  font-weight: 400;
+}
+
+.card li span {
+  display: block;
+  font-size: 14px;
+  line-height: 23px;
+  color: var(--lp-card-2);
+}
+
+/* ── 6. Призыв: «Восход» ─────────────────────────────────── */
+.final {
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 218px 24px 255px;
+  background: var(--lp-black);
+  text-align: center;
+}
+
+.final .h1 {
+  position: relative;
+  z-index: 1;
+  font-size: 72px;
+  line-height: 78px;
+  letter-spacing: -1px;
+}
+
+.final .pill {
+  position: relative;
+  z-index: 1;
+  margin-top: 32px;
+}
+
+/* Восход: салатовое солнце встаёт из-за горизонта, в небе проявляются линии уровней */
+.rise {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.rise .line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: color-mix(in srgb, var(--lp-lime) 40%, transparent);
+  opacity: 0;
+  animation: level 9s ease-in-out infinite;
+}
+
+.rise .ground {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 90px;
+  height: 1px;
+  background: color-mix(in srgb, var(--lp-mute) 30%, transparent);
+}
+
+.rise .halo {
+  position: absolute;
+  left: 50%;
+  bottom: 91px;
+  width: 900px;
+  height: 300px;
+  margin-left: -450px;
+  background: radial-gradient(ellipse 50% 100% at 50% 100%, var(--lp-glow), transparent 70%);
+}
+
+.rise .disc {
+  position: absolute;
+  left: 50%;
+  bottom: 91px;
+  width: 200px;
+  height: 100px;
+  margin-left: -100px;
+  overflow: hidden;
+}
+
+.rise .disc::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 200px;
+  height: 200px;
+  border-radius: 50%;
+  background: var(--lp-lime);
+  animation: rise 9s ease-in-out infinite alternate;
+}
+
+@keyframes rise {
+  from {
+    transform: translateY(60px);
+  }
+
+  to {
+    transform: translateY(0);
+  }
+}
+
+@keyframes level {
+  40%,
+  60% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rise .line,
+  .rise .disc::before {
+    animation: none;
+  }
+
+  .rise .line {
+    opacity: 0.5;
+  }
+}
+
+/* ── Телефон и узкие экраны: текст сверху, картинка снизу ─ */
 @media (max-width: 900px) {
-  .hero,
-  .rules,
-  .statsGrid {
-    grid-template-columns: 1fr;
+  .hero {
+    height: 725px;
   }
 
-  .steps,
-  .metrics {
-    grid-template-columns: 1fr 1fr;
+  .heroText {
+    padding-top: 72px;
   }
 
-  .step:nth-child(2),
-  .metric:nth-child(2) {
-    border-right: 0;
+  /* «Технический» ≈ 6,45 em: заполняет колонку с полями 24 px, 60 px — от 444 px */
+  .h1 {
+    font-size: min(60px, calc((100vw - 48px) / 6.6));
+    line-height: 1.05;
   }
 
-  .step:nth-child(-n + 2),
-  .metric:nth-child(-n + 2) {
-    border-bottom: 1px solid var(--border);
+  .heroSub {
+    max-width: 320px;
+    margin-top: 19px !important;
+  }
+
+  .band {
+    display: flex;
+    flex-direction: column;
+    height: auto;
+    padding-bottom: 0;
+  }
+
+  /* полоса под подписью: подпись не ложится на карточки и телефон */
+  .band.dawn {
+    padding-bottom: 96px;
+  }
+
+  /* карточка уровней свисает под картинку — подписи нужен больший зазор */
+  .band.stone {
+    padding-bottom: 124px;
+  }
+
+  .visual {
+    position: relative;
+    inset: auto;
+    order: 2;
+    height: 520px;
+  }
+
+  .copy,
+  .copy.right,
+  .copy.left,
+  .stone .copy {
+    position: relative;
+    left: auto;
+    order: 1;
+    width: auto;
+    padding: 48px 20px 0;
+  }
+
+  .copy .pill {
+    margin-top: 24px;
+  }
+
+  .copy .fine {
+    order: 3;
+    margin-top: 0 !important;
+  }
+
+  .band > .copy .fine {
+    position: absolute;
+    left: 20px;
+    right: 20px;
+    bottom: 28px;
+    top: auto;
+    z-index: 2;
+  }
+
+  .band > .copy {
+    position: static;
+  }
+
+  .kickLime {
+    font-size: 28px;
+    line-height: 34px;
+    letter-spacing: -0.33px;
+  }
+
+  .h2 {
+    font-size: 25px;
+    line-height: 27px;
+    letter-spacing: -0.34px;
+  }
+
+  .lockup {
+    font-size: 22px;
+    line-height: 28px;
+    margin-bottom: 18px !important;
+  }
+
+  .mark {
+    width: 20px;
+    height: 20px;
+    border-width: 2px;
+  }
+
+  .mark::after {
+    inset: 4px;
+  }
+
+  .desk {
+    left: 50%;
+    top: 20px;
+    margin-left: -360px;
+    transform: scale(0.56);
+    transform-origin: top center;
+  }
+
+  .beam {
+    left: 30%;
+  }
+
+  /* горизонт и солнце — фоном за телефоном, а не отдельным блоком */
+  .band > .deco {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 560px;
+  }
+
+  /* солнце справа от телефона (250 px по центру; правая рамка у горизонта ≈ 50% + 116 px) */
+  .sun {
+    left: calc(50% + 128px);
+  }
+
+  .glint {
+    left: calc(50% + 120px);
+    width: 96px;
+  }
+
+  .cardLiq {
+    left: 6%;
+    top: 40px;
+    width: 52%;
+    max-width: 300px;
+  }
+
+  .cardLv {
+    left: 44%;
+    top: 110px;
+    width: 46%;
+    max-width: 200px;
+  }
+
+  /* телефон показан верхней частью и растворяется, как в образце */
+  .phoneWrap {
+    position: relative;
+    left: auto;
+    top: auto;
+    width: auto;
+    height: 420px;
+    margin: 72px 0 0;
+    -webkit-mask-image: linear-gradient(180deg, var(--lp-black) 65%, transparent);
+    mask-image: linear-gradient(180deg, var(--lp-black) 65%, transparent);
+  }
+
+  .phone {
+    width: 250px;
+    margin: 0 auto;
+  }
+
+  .trust {
+    padding: 65px 0 90px;
+  }
+
+  .h2c {
+    max-width: 342px;
+    font-size: 40px;
+    line-height: 48px;
+    letter-spacing: -1px;
+  }
+
+  /* планшет: сетка 2×2 помещается */
+  .trust ul {
+    grid-template-columns: repeat(2, 260px);
+    column-gap: 40px;
+    row-gap: 64px;
+    margin-top: 96px;
+  }
+
+  .trust li p {
+    font-size: 18px;
+    line-height: 27px;
+  }
+
+  .learn {
+    padding-top: 67px;
+  }
+
+  .learn .h2c {
+    letter-spacing: -1px;
+  }
+
+  .learn > .pill {
+    margin-top: 37px;
+    max-width: 100%;
+    white-space: normal;
+  }
+
+  .card {
+    width: auto;
+    max-width: 358px;
+    margin: 80px auto -56px;
+    padding: 28px 20px 40px;
+  }
+
+  .card h3 {
+    margin-bottom: 22px;
+  }
+
+  .card li {
+    gap: 14px;
+  }
+
+  .card li > svg:first-child {
+    width: 72px;
+    height: 56px;
+  }
+
+  .card li span {
+    margin-top: 2px;
+    line-height: 18px;
+  }
+
+  .final {
+    padding: 200px 24px 300px;
+  }
+
+  .rise .ground {
+    bottom: 120px;
+  }
+
+  .rise .halo,
+  .rise .disc {
+    bottom: 121px;
+  }
+
+  .final .h1 {
+    font-size: 44px;
+    line-height: 48px;
+  }
+}
+
+/* планшет 641–900: стол крупнее */
+@media (min-width: 641px) and (max-width: 900px) {
+  .desk {
+    transform: scale(0.8);
+  }
+
+  .mat > .visual {
+    height: 560px;
+  }
+}
+
+/* телефон: «доверие» — листалка с точками */
+@media (max-width: 640px) {
+  .trust ul {
+    display: flex;
+    justify-content: flex-start;
+    gap: 26px;
+    margin-top: 70px;
+    padding: 0 calc(50% - 100px);
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+    scrollbar-width: none;
+  }
+
+  .trust ul:focus-visible {
+    outline: 2px solid var(--lp-lime);
+    outline-offset: 4px;
+  }
+
+  .trust li {
+    flex: none;
+    width: 200px;
+    scroll-snap-align: center;
+  }
+
+  .dots {
+    display: flex;
+    justify-content: center;
+    gap: 8px;
+    margin-top: 82px;
+  }
+
+  .dots i {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--lp-mute-2);
+    transition: background-color 0.2s;
+  }
+
+  .dots i[data-active] {
+    background: var(--lp-white);
   }
 }

@@ -15,7 +15,7 @@ export function proxy(req: NextRequest) {
   }
   if (authed && GUEST_ONLY.includes(pathname)) {
     const url = req.nextUrl.clone();
-    url.pathname = "/signals";
+    url.pathname = "/chart";
     url.search = "";
     return NextResponse.redirect(url);
   }

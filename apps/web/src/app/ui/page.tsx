@@ -108,7 +108,7 @@ export default function UiPage() {
             Токены, шрифты и компоненты по разделу 5 плана. Все экраны собираются только из них.
           </p>
         </div>
-        <ThemeToggle size="md" />
+        <ThemeToggle />
       </div>
 
       <div className={s.grid}>

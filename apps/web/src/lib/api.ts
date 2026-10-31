@@ -137,15 +137,20 @@ export type Health = {
   env: string;
 };
 
+/** Предел ожидания API при рендере страниц: зависший API не должен держать страницу. */
+const API_TIMEOUT_MS = 5000;
+
 async function get<T>(path: string, revalidate = 60): Promise<T | null> {
   try {
     const res = await fetch(`${API_URL}${path}`, {
       next: { revalidate },
       headers: { accept: "application/json" },
+      signal: AbortSignal.timeout(API_TIMEOUT_MS),
     });
     if (!res.ok) return null;
     return (await res.json()) as T;
   } catch {
+    // в том числе таймаут (TimeoutError)
     return null;
   }
 }
@@ -179,6 +184,26 @@ export async function getStatsTrades(
 export async function getClosedSignals(limit = 5): Promise<SignalRow[]> {
   const r = await get<{ items: SignalRow[] }>(`/v1/signals?status=closed&limit=${limit}`);
   return r?.items ?? [];
+}
+
+/** Число инструментов в работе — для цифр на главной. */
+export async function getInstrumentCount(): Promise<number | null> {
+  const list = await get<unknown[]>("/v1/instruments", 3600);
+  return list ? list.length : null;
+}
+
+/** Цена за месяц по тарифам с сервера (apps/api/app/plans.py) — для главной; null, если API недоступен. */
+export async function getMonthPrices(): Promise<Record<string, string> | null> {
+  const r = await get<{ plans: { code: string; price_month: string }[] }>("/v1/billing/plans", 3600);
+  return r ? Object.fromEntries(r.plans.map((p) => [p.code, p.price_month])) : null;
+}
+
+/** Закрытия последних дневных свечей (только закрытые) — для фоновой линии на главной; null, если API недоступен. */
+export async function getDailyCloses(symbol = "BTCUSDT", count = 240): Promise<number[] | null> {
+  const r = await get<{ candles: { c: string; open?: boolean }[] }>(`/v1/chart/candles?symbol=${symbol}&tf=1d&limit=500`, 3600);
+  if (!r) return null;
+  const closes = r.candles.filter((c) => !c.open).map((c) => Number(c.c));
+  return closes.length > 10 ? closes.slice(-count) : null;
 }
 
 export function getHealth(): Promise<Health | null> {

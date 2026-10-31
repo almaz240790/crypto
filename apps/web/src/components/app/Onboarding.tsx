@@ -45,7 +45,7 @@ export function Onboarding({ user }: { user: Me }) {
     }
   }
 
-  const finish = () => router.replace("/signals");
+  const finish = () => router.replace("/chart");
 
   return (
     <div className={s.wrap}>
@@ -168,7 +168,7 @@ export function Onboarding({ user }: { user: Me }) {
             </div>
             <div className={s.actions}>
               <Button variant="ghost" onClick={() => setStep(1)}>{t("Назад")}</Button>
-              <Button variant="primary" onClick={finish}>{t("Перейти к сигналам")}</Button>
+              <Button variant="primary" onClick={finish}>{t("Открыть график")}</Button>
             </div>
           </div>
         </Panel>

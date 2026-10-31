@@ -1,20 +1,25 @@
+/* Шапка: чёрная при любой теме; токены переопределены внутри, чтобы вложенные элементы (язык) были светлыми. */
 .header {
-  border-bottom: 1px solid var(--border);
-  background: var(--surface);
+  --text: var(--lp-white);
+  --text-2: var(--lp-mute);
+  --border: var(--lp-graphite);
+  --row-hover: var(--lp-graphite);
+  position: relative;
+  z-index: 20;
+  background: var(--lp-black);
+  color: var(--lp-white);
 }
 
 .inner {
   display: flex;
   align-items: center;
-  gap: var(--gap-4);
-  height: 48px;
+  gap: 72px;
+  height: 64px;
+  padding: 0 24px 0 36px;
 }
 
 .brand {
-  font-weight: 600;
-  font-size: var(--fs-body);
-  color: var(--text);
-  letter-spacing: 0;
+  color: var(--lp-white);
 }
 
 .brand:hover {
@@ -23,17 +28,17 @@
 
 .nav {
   display: flex;
-  gap: var(--gap-4);
-  font-size: var(--fs-table);
+  gap: 36px;
+  font-size: 16px;
+  letter-spacing: -0.25px;
 }
 
 .nav a {
-  color: var(--text-2);
-  padding: 12px 0;
+  color: var(--lp-white);
 }
 
 .nav a:hover {
-  color: var(--text);
+  color: var(--lp-lime);
   text-decoration: none;
 }
 
@@ -41,11 +46,178 @@
   margin-left: auto;
   display: flex;
   align-items: center;
-  gap: var(--gap-2);
+  gap: 12px;
 }
 
-@media (max-width: 720px) {
+.lang {
+  margin-right: 12px;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 44px;
+  padding: 0 32px;
+  border: 1px solid var(--lp-lime);
+  border-radius: 36px;
+  font-size: 16px;
+  letter-spacing: -0.25px;
+  white-space: nowrap;
+}
+
+.pill:hover {
+  text-decoration: none;
+}
+
+.acc {
+  background: var(--lp-lime);
+  color: var(--lp-ink);
+}
+
+.line {
+  background: transparent;
+  color: var(--lp-lime);
+}
+
+/* короткая подпись кнопки «График» — только на узком телефоне */
+.labelShort {
+  display: none;
+}
+
+.burger {
+  display: none;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.burger span {
+  display: block;
+  width: 22px;
+  height: 2px;
+  margin: 6px auto;
+  background: var(--lp-white);
+  transition: transform 0.2s;
+}
+
+.header[data-open] .burger span:first-child {
+  transform: translateY(4px) rotate(45deg);
+}
+
+.header[data-open] .burger span:last-child {
+  transform: translateY(-4px) rotate(-45deg);
+}
+
+.menu {
+  display: grid;
+  gap: 24px;
+  padding: 24px 20px 32px;
+  border-top: 1px solid var(--lp-graphite);
+  background: var(--lp-black);
+}
+
+.menu nav {
+  display: grid;
+}
+
+.menu nav a {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--lp-graphite);
+  color: var(--lp-white);
+  font-size: 22px;
+  letter-spacing: -0.3px;
+}
+
+@media (max-width: 1180px) {
+  .inner {
+    gap: 40px;
+  }
+
   .nav {
+    gap: 24px;
+  }
+}
+
+@media (max-width: 1024px) {
+  .nav,
+  .lang,
+  .desktopOnly {
+    display: none;
+  }
+
+  .burger {
+    display: block;
+  }
+
+  .inner {
+    gap: 16px;
+    padding: 0 12px 0 20px;
+  }
+
+  .pill {
+    padding: 0 20px;
+    font-size: 16px;
+  }
+
+  .burger span {
+    width: 30px;
+    height: 3px;
+    margin: 10px auto;
+    border-radius: 2px;
+  }
+
+  .header[data-open] .burger span:first-child {
+    transform: translateY(6.5px) rotate(45deg);
+  }
+
+  .header[data-open] .burger span:last-child {
+    transform: translateY(-6.5px) rotate(-45deg);
+  }
+}
+
+@media (max-width: 389px) {
+  .inner {
+    gap: 12px;
+    padding: 0 8px 0 16px;
+  }
+
+  .right {
+    gap: 4px;
+  }
+
+  .pill {
+    padding: 0 16px;
+  }
+}
+
+@media (max-width: 359px) {
+  .inner {
+    gap: 8px;
+    padding: 0 4px 0 12px;
+  }
+
+  .pill {
+    padding: 0 12px;
+    font-size: 14px;
+  }
+}
+
+@media (max-width: 419px) {
+  .labelLong {
+    display: none;
+  }
+
+  .labelShort {
+    display: inline;
+  }
+}
+
+@media (min-width: 1025px) {
+  .menu {
     display: none;
   }
 }

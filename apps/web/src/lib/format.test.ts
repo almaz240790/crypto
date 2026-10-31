@@ -7,6 +7,7 @@ import {
   formatPrice,
   formatR,
   formatTimeUTC,
+  nb,
   plural,
 } from "./format";
 
@@ -81,5 +82,14 @@ describe("plural", () => {
     expect(f(5)).toBe("сигналов");
     expect(f(11)).toBe("сигналов");
     expect(f(21)).toBe("сигнал");
+  });
+});
+
+describe("nb", () => {
+  it("тире и короткие слова не отрываются от соседних", () => {
+    expect(nb("Уровни, зоны и ликвидации — сами")).toBe(`Уровни, зоны и${NB}ликвидации${NB}— сами`);
+    expect(nb("график в кармане")).toBe(`график в${NB}кармане`);
+    expect(nb("мультичарт на 4 графика")).toBe(`мультичарт на${NB}4${NB}графика`);
+    expect(nb("Read charts — right on the chart")).toBe(`Read charts${NB}— right on the chart`);
   });
 });

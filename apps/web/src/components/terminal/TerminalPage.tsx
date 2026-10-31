@@ -40,8 +40,9 @@ const clampW = (w: number) => Math.round(Math.min(OBJECTS_W_MAX, Math.max(OBJECT
 
 type Saved = { type: ChartType; indicators: ActiveIndicator[]; layers: Record<LayerKey, boolean>; layers_v?: number; panels: PanelKey[]; scale: ScaleMode; overlay: string | null; updated_at?: number };
 /** Версия набора слоёв по умолчанию: при смене старые сохранённые слои сбрасываются на чистый график. */
-const LAYERS_VERSION = 3;
-const DEFAULT_LAYERS: Record<LayerKey, boolean> = { structure: false, zones: true, levels: false, signals: true, patterns: false, figures: true, volume_profile: false, sr: true, liq_map: true };
+const LAYERS_VERSION = 4;
+/** График как инструмент теханализа (ADR-0006): структура включена, сигналы — нет. */
+const DEFAULT_LAYERS: Record<LayerKey, boolean> = { structure: true, zones: true, levels: false, signals: false, patterns: false, figures: true, volume_profile: false, sr: true, liq_map: true };
 
 /** Слои из сохранённого состояния: старую версию заменяем чистым набором. */
 function migrate(p: Partial<Saved>): Partial<Saved> {
@@ -387,7 +388,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
         </select>
         <nav className={s.tfs} aria-label={t("таймфрейм")}>
           {TIMEFRAMES.map((x) => (
-            <Link key={x} href={`/chart/${symbol}/${x}`} aria-current={x === tf ? "page" : undefined} data-primary={x === "4h"} aria-disabled={INTRADAY.includes(x) && !user ? "true" : undefined} title={INTRADAY.includes(x) && !user ? t("после входа, тариф Pro") : undefined}>
+            <Link key={x} href={`/chart/${symbol}/${x}`} aria-current={x === tf ? "page" : undefined} data-primary={x === "4h"} aria-disabled={INTRADAY.includes(x) && !user ? "true" : undefined} title={INTRADAY.includes(x) && !user ? t("после входа, подписка Pro") : undefined}>
               {x === "4h" ? "H4" : x.toUpperCase()}
             </Link>
           ))}
@@ -498,7 +499,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
             {data.error}
           </div>
         ) : intradayLocked && data.error ? (
-          <div className={s.empty}>{t("Таймфреймы 1m–15m доступны после входа на тарифе Pro.")}{" "}<Link href="/pricing">{t("Тарифы")}</Link>
+          <div className={s.empty}>{t("Таймфреймы 1m–15m доступны после входа с подпиской Pro.")}{" "}<Link href="/pricing">{t("Подписка")}</Link>
           </div>
         ) : (
           <TerminalView sr={srLevels} liq={liqMap} candles={data.candles ?? []} current={data.current} tf={tf} type={st.type} indicators={st.indicators} layersOn={st.layers} layers={data.layers} patterns={data.patterns?.items} highlight={foundSel} figures={data.figures?.items} highlightFigure={figureSel} alertLines={alerts.filter((a) => a.type === "price" && typeof a.condition.price === "string").map((a) => ({ id: a.id, price: Number(a.condition.price), label: a.condition.op === "cross_up" ? "↑" : a.condition.op === "cross_down" ? "↓" : "↔" }))} derivatives={data.derivatives} panels={st.panels} tick={data.tick} onNeedOlder={data.loadOlder} drawings={drawingsProps} onCrosshair={setCross} onVisibleFrom={setVisibleFrom} onReady={(c) => { controls.current = c; }} scale={st.scale} overlay={overlayCandles} />
@@ -565,7 +566,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
         )}
         {dr.limitHit && (
           <p className={s.card} role="alert">
-            Лимит рисунков на инструмент: {dr.limit}. Удалите лишние{!user ? t(" или войдите") : t(" или перейдите на тариф выше")}.{" "}
+            Лимит рисунков на инструмент: {dr.limit}. Удалите лишние{!user ? t(" или войдите") : t(" или оформите подписку уровнем выше")}.{" "}
             <button type="button" className={s.chip} onClick={dr.dismissLimit}>{t("понятно")}</button>
           </p>
         )}

@@ -78,7 +78,7 @@ function Inner() {
               <span className="caption">{t("Сообщение")}</span>
               <textarea value={message} onChange={(e) => setMessage(e.target.value)} required minLength={10} maxLength={5000} rows={6} aria-label={t("Сообщение")} style={{ font: "inherit", padding: 8, border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg)", color: "var(--text)" }} />
             </label>
-            <Input label={t("Страница (прикрепляется сама)")} value={page} onChange={(e) => setPage(e.target.value)} maxLength={300} hint={`версия ${process.env.NEXT_PUBLIC_APP_VERSION ?? "—"}${user ? t(", тариф прикрепится автоматически") : ""}`} />
+            <Input label={t("Страница (прикрепляется сама)")} value={page} onChange={(e) => setPage(e.target.value)} maxLength={300} hint={`версия ${process.env.NEXT_PUBLIC_APP_VERSION ?? "—"}${user ? t(", подписка прикрепится автоматически") : ""}`} />
             <div className={s.actions}>
               <Button type="submit" variant="primary" size="sm" disabled={busy}>{t("Отправить")}</Button>
             </div>

@@ -7,7 +7,7 @@ test("манифест и service worker отдаются, офлайн-стра
   expect(m.ok()).toBe(true);
   const j = (await m.json()) as { name: string; display: string; icons: { src: string }[]; start_url: string };
   expect(j.display).toBe("standalone");
-  expect(j.start_url).toBe("/signals");
+  expect(j.start_url).toBe("/chart");
   expect(j.icons.some((i) => i.src.includes("maskable"))).toBe(true);
   for (const i of j.icons) expect((await request.get(i.src)).ok()).toBe(true);
   const sw = await request.get("/sw.js");

@@ -217,7 +217,7 @@ export function Feed({ instruments }: { instruments: { symbol: string; tick_size
         <p className="caption" role="note">
           Тариф {data.restrictions.plan}: сигналы градации {data.restrictions.grades?.join(", ") ?? t("всех")} с задержкой {data.restrictions.delay_hours} ч
           {!data.restrictions.all_instruments && ", только BTC, ETH и инструменты вотчлиста"}.{" "}
-          <Link href="/pricing">{t("Тарифы")}</Link>
+          <Link href="/pricing">{t("Подписка")}</Link>
         </p>
       )}
       <Panel flush title={data ? `${data.total} ${data.scope === "forward" ? t("форвард-") : ""}${t("сигналов")}` : t("Сигналы")} actions={<span>{t("обновляется по WebSocket и каждую свечу H4")}</span>}>

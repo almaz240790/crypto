@@ -19,7 +19,7 @@ test("поддержка: обращение без входа с автопри
   await expect(page.getByRole("heading", { name: "Поддержка" })).toBeVisible();
   await expect(page.getByText("Почему вы не обещаете доходность?")).toBeVisible();
   await page.getByLabel("Email для ответа").fill("guest@example.com");
-  await page.getByLabel("Тема").fill("Не вижу сигнал");
+  await page.getByLabel("Тема", { exact: true }).fill("Не вижу сигнал");
   await page.getByLabel("Сообщение").fill("Открыл карточку сигнала, а там пусто.");
   await expect(page.getByLabel("Страница (прикрепляется сама)")).toHaveValue("/signals/abc");
   await page.getByRole("button", { name: "Отправить" }).click();

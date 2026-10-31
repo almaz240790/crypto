@@ -1,5 +1,6 @@
 /*
- * Токены дизайн-системы Platform (план, раздел 5.3–5.6).
+ * Токены дизайн-системы PlatformSol (план, раздел 5.3–5.6; ADR-0006, редизайн 30.10.2026 по решению владельца):
+ * тёмная тема по умолчанию, почти чёрный фон, один салатовый акцент для действий, шрифты Manrope и Source Serif 4.
  * Единственное место в apps/web, где разрешены литералы цветов.
  * Проверка: `npm run lint:colors`.
  */
@@ -8,24 +9,52 @@
   color-scheme: light;
 
   /* Поверхности */
-  --bg: #f4f3ef;
+  --bg: #f6f7f5;
   --surface: #ffffff;
   --surface-raised: #ffffff;
-  --border: #d9d6ce;
-  --row-hover: #eceae3;
+  --border: #e1e5e2;
+  --row-hover: #eef1ee;
 
   /* Текст */
-  --text: #1a1a1a;
-  --text-2: #5c5a54;
-  /* План 5.3 даёт #8A877F; затемнён до #726F68 ради контраста 4.5:1 для 12px текста (WCAG AA). */
-  --text-3: #726f68;
-  --text-on-accent: #ffffff;
+  --text: #0c0f0e;
+  --text-2: #4a524f;
+  --text-3: #66706c;
+  --text-on-accent: #0a0c05;
 
   /* Семантика (только направление и результат) */
-  --up: #1f7a4d;
-  --down: #b3261e;
-  --accent: #0f4c81;
-  --warn: #9a6700;
+  --up: #0a7f55;
+  --down: #c8283a;
+  /* Ссылки и выделение: на светлом фоне салатовый нечитаем — тёмно-зелёный */
+  --accent: #3f6212;
+  /* Заливка кнопок: салатовый с тёмным текстом (контраст выше 12:1) */
+  --accent-solid: #c6f432;
+  --warn: #a16207;
+
+  /* Маркетинговые страницы (ADR-0006, сетка по образцу robinhood.com): цвета блоков не зависят от темы */
+  --lp-black: #000000;
+  --lp-white: #ffffff;
+  --lp-ink: #0e0d08;
+  --lp-ink-2: #3a3832;
+  --lp-mute: #d6d6d2;
+  --lp-mute-2: #8f8d86;
+  --lp-lime: #c6f432;
+  --lp-lime-line: #0e0d0833;
+  --lp-graphite: #2c2e34;
+  --lp-bezel: #0b0b0d;
+  /* «Стол картографа»: графитовый коврик с сеткой */
+  --lp-mat: #15171a;
+  --lp-mat-line: rgb(255 255 255 / 5%);
+  /* «Слои»: тёплый светлый камень */
+  --lp-stone: #d9d6ce;
+  --lp-stone-2: #ece9e2;
+  /* «Рассвет»: глубокий зелёно-чёрный */
+  --lp-forest: #0d1310;
+  --lp-dawn-3: #1d2a22;
+  --lp-card: #ffffff;
+  --lp-card-2: #6b6862;
+  --lp-thumb: #111111;
+  --lp-art: #f1efe8;
+  --lp-glow: rgb(198 244 50 / 35%);
 
   /* Индикаторы на графике — 6 нейтральных оттенков */
   --ind-1: #4a6fa5;
@@ -41,11 +70,16 @@
   --down-fill: color-mix(in srgb, var(--down) 12%, transparent);
   --warn-fill: color-mix(in srgb, var(--warn) 12%, transparent);
   --focus: var(--accent);
-  --shadow: 0 1px 2px rgb(0 0 0 / 8%);
+  --shadow: 0 1px 2px rgb(15 23 42 / 6%);
+  --shadow-lg: 0 24px 64px rgb(15 23 42 / 12%);
+  /* Свечение под скриншотом продукта на главной (бирюзовое, только для маркетинговых страниц) */
+  --glow: rgb(22 199 154 / 18%);
 
   /* Геометрия */
-  --radius: 2px;
-  --radius-lg: 4px;
+  --radius: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 20px;
+  --radius-pill: 999px;
   --row-h: 36px;
   --panel-head-h: 32px;
   --sidebar-w: 220px;
@@ -70,19 +104,20 @@
 
 [data-theme="dark"] {
   color-scheme: dark;
-  --bg: #121417;
-  --surface: #1a1d21;
-  --surface-raised: #22262b;
-  --border: #2e333a;
-  --row-hover: #24282d;
-  --text: #e6e4de;
-  --text-2: #a09d95;
-  --text-3: #8f8c84; /* план: #6E6B64, осветлён ради контраста */
-  --text-on-accent: #121417;
-  --up: #3daa6d;
-  --down: #e05a4e;
-  --accent: #6fa8dc;
-  --warn: #d4a72c;
+  --bg: #050607;
+  --surface: #0b0e10;
+  --surface-raised: #111518;
+  --border: #1d2327;
+  --row-hover: #14191c;
+  --text: #eef1f0;
+  --text-2: #a2aaa8;
+  --text-3: #7c8582;
+  --text-on-accent: #0a0c05;
+  --up: #22c58b;
+  --down: #f2555c;
+  --accent: #c6f432;
+  --accent-solid: #c6f432;
+  --warn: #f0b429;
   --ind-1: #7fa3d6;
   --ind-2: #c9a66b;
   --ind-3: #9db36f;
@@ -90,24 +125,27 @@
   --ind-5: #6fb3b8;
   --ind-6: #c98b72;
   --shadow: 0 1px 2px rgb(0 0 0 / 40%);
+  --shadow-lg: 0 24px 64px rgb(0 0 0 / 45%);
+  --glow: rgb(22 199 154 / 30%);
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     color-scheme: dark;
-    --bg: #121417;
-    --surface: #1a1d21;
-    --surface-raised: #22262b;
-    --border: #2e333a;
-    --row-hover: #24282d;
-    --text: #e6e4de;
-    --text-2: #a09d95;
-    --text-3: #8f8c84; /* план: #6E6B64, осветлён ради контраста */
-    --text-on-accent: #121417;
-    --up: #3daa6d;
-    --down: #e05a4e;
-    --accent: #6fa8dc;
-    --warn: #d4a72c;
+    --bg: #050607;
+    --surface: #0b0e10;
+    --surface-raised: #111518;
+    --border: #1d2327;
+    --row-hover: #14191c;
+    --text: #eef1f0;
+    --text-2: #a2aaa8;
+    --text-3: #7c8582;
+    --text-on-accent: #0a0c05;
+    --up: #22c58b;
+    --down: #f2555c;
+    --accent: #c6f432;
+    --accent-solid: #c6f432;
+    --warn: #f0b429;
     --ind-1: #7fa3d6;
     --ind-2: #c9a66b;
     --ind-3: #9db36f;
@@ -115,5 +153,7 @@
     --ind-5: #6fb3b8;
     --ind-6: #c98b72;
     --shadow: 0 1px 2px rgb(0 0 0 / 40%);
+    --shadow-lg: 0 24px 64px rgb(0 0 0 / 45%);
+    --glow: rgb(22 199 154 / 30%);
   }
 }
