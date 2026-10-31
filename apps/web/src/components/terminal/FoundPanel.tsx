@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import type React from "react";
 import { useEffect, useRef, useState } from "react";
 import { askChart, explainPattern, type Explanation, type FigureOnChart, type FigureStat, type PatternOnChart, type PatternStat } from "@/lib/chart";
 import { formatPrice, formatUsdCompact } from "@/lib/format";
@@ -183,7 +184,7 @@ export function FiguresList({ items, stats, selected, onSelect, tick = null }: {
  * Уровни списком (план 2A.4, 2A.6): каталог сцены (scene.index) — по 3 уровня на сторону, 2 зоны, по 3 скопления
  * ликвидаций, независимо от слоёв: на графике подписи может отрезать пресет или бюджет, здесь видны все.
  */
-export function LevelsList({ index, tick }: { index: SceneIndex | null; tick: string | null }) {
+export function LevelsList({ index, tick, selected = null, onPick }: { index: SceneIndex | null; tick: string | null; selected?: string | null; onPick?: (id: string | null) => void }) {
   const t = useT();
   // точность — по шагу цены инструмента, как на шкале (в том числе для шага в записи 1.000E-7)
   const px = (p: number) => formatPrice(p, tick);
@@ -197,38 +198,66 @@ export function LevelsList({ index, tick }: { index: SceneIndex | null; tick: st
   const longs = of("liq-long");
   if (res.length + sup.length + zones.length + shorts.length + longs.length === 0 && !liqUnavailable) return null;
   const liqTitle = t("Оценка по приросту открытого интереса для плеч 10–100×, не данные биржи.");
+  // строка — кнопка: выбор объекта на графике (и показ его, если он за кадром); повторное нажатие снимает выбор
+  const row = (r: LevelRow, children: React.ReactNode, title?: string) => {
+    const sel = r.id === selected;
+    return (
+      <li key={r.id} title={title} data-selected={sel || undefined}>
+        <button type="button" className={s.levelBtn} aria-pressed={sel} onClick={() => onPick?.(sel ? null : r.id)} disabled={!onPick}>
+          {children}
+        </button>
+      </li>
+    );
+  };
   return (
     <>
       <strong className={s.objHead}>{t("Уровни")}</strong>
       <ul className={s.levelList} aria-label={t("уровни поддержки и сопротивления")}>
-        {shorts.map((b) => (
-          <li key={b.id} title={liqTitle}>
-            <span className={s.levelLiq}>{t("Ликвидации шортов")}</span> <span className="num">{px(b.price)}</span> <strong className={`num ${s.levelLiq}`}>≈ {formatUsdCompact(b.amountUsd ?? 0)}</strong>
-          </li>
-        ))}
-        {res.map((l) => (
-          <li key={l.id}>
-            <strong className="down">R</strong> <span className="caption">{t("сопротивление")}</span> <span className="num">{px(l.price)}</span> <span className="caption">{t("касаний: {n}", { n: l.touches ?? 0 })}</span>
-          </li>
-        ))}
-        {zones.map((z) => (
-          <li key={z.id}>
-            <strong className={z.kind === "demand" ? "up" : z.kind === "supply" ? "down" : ""}>{(z.kinds ?? []).map(zoneCode).join("+")}</strong> <span className="caption">{zoneNames(z).map((n) => t(n)).join(" + ")}</span>{" "}
-            <span className={`num ${s.levelRange}`}>
-              {px(z.price)}–{px(z.priceTo ?? z.price)}
-            </span>
-          </li>
-        ))}
-        {sup.map((l) => (
-          <li key={l.id}>
-            <strong className="up">S</strong> <span className="caption">{t("поддержка")}</span> <span className="num">{px(l.price)}</span> <span className="caption">{t("касаний: {n}", { n: l.touches ?? 0 })}</span>
-          </li>
-        ))}
-        {longs.map((b) => (
-          <li key={b.id} title={liqTitle}>
-            <span className={s.levelLiq}>{t("Ликвидации лонгов")}</span> <span className="num">{px(b.price)}</span> <strong className={`num ${s.levelLiq}`}>≈ {formatUsdCompact(b.amountUsd ?? 0)}</strong>
-          </li>
-        ))}
+        {shorts.map((b) =>
+          row(
+            b,
+            <>
+              <span className={s.levelLiq}>{t("Ликвидации шортов")}</span> <span className="num">{px(b.price)}</span> <strong className={`num ${s.levelLiq}`}>≈ {formatUsdCompact(b.amountUsd ?? 0)}</strong>
+            </>,
+            liqTitle,
+          ),
+        )}
+        {res.map((l) =>
+          row(
+            l,
+            <>
+              <strong className="down">R</strong> <span className="caption">{t("сопротивление")}</span> <span className="num">{px(l.price)}</span> <span className="caption">{t("касаний: {n}", { n: l.touches ?? 0 })}</span>
+            </>,
+          ),
+        )}
+        {zones.map((z) =>
+          row(
+            z,
+            <>
+              <strong className={z.kind === "demand" ? "up" : z.kind === "supply" ? "down" : ""}>{(z.kinds ?? []).map(zoneCode).join("+")}</strong> <span className="caption">{zoneNames(z).map((n) => t(n)).join(" + ")}</span>{" "}
+              <span className={`num ${s.levelRange}`}>
+                {px(z.price)}–{px(z.priceTo ?? z.price)}
+              </span>
+            </>,
+          ),
+        )}
+        {sup.map((l) =>
+          row(
+            l,
+            <>
+              <strong className="up">S</strong> <span className="caption">{t("поддержка")}</span> <span className="num">{px(l.price)}</span> <span className="caption">{t("касаний: {n}", { n: l.touches ?? 0 })}</span>
+            </>,
+          ),
+        )}
+        {longs.map((b) =>
+          row(
+            b,
+            <>
+              <span className={s.levelLiq}>{t("Ликвидации лонгов")}</span> <span className="num">{px(b.price)}</span> <strong className={`num ${s.levelLiq}`}>≈ {formatUsdCompact(b.amountUsd ?? 0)}</strong>
+            </>,
+            liqTitle,
+          ),
+        )}
       </ul>
       {shorts.length + longs.length > 0 && <p className={`caption ${s.levelNote}`}>{t("Карта ликвидаций — расчётная оценка: суммы позиций с плечом 10–100×, которые закроются принудительно при подходе цены. Считается по приросту открытого интереса, а не по данным биржи.")}</p>}
       {shorts.length + longs.length === 0 && liqUnavailable && <p className={`caption ${s.levelNote}`} data-testid="liq-unavailable">{t("Карта ликвидаций на этом таймфрейме недоступна: мало данных открытого интереса.")}</p>}

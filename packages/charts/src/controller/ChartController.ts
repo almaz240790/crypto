@@ -140,6 +140,13 @@ export class ChartController {
   private hitGate: ((x: number, y: number) => boolean) | null = null;
   private readonly countdown: AxisCountdown;
   private lastScreen: ScreenScene | null = null;
+  private hoverNext: HoverSnapshot | null = null;
+  private hoverQueued = false;
+  private pendingFocus: string | null = null;
+  /** Вид двигал пользователь после последнего сброса: смена ширины области его не сбрасывает. */
+  private userMoved = false;
+  /** Правый край (логический), заданный последним сбросом. */
+  private resetTo: number | null = null;
   private visibleTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly cleanups: (() => void)[] = [];
 
@@ -199,7 +206,10 @@ export class ChartController {
     this.countdown = new AxisCountdown(this.el);
     this.handle = {
       store: this.store,
-      zoom: (f) => this.terminal.zoom(f),
+      zoom: (f) => {
+        this.userMoved = true;
+        this.terminal.zoom(f);
+      },
       reset: () => this.reset(),
       clearCrosshair: () => this.terminal.chart.clearCrosshairPosition(),
       focus: (t) => this.focus(t),
@@ -248,6 +258,8 @@ export class ChartController {
       this.gen++;
       // новый инструмент или таймфрейм: аналитика заново (ключ по времени свечи мог совпасть), выбор и наведение сняты
       this.analytics = undefined;
+      this.hoverNext = null;
+      this.overlay.setHovered(null);
       if (this.store.getState().selection !== null || this.store.getState().hover !== null) this.store.patch({ selection: null, hover: null });
       if (this.terminal.candles.length > 0) {
         this.reset();
@@ -366,6 +378,12 @@ export class ChartController {
     this.scene = scene;
     this.overlay.setScene(scene);
     this.store.patch({ sceneIndex: scene.index, legend: scene.legend });
+    this.refreshHover();
+    const pf = this.pendingFocus;
+    if (pf !== null) {
+      this.pendingFocus = null;
+      if (this.store.getState().selection === pf) this.scrollTo(this.objectTime(pf));
+    }
   }
 
   // ── вид ──
@@ -375,7 +393,8 @@ export class ChartController {
   }
 
   private reset(): void {
-    this.terminal.resetView(barsForWidth(this.plotWidth(), this.view, this.inputs.tf));
+    this.userMoved = false;
+    this.resetTo = this.terminal.resetView(barsForWidth(this.plotWidth(), this.view, this.inputs.tf))?.to ?? null;
   }
 
   private lastIndex(): number | null {
@@ -386,8 +405,25 @@ export class ChartController {
   }
 
   private focus(target: FocusTarget): void {
-    if (target.objectId !== undefined) this.store.select(target.objectId);
+    if (target.objectId !== undefined) {
+      this.store.select(target.objectId);
+      // объект отрезан лимитом и появится только в пересобранной сцене: его время — после неё
+      if (target.time === undefined && !this.sceneHas(target.objectId)) {
+        this.pendingFocus = target.objectId;
+        return;
+      }
+    }
     const time = target.time ?? (target.objectId !== undefined ? this.objectTime(target.objectId) : null);
+    this.scrollTo(time);
+  }
+
+  private sceneHas(id: string): boolean {
+    const scene = this.scene;
+    return !!scene && (scene.byId.has(id) || scene.objects.some((o) => o.groupId === id));
+  }
+
+  /** Время объекта за кадром — прокрутить так, чтобы оно оказалось на 70 % ширины, сохранив число баров. */
+  private scrollTo(time: number | null): void {
     if (time == null) return;
     const ts = this.terminal.chart.timeScale();
     const r = ts.getVisibleLogicalRange();
@@ -483,20 +519,30 @@ export class ChartController {
 
   // ── наведение, клик, наблюдатели ──
 
-  private hoverOf(objectId: string, point: { x: number; y: number } | undefined): HoverSnapshot | null {
+  /** Подсказка объекта: строки HoverInfo, тон, цена по шагу инструмента, расстояние от живой цены. */
+  private hoverOf(objectId: string, point: { x: number; y: number } | undefined, pinned: boolean): HoverSnapshot | null {
     const scene = this.scene;
-    if (!scene) return null;
+    const text = this.inputs.text;
+    if (!scene || !text) return null;
     const info: HoverInfo | null = sceneHover(scene, objectId);
-    if (!info) return null;
+    const obj = scene.byId.get(objectId);
+    if (!info || !obj) return null;
     const live = this.terminal.candles[this.terminal.candles.length - 1]?.close ?? null;
     let distancePct: number | null = null;
-    if (live && info.price !== undefined) {
+    let priceText: string | null = null;
+    if (info.price !== undefined) {
       const lo = info.priceTo !== undefined ? Math.min(info.price, info.priceTo) : info.price;
       const hi = info.priceTo !== undefined ? Math.max(info.price, info.priceTo) : info.price;
-      const target = live < lo ? lo : live > hi ? hi : live;
-      distancePct = ((target - live) / live) * 100;
+      priceText = lo === hi ? this.fmt.price(lo) : text.fill(text["hover.range"], { from: this.fmt.price(lo), to: this.fmt.price(hi) });
+      if (live) {
+        const target = live < lo ? lo : live > hi ? hi : live;
+        distancePct = ((target - live) / live) * 100;
+      }
     }
-    return { objectId, x: point?.x ?? 0, y: point?.y ?? 0, info, distancePct, pinned: false };
+    // подпись суммы ликвидаций ведёт к объекту карты: тон у них общий
+    const tone = obj.kind === "heat" && obj.id !== objectId ? (obj.tops.find((t) => t.id === objectId)?.label.tone ?? obj.tone) : obj.tone;
+    const size = this.terminal.chart.paneSize(0);
+    return { objectId, x: point?.x ?? 0, y: point?.y ?? 0, info, tone, priceText, distancePct, plot: { width: size.width, height: size.height }, pinned };
   }
 
   private hoveredId(p: HoveredParam): string | null {
@@ -504,25 +550,68 @@ export class ChartController {
     return typeof raw === "string" && this.scene?.byId.has(raw) ? raw : null;
   }
 
+  /** Попадание по тому же кадру, что рисуется (hitTest примитива: допуск 5 / 12 px, рисунки важнее). */
+  private hitAt(point: { x: number; y: number } | undefined): string | null {
+    if (!point) return null;
+    const raw = this.overlay.hitTest(point.x, point.y)?.externalId;
+    return typeof raw === "string" && this.scene?.byId.has(raw) ? raw : null;
+  }
+
+  /** Наведение мышью — не чаще кадра: последнее положение курсора записывается в store в следующем rAF. */
+  private queueHover(next: HoverSnapshot | null): void {
+    this.hoverNext = next;
+    if (this.hoverQueued || this.destroyed) return;
+    this.hoverQueued = true;
+    const run = () => {
+      this.hoverQueued = false;
+      if (this.destroyed) return;
+      const cur = this.store.getState().hover;
+      if (cur?.pinned) return; // закреплённую подсказку меняет только касание
+      this.store.patch({ hover: this.hoverNext });
+    };
+    if (this.opts.schedule) this.opts.schedule(run);
+    else if (typeof requestAnimationFrame === "function") requestAnimationFrame(run);
+    else setTimeout(run, 0);
+  }
+
+  /** После пересборки сцены подсказка следует за объектом (новые тексты, точность) или пропадает вместе с ним. */
+  private refreshHover(): void {
+    const cur = this.store.getState().hover;
+    if (!cur) return;
+    const next = this.hoverOf(cur.objectId, { x: cur.x, y: cur.y }, cur.pinned);
+    if (!next) this.overlay.setHovered(null);
+    this.store.patch({ hover: next });
+  }
+
   private subscribe(): void {
     const chart = this.terminal.chart;
     const onMove = (p: MouseEventParams<Time>) => {
+      // палец: подсказку открывает только тап (закрепляется), движение перекрестия её не трогает
+      if (this.coarse) return;
       const id = this.hoveredId(p as HoveredParam);
       this.overlay.setHovered(id);
-      const cur = this.store.getState().hover;
       if (!id) {
-        if (cur && !cur.pinned) this.store.patch({ hover: null });
+        if (this.store.getState().hover || this.hoverNext) this.queueHover(null);
         return;
       }
+      const cur = this.hoverNext ?? this.store.getState().hover;
       if (cur && cur.objectId === id && cur.x === p.point?.x && cur.y === p.point?.y) return;
-      this.store.patch({ hover: this.hoverOf(id, p.point) });
+      this.queueHover(this.hoverOf(id, p.point, false));
     };
     const onClick = (p: MouseEventParams<Time>) => {
-      const id = this.hoveredId(p as HoveredParam);
+      // мышь: LWC только что сделал hitTest для курсора; тап его не делает — попадание считаем сами
+      const id = this.coarse ? this.hitAt(p.point) : (this.hoveredId(p as HoveredParam) ?? this.hitAt(p.point));
       const scene = this.scene;
-      if (!id || !scene) return this.store.select(null);
+      if (!id || !scene) {
+        this.store.patch({ selection: null, ...(this.store.getState().hover?.pinned ? { hover: null } : {}) });
+        return;
+      }
       const sel = selectionId(scene, id);
-      this.store.select(this.store.getState().selection === sel ? null : sel);
+      const again = this.store.getState().selection === sel;
+      if (!this.coarse) return this.store.select(again ? null : sel);
+      // тап по объекту выбирает его и закрепляет карточку; повторный тап — снимает и то и другое
+      this.overlay.setHovered(again ? null : id);
+      this.store.patch({ selection: again ? null : sel, hover: again ? null : this.hoverOf(id, p.point, true) });
     };
     chart.subscribeCrosshairMove(onMove);
     chart.subscribeClick(onClick);
@@ -530,19 +619,58 @@ export class ChartController {
       chart.unsubscribeCrosshairMove(onMove);
       chart.unsubscribeClick(onClick);
     });
-    // выбор из React («Найдено») или кликом — пересборка сцены (выбранный рисуется сверх лимитов)
+    // выбор из React («Найдено», Esc) или кликом — пересборка сцены (выбранный рисуется сверх лимитов);
+    // закреплённая подсказка другого объекта снимается вместе с выбором
     let selected = this.store.getState().selection;
     this.cleanups.push(
       this.store.subscribe(() => {
-        const s = this.store.getState().selection;
+        const st = this.store.getState();
+        const s = st.selection;
         if (s === selected) return;
         selected = s;
+        const pin = st.hover;
+        if (pin?.pinned && this.scene && selectionId(this.scene, pin.objectId) !== s) {
+          this.overlay.setHovered(null);
+          this.store.patch({ hover: null });
+        }
         this.mark(Dirty.Scene);
       }),
     );
+    // ширина области свечей сменилась (шкала цены перемерена после загрузки шрифта, окно, боковая панель),
+    // а вид после сброса никто не двигал: сброс заново по новой ширине — иначе шаг свечей зависел бы от того,
+    // успела ли LWC узнать ширину шкалы к первому сбросу
+    const ts = this.terminal.chart.timeScale() as ReturnType<IChartApi["timeScale"]> & Partial<Pick<ReturnType<IChartApi["timeScale"]>, "subscribeSizeChange" | "unsubscribeSizeChange">>;
+    let sizeQueued = false;
+    const check = () => {
+      sizeQueued = false;
+      if (this.destroyed || this.userMoved || this.resetTo === null || this.terminal.candles.length === 0) return;
+      // правый край тот же (смена ширины его не двигает) — вид не прокручивали и не масштабировали
+      const r = ts.getVisibleLogicalRange();
+      if (r && Math.abs(r.to - this.resetTo) < 0.05) this.reset();
+    };
+    // проверка — в следующем кадре: заданный сбросом диапазон LWC применяет при отрисовке, до неё виден старый
+    const onSize = () => {
+      if (sizeQueued) return;
+      sizeQueued = true;
+      if (this.opts.schedule) this.opts.schedule(check);
+      else if (typeof requestAnimationFrame === "function") requestAnimationFrame(check);
+      else check();
+    };
+    ts.subscribeSizeChange?.(onSize);
+    this.cleanups.push(() => ts.unsubscribeSizeChange?.(onSize));
     const onDbl = () => this.reset();
+    // вид двигал пользователь (перетаскивание, колесо, щипок): сброс при смене ширины его не трогает
+    const onUser = () => {
+      this.userMoved = true;
+    };
     this.el.addEventListener("dblclick", onDbl);
-    this.cleanups.push(() => this.el.removeEventListener("dblclick", onDbl));
+    this.el.addEventListener("pointerdown", onUser);
+    this.el.addEventListener("wheel", onUser, { passive: true });
+    this.cleanups.push(() => {
+      this.el.removeEventListener("dblclick", onDbl);
+      this.el.removeEventListener("pointerdown", onUser);
+      this.el.removeEventListener("wheel", onUser);
+    });
     if (this.opts.observe === false || typeof window === "undefined") return;
     // тема: data-theme и системная схема — перерисовка из палитры, без пересборки сцены
     const onTheme = () => this.themeChanged();

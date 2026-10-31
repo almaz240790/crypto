@@ -1,5 +1,5 @@
 import type { HoverInfo, LegendEntry, SceneIndex } from "../scene/types";
-import type { Device } from "../types";
+import type { Device, Tone } from "../types";
 
 /**
  * Состояние графика для React (план 2B.2, architecture §11): неизменяемые срезы, сравнение по Object.is,
@@ -13,9 +13,15 @@ export interface HoverSnapshot {
   x: number;
   y: number;
   info: HoverInfo;
+  /** Тон объекта: цвет заголовка подсказки (--chart-<tone>). */
+  tone: Tone;
+  /** Цена или диапазон по шагу инструмента («0.0049400», «от 99.50 до 101.00»); null — у объекта нет цены. */
+  priceText: string | null;
   /** От живой цены, %; у зоны — 0, если цена внутри. */
   distancePct: number | null;
-  /** Касание закрепило подсказку до следующего касания в другом месте. */
+  /** Область свечей без ценовой шкалы, CSS px: подсказка не заходит на шкалу. */
+  plot: { width: number; height: number };
+  /** Касание закрепило подсказку до следующего касания в другом месте (палец: карточка внизу графика). */
   pinned: boolean;
 }
 

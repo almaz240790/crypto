@@ -75,7 +75,7 @@ type Props = {
   layoutsLimit: number | null;
   /** Перетаскивание левого края панели (ширина хранится в TerminalPage). */
   onResize?: { start: (e: React.PointerEvent<HTMLElement>) => void; step: (delta: number) => void; active: boolean };
-  found: { count?: number; items: PatternOnChart[]; stats: Record<string, PatternStat>; selected: number | null; onSelect: (id: number | null) => void; tf: string; symbol: string; canExplain: boolean; askAccess: "guest" | "plan" | "ok" | null; index: SceneIndex | null; tick: string | null; figures: FigureOnChart[]; figureStats: Record<string, FigureStat>; selectedFigure: number | null; onSelectFigure: (id: number | null) => void };
+  found: { count?: number; items: PatternOnChart[]; stats: Record<string, PatternStat>; selected: number | null; onSelect: (id: number | null) => void; tf: string; symbol: string; canExplain: boolean; askAccess: "guest" | "plan" | "ok" | null; index: SceneIndex | null; tick: string | null; levelSelected: string | null; onLevel: (id: string | null) => void; figures: FigureOnChart[]; figureStats: Record<string, FigureStat>; selectedFigure: number | null; onSelectFigure: (id: number | null) => void };
 };
 
 export const LAYER_LABEL: Record<LayerKey, string> = { structure: "Структура", zones: "Зоны", levels: "Макс./мин. дня и недели", signals: "Сигналы", patterns: "Паттерны", figures: "Фигуры", volume_profile: "Профиль объёма", sr: "Поддержка и сопротивление", liq_map: "Карта ликвидаций (оценка)" };
@@ -117,7 +117,7 @@ export function ObjectsPanel(p: Props) {
       {tab === "found" && (
         <div className={s.objScroll}>
           <AskBox symbol={p.found.symbol} tf={p.found.tf} access={p.found.askAccess} />
-          <LevelsList index={p.found.index} tick={p.found.tick} />
+          <LevelsList index={p.found.index} tick={p.found.tick} selected={p.found.levelSelected} onPick={p.found.onLevel} />
           <strong className={s.objHead}>{t("Фигуры")}</strong>
           <FiguresList items={p.found.figures} stats={p.found.figureStats} selected={p.found.selectedFigure} onSelect={p.found.onSelectFigure} tick={p.found.tick} />
           <strong className={s.objHead}>{t("Свечные паттерны")}</strong>

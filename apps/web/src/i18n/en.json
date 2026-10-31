@@ -1288,5 +1288,8 @@
   "Вся автоматическая разметка: структура, зоны, уровни, ликвидации, фигура": "All automatic markup: structure, zones, levels, liquidations, figure",
   "ваши изменения поверх «{preset}»": "your changes on top of “{preset}”",
   "Разметка графика обновлена: по умолчанию «Чистый». Прежний вид — «Подробный» в «Разметке».": "Chart markup has been updated: “Clean” is the default. The previous look is “Detailed” under Markup.",
-  "Инструмент и таймфрейм у каждого графика свои; на графиках — ближайшие поддержка, сопротивление и зона. Рисунки и индикаторы — в терминале.": "Each chart has its own instrument and timeframe; the charts show the nearest support, resistance and zone. Drawings and indicators are in the terminal."
+  "Инструмент и таймфрейм у каждого графика свои; на графиках — ближайшие поддержка, сопротивление и зона. Рисунки и индикаторы — в терминале.": "Each chart has its own instrument and timeframe; the charts show the nearest support, resistance and zone. Drawings and indicators are in the terminal.",
+  "закрыть подсказку": "close the tooltip",
+  "что на графике": "what is on the chart",
+  "Что на графике": "What is on the chart"
 }

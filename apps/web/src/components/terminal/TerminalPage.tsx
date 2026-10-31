@@ -95,6 +95,14 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
   const onReady = useCallback((c: TerminalControls | null) => {
     controls.current = c;
   }, []);
+  // строка «Найдено → Уровни»: выбрать объект на графике и показать его, если он за кадром; повторно — снять
+  const pickLevel = useCallback(
+    (id: string | null) => {
+      if (id === null) store.select(null);
+      else controls.current?.focus({ objectId: id });
+    },
+    [store],
+  );
   const visibleFrom = useChartStore((x) => x.visible.fromTime, store);
   // каталог сцены: «Найдено → Уровни» и пояснение «нет данных OI» — независимо от слоёв
   const sceneIndex = useChartStore((x) => x.sceneIndex, store);
@@ -650,7 +658,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
             {sheet === "ask" && <AskBox symbol={symbol} tf={tf} access={askAccess} heading={false} />}
             {sheet === "found" && (
               <>
-                <LevelsList index={sceneIndex} tick={data.tick} />
+                <LevelsList index={sceneIndex} tick={data.tick} selected={selection} onPick={pickLevel} />
                 <strong className={s.objHead}>{t("Фигуры")}</strong>
                 <FiguresList items={data.figures?.items ?? []} stats={data.figures?.stats ?? {}} selected={figureSel} onSelect={setFigureSel} tick={data.tick} />
                 <strong className={s.objHead}>{t("Свечные паттерны")}</strong>
@@ -741,7 +749,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
           onDeleteLayout={removeLayout}
           authed={!!user}
           layoutsLimit={user ? null : 0}
-          found={{ count: foundCount, items: data.patterns?.items ?? [], stats: data.patterns?.stats ?? {}, selected: foundSel, onSelect: setFoundSel, tf, symbol, canExplain: !!user, askAccess, index: sceneIndex, tick: data.tick, figures: data.figures?.items ?? [], figureStats: data.figures?.stats ?? {}, selectedFigure: figureSel, onSelectFigure: setFigureSel }}
+          found={{ count: foundCount, items: data.patterns?.items ?? [], stats: data.patterns?.stats ?? {}, selected: foundSel, onSelect: setFoundSel, tf, symbol, canExplain: !!user, askAccess, index: sceneIndex, tick: data.tick, levelSelected: selection, onLevel: pickLevel, figures: data.figures?.items ?? [], figureStats: data.figures?.stats ?? {}, selectedFigure: figureSel, onSelectFigure: setFigureSel }}
         />
       </div>
       <div className={s.bottom}>

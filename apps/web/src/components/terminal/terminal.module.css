@@ -895,11 +895,44 @@
 }
 
 .levelList li {
+  border-bottom: 1px solid var(--border);
+}
+
+/* строка уровня — кнопка: выбор объекта на графике (план 2B.2, §10.4) */
+.levelBtn {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
   align-items: baseline;
-  padding: 3px 0;
-  border-bottom: 1px solid var(--border);
+  width: 100%;
+  padding: 3px 4px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.levelBtn:hover:not(:disabled) {
+  background: var(--row-hover);
+}
+
+.levelBtn:disabled {
+  cursor: default;
+}
+
+.levelList li[data-selected] .levelBtn {
+  box-shadow: inset 2px 0 0 var(--accent);
+  background: var(--row-hover);
+}
+
+@media (pointer: coarse) {
+  .levelBtn {
+    min-height: 44px;
+    align-items: center;
+  }
 }
 
 .levelLiq {

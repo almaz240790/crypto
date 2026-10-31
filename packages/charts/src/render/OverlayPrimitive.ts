@@ -49,7 +49,7 @@ export interface OverlayDebug {
   /** Отсчёт до закрытия под ценой (DOM-зеркало на шкале), координаты панели. */
   countdown: Rect | null;
   /** Нарисованные объекты и цвет их линии или заливки (смена темы — перерисовка с новыми цветами). */
-  objects: readonly { id: string; layer: string; kind: SceneObject["kind"]; tone: string; color: string }[];
+  objects: readonly { id: string; layer: string; kind: SceneObject["kind"]; tone: string; color: string; emphasis: SceneObject["emphasis"]; rect: Rect | null }[];
   /** Сколько раз раскладка пересчитывалась (неподвижный график — 0 новых пересчётов). */
   layouts: number;
 }
@@ -69,6 +69,20 @@ export interface OverlayOptions {
   /** Грубый указатель (палец): допуск попадания 12 px и упрощение подписей во время жеста. */
   coarse?: boolean;
   now?: () => number;
+}
+
+/** Прямоугольник объекта на экране (для переписи: куда навести и кликнуть). */
+function geomRect(g: ScreenScene["objects"][number]["geom"]): Rect | null {
+  switch (g.kind) {
+    case "box":
+      return { x: g.x1, y: g.y1, w: g.x2 - g.x1, h: g.y2 - g.y1 };
+    case "hline":
+      return { x: g.x1, y: g.y, w: g.x2 - g.x1, h: 0 };
+    case "glyph":
+      return { x: g.x - g.r, y: g.y - g.r, w: 2 * g.r, h: 2 * g.r };
+    default:
+      return null;
+  }
 }
 
 /** Сколько после изменения видимого диапазона подписи считаются «в жесте» (план 2A.7). */
@@ -344,7 +358,7 @@ export class OverlayPrimitive implements ISeriesPrimitive<Time> {
     const heatRects: Rect[] = [];
     const objects: OverlayDebug["objects"][number][] = [];
     for (const { obj, geom } of s?.objects ?? []) {
-      objects.push({ id: obj.id, layer: obj.layer, kind: obj.kind, tone: obj.tone, color: toneColor(theme, obj.tone) });
+      objects.push({ id: obj.id, layer: obj.layer, kind: obj.kind, tone: obj.tone, color: toneColor(theme, obj.tone), emphasis: obj.emphasis, rect: geomRect(geom) });
       if (geom.kind === "heat") for (const r of geom.rows) if (r.w > 0) heatRects.push({ x: geom.x1 - r.w, y: r.y1, w: r.w, h: r.y2 - r.y1 });
     }
     const lp = s?.obstacles.rects.find((o) => o.kind === "lastPrice")?.rect ?? null;

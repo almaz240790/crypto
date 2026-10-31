@@ -9,6 +9,8 @@ import s from "../terminal.module.css";
 import { useT } from "@/i18n/client";
 import { chartText } from "./chartText";
 import { useChartStore } from "./useChartStore";
+import { LegendChip } from "./LegendChip";
+import { ObjectTooltip } from "./ObjectTooltip";
 
 /** Цвет индикатора — токен дизайн-системы (план 5.3): палитра --ind-1…6 и смысловые цвета. */
 export type IndColor = "ind1" | "ind2" | "ind3" | "ind4" | "ind5" | "ind6" | "accent" | "up" | "down" | "warn";
@@ -170,6 +172,8 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
   /** Подгрузка истории слева и смена темы — из хранилища графика (переходные поля до D). */
   const historyRev = useChartStore((st) => st.status.historyRev, store);
   const themeVersion = useChartStore((st) => st.status.themeVersion, store);
+  /** Палец: подсказка объекта — закреплённая карточка внизу графика (план 2A.7). */
+  const [coarse] = useState(() => typeof window !== "undefined" && window.matchMedia("(pointer: coarse)").matches);
   /** Что загружено в график: смена инструмента или таймфрейма — замена и сброс вида, иначе — дописывание. */
   const loadedRef = useRef<{ key: string; tf: Timeframe; candles: Candle[] } | null>(null);
 
@@ -585,6 +589,8 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
   return (
     <div className={s.chart}>
       <div ref={ref} className={s.canvas} data-testid="terminal" />
+      <ObjectTooltip store={store} coarse={coarse} />
+      {device !== "cell" && <LegendChip store={store} />}
       {heads.map((h) => (
         <div
           key={h.key}

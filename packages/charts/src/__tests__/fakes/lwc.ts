@@ -67,7 +67,11 @@ export function makeChart(o: { candles: () => readonly Candle[]; width?: number;
   const clicks: ((p: unknown) => void)[] = [];
   const applied: unknown[] = [];
   const spacing = () => state.width / (state.range.to - state.range.from);
+  const sizeCbs: ((w: number, h: number) => void)[] = [];
   const ts = {
+    sizeCbs,
+    subscribeSizeChange: (cb: (w: number, h: number) => void) => sizeCbs.push(cb),
+    unsubscribeSizeChange: (cb: (w: number, h: number) => void) => sizeCbs.splice(sizeCbs.indexOf(cb), 1),
     width: () => state.width,
     applied: [] as unknown[],
     applyOptions: (x: unknown) => ts.applied.push(x),
@@ -148,8 +152,9 @@ export class FakeTerminal {
   setPriceFormat(): void {
     this.calls.push("setPriceFormat");
   }
-  resetView(n?: number): void {
+  resetView(n?: number): { from: number; to: number } | null {
     this.calls.push(`resetView:${n}`);
+    return { ...this.env.chart.state.range };
   }
   zoom(f: number): void {
     this.calls.push(`zoom:${f}`);

@@ -11,7 +11,7 @@ import { loadFixture } from "./fixtures/scene/load";
 
 /** Каркас контроллера (план 2B.2, §11.2): стадии в одном кадре, тема и тик без пересборки сцены, смена устройства. */
 
-function setup(o: { width?: number; device?: "auto" | "cell"; candles?: Candle[] } = {}) {
+function setup(o: { width?: number; device?: "auto" | "cell"; candles?: Candle[]; coarse?: boolean } = {}) {
   const queue: (() => void)[] = [];
   const store = createChartStore();
   const el = fakeElement(o.width ?? 1000);
@@ -21,7 +21,7 @@ function setup(o: { width?: number; device?: "auto" | "cell"; candles?: Candle[]
     container: el,
     store,
     device: o.device ?? "auto",
-    coarse: false,
+    coarse: o.coarse ?? false,
     observe: false,
     onNeedOlder: async () => null,
     createTerminal: () => {
@@ -192,17 +192,129 @@ describe("ChartController: стадии сцены", () => {
     expect(ctrl.currentScene!.selected).toBeNull();
   });
 
-  it("наведение пишет hover с подсказкой и расстоянием от живой цены", () => {
+  it("наведение пишет hover раз в кадр: подсказка, тон, цена по шагу, расстояние от живой цены", () => {
+    const { ctrl, store, term, flush } = setup();
+    ctrl.set({ text: RU_TEXT, structure: fx.structure, tick: "0.1" });
+    flush();
+    const obj = ctrl.currentScene!.objects.find((o) => o.layer === "sr")!;
+    const move = (p: unknown) => term.env.chart.moves.forEach((cb) => cb(p));
+    move({ hoveredInfo: { objectId: obj.id }, point: { x: 5, y: 5 } });
+    move({ hoveredInfo: { objectId: obj.id }, point: { x: 10, y: 20 } });
+    expect(store.getState().hover).toBeNull(); // запись — в следующем кадре, последним положением
+    flush();
+    const h = store.getState().hover!;
+    expect(h).toMatchObject({ objectId: obj.id, x: 10, y: 20, pinned: false, tone: obj.tone });
+    expect(h.info.title).toBe(obj.hover.title);
+    expect(h.priceText).toMatch(/^\d[\d\s\u202f]*\.\d$/);
+    expect(h.distancePct).not.toBeNull();
+    expect(h.plot.width).toBeGreaterThan(0);
+    move({ point: { x: 10, y: 20 } });
+    flush();
+    expect(store.getState().hover).toBeNull();
+  });
+
+  it("зона: в подсказке диапазон «от … до …»; объект пропал из сцены — подсказка тоже", () => {
+    const { ctrl, store, term, flush } = setup();
+    ctrl.set({ text: RU_TEXT, structure: fx.structure, markup: { preset: "levels", overrides: {} } });
+    flush();
+    const zone = ctrl.currentScene!.objects.find((o) => o.kind === "box")!;
+    term.env.chart.moves.forEach((cb) => cb({ hoveredInfo: { objectId: zone.id }, point: { x: 1, y: 1 } }));
+    flush();
+    expect(store.getState().hover!.priceText).toMatch(/^от .+ до .+$/);
+    ctrl.set({ markup: { preset: "clean", overrides: { zones: false } } });
+    flush();
+    expect(store.getState().hover).toBeNull();
+  });
+
+  it("палец: тап по объекту выбирает и закрепляет карточку, тап мимо — снимает; движение перекрестия подсказку не трогает", () => {
+    const { ctrl, store, term, flush } = setup({ coarse: true });
+    ctrl.set({ text: RU_TEXT, structure: fx.structure });
+    flush();
+    ctrl.overlay.updateAllViews();
+    const sr = ctrl.currentScene!.objects.find((o) => o.kind === "hline" && o.layer === "sr")!;
+    const y = term.env.series.priceToCoordinate((sr as { price: number }).price) as number;
+    const id = ctrl.overlay.hitTest(100, y)?.externalId;
+    expect(id).toBeDefined();
+    const tap = (p: unknown) => term.env.chart.clicks.forEach((cb) => cb(p));
+    // у тапа LWC не делает hitTest: hoveredInfo устарел или пуст — контроллер считает попадание сам
+    tap({ point: { x: 100, y }, hoveredInfo: { objectId: "устарел" } });
+    expect(store.getState().selection).toBe(id);
+    expect(store.getState().hover).toMatchObject({ objectId: id, pinned: true });
+    term.env.chart.moves.forEach((cb) => cb({ point: { x: 3, y: 3 } }));
+    flush();
+    expect(store.getState().hover?.pinned).toBe(true);
+    tap({ point: { x: 100, y: y + 200 } });
+    expect(store.getState().selection).toBeNull();
+    expect(store.getState().hover).toBeNull();
+    // Esc или крестик карточки: select(null) снимает и закреплённую подсказку
+    tap({ point: { x: 100, y } });
+    expect(store.getState().hover?.pinned).toBe(true);
+    store.select(null);
+    expect(store.getState().hover).toBeNull();
+    // повторный тап по выбранному объекту — снять выбор
+    tap({ point: { x: 100, y } });
+    tap({ point: { x: 100, y } });
+    expect(store.getState().selection).toBeNull();
+    expect(store.getState().hover).toBeNull();
+  });
+
+  it("focus: строка «Найдено» выбирает объект и прокручивает к нему; отрезанный лимитом — после пересборки сцены", () => {
+    const { ctrl, store, term, flush } = setup({ candles: fx.candles });
+    ctrl.set({ text: RU_TEXT, structure: fx.structure });
+    flush();
+    const row = ctrl.currentScene!.index.levels.find((r) => r.layer === "zones" && !r.onChart)!;
+    expect(row).toBeDefined();
+    term.env.chart.state.range = { from: 0, to: 10 };
+    ctrl.handle.focus({ objectId: row.id });
+    expect(store.getState().selection).toBe(row.id);
+    expect(term.env.chart.state.range).toEqual({ from: 0, to: 10 }); // объекта ещё нет в сцене
+    flush();
+    expect(ctrl.sceneObject(row.id)?.emphasis).toBe("selected");
+    const r = term.env.chart.state.range;
+    expect(r.to - r.from).toBeCloseTo(10);
+    expect(r.from).not.toBe(0); // время зоны — на 70 % ширины (зона старше буфера: левее первой свечи)
+    // нарисованный объект в кадре — вид не двигается
+    const before = { ...term.env.chart.state.range };
+    ctrl.handle.focus({ objectId: row.id });
+    expect(term.env.chart.state.range).toEqual(before);
+  });
+
+  it("ширина области сменилась, а вид после сброса не трогали — сброс заново; после масштаба или прокрутки — нет", () => {
+    const { ctrl, term, flush } = setup();
+    ctrl.set({ text: RU_TEXT, structure: fx.structure });
+    ctrl.notifyCandles("replace");
+    flush();
+    const resets = () => term.calls.filter((c) => c.startsWith("resetView")).length;
+    const size = (w: number) => {
+      term.env.chart.state.width = w;
+      term.env.chart.timeScale().sizeCbs.forEach((cb) => cb(w, 400));
+      flush(); // проверка — в следующем кадре
+    };
+    const n0 = resets();
+    size(930);
+    expect(resets()).toBe(n0 + 1);
+    // прокрутка (правый край сдвинулся) — вид пользователя не сбрасывается
+    term.env.chart.state.range = { from: 10, to: 100 };
+    size(920);
+    expect(resets()).toBe(n0 + 1);
+    // ⟲ — снова «нетронутый» вид; масштаб кнопкой — уже нет
+    ctrl.handle.reset();
+    size(910);
+    expect(resets()).toBe(n0 + 3);
+    ctrl.handle.zoom(1.25);
+    size(900);
+    expect(resets()).toBe(n0 + 3);
+  });
+
+  it("мышь: клик без hoveredInfo — попадание по кадру примитива", () => {
     const { ctrl, store, term, flush } = setup();
     ctrl.set({ text: RU_TEXT, structure: fx.structure });
     flush();
-    const obj = ctrl.currentScene!.objects.find((o) => o.layer === "sr")!;
-    term.env.chart.moves.forEach((cb) => cb({ hoveredInfo: { objectId: obj.id }, point: { x: 10, y: 20 } }));
-    const h = store.getState().hover!;
-    expect(h).toMatchObject({ objectId: obj.id, x: 10, y: 20, pinned: false });
-    expect(h.info.title).toBe(obj.hover.title);
-    expect(h.distancePct).not.toBeNull();
-    term.env.chart.moves.forEach((cb) => cb({ point: { x: 10, y: 20 } }));
+    ctrl.overlay.updateAllViews();
+    const sr = ctrl.currentScene!.objects.find((o) => o.kind === "hline" && o.layer === "sr")!;
+    const y = term.env.series.priceToCoordinate((sr as { price: number }).price) as number;
+    term.env.chart.clicks.forEach((cb) => cb({ point: { x: 100, y } }));
+    expect(store.getState().selection).toBe(ctrl.overlay.hitTest(100, y)!.externalId);
     expect(store.getState().hover).toBeNull();
   });
 

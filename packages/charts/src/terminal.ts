@@ -432,14 +432,18 @@ export class Terminal {
    * автомасштаб цены. Индексы — по шкале времени (индекс последней и первой свечи буфера), а не по длине
    * буфера: на шкале бывают и точки других серий. Свечей меньше n — показываются все.
    */
-  resetView(n: number = FALLBACK_BARS): void {
+  /** Возвращает заданный диапазон: LWC применяет его в следующей отрисовке, getVisibleLogicalRange до неё — старый. */
+  resetView(n: number = FALLBACK_BARS): { from: number; to: number } | null {
     const ts = this.chart.timeScale();
     const last = this.lastIndex();
+    let range: { from: number; to: number } | null = null;
     if (last !== null) {
       const from = Math.max(this.firstIndex(), last + 1 - Math.max(1, Math.round(n)));
-      ts.setVisibleLogicalRange(this.rightEdgeRange(last, last + 1 - from));
+      range = this.rightEdgeRange(last, last + 1 - from);
+      ts.setVisibleLogicalRange(range);
     }
     this.chart.priceScale("right").applyOptions({ autoScale: true });
+    return range;
   }
 
   /** Индекс первой свечи буфера на шкале времени (0, если левее неё на шкале ничего нет). */
