@@ -7,8 +7,14 @@ import type { NextRequest } from "next/server";
  */
 export const dynamic = "force-dynamic";
 
-const PASS_REQ = ["content-type", "authorization", "cookie", "accept", "user-agent", "accept-language"];
-const PASS_RES = ["content-type", "cache-control", "content-disposition", "retry-after"];
+/**
+ * if-none-match / etag / age — ревалидация /v1/chart: повторный запрос получает 304 без тела (план 2B.4).
+ * cdn-cache-control — свежесть для edge (Cloudflare перед этим прокси); браузер его не читает.
+ */
+const PASS_REQ = ["content-type", "authorization", "cookie", "accept", "user-agent", "accept-language", "if-none-match"];
+const PASS_RES = ["content-type", "cache-control", "cdn-cache-control", "content-disposition", "retry-after", "etag", "age"];
+/** Статусы без тела: Response с телом для них бросает исключение. */
+const NULL_BODY = new Set([204, 205, 304]);
 
 async function proxy(req: NextRequest, ctx: { params: Promise<{ path: string[] }> }): Promise<Response> {
   const base = process.env.API_URL ?? process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -44,7 +50,7 @@ async function proxy(req: NextRequest, ctx: { params: Promise<{ path: string[] }
     if (v) out.set(h, v);
   }
   for (const c of upstream.headers.getSetCookie()) out.append("set-cookie", c);
-  return new Response(upstream.status === 204 ? null : upstream.body, { status: upstream.status, headers: out });
+  return new Response(NULL_BODY.has(upstream.status) ? null : upstream.body, { status: upstream.status, headers: out });
 }
 
 export { proxy as DELETE, proxy as GET, proxy as HEAD, proxy as PATCH, proxy as POST, proxy as PUT };

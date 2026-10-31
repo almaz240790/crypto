@@ -1,8 +1,15 @@
 """chart-data (план 2A.3, задача 2B.4): свечи порциями, агрегаты 5m/15m/1h из 1m, текущая
 незакрытая свеча, слои структуры и сигналов для терминала.
 
-Хранятся 1m, 4h, 1d, 1w; 5m/15m/1h считаются time_bucket'ом по 1m на лету (continuous
-aggregates TimescaleDB — отдельная миграция, когда объём запросов это оправдает).
+Хранятся 1m, 4h, 1d, 1w; 5m/15m/1h считаются в SQL (``time_bucket`` + ``first``/``last``
+TimescaleDB) по 1m на лету, текущая свеча — тем же агрегатом по 1m текущего интервала
+(continuous aggregates — отдельная миграция, когда объём запросов это оправдает). Колонки
+Numeric, поэтому агрегат в БД точный и совпадает с :func:`aggregate` / :func:`fold`.
+
+В агрегаты идут только закрытые минуты (``is_closed``): формирующуюся минуту market-data
+перезаписывает раз в секунду, а WebSocket отдаёт её один раз, закрытой. Так незакрытая свеча
+ответа — ровно свёртка закрытых минут до ``current_through``, и клиент досворачивает минуты
+новее без потерь и двойного счёта.
 """
 
 from __future__ import annotations
@@ -10,6 +17,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+from collections.abc import Collection
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -34,6 +42,11 @@ AGGREGATED = {Timeframe.M5: 5, Timeframe.M15: 15, Timeframe.H1: 60}
 PAGE = 500
 LAYER_TFS = (Timeframe.H1, Timeframe.H4, Timeframe.D1, Timeframe.W1)
 LAYERS_TTL = 60
+CHART_VIEW = {"events": 12, "sweeps": 12}
+"""layers?view=chart: сколько последних событий структуры и снятий ликвидности отдаётся.
+Клиентский лимит пресета не больше трети (веб: SERVER_CAPS в presets.ts)."""
+DERIV_SERIES = ("funding", "oi", "liquidations", "ls_ratio", "ls_top")
+"""Ряды derivatives?series=…; ``none`` — только funding_current, next_funding_t и примечание."""
 
 
 def _dec(x: Decimal | None) -> str | None:
@@ -54,7 +67,9 @@ def candle_dict(c: Candle, open_: bool = False) -> dict[str, Any]:
 
 def aggregate(m1: list[Candle], tf: Timeframe) -> list[Candle]:
     """Чистая агрегация минутных свечей в tf (5m/15m/1h): open первой, high/low, close
-    последней, сумма объёмов. Неполные корзины на краях тоже отдаются — решает вызывающий."""
+    последней, сумма объёмов. Неполные корзины на краях тоже отдаются — решает вызывающий.
+
+    Эталон для SQL-агрегата :func:`load_candles` (тесты сверяют их на фикстурах)."""
     size = tf.seconds
     out: list[Candle] = []
     cur: Candle | None = None
@@ -87,12 +102,42 @@ def _rows_to_candles(rows: list[Any]) -> list[Candle]:
     ]
 
 
+_AGG_COLUMNS = (
+    "first(open, open_time), max(high), min(low), last(close, open_time), "
+    "sum(volume), sum(quote_volume), CAST(sum(trades) AS bigint)"
+)
+_BEFORE = "(CAST(:b AS timestamptz) is null or open_time < CAST(:b AS timestamptz))"
+_CLOSED_M1 = "instrument_id=:i and timeframe='1m' and is_closed"
+"""Минуты для агрегатов: только закрытые (формирующаяся перезаписывается раз в секунду)."""
+_LAST_M1_SQL = text(
+    f"select open_time from candles where {_CLOSED_M1} and {_BEFORE} "
+    "order by open_time desc limit 1"
+)
+_BUCKETS_SQL = text(
+    f"select time_bucket(:w, open_time) as t, {_AGG_COLUMNS} from candles "
+    f"where {_CLOSED_M1} and open_time >= :lo and {_BEFORE} "
+    "group by 1 order by 1"
+)
+_OLDER_M1_SQL = text(f"select exists(select 1 from candles where {_CLOSED_M1} and open_time < :lo)")
+_CURRENT_SQL = text(
+    f"select {_AGG_COLUMNS}, max(open_time), count(*) from candles "
+    f"where {_CLOSED_M1} and open_time >= :s"
+)
+
+
 def load_candles(
     db: Session, instrument_id: int, tf: Timeframe, before: datetime | None, limit: int = PAGE
 ) -> tuple[list[Candle], bool]:
     """Закрытые свечи tf до ``before`` (не включая), последние ``limit``.
 
     Возвращает (свечи, есть ли ещё слева).
+
+    5m/15m/1h — SQL-агрегат закрытых минут по окну времени из ``limit`` корзин, которое кончается
+    корзиной самой новой закрытой минуты раньше ``before``: ``[top − (limit−1)·size, before)``.
+    Левая корзина окна всегда полная (окно выровнено по корзинам), ``has_older`` — есть ли минуты
+    левее окна. Отличие от прежнего окна по строкам — только у пропусков в данных: корзины без
+    минут не отдаются, и порция короче ``limit``, но не пустая, пока слева есть данные.
+    Хранимые 4h/1d/1w отдаются как есть (последняя может быть незакрытым снимком биржи).
     """
     limit = max(1, min(limit, PAGE))
     if tf in STORED:
@@ -107,28 +152,18 @@ def load_candles(
             {"i": instrument_id, "tf": tf.value, "b": before, "n": limit + 1},
         ).all()
         candles = _rows_to_candles(list(reversed(rows)))
-    else:
-        mult = AGGREGATED[tf]
-        rows = db.execute(
-            text(
-                "select open_time, open, high, low, close, volume, quote_volume, trades "
-                "from candles "
-                "where instrument_id=:i and timeframe='1m' "
-                "and (CAST(:b AS timestamptz) is null or open_time < CAST(:b AS timestamptz)) "
-                "order by open_time desc limit :n"
-            ),
-            {"i": instrument_id, "b": before, "n": (limit + 2) * mult},
-        ).all()
-        candles = aggregate(_rows_to_candles(list(reversed(rows))), tf)
-        # первая корзина может быть неполной (обрезана лимитом) — выбрасываем
-        if len(candles) > limit + 1:
-            candles = candles[-(limit + 1) :]
-        elif candles and len(rows) >= (limit + 2) * mult:
-            candles = candles[1:]
-    has_older = len(candles) > limit
-    if has_older:
-        candles = candles[-limit:]
-    return candles, has_older
+        has_older = len(candles) > limit
+        return (candles[-limit:] if has_older else candles), has_older
+    size = tf.seconds
+    top = db.execute(_LAST_M1_SQL, {"i": instrument_id, "b": before}).scalar()
+    if top is None:
+        return [], False
+    lo = datetime.fromtimestamp(bucket_key(int(top.timestamp()), size) - (limit - 1) * size, tz=UTC)
+    rows = db.execute(
+        _BUCKETS_SQL, {"i": instrument_id, "b": before, "lo": lo, "w": tf.delta}
+    ).all()
+    has_older = bool(db.execute(_OLDER_M1_SQL, {"i": instrument_id, "lo": lo}).scalar())
+    return _rows_to_candles(list(rows)), has_older
 
 
 def bucket_start(tf: Timeframe, now: datetime) -> datetime:
@@ -140,25 +175,33 @@ def bucket_start(tf: Timeframe, now: datetime) -> datetime:
     return datetime.fromtimestamp((int(now.timestamp()) // size) * size, tz=UTC)
 
 
-def current_candle(db: Session, instrument_id: int, tf: Timeframe, now: datetime) -> Candle | None:
-    """Незакрытая свеча tf из минутных свечей текущего интервала (для tf ≥ 5m)."""
+def current_bar(
+    db: Session, instrument_id: int, tf: Timeframe, now: datetime
+) -> tuple[Candle, datetime] | None:
+    """Незакрытая свеча tf одним SQL-агрегатом по закрытым минутам текущего интервала (для
+    tf ≥ 5m) и open time самой новой минуты в ней (``current_through``) — из того же запроса,
+    поэтому свеча и время всегда согласованы. Закрытых минут в интервале нет — ``None``."""
     if tf is Timeframe.M1:
         return None
     start = bucket_start(tf, now)
-    rows = db.execute(
-        text(
-            "select open_time, open, high, low, close, volume, quote_volume, trades from candles "
-            "where instrument_id=:i and timeframe='1m' and open_time >= :s order by open_time"
-        ),
-        {"i": instrument_id, "s": start},
-    ).all()
-    if not rows:
+    row = db.execute(_CURRENT_SQL, {"i": instrument_id, "s": start}).one()
+    if not row[8]:
         return None
-    return fold(_rows_to_candles(list(rows)), start)
+    candle = Candle(
+        start, row[0], row[1], row[2], row[3], row[4], row[5] or Decimal(0), int(row[6] or 0)
+    )
+    return candle, row[7].astimezone(UTC)
+
+
+def current_candle(db: Session, instrument_id: int, tf: Timeframe, now: datetime) -> Candle | None:
+    """Незакрытая свеча tf из минутных свечей текущего интервала (для tf ≥ 5m)."""
+    bar = current_bar(db, instrument_id, tf, now)
+    return None if bar is None else bar[0]
 
 
 def fold(m1: list[Candle], start: datetime) -> Candle:
-    """Чистая свёртка минутных свечей в одну свечу с началом ``start``."""
+    """Чистая свёртка минутных свечей в одну свечу с началом ``start``. Эталон для
+    :func:`current_bar` (тесты сверяют их на фикстурах)."""
     return Candle(
         start,
         m1[0].open,
@@ -286,17 +329,49 @@ def layers_cached(
     return out
 
 
+def chart_view(structure: dict[str, Any] | None) -> dict[str, Any] | None:
+    """layers?view=chart: только то, что рисует график. Без swing-ов; зоны — только активные
+    (клиентская склейка зон всё равно берёт active); последние CHART_VIEW событий структуры и
+    снятий по времени; равные уровни — только не снятые. levels, bias, atr — как есть."""
+    if structure is None:
+        return None
+
+    def last(items: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:
+        n = CHART_VIEW[key]
+        return sorted(items, key=lambda x: int(x["t"]))[-n:] if n else []
+
+    out = dict(structure)
+    out["swings"] = []
+    out["zones"] = [z for z in structure.get("zones", []) if z.get("status") == "active"]
+    out["events"] = last(list(structure.get("events", [])), "events")
+    out["sweeps"] = last(list(structure.get("sweeps", [])), "sweeps")
+    out["equal_levels"] = [e for e in structure.get("equal_levels", []) if not e.get("swept")]
+    return out
+
+
 def signal_layer(
-    db: Session, inst: Instrument, scope_statuses: list[str], limit: int = 50
+    db: Session,
+    inst: Instrument,
+    scope_statuses: list[str],
+    grades: Collection[str] | None = None,
+    closed_by: datetime | None = None,
+    limit: int = 50,
 ) -> list[dict[str, Any]]:
-    """Сигналы инструмента для слоя: вход, стоп, цели, статус, события на шкале времени."""
-    rows = db.execute(
+    """Сигналы инструмента для слоя: вход, стоп, цели, статус, события на шкале времени.
+
+    ``grades`` — видимые градации (``None`` — все), ``closed_by`` — только сигналы с закрытием
+    свечи не позже (задержка тарифа; ``None`` — без задержки): те же ограничения, что у
+    ``/v1/signals``."""
+    q = (
         select(Signal, StrategyVersion.version)
         .join(StrategyVersion, StrategyVersion.id == Signal.strategy_version_id)
         .where(Signal.instrument_id == inst.id, StrategyVersion.status.in_(scope_statuses))
-        .order_by(Signal.candle_close_time.desc())
-        .limit(limit)
-    ).all()
+    )
+    if grades is not None:
+        q = q.where(Signal.grade.in_(list(grades)))
+    if closed_by is not None:
+        q = q.where(Signal.candle_close_time <= closed_by)
+    rows = db.execute(q.order_by(Signal.candle_close_time.desc()).limit(limit)).all()
     ids = [s.id for s, _ in rows]
     events: dict[int, list[dict[str, Any]]] = {}
     if ids:
@@ -358,49 +433,74 @@ def bucket_sum(rows: list[tuple[datetime, Decimal, Decimal]], size: int) -> list
     return [{"t": k, "long": _dec(a), "short": _dec(b)} for k, (a, b) in sorted(out.items())]
 
 
+_DERIV_SQL = {
+    "funding": text(
+        "select funding_time, rate, interval_hours from funding_rates "
+        "where instrument_id=:i and funding_time>=:s and funding_time<:u order by 1"
+    ),
+    "oi": text(
+        "select time, oi_quote from open_interest "
+        "where instrument_id=:i and time>=:s and time<:u order by 1"
+    ),
+    "liquidations": text(
+        "select time, long_usd, short_usd from liquidations "
+        "where instrument_id=:i and time>=:s and time<:u order by 1"
+    ),
+    "ls": text(
+        "select time, global_ratio, top_traders_ratio from long_short_ratios "
+        "where instrument_id=:i and time>=:s and time<:u order by 1"
+    ),
+}
+_LAST_FUNDING_SQL = text(
+    "select funding_time, rate, interval_hours from funding_rates "
+    "where instrument_id=:i and funding_time>=:s and funding_time<:u "
+    "order by funding_time desc limit 1"
+)
+LIQUIDATIONS_NOTE = "ликвидации из публичного потока Binance (не полный объём)"
+
+
 def load_derivatives(
-    db: Session, instrument_id: int, tf: Timeframe, since: datetime, until: datetime | None
+    db: Session,
+    instrument_id: int,
+    tf: Timeframe,
+    since: datetime,
+    until: datetime | None,
+    series: Collection[str] | None = None,
 ) -> dict[str, Any]:
+    """Ряды funding / OI / ликвидаций / long-short по корзинам tf за ``[since, until)``.
+
+    ``series`` — какие ряды отдать (из DERIV_SERIES); ``None`` — все, как раньше; пустой набор —
+    только ``funding_current``, ``next_funding_t`` и примечание. Запрашиваются только нужные
+    таблицы."""
     until = until or datetime.now(tz=UTC)
     size = tf.seconds
-    f = db.execute(
-        text(
-            "select funding_time, rate, interval_hours from funding_rates "
-            "where instrument_id=:i and funding_time>=:s and funding_time<:u order by 1"
-        ),
-        {"i": instrument_id, "s": since, "u": until},
-    ).all()
-    oi = db.execute(
-        text(
-            "select time, oi_quote from open_interest "
-            "where instrument_id=:i and time>=:s and time<:u order by 1"
-        ),
-        {"i": instrument_id, "s": since, "u": until},
-    ).all()
-    liq = db.execute(
-        text(
-            "select time, long_usd, short_usd from liquidations "
-            "where instrument_id=:i and time>=:s and time<:u order by 1"
-        ),
-        {"i": instrument_id, "s": since, "u": until},
-    ).all()
-    ls = db.execute(
-        text(
-            "select time, global_ratio, top_traders_ratio from long_short_ratios "
-            "where instrument_id=:i and time>=:s and time<:u order by 1"
-        ),
-        {"i": instrument_id, "s": since, "u": until},
-    ).all()
-    last_f = f[-1] if f else None
+    want = set(DERIV_SERIES) if series is None else set(series)
+    params = {"i": instrument_id, "s": since, "u": until}
+
+    def rows(key: str) -> list[Any]:
+        return list(db.execute(_DERIV_SQL[key], params).all())
+
+    if "funding" in want:
+        f = rows("funding")
+        last_f = f[-1] if f else None
+    else:
+        f = []
+        last_f = db.execute(_LAST_FUNDING_SQL, params).first()
     interval = int(last_f[2] or 8) if last_f else 8
     next_funding = int(last_f[0].timestamp()) + interval * 3600 if last_f is not None else None
-    return {
-        "funding": [{"t": int(r[0].timestamp()), "v": _dec(r[1])} for r in f],
-        "funding_current": _dec(last_f[1]) if last_f else None,
-        "next_funding_t": next_funding,
-        "oi": bucket_last([(r[0], r[1]) for r in oi], size),
-        "liquidations": bucket_sum([(r[0], r[1], r[2]) for r in liq], size),
-        "liquidations_note": "ликвидации из публичного потока Binance (не полный объём)",
-        "ls_ratio": bucket_last([(r[0], r[1]) for r in ls], size),
-        "ls_top": bucket_last([(r[0], r[2]) for r in ls], size),
-    }
+    ls = rows("ls") if want & {"ls_ratio", "ls_top"} else []
+    out: dict[str, Any] = {}
+    if "funding" in want:
+        out["funding"] = [{"t": int(r[0].timestamp()), "v": _dec(r[1])} for r in f]
+    out["funding_current"] = _dec(last_f[1]) if last_f else None
+    out["next_funding_t"] = next_funding
+    if "oi" in want:
+        out["oi"] = bucket_last([(r[0], r[1]) for r in rows("oi")], size)
+    if "liquidations" in want:
+        out["liquidations"] = bucket_sum([(r[0], r[1], r[2]) for r in rows("liquidations")], size)
+    out["liquidations_note"] = LIQUIDATIONS_NOTE
+    if "ls_ratio" in want:
+        out["ls_ratio"] = bucket_last([(r[0], r[1]) for r in ls], size)
+    if "ls_top" in want:
+        out["ls_top"] = bucket_last([(r[0], r[2]) for r in ls], size)
+    return out
