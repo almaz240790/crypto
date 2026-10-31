@@ -26,11 +26,13 @@ const ENDPOINTS: { path: string; what: string; params: string }[] = [
   { path: "/v1/stats/export.csv", what: "Полная история сделок в CSV", params: "scope, version, symbol" },
   { path: "/v1/stats/patterns", what: "Отработка свечных паттернов", params: "tf, type, symbol, horizon" },
   { path: "/v1/stats/figures", what: "Отработка графических фигур", params: "tf, type" },
-  { path: "/v1/chart/candles", what: "Закрытые свечи инструмента", params: "symbol, tf, before, limit" },
-  { path: "/v1/chart/layers", what: "Структура рынка, зоны, уровни на таймфрейме", params: "symbol, tf" },
-  { path: "/v1/chart/patterns", what: "Свечные паттерны на графике", params: "symbol, tf, since, until, limit" },
-  { path: "/v1/chart/figures", what: "Графические фигуры на графике", params: "symbol, tf, since, until, limit" },
-  { path: "/v1/chart/derivatives", what: "Funding, OI, ликвидации, L/S ratio по корзинам таймфрейма", params: "symbol, tf, before, limit" },
+  { path: "/v1/chart/candles", what: "Закрытые свечи инструмента", params: "symbol, tf, before, limit; в ответе current, current_through" },
+  { path: "/v1/chart/layers", what: "Структура рынка, зоны, уровни на таймфрейме", params: "symbol, tf, view=chart" },
+  { path: "/v1/chart/patterns", what: "Свечные паттерны на графике", params: "symbol, tf, since, until, limit, view=chart, ids" },
+  { path: "/v1/chart/figures", what: "Графические фигуры на графике", params: "symbol, tf, since, until, limit, view=chart" },
+  { path: "/v1/chart/found", what: "Счётчики паттернов и фигур за диапазон", params: "symbol, tf, since, until" },
+  { path: "/v1/chart/signals", what: "Сигналы инструмента для графика", params: "symbol" },
+  { path: "/v1/chart/derivatives", what: "Funding, OI, ликвидации, L/S ratio по корзинам таймфрейма", params: "symbol, tf, before, limit, series" },
   { path: "/v1/screener", what: "Скринер по всем инструментам", params: "symbols" },
   { path: "/v1/screener/export.csv", what: "Скринер в CSV", params: "symbols" },
   { path: "/v1/instruments", what: "Список инструментов", params: "—" },
@@ -83,6 +85,15 @@ print(r.json()["metrics"])`}</pre>
               ))}
             </tbody>
           </Table>
+        </Panel>
+        <Panel title={t("Данные графика: параметры и кэш")}>
+          <ul style={{ margin: 0, paddingLeft: 18, display: "grid", gap: 6 }}>
+            <li><code>view=chart</code>{" "}{t("у layers, patterns и figures — только то, что рисует график: активные зоны, последние 12 событий структуры и снятий, не снятые равные уровни; у паттернов контекст только у значимых и поле total. Полные элементы паттернов — по")}{" "}<code>ids=1,2</code>{" "}{t("(до 20).")}</li>
+            <li><code>series</code>{" "}{t("у derivatives — нужные ряды через запятую: funding, oi, liquidations, ls_ratio, ls_top; none — только текущий funding и время следующего. Без параметра — все ряды.")}</li>
+            <li><code>/v1/chart/found</code>{" "}{t("— счётчики паттернов и фигур за диапазон без самих элементов;")}{" "}<code>/v1/chart/signals</code>{" "}{t("— сигналы для графика, нужен вход или API-ключ.")}</li>
+            <li><code>current_through</code>{" "}{t("— время открытия самой новой минутной свечи, учтённой в текущей незакрытой свече.")}</li>
+            <li>{t("Ответы /v1/chart приходят с ETag и Cache-Control: повторный запрос с заголовком")}{" "}<code>If-None-Match</code>{" "}{t("получает 304 без тела, страницы истории (before) кэшируются на час. Ответы, зависящие от тарифа или входа, общими кэшами не сохраняются.")}</li>
+          </ul>
         </Panel>
         <p className="caption">{t("Полная схема всех эндпоинтов с типами полей — в OpenAPI:")}{" "}<a href={`${BASE}/docs`}>{BASE}/docs</a>{t(". Данные носят информационный характер и не являются инвестиционной рекомендацией.")}</p>
       </main>
