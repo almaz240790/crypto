@@ -53,6 +53,25 @@ const barSpacing = (page: Page) =>
     return r ? ts.width() / (r.to - r.from) : 0;
   });
 const mainLen = async (page: Page) => (await seriesOf(page))[0]?.len ?? 0;
+const fontSize = (page: Page) => page.evaluate(() => (document.querySelector('[data-testid="terminal"]') as HTMLElement & { __chart: { options(): { layout: { fontSize: number } } } }).__chart.options().layout.fontSize);
+const token = (page: Page, name: string) => page.evaluate((n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim().toLowerCase(), name);
+/** Свечи молодой монеты (листинг позже начала истории): только последние 100 закрытых и текущая. */
+const NEW_COIN = "NEWUSDT";
+const NEW_FIRST = FIRST_PAGE - 100;
+function newCoin(page: Page) {
+  const candle = (i: number) => {
+    const o = 100 + Math.sin(i / 7) * 5;
+    const c = o + Math.cos(i / 5);
+    return { t: T0 + i * H4, o: o.toFixed(2), h: (Math.max(o, c) + 1).toFixed(2), l: (Math.min(o, c) - 1).toFixed(2), c: c.toFixed(2), v: "1000", open: false };
+  };
+  return page.route("**/v1/chart/candles?**", (route) => {
+    const u = new URL(route.request().url());
+    if (u.searchParams.get("symbol") !== NEW_COIN) return route.fallback();
+    const before = u.searchParams.get("before");
+    const items = before ? [] : Array.from({ length: 100 }, (_, i) => candle(NEW_FIRST + i));
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ symbol: NEW_COIN, tf: "4h", candles: items, current: before ? null : { ...candle(FIRST_PAGE), open: true }, has_older: false, tick_size: "0.01", server_time: "" }) });
+  });
+}
 const olderCalls = (calls: string[]) => calls.filter((c) => c.startsWith("/v1/chart/candles") && c.includes("before=")).length;
 
 test("монета дешевле цента (шаг 1e-7): деления шкалы, цена в шапке, уровни и перекрестие — не «0.00»", async ({ page }) => {
@@ -240,4 +259,91 @@ test("светлая тема: слои, индикаторы и фигуры п
   await expect.poll(lineColors).toContain(lightAccent);
   expect(await lineColors()).not.toContain(darkAccent);
   expect(await lineColors()).not.toContain(darkInd);
+});
+
+test("светлая тема: линия наложенного инструмента перекрашивается сразу, тёмной охры на белом нет", async ({ page }) => {
+  const calls: string[] = [];
+  await mock(page, calls);
+  await page.goto("/chart/BTCUSDT/4h");
+  await ready(page);
+  await page.getByLabel("наложение").selectOption("ETHUSDT");
+  const darkWarn = await token(page, "--warn");
+  const lineColors = async () => (await seriesOf(page)).filter((s) => s.type === "Line" && s.len > 0).map((s) => (s.color ?? "").toLowerCase());
+  await expect.poll(lineColors).toContain(darkWarn);
+  await page.evaluate(() => {
+    document.documentElement.dataset.theme = "light";
+  });
+  const lightWarn = await token(page, "--warn");
+  expect(lightWarn).not.toBe(darkWarn);
+  await expect.poll(lineColors).toContain(lightWarn);
+  expect(await lineColors()).not.toContain(darkWarn);
+});
+
+test("наложение с более длинной историей: точки только на свечах монеты, сброс вида — на её последних свечах", async ({ page }) => {
+  const calls: string[] = [];
+  await mock(page, calls);
+  await newCoin(page);
+  await page.goto(`/chart/${NEW_COIN}/4h`);
+  await ready(page);
+  await page.getByLabel("наложение").selectOption("ETHUSDT");
+  const warn = await token(page, "--warn");
+  const overlay = async () => (await seriesOf(page)).find((s) => s.type === "Line" && (s.color ?? "").toLowerCase() === warn && s.len > 0) ?? null;
+  await expect.poll(async () => (await overlay())?.len ?? 0).toBeGreaterThan(0);
+  // у ETHUSDT в заглушке 300 закрытых свечей, у монеты — 100: левее её первой свечи точек наложения нет
+  expect((await overlay())!.first).toBe(T0 + NEW_FIRST * H4);
+  const last = T0 + FIRST_PAGE * H4;
+  for (const reset of ["button", "dblclick"] as const) {
+    await setLogical(page, { from: 10, to: 40 });
+    if (reset === "button") await page.getByRole("button", { name: "показать последние свечи" }).click();
+    else {
+      const box = (await page.getByTestId("terminal").boundingBox())!;
+      await page.mouse.dblclick(box.x + box.width * 0.5, box.y + box.height * 0.5);
+    }
+    // раньше сброс считал индексы по длине буфера и показывал прошлое наложения без единой свечи монеты
+    await expect.poll(async () => (await timeRange(page))?.to ?? 0).toBeGreaterThanOrEqual(last);
+    expect((await timeRange(page))!.from).toBeGreaterThanOrEqual(T0 + NEW_FIRST * H4);
+  }
+});
+
+test("ширина окна через 900 px: шрифт шкал и формат цены основной серии переключаются сразу", async ({ page }) => {
+  const calls: string[] = [];
+  await mock(page, calls);
+  await page.goto("/chart/BTCUSDT/4h");
+  await ready(page);
+  // шаг цены BTCUSDT 0.1 приходит вместе со свечами: формат — один знак
+  await expect.poll(() => formatWith(page, 0, 0, 80723.7)).toBe("80 723.7");
+  expect(await fontSize(page)).toBe(11);
+  // окно уже 900 px (поворот планшета): мельче шрифт и крупные цены целым числом — как у подписей уровней
+  await page.setViewportSize({ width: 800, height: 900 });
+  await expect.poll(() => fontSize(page)).toBe(10);
+  expect(await formatWith(page, 0, 0, 80723.7)).toBe("80 724");
+  await page.setViewportSize({ width: 1600, height: 900 });
+  await expect.poll(() => fontSize(page)).toBe(11);
+  expect(await formatWith(page, 0, 0, 80723.7)).toBe("80 723.7");
+});
+
+test("подпись горизонтальной линии — с точностью инструмента (шаг 1e-7), как на шкале", async ({ page }) => {
+  // подписи рисунков рисуются в canvas: перехватываем fillText (hline подписывается у левого края, x = 4)
+  await page.addInitScript(() => {
+    const out: { text: string; x: number }[] = [];
+    (window as unknown as { __texts: typeof out }).__texts = out;
+    const orig = CanvasRenderingContext2D.prototype.fillText;
+    CanvasRenderingContext2D.prototype.fillText = function (text: string, x: number, y: number, w?: number) {
+      out.push({ text: String(text), x });
+      return orig.call(this, text, x, y, w);
+    };
+  });
+  const calls: string[] = [];
+  await mock(page, calls, true);
+  await page.goto(`/chart/${SUBCENT}/4h`);
+  await ready(page);
+  await page.keyboard.press("Alt+h");
+  await expect(page.getByRole("toolbar", { name: "панель рисования" }).getByRole("button", { name: "Горизонтальная линия" })).toHaveAttribute("aria-pressed", "true");
+  const box = (await page.getByTestId("terminal").boundingBox())!;
+  await page.mouse.click(box.x + box.width * 0.45, box.y + box.height * 0.35);
+  await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 1");
+  const labels = () => page.evaluate(() => (window as unknown as { __texts: { text: string; x: number }[] }).__texts.filter((t) => t.x === 4 && /^[\d.]+$/.test(t.text)).map((t) => t.text));
+  await expect.poll(async () => (await labels()).length).toBeGreaterThan(0);
+  // раньше — четыре значащие цифры: «0.004700» вместо семи знаков шага
+  for (const l of await labels()) expect(l).toMatch(/^0\.00\d{5}$/);
 });

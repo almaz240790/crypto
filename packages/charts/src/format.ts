@@ -28,8 +28,11 @@ function fixed(p: number, decimals: number): string {
 function compact(p: number): string | null {
   const a = Math.abs(p);
   if (a < COMPACT_FROM) return null;
-  for (const [base, suffix] of COMPACT) if (a >= base) return `${p < 0 ? "−" : ""}${(a / base).toFixed(COMPACT_DIGITS)}${suffix}`;
-  return null;
+  // сначала округление, потом единица: 999 999 999 — «1.00B», а не «1000.00M»
+  let unit = COMPACT.findIndex(([base]) => a >= base);
+  let s = (a / COMPACT[unit]![0]).toFixed(COMPACT_DIGITS);
+  if (unit > 0 && Number(s) >= 1000) s = (a / COMPACT[--unit]![0]).toFixed(COMPACT_DIGITS);
+  return `${p < 0 ? "−" : ""}${s}${COMPACT[unit]![1]}`;
 }
 
 /** Цена с точностью инструмента (последнее значение, перекрестие). */
@@ -97,24 +100,46 @@ export function formatPercentValue(v: number, digits = PERCENT_DIGITS): string {
   return `${fixed(v, digits)} %`;
 }
 
+/** Единицы компактной записи от меньшей к большей; первая — без суффикса (меньше тысячи). */
 const COMPACT_VALUE = [
-  [1e12, "T"],
-  [1e9, "B"],
-  [1e6, "M"],
+  [1, ""],
   [1e3, "K"],
+  [1e6, "M"],
+  [1e9, "B"],
+  [1e12, "T"],
 ] as const;
+/** Три значащие цифры: 7.82, 54.3, 781. */
+const compactDecimals = (x: number): number => (x >= 100 ? 0 : x >= 10 ? 1 : 2);
 
-/** Объём, открытый интерес, суммы: 7.82B, 78.2M, 781M, 54.3K; меньше тысячи — как есть, до двух знаков. */
+/**
+ * Объём, открытый интерес, суммы: 7.82B, 78.2M, 781M, 54.3K; меньше тысячи — как есть, до двух знаков.
+ * Сначала округление, потом выбор единицы и числа знаков: 999 800 — «1.00M», а не «1000K»;
+ * 99 960 — «100K», а не «100.0K»; 9 999 — «10.0K», а не «10.00K».
+ */
 export function formatCompactValue(v: number): string {
   const a = Math.abs(v);
-  const sign = v < 0 && a > 0 ? "−" : "";
-  for (const [base, suffix] of COMPACT_VALUE) {
-    if (a >= base) {
-      const x = a / base;
-      return `${sign}${x.toFixed(x >= 100 ? 0 : x >= 10 ? 1 : 2)}${suffix}`;
+  let unit = 0;
+  while (unit < COMPACT_VALUE.length - 1 && a >= COMPACT_VALUE[unit + 1]![0]) unit++;
+  for (;;) {
+    const [base, suffix] = COMPACT_VALUE[unit]!;
+    const x = a / base;
+    let s: string;
+    if (base === 1) s = String(Number(x.toFixed(2)));
+    else {
+      let d = compactDecimals(x);
+      s = x.toFixed(d);
+      // округление перешло порог разряда (99.96 → «100.0»): знаков — по округлённому значению
+      while (d > 0 && compactDecimals(Number(s)) < d) {
+        d = compactDecimals(Number(s));
+        s = x.toFixed(d);
+      }
     }
+    if (Number(s) >= 1000 && unit < COMPACT_VALUE.length - 1) {
+      unit++;
+      continue;
+    }
+    return `${v < 0 && Number(s) !== 0 ? "−" : ""}${s}${suffix}`;
   }
-  return `${sign}${Number(a.toFixed(2))}`;
 }
 
 /** Значащих цифр у малых значений индикаторов на отдельных панелях (MACD, ATR у монет дешевле цента). */

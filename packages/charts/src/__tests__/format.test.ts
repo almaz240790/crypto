@@ -96,6 +96,24 @@ describe("форматы панелей", () => {
     expect(formatCompactValue(512.345)).toBe("512.35");
     expect(fmt(COMPACT_FORMAT, 1_500_000)).toBe("1.50M");
   });
+  it("компактно: сначала округление, потом единица и число знаков", () => {
+    expect(formatCompactValue(999_800)).toBe("1.00M");
+    expect(formatCompactValue(999_999_000)).toBe("1.00B");
+    expect(formatCompactValue(99_960)).toBe("100K");
+    expect(formatCompactValue(9_999)).toBe("10.0K");
+    expect(formatCompactValue(999.999)).toBe("1.00K");
+    expect(formatCompactValue(-999_800)).toBe("−1.00M");
+    // по эту сторону порога — как раньше
+    expect(formatCompactValue(999_499)).toBe("999K");
+    expect(formatCompactValue(99_949)).toBe("99.9K");
+    expect(formatCompactValue(9_994)).toBe("9.99K");
+    expect(formatCompactValue(1_000_000)).toBe("1.00M");
+    expect(formatCompactValue(-0.001)).toBe("0");
+    // то же у меток цены и делений шкалы
+    expect(formatPriceLabel(999_999_999, 1)).toBe("1.00B");
+    expect(formatPriceLabel(999_994_999, 1)).toBe("999.99M");
+    expect(formatIndicatorValue(999_999_000)).toBe("1.00B");
+  });
   it("значения индикаторов: разряды, малые — три значащие цифры", () => {
     expect(formatIndicatorValue(55.234)).toBe("55.23");
     expect(formatIndicatorValue(-312.5)).toBe("−312.50");

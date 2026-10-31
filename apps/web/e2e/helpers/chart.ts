@@ -20,6 +20,9 @@ const subcent = (i: number) => {
   return { t: T0 + i * H4, o: f(o), h: f(Math.max(o, c) + 0.00004), l: f(Math.min(o, c) - 0.00004), c: f(c), v: "123456789", open: false };
 };
 
+/** Шаг цены — как у /v1/instruments ниже: у BTCUSDT 0.1 (как на бирже), у монеты дешевле цента — старый формат API. */
+const TICKS: Record<string, string> = { BTCUSDT: "0.1", ETHUSDT: "0.01", [SUBCENT]: "1.000E-7" };
+
 export type MockServer = { drawings: Record<string, unknown>[]; layout: Record<string, unknown> | null; layouts?: Record<string, Record<string, unknown>>; alerts?: Record<string, unknown>[]; plan?: "free" | "pro" | "premium" };
 
 export async function mock(page: Page, calls: string[], authed = false, server: MockServer = { drawings: [], layout: null }) {
@@ -45,8 +48,8 @@ export async function mock(page: Page, calls: string[], authed = false, server: 
       const end = before ? Math.round((Number(before) - T0) / H4) : FIRST_PAGE;
       const start = before ? Math.max(HISTORY_FROM, end - 500) : 0;
       const items = Array.from({ length: Math.max(0, end - start) }, (_, i) => mk(start + i));
-      // шаг цены — в точности данных заглушки (у цен два знака); у монеты дешевле цента — старый формат API
-      const tick = symbol === SUBCENT ? "1.000E-7" : "0.01";
+      // шаг цены тот же, что в /v1/instruments; прочие символы заглушки — 0.01
+      const tick = TICKS[symbol] ?? "0.01";
       return json(200, { symbol, tf, candles: items, current: before ? null : { ...mk(end), open: true }, has_older: start > HISTORY_FROM, tick_size: tick, server_time: "" });
     }
     if (p === "/v1/drawings" && route.request().method() === "GET") return json(200, { symbol: "BTCUSDT", items: server.drawings, limit: 100, sync: true });
@@ -103,15 +106,18 @@ export async function mock(page: Page, calls: string[], authed = false, server: 
       return json(200, { text: `Бычье поглощение на BTCUSDT H4: значимый, подтверждён на закрытии свечи. Историческая отработка: 54 % случаев (n=120).`, source: b.pattern_id === 1 ? "template" : "llm", footer: "Текст составлен по данным графика на 12:00 UTC, не является рекомендацией.", generated_at: "", facts_hash: "abc", prompt_version: "explain_pattern.v1" });
     }
     // линия шеи двойной вершины уходит правее последней свечи: линия фигуры не должна сдвигать вид
-    if (p === "/v1/chart/figures")
+    if (p === "/v1/chart/figures") {
+      // у монеты дешевле цента фигуры в её масштабе (как уровни ниже): иначе линии около 100 растягивали шкалу
+      const px = (v: string) => (u.searchParams.get("symbol") === SUBCENT ? (Number(v) * 0.00005).toFixed(7) : v);
       return json(200, {
         symbol: "BTCUSDT", tf: "4h", note: "",
         items: [
-          { id: 5, type: "double_top", title: "Двойная вершина", direction: "down", status: "confirmed", scale: 2, start_t: T0 + 150 * 14400, end_t: T0 + 180 * 14400, known_t: T0 + 182 * 14400, confirm_t: T0 + 190 * 14400, invalidated_t: null, points: [[T0 + 150 * 14400, "104"], [T0 + 165 * 14400, "99"], [T0 + 180 * 14400, "104.2"]], lines: [{ name: "neck", a: [T0 + 165 * 14400, "99"], b: [T0 + 320 * 14400, "99"] }], breakout_level: "99", target: "94", invalidation: "104.2", quality: 0.81, metrics: {}, source: "backfill", tf: "4h" },
-          { id: 6, type: "channel_up", title: "Восходящий канал", direction: null, status: "forming", scale: 3, start_t: T0 + 250 * 14400, end_t: T0 + 290 * 14400, known_t: T0 + 293 * 14400, confirm_t: null, invalidated_t: null, points: [[T0 + 250 * 14400, "100"], [T0 + 290 * 14400, "105"]], lines: [{ name: "upper", a: [T0 + 250 * 14400, "102"], b: [T0 + 300 * 14400, "108"] }, { name: "lower", a: [T0 + 250 * 14400, "98"], b: [T0 + 300 * 14400, "104"] }], breakout_level: null, target: null, invalidation: null, quality: 0.72, metrics: {}, source: "live", tf: "4h" },
+          { id: 5, type: "double_top", title: "Двойная вершина", direction: "down", status: "confirmed", scale: 2, start_t: T0 + 150 * 14400, end_t: T0 + 180 * 14400, known_t: T0 + 182 * 14400, confirm_t: T0 + 190 * 14400, invalidated_t: null, points: [[T0 + 150 * 14400, px("104")], [T0 + 165 * 14400, px("99")], [T0 + 180 * 14400, px("104.2")]], lines: [{ name: "neck", a: [T0 + 165 * 14400, px("99")], b: [T0 + 320 * 14400, px("99")] }], breakout_level: px("99"), target: px("94"), invalidation: px("104.2"), quality: 0.81, metrics: {}, source: "backfill", tf: "4h" },
+          { id: 6, type: "channel_up", title: "Восходящий канал", direction: null, status: "forming", scale: 3, start_t: T0 + 250 * 14400, end_t: T0 + 290 * 14400, known_t: T0 + 293 * 14400, confirm_t: null, invalidated_t: null, points: [[T0 + 250 * 14400, px("100")], [T0 + 290 * 14400, px("105")]], lines: [{ name: "upper", a: [T0 + 250 * 14400, px("102")], b: [T0 + 300 * 14400, px("108")] }, { name: "lower", a: [T0 + 250 * 14400, px("98")], b: [T0 + 300 * 14400, px("104")] }], breakout_level: null, target: null, invalidation: null, quality: 0.72, metrics: {}, source: "live", tf: "4h" },
         ],
         stats: { double_top: { type: "double_top", title: "Двойная вершина", n: 48, low_n: false, success_rate: "0.4583", ci_low: "0.33", ci_high: "0.59", avg_move_atr: "2.1", avg_adverse_atr: "1.4", avg_bars_to_target: "7.5" } },
       });
+    }
     if (p === "/v1/chart/patterns")
       return json(200, {
         symbol: "BTCUSDT", tf: "4h", horizon: 5, note: "",

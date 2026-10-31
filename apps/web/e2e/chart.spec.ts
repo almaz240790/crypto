@@ -214,7 +214,8 @@ test("паттерны: вкладка «Найдено», подробност�
   await expect(figs).toContainText("формируется");
   await figs.getByRole("button", { name: /Двойная вершина/ }).click();
   await expect(figs).toContainText("подтверждена закрытием свечи за линией");
-  await expect(figs).toContainText("расчётная цель 94.00, инвалидация 104.20");
+  // цены — по шагу BTCUSDT 0.1: один знак, как на шкале
+  await expect(figs).toContainText("расчётная цель 94.0, инвалидация 104.2");
   await expect(figs).toContainText("историческая отработка 46 % (n=48, до цели за 20 свечей)");
   await figs.getByRole("button", { name: /Восходящий канал/ }).click();
   await expect(figs).toContainText("геометрия без подтверждения");

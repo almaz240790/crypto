@@ -212,6 +212,12 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
   const [historyRev, setHistoryRev] = useState(0);
   /** Смена темы: все слои, индикаторы и панели перечитывают токены сразу, а не к закрытию свечи. */
   const [themeRev, setThemeRev] = useState(0);
+  /**
+   * Узкий экран (телефон, планшет вертикально): шрифт шкал, формат цены и подписи уровней. Следим за
+   * matchMedia: при переходе через 900 px (поворот, окно уже) всё переключается сразу и вместе, а не к
+   * пересчёту слоёв и не только при смене инструмента.
+   */
+  const [narrow, setNarrow] = useState(() => typeof window !== "undefined" && window.matchMedia(MOBILE_QUERY).matches);
   /** Что загружено в график: смена инструмента или таймфрейма — замена и сброс вида, иначе — дописывание. */
   const loadedRef = useRef<{ key: string; tf: Timeframe; candles: Candle[] } | null>(null);
   /** Поколение данных: ответ на запрос истории для прежнего инструмента отбрасывается. */
@@ -504,15 +510,23 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [candles, tf, dataKey, syncModel]);
 
-  // формат цены инструмента: точность и минимальный шаг из шага цены — основной серии и наложенным линиям;
-  // на телефоне крупные цены без дробной части и шрифт мельче — шкала занимает меньше места
+  useEffect(() => {
+    const mq = window.matchMedia(MOBILE_QUERY);
+    const onChange = () => setNarrow(mq.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+
+  // формат цены инструмента: точность и минимальный шаг из шага цены — основной серии, наложенным линиям и
+  // подписям рисунков; на телефоне крупные цены без дробной части и шрифт мельче — шкала занимает меньше места.
+  // Шрифт хранит Terminal: смена темы его не сбрасывает
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
-    const narrow = window.matchMedia(MOBILE_QUERY).matches;
-    term.chart.applyOptions({ layout: { fontSize: narrow ? MOBILE_SCALE_FONT_PX : DESKTOP_SCALE_FONT_PX } });
+    term.setFontSize(narrow ? MOBILE_SCALE_FONT_PX : DESKTOP_SCALE_FONT_PX);
     term.setPriceFormat(instrumentPriceFormat(tick, narrow));
-  }, [tick]);
+    drawPrimRef.current?.update({ precision: tickPrecision(tick) });
+  }, [tick, narrow]);
 
   useEffect(() => {
     const term = termRef.current;
@@ -535,11 +549,12 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
     termRef.current?.setScaleMode(scale);
   }, [scale]);
 
+  // наложенный инструмент: цвет — токен --warn, перечитывается и при смене темы (themeRev)
   useEffect(() => {
     const term = termRef.current;
     if (!term || !ref.current) return;
     term.setOverlay(overlay, tokensFromElement(ref.current).warn);
-  }, [overlay]);
+  }, [overlay, themeRev]);
 
   useEffect(() => {
     termRef.current?.setType(type);
@@ -691,8 +706,8 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
     // цена — меткой на шкале; длинных надписей поверх свечей нет
     const hlines: HLine[] = [];
     const precision = tickPrecision(tick);
-    const short = window.matchMedia(MOBILE_QUERY).matches;
-    const fp = (p: number) => (short ? formatPriceShort(p, precision) : formatPriceLabel(p, precision));
+    // тот же признак узкой шкалы, что у формата основной серии: подписи уровней и цена на шкале — в одном формате
+    const fp = (p: number) => (narrow ? formatPriceShort(p, precision) : formatPriceLabel(p, precision));
     // axis — цвет метки на шкале (сплошной токен) или false, если метка не нужна
     const seg = (from: number, to: number | null, price: number, c: string, style: 0 | 1 | 2 | 3, width: 1 | 2 = 1, tag?: string, priority = 0, axis: string | false = false) => {
       const a = Math.max(snap(from), first);
@@ -807,7 +822,7 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
     markers.sort((a, b) => (a.time as number) - (b.time as number));
     if (!markersRef.current) markersRef.current = createSeriesMarkers(main, markers);
     else markersRef.current.setMarkers(markers);
-  }, [layers, layersOn, candles, lastT, tf, type, patterns, highlight, figures, highlightFigure, alertKey, t, tick, srLevels, liqMap, historyRev, themeRev]);
+  }, [layers, layersOn, candles, lastT, tf, type, patterns, highlight, figures, highlightFigure, alertKey, t, tick, narrow, srLevels, liqMap, historyRev, themeRev]);
 
   return (
     <div className={s.chart}>

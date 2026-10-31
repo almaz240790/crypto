@@ -47,6 +47,8 @@ export const VIEW_MAX_BARS = 150;
 const VIEW_FALLBACK_BARS = 100;
 /** Формат цены до того, как известен шаг инструмента (как у LWC по умолчанию). */
 const DEFAULT_PRICE_FORMAT: PriceFormat = { type: "price", precision: 2, minMove: 0.01 };
+/** Размер шрифта шкал по умолчанию (как в chartOptions); на телефоне TerminalView ставит мельче. */
+const DEFAULT_FONT_PX = 11;
 
 /**
  * Сколько свечей показать при сбросе вида: ширина области графика / целевой шаг бара минус пустые бары
@@ -78,6 +80,9 @@ export class Terminal {
   private panes = 1;
   private scaleMode: ScaleMode = "linear";
   private overlay: ISeriesApi<"Line"> | null = null;
+  /** Свечи наложенного инструмента целиком; на графике — только на времени свечей буфера (см. overlayData). */
+  private overlayCandles: readonly Candle[] = [];
+  private fontSize = DEFAULT_FONT_PX;
   private readonly container: HTMLElement;
 
   constructor(container: HTMLElement, opts: TerminalOptions) {
@@ -139,9 +144,19 @@ export class Terminal {
     if (range) this.chart.timeScale().setVisibleLogicalRange(range);
   }
 
+  /**
+   * Размер шрифта шкал (на телефоне мельче). Хранится в Terminal: смена темы заново применяет chartOptions,
+   * и без этого шкалы возвращались к 11 px до смены инструмента.
+   */
+  setFontSize(px: number): void {
+    this.fontSize = px;
+    this.chart.applyOptions({ layout: { fontSize: px } });
+  }
+
   setTheme(tokens: ThemeTokens): void {
     this.tokens = tokens;
-    this.chart.applyOptions(chartOptions(tokens));
+    const o = chartOptions(tokens);
+    this.chart.applyOptions({ ...o, layout: { ...o.layout, fontSize: this.fontSize } });
     const c = seriesColors(tokens);
     if (this.type === "bars") this.main.applyOptions(c.bars);
     else if (this.type === "line") this.main.applyOptions(c.line);
@@ -184,23 +199,34 @@ export class Terminal {
   /**
    * Обновление текущей свечи или новая свеча справа (WebSocket, закрытие свечи) — инкрементально,
    * без setData: масштаб и прокрутка пользователя сохраняются, загруженная история слева остаётся.
-   * За новым баром LWC сдвигает вид сам, только если последний бар был виден (shiftVisibleRangeOnNewBar).
+   * За новым баром LWC сдвигает вид сам, только если последний бар был виден (shiftVisibleRangeOnNewBar),
+   * иначе компенсирует сдвиг и вид остаётся на тех же свечах.
+   *
+   * Полный буфер (MAX_CANDLES): сначала новая свеча справа — тем же update, затем из серий убираются
+   * выпавшие слева. Диапазон вида здесь не задаётся вовсе: LWC при выпадении точек слева держит правый
+   * отступ, т. е. те же свечи на экране, — и у края, и в прокрученной истории. Раньше диапазон
+   * восстанавливался явно со сдвигом по шкале времени: у края это прибивало вид к старым свечам (живая
+   * свеча уходила за правый край через ~6 закрытий), а с серией отдельной панели, ещё державшей выпавшее
+   * время (OBV, объём), сдвиг считался нулевым и вид уезжал на бар вперёд с каждым закрытием.
    */
   update(c: Candle): void {
     const before = this.buffer;
     this.buffer = pushLatest(before, c);
     if (this.buffer === before) return;
-    const first = before.candles[0]?.time;
-    if (before.candles.length > 0 && this.buffer.candles[0]?.time !== first) {
-      // буфер полон: слева ушла самая старая свеча — индексы сдвинулись, держим вид на тех же свечах
-      this.renderAnchored(this.buffer.candles[0]?.time);
-      return;
-    }
     const data = this.seriesData();
+    const vol = this.volumeData();
     const last = data[data.length - 1];
     if (!last) return;
+    const appended = last.time !== before.candles[before.candles.length - 1]?.time;
     this.main.update(last as never);
-    this.volume.update(this.volumeData()[data.length - 1]!);
+    this.volume.update(vol[vol.length - 1]!);
+    const dropped = before.candles.length > 0 && this.buffer.candles[0]?.time !== before.candles[0]?.time;
+    if (dropped) {
+      this.main.setData(data as never);
+      this.volume.setData(vol);
+    }
+    // наложенный инструмент — на новом наборе времён свечей (новая справа, выпавшие слева)
+    if (appended || dropped) this.applyOverlay();
   }
 
   /** Отдельная панель под индикатор: возвращает индекс панели. */
@@ -285,20 +311,37 @@ export class Terminal {
     this.chart.priceScale("right").applyOptions({ autoScale: on });
   }
 
-  /** Наложение второго инструмента (план 2A.3 v2): линия закрытий; null — убрать. */
+  /**
+   * Наложение второго инструмента (план 2A.3 v2): линия закрытий; null — убрать. Цвет передаётся при каждом
+   * вызове (и при смене темы). Точки — только на времени свечей основного инструмента: у монеты, листинг
+   * которой моложе наложенного инструмента, старые точки наложения добавляли на шкалу времени деления левее
+   * первой свечи, и сброс вида показывал прошлое без единой свечи.
+   */
   setOverlay(candles: readonly Candle[] | null, color: string): void {
     if (!candles || candles.length === 0) {
       if (this.overlay) this.chart.removeSeries(this.overlay);
       this.overlay = null;
+      this.overlayCandles = [];
       return;
     }
+    this.overlayCandles = candles;
     if (!this.overlay) {
       this.overlay = this.chart.addSeries(LineSeries, { color, lineWidth: 1, priceLineVisible: false, lastValueVisible: true, crosshairMarkerVisible: false, priceScaleId: this.scaleMode === "percent" ? "right" : OVERLAY_SCALE }, 0);
       this.chart.priceScale(OVERLAY_SCALE).applyOptions({ visible: false, scaleMargins: { top: 0.08, bottom: 0.2 } });
     } else {
       this.overlay.applyOptions({ color });
     }
-    this.overlay.setData(candles.map((c) => ({ time: c.time as Time, value: c.close })));
+    this.applyOverlay();
+  }
+
+  /** Точки наложения на времени свечей буфера. */
+  private overlayData(): { time: Time; value: number }[] {
+    const times = new Set(this.buffer.candles.map((c) => c.time));
+    return this.overlayCandles.filter((c) => times.has(c.time)).map((c) => ({ time: c.time as Time, value: c.close }));
+  }
+
+  private applyOverlay(): void {
+    this.overlay?.setData(this.overlayData());
   }
 
   /** Масштаб вокруг точки (x в пикселях контейнера; без x — вокруг центра видимой области). */
@@ -338,14 +381,23 @@ export class Terminal {
   /**
    * Сброс вида (первая загрузка, кнопка ⟲, двойной клик/тап — план 2A.7): последние свечи с шагом около
    * barPx пикселей на бар и автомасштаб цены. Число свечей — от ширины области, см. barsForWidth.
+   * Индексы — по шкале времени (индекс последней и первой свечи буфера), а не по длине буфера: на шкале
+   * бывают и точки других серий.
    */
   resetView(barPx: number = VIEW_BAR_PX.desktop): void {
     const ts = this.chart.timeScale();
     const width = ts.width() || this.container.clientWidth;
     const n = barsForWidth(width, barPx);
-    const len = this.buffer.candles.length;
-    ts.setVisibleLogicalRange({ from: Math.max(0, len - n), to: len + RIGHT_OFFSET });
+    const c = this.buffer.candles;
+    const last = c.length > 0 ? (ts.timeToIndex(c[c.length - 1]!.time as Time, true) ?? c.length - 1) : -1;
+    ts.setVisibleLogicalRange({ from: Math.max(this.firstIndex(), last + 1 - n), to: last + 1 + RIGHT_OFFSET });
     this.chart.priceScale("right").applyOptions({ autoScale: true });
+  }
+
+  /** Индекс первой свечи буфера на шкале времени (0, если левее неё на шкале ничего нет). */
+  private firstIndex(): number {
+    const first = this.buffer.candles[0];
+    return first ? (this.chart.timeScale().timeToIndex(first.time as Time, true) ?? 0) : 0;
   }
 
   destroy(): void {
@@ -357,10 +409,12 @@ export class Terminal {
   private onRange(r: LogicalRange | null): void {
     this.opts.onVisibleRange?.(r);
     if (!r) return;
+    // левый край вида — от первой свечи буфера, а не от начала шкалы времени
+    const from = r.from - this.firstIndex();
     // ушли от левого края — следующий подход снова может подгрузить порцию
-    if (r.from >= EDGE) this.edgeArmed = true;
+    if (from >= EDGE) this.edgeArmed = true;
     if (this.requesting) return;
-    if (this.edgeArmed && needsOlder(this.buffer, r.from) && this.opts.onNeedOlder) {
+    if (this.edgeArmed && needsOlder(this.buffer, from) && this.opts.onNeedOlder) {
       const first = this.buffer.candles[0];
       if (first) {
         this.requesting = true;
@@ -409,6 +463,7 @@ export class Terminal {
   private setSeriesData(): void {
     this.main.setData(this.seriesData() as never);
     this.volume.setData(this.volumeData());
+    this.applyOverlay();
   }
 }
 
