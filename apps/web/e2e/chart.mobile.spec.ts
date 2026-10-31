@@ -176,3 +176,19 @@ test("карточка значений на телефоне: индикато�
   await ohlc.getByRole("button", { name: "закрыть карточку" }).tap();
   await expect(ohlc).toBeHidden();
 });
+
+test("телефон: число свечей от ширины — около 6 px на свечу, а не 2 px при 150 свечах", async ({ page }) => {
+  const calls: string[] = [];
+  await mock(page, calls, true);
+  await page.goto("/chart/BTCUSDT/4h");
+  await expect(page.getByTestId("terminal").locator("canvas").first()).toBeVisible();
+  const spacing = () =>
+    page.evaluate(() => {
+      type TS = { getVisibleLogicalRange(): { from: number; to: number } | null; width(): number };
+      const ts = (document.querySelector('[data-testid="terminal"]') as HTMLElement & { __chart: { timeScale(): TS } }).__chart.timeScale();
+      const r = ts.getVisibleLogicalRange();
+      return r ? ts.width() / (r.to - r.from) : 0;
+    });
+  await expect.poll(spacing).toBeGreaterThan(5);
+  expect(await spacing()).toBeLessThan(7.5);
+});
