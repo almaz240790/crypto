@@ -1184,5 +1184,17 @@
   "нет Redis": "Redis unavailable",
   "нет базы": "database unavailable",
   "нет закрытия свечи у {a} из {b} инструментов": "no candle close for {a} of {b} instruments",
-  "версия {v}": "version {v}"
+  "версия {v}": "version {v}",
+  "Чистый": "Clean",
+  "Система PlatformSol": "PlatformSol system",
+  "Осцилляторы": "Oscillators",
+  "Обращение #{id} принято. Ответ придёт на {email}, обычно в течение суток.": "Request #{id} received. We will reply to {email}, usually within a day.",
+  "Проверка по минутным свечам, до 60 с. Активных по инструменту: {n}.": "Checked on 1-minute candles, within 60 s. Active for this instrument: {n}.",
+  "VWAP (дневной)": "VWAP (daily)",
+  "Доля случаев, когда после подтверждения паттерна на закрытии свечи цена прошла ≥ 1 ATR в его сторону за {h} {candles}. Считается автоматически из отметок детектора, без ручного ввода. При n < 30 процент не показывается. Паттерны не являются сигналами.": "Share of cases where, after the pattern was confirmed at a candle close, price moved ≥ 1 ATR in its direction within {h} {candles}. Computed automatically from detector marks, with no manual input. With n < 30 the percentage is not shown. Patterns are not signals.",
+  "горизонт": "horizon",
+  "{h} св.": "{h} candles",
+  "Нет соединения": "No connection",
+  "Сигналы и цены не кэшируются, чтобы вы не видели устаревшие данные. Проверьте сеть и обновите страницу.": "Signals and prices are not cached so you never see stale data. Check your connection and reload the page.",
+  "Повторить": "Retry"
 }

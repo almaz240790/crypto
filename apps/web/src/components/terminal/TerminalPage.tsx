@@ -600,7 +600,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
                 </label>
                 <button type="submit" className={s.chip}>{t("Создать алерт")}</button>
                 <p className="caption">
-                  Проверка по минутным свечам, до 60 с. Активных по инструменту: {alerts.length}. <Link href="/alerts">{t("Все алерты")}</Link>
+                  {t("Проверка по минутным свечам, до 60 с. Активных по инструменту: {n}.", { n: alerts.length })} <Link href="/alerts">{t("Все алерты")}</Link>
                 </p>
               </form>
             )}
@@ -653,14 +653,14 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
                     return (
                       <label key={i.id}>
                         <input type="checkbox" checked={indicatorIds.has(i.id)} onChange={() => toggleIndicator(i.id)} />
-                        <span className={s.indDot} style={{ background: `var(${IND_COLOR_VAR[indicatorColor(i.id)]})` }} aria-hidden="true" /> {i.title}
+                        <span className={s.indDot} style={{ background: `var(${IND_COLOR_VAR[indicatorColor(i.id)]})` }} aria-hidden="true" /> {t(i.title)}
                         <span className="caption">{i.pane === "overlay" ? t("на графике") : t("панель")}</span>
                       </label>
                     );
                   }),
                   ...PANELS.map((pn) => (
                     <label key={pn.id}>
-                      <input type="checkbox" checked={st.panels.includes(pn.id)} onChange={() => togglePanel(pn.id)} /> {pn.title}
+                      <input type="checkbox" checked={st.panels.includes(pn.id)} onChange={() => togglePanel(pn.id)} /> {t(pn.title)}
                       <span className="caption">{pn.id === "liq" ? t("панель · данные публичного потока, не полный объём") : t("панель · деривативы")}</span>
                     </label>
                   )),
