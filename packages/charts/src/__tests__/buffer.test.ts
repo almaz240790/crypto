@@ -10,17 +10,28 @@ describe("буфер свечей", () => {
     expect(b.candles.map((c) => c.time)).toEqual([0, 60, 120, 180, 240, 600, 660, 720]);
   });
 
-  it("подгрузка слева не превышает лимит и выгружает правый край", () => {
+  it("подгрузка слева не превышает лимит и никогда не выгружает свежие свечи справа", () => {
     let b = createBuffer(mk(100_000, MAX_CANDLES - 100));
+    const newest = b.candles.at(-1)!.time;
     b = prependOlder(b, mk(0, 500), true);
     expect(b.candles.length).toBe(MAX_CANDLES);
-    expect(b.candles[0]!.time).toBe(0);
-    expect(b.trimmedRight).toBe(400);
-    expect(needsNewer(b, MAX_CANDLES - 10)).toBe(true);
-    expect(needsNewer(b, 1000)).toBe(false);
-    // пока правый край выгружен, живые обновления игнорируются
+    // из порции взята самая новая часть, правый край на месте
+    expect(b.candles[0]!.time).toBe(400 * 60);
+    expect(b.candles.at(-1)!.time).toBe(newest);
+    expect(b.trimmedRight).toBe(0);
+    expect(b.hasOlder).toBe(true);
+    // буфер полон — дальше влево не грузим, живые обновления продолжают приходить
+    expect(needsOlder(b, 0)).toBe(false);
+    expect(needsNewer(b, MAX_CANDLES - 10)).toBe(false);
     const after = pushLatest(b, { ...mk(9_999_999, 1)[0]! });
-    expect(after).toBe(b);
+    expect(after.candles.at(-1)!.time).toBe(9_999_999);
+  });
+
+  it("порция без пересечений: свечи не старше первой отбрасываются", () => {
+    let b = createBuffer(mk(600, 5));
+    b = prependOlder(b, mk(0, 12), false);
+    expect(b.candles.map((c) => c.time)).toEqual([0, 60, 120, 180, 240, 300, 360, 420, 480, 540, 600, 660, 720, 780, 840]);
+    expect(b.hasOlder).toBe(false);
   });
 
   it("возврат вправо подменяет свежую часть", () => {

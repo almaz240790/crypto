@@ -28,8 +28,11 @@ function fixed(p: number, decimals: number): string {
 function compact(p: number): string | null {
   const a = Math.abs(p);
   if (a < COMPACT_FROM) return null;
-  for (const [base, suffix] of COMPACT) if (a >= base) return `${p < 0 ? "−" : ""}${(a / base).toFixed(COMPACT_DIGITS)}${suffix}`;
-  return null;
+  // сначала округление, потом единица: 999 999 999 — «1.00B», а не «1000.00M»
+  let unit = COMPACT.findIndex(([base]) => a >= base);
+  let s = (a / COMPACT[unit]![0]).toFixed(COMPACT_DIGITS);
+  if (unit > 0 && Number(s) >= 1000) s = (a / COMPACT[--unit]![0]).toFixed(COMPACT_DIGITS);
+  return `${p < 0 ? "−" : ""}${s}${COMPACT[unit]![1]}`;
 }
 
 /** Цена с точностью инструмента (последнее значение, перекрестие). */
@@ -58,4 +61,95 @@ export function tickDecimals(prices: readonly number[]): number {
 export function formatTicks(prices: readonly number[]): string[] {
   const d = tickDecimals(prices);
   return prices.map((p) => compact(p) ?? fixed(p, d));
+}
+
+/** Точность цены, если шаг инструмента неизвестен. */
+export const DEFAULT_PRECISION = 2;
+/** Больше знаков шаг цены не даёт ни у одного инструмента; защита от мусора в данных. */
+const MAX_TICK_DECIMALS = 12;
+const TICK_RE = /^[+]?(\d*)(?:\.(\d*))?(?:e([+-]?\d+))?$/;
+
+/**
+ * Число знаков после запятой по шагу цены (план 5.4). Понимает и экспоненциальную запись, которую
+ * отдаёт str(Decimal): "1.000E-7" → 7, "2.5E-6" → 7, "0.00001000" → 5, "0.1" → 1, "1" → 0.
+ */
+export function tickPrecision(tick: string | number | null | undefined, fallback = DEFAULT_PRECISION): number {
+  if (tick === null || tick === undefined) return fallback;
+  const s = String(tick).trim().toLowerCase();
+  const m = TICK_RE.exec(s);
+  if (!m || !(Number(s) > 0)) return fallback;
+  const frac = (m[2] ?? "").replace(/0+$/, "");
+  const exp = m[3] ? Number(m[3]) : 0;
+  return Math.min(MAX_TICK_DECIMALS, Math.max(0, frac.length - exp));
+}
+
+export type TickFormat = { precision: number; minMove: number };
+
+/** Точность и минимальный шаг цены для шкалы и подписей; без шага — две цифры после запятой. */
+export function tickFormat(tick: string | number | null | undefined): TickFormat {
+  const precision = tickPrecision(tick);
+  const v = Number(tick);
+  return { precision, minMove: tick !== null && tick !== undefined && Number.isFinite(v) && v > 0 ? v : 10 ** -precision };
+}
+
+/** Знаков у процентов на панели фандинга: ставка 0.0100 %, а не «0.0». */
+export const PERCENT_DIGITS = 4;
+
+/** Проценты на панели (фандинг): «0.0100 %», «−0.0111 %». */
+export function formatPercentValue(v: number, digits = PERCENT_DIGITS): string {
+  return `${fixed(v, digits)} %`;
+}
+
+/** Единицы компактной записи от меньшей к большей; первая — без суффикса (меньше тысячи). */
+const COMPACT_VALUE = [
+  [1, ""],
+  [1e3, "K"],
+  [1e6, "M"],
+  [1e9, "B"],
+  [1e12, "T"],
+] as const;
+/** Три значащие цифры: 7.82, 54.3, 781. */
+const compactDecimals = (x: number): number => (x >= 100 ? 0 : x >= 10 ? 1 : 2);
+
+/**
+ * Объём, открытый интерес, суммы: 7.82B, 78.2M, 781M, 54.3K; меньше тысячи — как есть, до двух знаков.
+ * Сначала округление, потом выбор единицы и числа знаков: 999 800 — «1.00M», а не «1000K»;
+ * 99 960 — «100K», а не «100.0K»; 9 999 — «10.0K», а не «10.00K».
+ */
+export function formatCompactValue(v: number): string {
+  const a = Math.abs(v);
+  let unit = 0;
+  while (unit < COMPACT_VALUE.length - 1 && a >= COMPACT_VALUE[unit + 1]![0]) unit++;
+  for (;;) {
+    const [base, suffix] = COMPACT_VALUE[unit]!;
+    const x = a / base;
+    let s: string;
+    if (base === 1) s = String(Number(x.toFixed(2)));
+    else {
+      let d = compactDecimals(x);
+      s = x.toFixed(d);
+      // округление перешло порог разряда (99.96 → «100.0»): знаков — по округлённому значению
+      while (d > 0 && compactDecimals(Number(s)) < d) {
+        d = compactDecimals(Number(s));
+        s = x.toFixed(d);
+      }
+    }
+    if (Number(s) >= 1000 && unit < COMPACT_VALUE.length - 1) {
+      unit++;
+      continue;
+    }
+    return `${v < 0 && Number(s) !== 0 ? "−" : ""}${s}${suffix}`;
+  }
+}
+
+/** Значащих цифр у малых значений индикаторов на отдельных панелях (MACD, ATR у монет дешевле цента). */
+const VALUE_SIGNIFICANT = 3;
+
+/** Значение индикатора на отдельной панели: разряды, два знака; малые — три значащие цифры; огромные — компактно. */
+export function formatIndicatorValue(v: number): string {
+  const a = Math.abs(v);
+  if (a >= COMPACT_FROM) return formatCompactValue(v);
+  if (a === 0 || a >= 1) return fixed(v, 2);
+  const d = Math.min(MAX_DECIMALS, Math.max(2, VALUE_SIGNIFICANT - 1 - Math.floor(Math.log10(a))));
+  return fixed(v, d);
 }

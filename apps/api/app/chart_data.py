@@ -329,11 +329,22 @@ def signal_layer(
 # --- крипто-панели: funding, OI, ликвидации (план 2A.4, задача 2B.5) ----------------------------
 
 
+WEEK_SECONDS = int(Timeframe.W1.seconds)
+# 1970-01-01 — четверг; недельная свеча Binance открывается в понедельник 00:00 UTC (1970-01-05)
+WEEK_ORIGIN = 4 * 86400
+
+
+def bucket_key(ts: int, size: int) -> int:
+    """Начало корзины tf для unix-времени — то же, что open_time свечи (неделя — с понедельника)."""
+    origin = WEEK_ORIGIN if size == WEEK_SECONDS else 0
+    return ((ts - origin) // size) * size + origin
+
+
 def bucket_last(rows: list[tuple[datetime, Decimal]], size: int) -> list[dict[str, Any]]:
     """Последнее значение в каждой корзине tf (для OI)."""
     out: dict[int, Decimal] = {}
     for t, v in rows:
-        out[(int(t.timestamp()) // size) * size] = v
+        out[bucket_key(int(t.timestamp()), size)] = v
     return [{"t": k, "v": _dec(v)} for k, v in sorted(out.items())]
 
 
@@ -341,7 +352,7 @@ def bucket_sum(rows: list[tuple[datetime, Decimal, Decimal]], size: int) -> list
     """Суммы long/short в каждой корзине tf (для ликвидаций)."""
     out: dict[int, tuple[Decimal, Decimal]] = {}
     for t, a, b in rows:
-        k = (int(t.timestamp()) // size) * size
+        k = bucket_key(int(t.timestamp()), size)
         pa, pb = out.get(k, (Decimal(0), Decimal(0)))
         out[k] = (pa + a, pb + b)
     return [{"t": k, "long": _dec(a), "short": _dec(b)} for k, (a, b) in sorted(out.items())]

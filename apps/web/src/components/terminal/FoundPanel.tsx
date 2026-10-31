@@ -129,7 +129,7 @@ export function figureStatText(st: FigureStat | undefined, t: T): string {
 const FIGURE_STATUS: Record<FigureOnChart["status"], string> = { forming: "формируется", confirmed: "подтверждена", invalidated: "отменена" };
 
 /** Список фигур в панели «Найдено» (4B.6): статус, качество геометрии, цель, отработка типа. */
-export function FiguresList({ items, stats, selected, onSelect }: { items: FigureOnChart[]; stats: Record<string, FigureStat>; selected: number | null; onSelect: (id: number | null) => void }) {
+export function FiguresList({ items, stats, selected, onSelect, tick = null }: { items: FigureOnChart[]; stats: Record<string, FigureStat>; selected: number | null; onSelect: (id: number | null) => void; tick?: string | null }) {
   const t = useT();
   const [showAll, setShowAll] = useState(false);
   const live = items.filter((f) => f.status !== "invalidated" || f.id === selected);
@@ -164,7 +164,7 @@ export function FiguresList({ items, stats, selected, onSelect }: { items: Figur
             {sel && (
               <div className={s.foundDetails}>
                 <div>{f.status === "confirmed" ? t("подтверждена закрытием свечи за линией") : f.status === "forming" ? t("геометрия без подтверждения: цель и статистика не показываются") : t("отменена: цена закрылась против фигуры или вышло время")}</div>
-                {f.status === "confirmed" && f.target && <div>{t("расчётная цель")} {formatPrice(f.target)}{f.invalidation ? `, ${t("инвалидация")} ${formatPrice(f.invalidation)}` : ""}</div>}
+                {f.status === "confirmed" && f.target && <div>{t("расчётная цель")} {formatPrice(f.target, tick)}{f.invalidation ? `, ${t("инвалидация")} ${formatPrice(f.invalidation, tick)}` : ""}</div>}
                 {f.status === "confirmed" && <div>{figureStatText(stats[f.type], t)}</div>}
                 <div className="caption">{t("не является сигналом или рекомендацией")}</div>
               </div>
@@ -181,11 +181,11 @@ export function FiguresList({ items, stats, selected, onSelect }: { items: Figur
 
 /** Поле вопроса о графике (план 3.17, 4B.7): Premium; остальным — пояснение из ответа сервера. */
 /** Уровни списком (план 2A.4, 2A.6): на графике подписи могут скрываться при наложении, здесь видны все. */
-export function LevelsList({ sr, liq, tick, zones = [] }: { sr: SrLevel[]; liq: LiqMap | null; tick: string | null; zones?: ZoneGroup[] }) {
+export function LevelsList({ sr, liq, tick, zones = [], liqUnavailable = false }: { sr: SrLevel[]; liq: LiqMap | null; tick: string | null; zones?: ZoneGroup[]; liqUnavailable?: boolean }) {
   const t = useT();
-  const dec = tick && tick.includes(".") ? tick.replace(/0+$/, "").split(".")[1]!.length : 0;
-  const px = (p: number) => formatPrice(p.toFixed(tick ? dec : 2));
-  if (sr.length === 0 && !liq && zones.length === 0) return null;
+  // точность — по шагу цены инструмента, как на шкале (в том числе для шага в записи 1.000E-7)
+  const px = (p: number) => formatPrice(p, tick);
+  if (sr.length === 0 && !liq && zones.length === 0 && !liqUnavailable) return null;
   const res = sr.filter((l) => l.side === "resistance").sort((a, b) => b.price - a.price);
   const sup = sr.filter((l) => l.side === "support").sort((a, b) => b.price - a.price);
   return (
@@ -193,7 +193,7 @@ export function LevelsList({ sr, liq, tick, zones = [] }: { sr: SrLevel[]; liq: 
       <strong className={s.objHead}>{t("Уровни")}</strong>
       <ul className={s.levelList} aria-label={t("уровни поддержки и сопротивления")}>
         {[...(liq?.topShorts ?? [])].sort((a, b) => b.price - a.price).map((b) => (
-          <li key={`ls${b.price}`} title={t("Оценка по объёму и открытому интересу для плеч 10–100×, не данные биржи.")}>
+          <li key={`ls${b.price}`} title={t("Оценка по приросту открытого интереса для плеч 10–100×, не данные биржи.")}>
             <span className={s.levelLiq}>{t("Ликвидации шортов")}</span> <span className="num">{px(b.price)}</span> <strong className={`num ${s.levelLiq}`}>≈ {formatUsdCompact(b.short)}</strong>
           </li>
         ))}
@@ -213,12 +213,13 @@ export function LevelsList({ sr, liq, tick, zones = [] }: { sr: SrLevel[]; liq: 
           </li>
         ))}
         {[...(liq?.topLongs ?? [])].sort((a, b) => b.price - a.price).map((b) => (
-          <li key={`ll${b.price}`} title={t("Оценка по объёму и открытому интересу для плеч 10–100×, не данные биржи.")}>
+          <li key={`ll${b.price}`} title={t("Оценка по приросту открытого интереса для плеч 10–100×, не данные биржи.")}>
             <span className={s.levelLiq}>{t("Ликвидации лонгов")}</span> <span className="num">{px(b.price)}</span> <strong className={`num ${s.levelLiq}`}>≈ {formatUsdCompact(b.long)}</strong>
           </li>
         ))}
       </ul>
-      {liq && <p className={`caption ${s.levelNote}`}>{t("Карта ликвидаций — расчётная оценка: суммы позиций с плечом 10–100×, которые закроются принудительно при подходе цены. Считается по приросту открытого интереса и объёму, а не по данным биржи.")}</p>}
+      {liq && <p className={`caption ${s.levelNote}`}>{t("Карта ликвидаций — расчётная оценка: суммы позиций с плечом 10–100×, которые закроются принудительно при подходе цены. Считается по приросту открытого интереса, а не по данным биржи.")}</p>}
+      {!liq && liqUnavailable && <p className={`caption ${s.levelNote}`} data-testid="liq-unavailable">{t("Карта ликвидаций на этом таймфрейме недоступна: мало данных открытого интереса.")}</p>}
     </>
   );
 }

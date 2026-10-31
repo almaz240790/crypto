@@ -5,16 +5,17 @@
  * Все цены приходят из API строками (Decimal); здесь только отображение.
  */
 
+import { tickPrecision } from "@platform/charts/format";
+
 const MINUS = "−"; // типографский минус
 const NBSP = " ";
 
-/** Число знаков после запятой по шагу цены: "0.01" → 2, "1" → 0, "0.00001000" → 5. */
+/**
+ * Число знаков после запятой по шагу цены: "0.01" → 2, "1" → 0, "0.00001000" → 5, "1.000E-7" → 7.
+ * Тот же расчёт, что у шкалы графика (packages/charts/format), — одна точность на шкале, в шапке и в списках.
+ */
 export function decimalsFromTick(tick: string | null | undefined): number {
-  if (!tick) return 2;
-  const t = tick.trim().replace(/0+$/, "");
-  const i = t.indexOf(".");
-  if (i < 0) return 0;
-  return Math.max(0, t.length - i - 1);
+  return tickPrecision(tick);
 }
 
 /** Группировка разрядов тонким пробелом: 65432.1 → "65 432.1". */

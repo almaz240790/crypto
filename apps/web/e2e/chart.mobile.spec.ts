@@ -176,3 +176,38 @@ test("карточка значений на телефоне: индикато�
   await ohlc.getByRole("button", { name: "закрыть карточку" }).tap();
   await expect(ohlc).toBeHidden();
 });
+
+test("телефон: число свечей от ширины — около 6 px на свечу, а не 2 px при 150 свечах", async ({ page }) => {
+  const calls: string[] = [];
+  await mock(page, calls, true);
+  await page.goto("/chart/BTCUSDT/4h");
+  await expect(page.getByTestId("terminal").locator("canvas").first()).toBeVisible();
+  const spacing = () =>
+    page.evaluate(() => {
+      type TS = { getVisibleLogicalRange(): { from: number; to: number } | null; width(): number };
+      const ts = (document.querySelector('[data-testid="terminal"]') as HTMLElement & { __chart: { timeScale(): TS } }).__chart.timeScale();
+      const r = ts.getVisibleLogicalRange();
+      return r ? ts.width() / (r.to - r.from) : 0;
+    });
+  await expect.poll(spacing).toBeGreaterThan(5);
+  expect(await spacing()).toBeLessThan(7.5);
+});
+
+test("телефон: шрифт шкал 10 px остаётся после смены темы", async ({ page }) => {
+  const calls: string[] = [];
+  await mock(page, calls, true);
+  await page.goto("/chart/BTCUSDT/4h");
+  await expect(page.getByTestId("terminal").locator("canvas").first()).toBeVisible();
+  type Opts = { layout: { fontSize: number; background: { color?: string } } };
+  const opts = () => page.evaluate(() => (document.querySelector('[data-testid="terminal"]') as HTMLElement & { __chart: { options(): Opts } }).__chart.options().layout);
+  await expect.poll(async () => (await opts()).fontSize).toBe(10);
+  for (const theme of ["light", "dark"]) {
+    const bg = (await opts()).background.color;
+    await page.evaluate((th) => {
+      document.documentElement.dataset.theme = th;
+    }, theme);
+    // тема применилась (фон графика сменился), а шрифт — по-прежнему телефонный, не 11 px
+    await expect.poll(async () => (await opts()).background.color).not.toBe(bg);
+    expect((await opts()).fontSize).toBe(10);
+  }
+});
