@@ -1,9 +1,15 @@
-"""chart-data (план 2A.3): агрегация 1m → 5m/15m/1h совпадает с ручной, свёртка текущей свечи."""
+"""chart-data (план 2A.3, 2B.4): агрегация 1m → 5m/15m/1h совпадает с ручной, свёртка текущей
+свечи; SQL-агрегат равен aggregate()/fold(), /found = элементы, бюджет серверного времени."""
 
 from __future__ import annotations
 
+import random
+import time
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from typing import Any
+
+from sqlalchemy import select, text
 
 from app.chart_data import aggregate, bucket_start, fold
 from engine.candles import Candle, Timeframe
@@ -211,7 +217,7 @@ def test_candles_tick_size_in_fixed_point(monkeypatch: pytest.MonkeyPatch) -> No
         inst = SimpleNamespace(id=1, symbol="1000PEPEUSDT", tick_size=Decimal(tick))
         monkeypatch.setattr(chart, "_instrument", lambda db, symbol, inst=inst: inst)
         monkeypatch.setattr(chart, "load_candles", lambda *a, **k: ([c], False))
-        monkeypatch.setattr(chart, "current_candle", lambda *a, **k: None)
+        monkeypatch.setattr(chart, "current_bar", lambda *a, **k: None)
         app.dependency_overrides[auth.get_db] = lambda: object()
         try:
             r = TestClient(app).get("/v1/chart/candles?symbol=1000PEPEUSDT&tf=4h")
@@ -220,3 +226,352 @@ def test_candles_tick_size_in_fixed_point(monkeypatch: pytest.MonkeyPatch) -> No
         assert r.status_code == 200, r.text
         assert r.json()["tick_size"] == want
         assert r.json()["candles"][0]["c"] == "0.00494"
+
+
+# --- SQL-агрегат 5m/15m/1h и текущая свеча против эталонов aggregate()/fold() (план 2B.4) -------
+
+AGG_TFS = (Timeframe.M5, Timeframe.M15, Timeframe.H1)
+FIX_START = datetime(2026, 10, 20, 0, 23, tzinfo=UTC)  # данные начинаются с середины часа
+FIX_END = datetime(2026, 10, 23, 0, 23, tzinfo=UTC)
+FIX_GAPS = (
+    (datetime(2026, 10, 20, 5, 41, tzinfo=UTC), datetime(2026, 10, 20, 5, 48, tzinfo=UTC)),
+    (datetime(2026, 10, 21, 10, 50, tzinfo=UTC), datetime(2026, 10, 21, 13, 0, tzinfo=UTC)),
+    (datetime(2026, 10, 22, 3, 0, tzinfo=UTC), datetime(2026, 10, 22, 3, 1, tzinfo=UTC)),
+)
+
+
+def _instrument_row(s: Any, symbol: str) -> Any:
+    from app.models import Instrument
+
+    inst = Instrument(
+        exchange="binance", symbol=symbol, base=symbol[:-4], quote="USDT",
+        market_type="futures", tick_size=Decimal("0.01"), lot_size=Decimal("0.001"),
+    )  # fmt: skip
+    s.add(inst)
+    s.flush()
+    return inst
+
+
+def _m1_rows(inst_id: int, minutes: list[datetime], seed: int = 7) -> list[dict[str, Any]]:
+    """Случайное блуждание с точными Decimal: OHLC, объёмы, quote_volume и trades."""
+    rng = random.Random(seed)
+    price = Decimal("100")
+    rows = []
+    for t in minutes:
+        o = price
+        c = o + Decimal(rng.randint(-50, 50)) / 100
+        rows.append(
+            {
+                "instrument_id": inst_id,
+                "timeframe": "1m",
+                "open_time": t,
+                "open": o,
+                "high": max(o, c) + Decimal(rng.randint(0, 30)) / 100,
+                "low": min(o, c) - Decimal(rng.randint(0, 30)) / 100,
+                "close": c,
+                "volume": Decimal(rng.randint(1, 10_000)) / 1000,
+                "quote_volume": Decimal(rng.randint(1, 10**6)) / 100,
+                "trades": rng.randint(0, 500),
+            }
+        )
+        price = c
+    return rows
+
+
+def _insert_m1(s: Any, rows: list[dict[str, Any]]) -> None:
+    from sqlalchemy import insert
+
+    from app.models.market import Candle as CandleRow
+
+    for i in range(0, len(rows), 5000):
+        s.execute(insert(CandleRow), rows[i : i + 5000])
+    s.flush()
+
+
+def _fixture_minutes() -> list[datetime]:
+    out = []
+    t = FIX_START
+    while t < FIX_END:
+        if not any(a <= t < b for a, b in FIX_GAPS):
+            out.append(t)
+        t += timedelta(minutes=1)
+    return out
+
+
+def _m1_before(s: Any, inst_id: int, before: datetime | None) -> list[Candle]:
+    from app.chart_data import _rows_to_candles
+
+    rows = s.execute(
+        text(
+            "select open_time, open, high, low, close, volume, quote_volume, trades from candles "
+            "where instrument_id=:i and timeframe='1m' "
+            "and (CAST(:b AS timestamptz) is null or open_time < CAST(:b AS timestamptz)) "
+            "order by open_time"
+        ),
+        {"i": inst_id, "b": before},
+    ).all()
+    return _rows_to_candles(list(rows))
+
+
+def _old_load(
+    s: Any, inst_id: int, tf: Timeframe, before: datetime | None, limit: int
+) -> tuple[list[Candle], bool]:
+    """Прежний путь load_candles для 5m/15m/1h: окно (limit+2)·mult строк и свёртка в Python."""
+    mult = tf.seconds // 60
+    m1 = _m1_before(s, inst_id, before)
+    rows = m1[-(limit + 2) * mult :]
+    candles = aggregate(rows, tf)
+    if len(candles) > limit + 1:
+        candles = candles[-(limit + 1) :]
+    elif candles and len(rows) >= (limit + 2) * mult:
+        candles = candles[1:]
+    has_older = len(candles) > limit
+    return (candles[-limit:] if has_older else candles), has_older
+
+
+@db_only
+def test_sql_aggregate_equals_python_aggregate() -> None:
+    """5m/15m/1h из SQL (time_bucket, first/last) совпадают с aggregate() по всем полям: на
+    данных с пропусками, с before и без, на границе корзины и внутри пропуска."""
+    from app.chart_data import load_candles
+    from app.db import SessionLocal
+
+    befores: list[datetime | None] = [
+        None,
+        datetime(2026, 10, 23, 0, 0, tzinfo=UTC),
+        datetime(2026, 10, 22, 7, 37, tzinfo=UTC),  # не на границе корзины
+        datetime(2026, 10, 21, 14, 0, tzinfo=UTC),  # сразу после большого пропуска
+        datetime(2026, 10, 21, 12, 0, tzinfo=UTC),  # внутри пропуска
+        datetime(2026, 10, 20, 0, 30, tzinfo=UTC),  # в первой (неполной) корзине данных
+    ]
+    with SessionLocal() as s:
+        s.begin()
+        try:
+            inst = _instrument_row(s, "AGGTESTUSDT")
+            _insert_m1(s, _m1_rows(inst.id, _fixture_minutes()))
+            for tf in AGG_TFS:
+                size = timedelta(seconds=tf.seconds)
+                for before in befores:
+                    ref = aggregate(_m1_before(s, inst.id, before), tf)
+                    by_t = {c.open_time: c for c in ref}
+                    for limit in (20, 37, 500):
+                        got, more = load_candles(s, inst.id, tf, before, limit)
+                        assert got, (tf, before, limit)
+                        # каждая свеча — та же корзина aggregate() по всем 1m раньше before
+                        for c in got:
+                            assert c == by_t[c.open_time], (tf, before, limit, c.open_time)
+                        # окно — limit корзин по времени, кончается корзиной последней минуты
+                        lo = ref[-1].open_time - (limit - 1) * size
+                        assert got == [c for c in ref if c.open_time >= lo]
+                        assert more == any(c.open_time < lo for c in ref)
+                    # окно накрыло все данные — ровно прежний результат
+                    got, more = load_candles(s, inst.id, tf, before, 500)
+                    if not more:
+                        assert (got, more) == _old_load(s, inst.id, tf, before, 500), (tf, before)
+                    # у пропусков прежнее окно по строкам шире; общие корзины совпадают
+                    for limit in (20, 500):
+                        old = {c.open_time: c for c in _old_load(s, inst.id, tf, before, limit)[0]}
+                        got, _ = load_candles(s, inst.id, tf, before, limit)
+                        assert {c.open_time for c in got} <= set(old), (tf, before, limit)
+                        assert all(c == old[c.open_time] for c in got), (tf, before, limit)
+            # без пропусков в окне — совпадает с прежним путём целиком, включая has_older
+            for tf, before, limit in (
+                (Timeframe.M5, datetime(2026, 10, 23, 0, 0, tzinfo=UTC), 50),
+                (Timeframe.M15, datetime(2026, 10, 22, 23, 0, tzinfo=UTC), 60),
+                (Timeframe.H1, datetime(2026, 10, 23, 0, 0, tzinfo=UTC), 20),
+                (Timeframe.H1, None, 20),
+            ):
+                assert load_candles(s, inst.id, tf, before, limit) == _old_load(
+                    s, inst.id, tf, before, limit
+                ), (tf, before, limit)
+            # раньше данных и у инструмента без минут — пусто
+            early = datetime(2026, 10, 20, 0, 0, tzinfo=UTC)
+            assert load_candles(s, inst.id, Timeframe.H1, early, 500) == ([], False)
+            assert load_candles(s, inst.id + 10_000, Timeframe.H1, None, 500) == ([], False)
+        finally:
+            s.rollback()
+
+
+@db_only
+def test_current_bar_and_through_equal_fold() -> None:
+    """current_candle и current_through из SQL равны fold() по минутам текущего интервала."""
+    from app.chart_data import current_bar, current_candle
+    from app.db import SessionLocal
+
+    with SessionLocal() as s:
+        s.begin()
+        try:
+            inst = _instrument_row(s, "CURTESTUSDT")
+            _insert_m1(s, _m1_rows(inst.id, _fixture_minutes(), seed=11))
+            m1 = _m1_before(s, inst.id, None)
+            now = FIX_END - timedelta(seconds=30)
+            for tf in (Timeframe.M5, Timeframe.M15, Timeframe.H1, Timeframe.H4, Timeframe.D1,
+                       Timeframe.W1):  # fmt: skip
+                start = bucket_start(tf, now)
+                inside = [c for c in m1 if c.open_time >= start]
+                bar = current_bar(s, inst.id, tf, now)
+                assert bar is not None, tf
+                assert bar[0] == fold(inside, start), tf
+                assert bar[1] == inside[-1].open_time == FIX_END - timedelta(minutes=1)
+                assert current_candle(s, inst.id, tf, now) == bar[0]
+            # текущая неделя содержит все три пропуска: fold по всем минутам с понедельника
+            assert bucket_start(Timeframe.W1, now) < FIX_GAPS[0][0]
+            # в текущем интервале нет минут — None; у 1m текущей свечи нет
+            assert current_bar(s, inst.id, Timeframe.H1, FIX_END + timedelta(hours=5)) is None
+            assert current_bar(s, inst.id, Timeframe.M1, now) is None
+        finally:
+            s.rollback()
+
+
+@db_only
+def test_found_counts_equal_items() -> None:
+    """/found считает то же, что /patterns и /figures отдают элементами (тот же отбор), а
+    patterns view=chart / ids — правила полей и total."""
+    from fastapi.testclient import TestClient
+
+    from app import auth
+    from app.db import SessionLocal
+    from app.main import app
+    from app.models import FigureRow, Pattern, PatternRulesVersion
+
+    t0 = datetime(2026, 9, 1, tzinfo=UTC)
+    h4 = timedelta(hours=4)
+    with SessionLocal() as s:
+        s.begin()
+        try:
+            inst = _instrument_row(s, "FOUNDTESTUSDT")
+            other = _instrument_row(s, "FOUNDOTHERUSDT")
+            rv = PatternRulesVersion(version="found-" + datetime.now(tz=UTC).strftime("%H%M%S%f"))
+            s.add(rv)
+            s.flush()
+            for i in range(30):
+                for owner in (inst, other):
+                    t = t0 + h4 * i
+                    s.add(
+                        Pattern(
+                            instrument_id=owner.id, timeframe="4h",
+                            type=("engulfing", "doji", "pin_bar")[i % 3],
+                            direction=None if i % 3 == 1 else ("up", "down")[i % 2],
+                            status="confirmed", start_time=t - h4, confirm_time=t + h4,
+                            candle_close_time=t + h4,
+                            geometry={"candle_time": int(t.timestamp()), "price": "1", "atr": "1"},
+                            context={"trend": "up", "volume_ratio": "1.5"},
+                            is_significant=i % 4 == 0, rules_version_id=rv.id, source="backfill",
+                        )
+                    )  # fmt: skip
+            for i in range(9):
+                start = t0 + h4 * (3 * i)
+                s.add(
+                    FigureRow(
+                        instrument_id=inst.id, timeframe="4h", type="double_top",
+                        direction="down", status=("forming", "confirmed", "invalidated")[i % 3],
+                        scale=1, start_time=start, end_time=start + h4 * 10,
+                        known_time=start + h4 * 11, geometry={"points": [], "lines": []},
+                        quality=Decimal("0.5"), metrics={"x": 1}, rules_version="t",
+                        source="backfill",
+                    )
+                )  # fmt: skip
+            s.flush()
+            app.dependency_overrides[auth.get_db] = lambda: s
+            client = TestClient(app)
+            sym = "symbol=FOUNDTESTUSDT&tf=4h"
+            ranges = [
+                (1, None),
+                (int((t0 + h4 * 7).timestamp()), None),
+                (int((t0 + h4 * 5).timestamp()), int((t0 + h4 * 21).timestamp())),
+                (int((t0 + h4 * 100).timestamp()), None),  # пусто
+            ]
+            for since, until in ranges:
+                q = f"{sym}&since={since}" + (f"&until={until}" if until else "")
+                found = client.get(f"/v1/chart/found?{q}").json()
+                items = client.get(f"/v1/chart/patterns?{q}&limit=1000").json()["items"]
+                light = client.get(f"/v1/chart/patterns?{q}&limit=1000&view=chart").json()
+                figs = client.get(f"/v1/chart/figures?{q}&limit=500").json()["items"]
+                assert found["patterns"]["total"] == len(items) == light["total"]
+                assert found["patterns"]["significant_t"] == sorted(
+                    p["t"] for p in items if p["significant"]
+                )
+                assert found["figures"]["active_end_t"] == sorted(
+                    f["end_t"] for f in figs if f["status"] != "invalidated"
+                )
+                assert [p["id"] for p in light["items"]] == [p["id"] for p in items]
+            # view=chart: total без учёта limit, контекст только у значимых, без source/tf
+            light = client.get(f"/v1/chart/patterns?{sym}&since=1&limit=5&view=chart").json()
+            assert len(light["items"]) == 5 and light["total"] == 30
+            for p in light["items"]:
+                assert "source" not in p and "tf" not in p
+                assert ("context" in p) == p["significant"]
+            fig = client.get(f"/v1/chart/figures?{sym}&since=1&view=chart").json()["items"][0]
+            assert not {"metrics", "source", "tf"} & set(fig)
+            # ids: только свои отметки этого инструмента и tf, полными элементами
+            all_items = client.get(f"/v1/chart/patterns?{sym}&since=1&limit=1000").json()["items"]
+            want = [all_items[1]["id"], all_items[2]["id"]]
+            foreign = s.scalar(select(Pattern.id).where(Pattern.instrument_id == other.id))
+            ids = ",".join(str(x) for x in [*want, foreign])
+            got = client.get(f"/v1/chart/patterns?{sym}&ids={ids}&view=chart").json()
+            assert [p["id"] for p in got["items"]] == want and got["total"] == 2
+            assert all("context" in p and p["source"] == "backfill" for p in got["items"])
+            # фигур на 1h нет — figures: null
+            one_h = client.get("/v1/chart/found?symbol=FOUNDTESTUSDT&tf=1h&since=1").json()
+            assert one_h["figures"] is None and one_h["patterns"]["total"] == 0
+        finally:
+            app.dependency_overrides.pop(auth.get_db, None)
+            s.rollback()
+
+
+# --- бюджет серверного времени (план 2B.4: p95 < 300 мс; B16: ≤ тривиальный запрос + 60 мс) ---
+
+BUDGET_P95_MS = 300.0
+BUDGET_OVER_TRIVIAL_MS = 60.0
+BUDGET_SAMPLES = 20
+
+
+def _timed(client: Any, url: str, n: int) -> list[float]:
+    out = []
+    for _ in range(n):
+        t = time.perf_counter()
+        client.get(url)
+        out.append((time.perf_counter() - t) * 1000)
+    return sorted(out)
+
+
+@db_only
+def test_candles_server_time_budget() -> None:
+    """Свечи 1h (500 корзин = 30 000 минут) и 1w (текущая неделя до 10 080 минут) укладываются в
+    p95 < 300 мс и p50 ≤ p50 тривиального запроса + 60 мс: агрегат в SQL, а не в Python."""
+    from fastapi.testclient import TestClient
+
+    from app import auth
+    from app.db import SessionLocal
+    from app.main import app
+
+    now = datetime.now(tz=UTC).replace(second=0, microsecond=0)
+    minutes = [now - timedelta(minutes=i) for i in range(21 * 24 * 60, -1, -1)]
+    with SessionLocal() as s:
+        s.begin()
+        try:
+            inst = _instrument_row(s, "BUDGETTESTUSDT")
+            _insert_m1(s, _m1_rows(inst.id, minutes, seed=3))
+            s.execute(text("analyze candles"))
+            app.dependency_overrides[auth.get_db] = lambda: s
+            client = TestClient(app)
+            h1 = "/v1/chart/candles?symbol=BUDGETTESTUSDT&tf=1h"
+            w1 = "/v1/chart/candles?symbol=BUDGETTESTUSDT&tf=1w"
+            trivial = "/v1/chart/candles?symbol=NOSUCHUSDT&tf=1h"  # 404 после одного запроса
+            body = client.get(h1).json()
+            assert len(body["candles"]) == 500 and body["has_older"] is True
+            assert body["current_through"] == int(now.timestamp())
+            body = client.get(w1).json()
+            assert body["current"]["t"] == int(bucket_start(Timeframe.W1, now).timestamp())
+            assert body["current_through"] == int(now.timestamp())
+            base = _timed(client, trivial, BUDGET_SAMPLES)
+            base_p50 = base[len(base) // 2]
+            for url in (h1, w1):
+                ms = _timed(client, url, BUDGET_SAMPLES)
+                p50, p95 = ms[len(ms) // 2], ms[int(0.95 * (len(ms) - 1))]
+                print(f"{url}: p50 {p50:.1f} мс, p95 {p95:.1f} мс; тривиальный p50 {base_p50:.1f}")
+                assert p95 < BUDGET_P95_MS, (url, p95)
+                assert p50 <= base_p50 + BUDGET_OVER_TRIVIAL_MS, (url, p50, base_p50)
+        finally:
+            app.dependency_overrides.pop(auth.get_db, None)
+            s.rollback()

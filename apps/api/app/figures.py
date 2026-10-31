@@ -509,6 +509,25 @@ def figure_dict(r: FigureRow) -> dict[str, Any]:
     }
 
 
+def figure_view_dict(r: FigureRow) -> dict[str, Any]:
+    """Фигура для figures?view=chart: без ``metrics``, ``source`` и ``tf``."""
+    d = figure_dict(r)
+    del d["metrics"], d["source"], d["tf"]
+    return d
+
+
+def _chart_filter(
+    inst: Instrument, tf: Timeframe, since: datetime | None, until: datetime | None
+) -> list[Any]:
+    """Фигуры, пересекающие диапазон, — общий отбор у figures и found (счётчики = элементы)."""
+    where: list[Any] = [FigureRow.instrument_id == inst.id, FigureRow.timeframe == tf.value]
+    if since is not None:
+        where.append(FigureRow.end_time >= since)
+    if until is not None:
+        where.append(FigureRow.start_time <= until)
+    return where
+
+
 def chart_figures(
     db: Session,
     inst: Instrument,
@@ -516,12 +535,11 @@ def chart_figures(
     since: datetime | None,
     until: datetime | None,
     limit: int = 100,
+    *,
+    view: str | None = None,
 ) -> dict[str, Any]:
-    q = select(FigureRow).where(FigureRow.instrument_id == inst.id, FigureRow.timeframe == tf.value)
-    if since is not None:
-        q = q.where(FigureRow.end_time >= since)
-    if until is not None:
-        q = q.where(FigureRow.start_time <= until)
+    """Фигуры для слоя графика и «Найдено»; ``view="chart"`` — без metrics/source/tf."""
+    q = select(FigureRow).where(*_chart_filter(inst, tf, since, until))
     rows = db.scalars(q.order_by(FigureRow.end_time.desc()).limit(limit)).all()
     types = sorted({r.type for r in rows})
     snaps = {
@@ -535,13 +553,26 @@ def chart_figures(
             )
         ).all()
     }
+    to_dict = figure_view_dict if view == "chart" else figure_dict
     return {
         "symbol": inst.symbol,
         "tf": tf.value,
-        "items": [figure_dict(r) for r in reversed(rows)],
+        "items": [to_dict(r) for r in reversed(rows)],
         "stats": {t: snapshot_dict(snaps.get(t), t) for t in types},
         "note": (
             "Фигуры считаются по закрытым свечам; «формируется» — геометрия без подтверждения. "
             "Не являются сигналами."
         ),
     }
+
+
+def figure_active_ends(
+    db: Session, inst: Instrument, tf: Timeframe, since: datetime | None, until: datetime | None
+) -> dict[str, Any]:
+    """Счётчик для /chart/found: ``end_t`` неотменённых фигур в диапазоне."""
+    ends = db.scalars(
+        select(FigureRow.end_time)
+        .where(*_chart_filter(inst, tf, since, until), FigureRow.status != "invalidated")
+        .order_by(FigureRow.end_time)
+    ).all()
+    return {"active_end_t": [int(t.timestamp()) for t in ends]}

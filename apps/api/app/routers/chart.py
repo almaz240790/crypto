@@ -1,36 +1,55 @@
-"""/v1/chart — данные терминала (план 2A.3, 2B.4): свечи порциями, текущая свеча, слои."""
+"""/v1/chart — данные терминала (план 2A.3, 2B.4): свечи порциями, текущая свеча, слои.
+
+Кэширование ответов — :mod:`app.http_cache` (Cache-Control по варианту, слабый ETag, 304).
+Все новые параметры (``view``, ``ids``, ``series``) необязательны: без них ответы прежние.
+"""
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 import redis
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import auth
 from app.chart_data import (
+    DERIV_SERIES,
     LAYER_TFS,
     PAGE,
     _dec,
+    bucket_start,
     candle_dict,
-    current_candle,
+    chart_view,
+    current_bar,
     layers_cached,
     load_candles,
     load_derivatives,
     signal_layer,
 )
 from app.config import settings
-from app.entitlements import entitlements_for
+from app.entitlements import Entitlements, entitlements_for
+from app.http_cache import (
+    CANDLES_HISTORY,
+    CANDLES_LATEST,
+    DERIVATIVES,
+    LAYERS_CHART,
+    OBJECTS,
+    PRIVATE_NO_CACHE,
+    PRIVATE_NO_STORE,
+    json_response,
+)
 from app.models import Instrument, User
 from app.routers.public import optional_user
 from engine.candles import Timeframe
 
 router = APIRouter(prefix="/v1/chart", tags=["chart"])
 INTRADAY = {Timeframe.M1, Timeframe.M5, Timeframe.M15}
+View = Literal["chart"]
+VIEW_DOC = "chart — только то, что рисует график (меньше ответ, общий кэш)"
 
 
 def _instrument(db: Session, symbol: str) -> Instrument:
@@ -47,114 +66,231 @@ def _tf(tf: str) -> Timeframe:
         raise HTTPException(400, "таймфрейм: 1m, 5m, 15m, 1h, 4h, 1d, 1w") from exc
 
 
+def _ts(x: int | None) -> datetime | None:
+    return datetime.fromtimestamp(x, tz=UTC) if x else None
+
+
+def _redis() -> Any | None:
+    try:
+        return redis.from_url(settings.redis_url, socket_timeout=2)
+    except Exception:
+        return None
+
+
+def _signal_scopes(user: User, ent: Entitlements) -> list[str]:
+    """live — всем вошедшим; forward — по правам тарифа и админам."""
+    scopes = ["live"]
+    if user.role in ("admin", "owner") or ent.forward_scope:
+        scopes.append("forward")
+    return scopes
+
+
 @router.get("/candles")
 def candles(
+    request: Request,
     symbol: str,
     tf: str = "4h",
     before: int | None = Query(None, description="unix-время: отдать свечи строго раньше"),
     limit: int = Query(PAGE, ge=20, le=PAGE),
     user: User | None = Depends(optional_user),
     db: Session = Depends(auth.get_db),
-) -> dict[str, Any]:
-    """Закрытые свечи порцией (по умолчанию последние 500) и текущая незакрытая свеча."""
+) -> Response:
+    """Закрытые свечи порцией (по умолчанию последние 500) и текущая незакрытая свеча.
+
+    ``current_through`` — open time самой новой минуты, свёрнутой в незакрытую свечу (``current``
+    или последнюю свечу с ``open: true``): клиент досворачивает минуты новее неё."""
     timeframe = _tf(tf)
     ent = entitlements_for(db, user)
     if timeframe in INTRADAY and not ent.intraday:
         raise HTTPException(403, "таймфреймы 1m–15m доступны на тарифе Pro")
     inst = _instrument(db, symbol)
     now = datetime.now(tz=UTC)
-    b = datetime.fromtimestamp(before, tz=UTC) if before else None
+    b = _ts(before)
     rows, has_older = load_candles(db, inst.id, timeframe, b, limit)
     # последняя хранимая свеча tf может быть ещё не закрыта — помечаем
     out = [candle_dict(c, open_=c.open_time + timeframe.delta > now) for c in rows]
     cur = None
+    through: datetime | None = None
     if b is None and timeframe is not Timeframe.M1:
         last_open = rows[-1].open_time if rows else None
-        c = current_candle(db, inst.id, timeframe, now)
-        if c is not None and (last_open is None or c.open_time > last_open):
-            cur = candle_dict(c, open_=True)
-    return {
+        bar = current_bar(db, inst.id, timeframe, now)
+        if bar is not None:
+            c, through = bar
+            if last_open is None or c.open_time > last_open:
+                cur = candle_dict(c, open_=True)
+    payload = {
         "symbol": inst.symbol,
         "tf": timeframe.value,
         "candles": out,
         "current": cur,
+        "current_through": int(through.timestamp()) if through is not None else None,
         "has_older": has_older,
         # фиксированная запись: str(Decimal) даёт '1.000E-7', и клиент считал 6 знаков вместо 7
         "tick_size": _dec(inst.tick_size),
         "server_time": now.isoformat(),
     }
+    if timeframe in INTRADAY:
+        cache = PRIVATE_NO_STORE  # права тарифа
+    elif b is not None and b <= bucket_start(timeframe, now):
+        cache = CANDLES_HISTORY  # только закрытые свечи — порция не меняется
+    else:
+        cache = CANDLES_LATEST
+    return json_response(request, payload, cache)
 
 
 @router.get("/layers")
 def layers(
+    request: Request,
     symbol: str,
     tf: str = "4h",
+    view: View | None = Query(None, description=VIEW_DOC),
     user: User | None = Depends(optional_user),
     db: Session = Depends(auth.get_db),
-) -> dict[str, Any]:
+) -> Response:
     """Слои: структура (swing, BOS/CHoCH), зоны, уровни, равные уровни, снятия, bias — по tf ≥ 1h;
-    сигналы инструмента (live; forward — по правам). Кэш 60 с."""
+    сигналы инструмента (live; forward — по правам). Кэш 60 с.
+
+    ``view=chart`` — только структура в объёме графика (без swing-ов, активные зоны, последние
+    12 событий и снятий, не снятые равные уровни) и без ``signals``: ответ не зависит от
+    пользователя и кэшируется публично. Сигналы для графика — ``/v1/chart/signals``."""
     timeframe = _tf(tf)
     inst = _instrument(db, symbol)
     now = datetime.now(tz=UTC)
-    ent = entitlements_for(db, user)
-    r: Any | None
-    try:
-        r = redis.from_url(settings.redis_url, socket_timeout=2)
-    except Exception:
-        r = None
-    structure = layers_cached(db, r, inst, timeframe, now) if timeframe in LAYER_TFS else None
-    scopes = ["live"]
-    if user is not None and (user.role in ("admin", "owner") or ent.forward_scope):
-        scopes.append("forward")
-    signals = signal_layer(db, inst, scopes) if user is not None else []
-    return {
+    structure = None
+    if timeframe in LAYER_TFS:
+        structure = layers_cached(db, _redis(), inst, timeframe, now)
+    payload: dict[str, Any]
+    if view == "chart":
+        payload = {
+            "symbol": inst.symbol,
+            "tf": timeframe.value,
+            "structure": chart_view(structure),
+            "server_time": now.isoformat(),
+        }
+        return json_response(request, payload, LAYERS_CHART)
+    signals: list[dict[str, Any]] = []
+    if user is not None:
+        signals = signal_layer(db, inst, _signal_scopes(user, entitlements_for(db, user)))
+    payload = {
         "symbol": inst.symbol,
         "tf": timeframe.value,
         "structure": structure,
         "signals": signals,
         "server_time": now.isoformat(),
     }
+    return json_response(request, payload, PRIVATE_NO_CACHE)
+
+
+@router.get("/signals")
+def chart_signals(
+    request: Request,
+    symbol: str,
+    user: User = Depends(auth.current_user),
+    db: Session = Depends(auth.get_db),
+) -> Response:
+    """Сигналы инструмента для слоя графика (нужен вход): live, forward — по правам тарифа.
+    Те же элементы, что ``signals`` в ``/layers`` без ``view``."""
+    inst = _instrument(db, symbol)
+    payload = {
+        "symbol": inst.symbol,
+        "signals": signal_layer(db, inst, _signal_scopes(user, entitlements_for(db, user))),
+        "server_time": datetime.now(tz=UTC).isoformat(),
+    }
+    return json_response(request, payload, PRIVATE_NO_STORE)
+
+
+def _parse_ids(raw: str) -> list[int]:
+    try:
+        ids = sorted({int(x) for x in raw.split(",") if x.strip()})
+    except ValueError as exc:
+        raise HTTPException(400, "ids: номера через запятую") from exc
+    from app.patterns import IDS_MAX
+
+    if not ids or len(ids) > IDS_MAX:
+        raise HTTPException(400, f"ids: от 1 до {IDS_MAX} номеров")
+    return ids
 
 
 @router.get("/patterns")
 def patterns(
+    request: Request,
     symbol: str,
     tf: str = "4h",
     since: int | None = Query(None, description="unix-секунды, по закрытию свечи"),
     until: int | None = None,
     limit: int = Query(300, ge=1, le=1000),
+    view: View | None = Query(None, description=VIEW_DOC + "; есть total"),
+    ids: str | None = Query(None, description="id через запятую (≤ 20): полные элементы"),
     db: Session = Depends(auth.get_db),
-) -> dict[str, Any]:
+) -> Response:
     """Свечные паттерны инструмента на таймфрейме (план 2A.10.1, 2B.12): отметки с контекстом
-    и историческая отработка по типам. Доступно всем — это часть открытой статистики."""
+    и историческая отработка по типам. Доступно всем — это часть открытой статистики.
+
+    ``view=chart`` — без ``source``/``tf``, ``context`` только у значимых, плюс ``total``;
+    ``ids=`` — только эти отметки полными элементами (с контекстом)."""
     from app.patterns import chart_patterns
 
     timeframe = _tf(tf)
+    id_list = _parse_ids(ids) if ids is not None else None
     inst = _instrument(db, symbol)
-    s = datetime.fromtimestamp(since, tz=UTC) if since else None
-    u = datetime.fromtimestamp(until, tz=UTC) if until else None
-    return chart_patterns(db, inst, timeframe, s, u, limit)
+    payload = chart_patterns(
+        db, inst, timeframe, _ts(since), _ts(until), limit, view=view, ids=id_list
+    )
+    return json_response(request, payload, OBJECTS)
 
 
 @router.get("/figures")
 def figures(
+    request: Request,
     symbol: str,
     tf: str = "4h",
     since: int | None = None,
     until: int | None = None,
     limit: int = Query(100, ge=1, le=500),
+    view: View | None = Query(None, description=VIEW_DOC),
     db: Session = Depends(auth.get_db),
-) -> dict[str, Any]:
+) -> Response:
     """Графические фигуры инструмента (план 2A.10.2, 4B.6): формируется / подтверждена /
-    отменена, с линиями, целью и исторической отработкой типа. Доступно всем."""
+    отменена, с линиями, целью и исторической отработкой типа. Доступно всем.
+
+    ``view=chart`` — без ``metrics``, ``source`` и ``tf``."""
     from app.figures import chart_figures
 
     timeframe = _tf(tf)
     inst = _instrument(db, symbol)
-    s = datetime.fromtimestamp(since, tz=UTC) if since else None
-    u = datetime.fromtimestamp(until, tz=UTC) if until else None
-    return chart_figures(db, inst, timeframe, s, u, limit)
+    payload = chart_figures(db, inst, timeframe, _ts(since), _ts(until), limit, view=view)
+    return json_response(request, payload, OBJECTS)
+
+
+@router.get("/found")
+def found(
+    request: Request,
+    symbol: str,
+    tf: str = "4h",
+    since: int = Query(description="unix-секунды: начало диапазона, как since у patterns"),
+    until: int | None = Query(None, description="unix-секунды: конец диапазона"),
+    db: Session = Depends(auth.get_db),
+) -> Response:
+    """Счётчики «Найдено» за диапазон до загрузки элементов: сколько паттернов (``total``) и
+    время свечи значимых (``significant_t``), конец неотменённых фигур (``active_end_t``; ``null``
+    на таймфреймах без фигур). Отбор тот же, что у ``/patterns`` и ``/figures``."""
+    from app.figures import FIGURE_TFS, figure_active_ends
+    from app.patterns import pattern_counts
+
+    timeframe = _tf(tf)
+    inst = _instrument(db, symbol)
+    s, u = _ts(since), _ts(until)
+    payload = {
+        "symbol": inst.symbol,
+        "tf": timeframe.value,
+        "since": since,
+        "until": until,
+        "patterns": pattern_counts(db, inst, timeframe, s, u),
+        "figures": figure_active_ends(db, inst, timeframe, s, u)
+        if timeframe in FIGURE_TFS
+        else None,
+    }
+    return json_response(request, payload, OBJECTS)
 
 
 class ExplainIn(BaseModel):
@@ -181,12 +317,7 @@ def ask(
 
     timeframe = _tf(body.tf)
     inst = _instrument(db, body.symbol)
-    r: Any | None
-    try:
-        r = redis.from_url(settings.redis_url, socket_timeout=2)
-    except Exception:
-        r = None
-    return ask_chart(db, r, user, inst, timeframe, body.question)
+    return ask_chart(db, _redis(), user, inst, timeframe, body.question)
 
 
 @router.post("/explain")
@@ -205,31 +336,44 @@ def explain(
     p = db.get(Pattern, body.pattern_id)
     if p is None or p.instrument_id != inst.id or p.timeframe != timeframe.value:
         raise HTTPException(404, "паттерн не найден")
-    r: Any | None
-    try:
-        r = redis.from_url(settings.redis_url, socket_timeout=2)
-    except Exception:
-        r = None
-    return explain_pattern(db, r, user, inst, timeframe, p)
+    return explain_pattern(db, _redis(), user, inst, timeframe, p)
+
+
+def _parse_series(raw: str) -> list[str]:
+    names = [x.strip() for x in raw.split(",") if x.strip()]
+    if names == ["none"]:
+        return []
+    bad = [n for n in names if n not in DERIV_SERIES]
+    if not names or bad:
+        raise HTTPException(400, f"series: {', '.join(DERIV_SERIES)} через запятую или none")
+    return names
 
 
 @router.get("/derivatives")
 def derivatives(
+    request: Request,
     symbol: str,
     tf: str = "4h",
     before: int | None = Query(None),
     limit: int = Query(PAGE, ge=20, le=PAGE),
+    series: str | None = Query(
+        None,
+        description="ряды через запятую: funding, oi, liquidations, ls_ratio, ls_top; "
+        "none — только funding_current, next_funding_t, liquidations_note; без параметра — все",
+    ),
     user: User | None = Depends(optional_user),
     db: Session = Depends(auth.get_db),
-) -> dict[str, Any]:
+) -> Response:
     """Панели funding / OI / ликвидаций, выровненные по корзинам tf, за окно ``limit`` свечей."""
     timeframe = _tf(tf)
+    wanted = _parse_series(series) if series is not None else None
     inst = _instrument(db, symbol)
-    until = datetime.fromtimestamp(before, tz=UTC) if before else None
+    until = _ts(before)
     end = until or datetime.now(tz=UTC)
     since = end - timeframe.delta * limit
-    return {
+    payload = {
         "symbol": inst.symbol,
         "tf": timeframe.value,
-        **load_derivatives(db, inst.id, timeframe, since, until),
+        **load_derivatives(db, inst.id, timeframe, since, until, wanted),
     }
+    return json_response(request, payload, DERIVATIVES)

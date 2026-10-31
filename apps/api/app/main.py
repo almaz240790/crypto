@@ -13,6 +13,7 @@ from sqlalchemy import text
 from app.config import settings
 from app.db import SessionLocal, engine
 from app.debug import router as debug_router
+from app.http_cache import NoStoreErrors
 from app.live import hub
 from app.live import router as live_router
 from app.routers.admin import router as admin_router
@@ -57,6 +58,8 @@ app.include_router(labels_router)
 app.include_router(public_router)
 app.include_router(support_router)
 app.include_router(user_router)
+# ошибки /v1/chart не кэшируются ни браузером, ни edge (план 2B.4)
+app.add_middleware(NoStoreErrors, prefix="/v1/chart")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[settings.frontend_url],

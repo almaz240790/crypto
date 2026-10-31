@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import delete, insert, select, text
+from sqlalchemy import BigInteger, delete, func, insert, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -651,6 +651,32 @@ def pattern_dict(p: Pattern) -> dict[str, Any]:
     }
 
 
+def pattern_view_dict(p: Pattern) -> dict[str, Any]:
+    """Отметка для patterns?view=chart: без ``source`` и ``tf`` (они в запросе), ``context`` —
+    только у значимых (его показывает подсказка значимого паттерна; полный элемент — ``ids=``)."""
+    d = pattern_dict(p)
+    del d["source"], d["tf"]
+    if not p.is_significant:
+        del d["context"]
+    return d
+
+
+IDS_MAX = 20
+"""patterns?ids=…: сколько полных элементов можно запросить разом."""
+
+
+def _chart_filter(
+    inst: Instrument, tf: Timeframe, since: datetime | None, until: datetime | None
+) -> list[Any]:
+    """Отбор отметок графика за диапазон — общий у patterns и found (счётчики = элементы)."""
+    where: list[Any] = [Pattern.instrument_id == inst.id, Pattern.timeframe == tf.value]
+    if since is not None:
+        where.append(Pattern.candle_close_time >= since)
+    if until is not None:
+        where.append(Pattern.candle_close_time <= until)
+    return where
+
+
 def chart_patterns(
     db: Session,
     inst: Instrument,
@@ -658,15 +684,31 @@ def chart_patterns(
     since: datetime | None,
     until: datetime | None,
     limit: int = 300,
+    *,
+    view: str | None = None,
+    ids: list[int] | None = None,
 ) -> dict[str, Any]:
-    """Отметки для слоя графика и панели «Найдено» (2B.12) плюс историческая отработка по типам."""
-    q = select(Pattern).where(Pattern.instrument_id == inst.id, Pattern.timeframe == tf.value)
-    if since is not None:
-        q = q.where(Pattern.candle_close_time >= since)
-    if until is not None:
-        q = q.where(Pattern.candle_close_time <= until)
-    rows = db.scalars(q.order_by(Pattern.candle_close_time.desc()).limit(limit)).all()
-    items = [pattern_dict(p) for p in reversed(rows)]
+    """Отметки для слоя графика и панели «Найдено» (2B.12) плюс историческая отработка по типам.
+
+    ``view="chart"`` — облегчённые элементы (:func:`pattern_view_dict`) и ``total`` — сколько
+    отметок в диапазоне без учёта ``limit``. ``ids`` — только эти отметки, полными элементами;
+    ``since``/``until``/``limit`` тогда не применяются."""
+    if ids is not None:
+        where = [
+            Pattern.instrument_id == inst.id,
+            Pattern.timeframe == tf.value,
+            Pattern.id.in_(ids),
+        ]
+        rows = db.scalars(
+            select(Pattern).where(*where).order_by(Pattern.candle_close_time.desc())
+        ).all()
+    else:
+        where = _chart_filter(inst, tf, since, until)
+        rows = db.scalars(
+            select(Pattern).where(*where).order_by(Pattern.candle_close_time.desc()).limit(limit)
+        ).all()
+    light = view == "chart" and ids is None
+    items = [pattern_view_dict(p) if light else pattern_dict(p) for p in reversed(rows)]
     types = sorted({p.type for p in rows})
     snaps = {
         s.type: s
@@ -682,7 +724,7 @@ def chart_patterns(
             )
         ).all()
     }
-    return {
+    out: dict[str, Any] = {
         "symbol": inst.symbol,
         "tf": tf.value,
         "items": items,
@@ -690,3 +732,27 @@ def chart_patterns(
         "horizon": STATS_HORIZON,
         "note": "Паттерны считаются по закрытым свечам и не являются сигналами.",
     }
+    if view == "chart":
+        if ids is not None or len(rows) < limit:
+            out["total"] = len(rows)
+        else:
+            out["total"] = _count(db, where)
+    return out
+
+
+def _count(db: Session, where: list[Any]) -> int:
+    return int(db.scalar(select(func.count()).select_from(Pattern).where(*where)) or 0)
+
+
+def pattern_counts(
+    db: Session, inst: Instrument, tf: Timeframe, since: datetime | None, until: datetime | None
+) -> dict[str, Any]:
+    """Счётчики для /chart/found: сколько отметок в диапазоне и время свечи (``t``) значимых —
+    по ним клиент считает «Найдено (n)» в видимом диапазоне до загрузки элементов."""
+    where = _chart_filter(inst, tf, since, until)
+    total = _count(db, where)
+    t = func.coalesce(Pattern.geometry["candle_time"].astext.cast(BigInteger), 0)
+    significant = db.scalars(
+        select(t).where(*where, Pattern.is_significant.is_(True)).order_by(t)
+    ).all()
+    return {"total": total, "significant_t": [int(x) for x in significant]}
