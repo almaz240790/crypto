@@ -9,10 +9,13 @@ import { getT } from "@/i18n/server";
 
 export const dynamic = "force-dynamic";
 
-export const metadata: Metadata = {
-  title: "Отработка свечных паттернов",
-  description: "Историческая отработка свечных паттернов по закрытым свечам: число случаев, доля хода ≥ 1 ATR в сторону паттерна, интервал Уилсона 95 %. Паттерны не являются сигналами.",
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const t = await getT();
+  return {
+    title: t("Отработка свечных паттернов"),
+    description: t("Историческая отработка свечных паттернов по закрытым свечам: число случаев, доля хода ≥ 1 ATR в сторону паттерна, интервал Уилсона 95 %. Паттерны не являются сигналами."),
+  };
+}
 
 const TFS = ["15m", "1h", "4h", "1d", "1w"];
 const HORIZONS = [3, 5, 10];

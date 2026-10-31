@@ -327,7 +327,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
       return;
     }
     const copy = dr.actions.copyTo(id, target, ratio);
-    if (copy) say(`Рисунок скопирован на ${target}${ratio !== 1 ? t(" (цены пропорционально)") : ""}`);
+    if (copy) say(`${t("Рисунок скопирован на {symbol}", { symbol: target })}${ratio !== 1 ? t(" (цены пропорционально)") : ""}`);
   };
   const countdown = last ? secondsToClose(tf, last.time, now) : null;
   const intradayLocked = !user || (data.error ?? "").includes(t("тарифе"));
@@ -506,16 +506,16 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
         )}
         {sel && (
           <div className={s.card} role="region" aria-label={t("выбранный рисунок")}>
-            <strong>{TOOL_TITLES[sel.type]}</strong>
+            <strong>{t(TOOL_TITLES[sel.type])}</strong>
             {(sel.type === "note" || sel.type === "rect" || sel.type === "trend") && (
               <input aria-label={t("текст рисунка")} placeholder={t("подпись (до 140 символов)")} maxLength={140} value={sel.text ?? ""} onChange={(e) => dr.actions.patch(sel.id, { text: e.target.value })} />
             )}
             {pos && (
               <span className={s.posStats}>
-                R:R <strong>{pos.rr.toFixed(2)}</strong> · риск {pos.riskPct.toFixed(2)} %
+                R:R <strong>{pos.rr.toFixed(2)}</strong> {t("· риск")} {pos.riskPct.toFixed(2)} %
                 {pos.riskUsd != null && pos.size != null && (
                   <>
-                    {" "}· риск <strong>{pos.riskUsd.toFixed(0)} USDT</strong>{" "}{t("· размер")}{" "}<strong>{pos.size.toPrecision(4)}</strong>
+                    {" "}{t("· риск")} <strong>{pos.riskUsd.toFixed(0)} USDT</strong>{" "}{t("· размер")}{" "}<strong>{pos.size.toPrecision(4)}</strong>
                   </>
                 )}
                 {pos.riskUsd == null && <span className="caption">{" "}{t("· задайте депозит и риск в настройках")}</span>}
@@ -566,7 +566,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
         )}
         {dr.limitHit && (
           <p className={s.card} role="alert">
-            Лимит рисунков на инструмент: {dr.limit}. Удалите лишние{!user ? t(" или войдите") : t(" или оформите подписку уровнем выше")}.{" "}
+            {t("Лимит рисунков на инструмент: {n}. Удалите лишние", { n: dr.limit ?? "—" })}{!user ? t(" или войдите") : t(" или оформите подписку уровнем выше")}.{" "}
             <button type="button" className={s.chip} onClick={dr.dismissLimit}>{t("понятно")}</button>
           </p>
         )}
@@ -615,18 +615,18 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
               </>
             )}
             {sheet === "draw" &&
-              TOOLS.map((t) => (
+              TOOLS.map((tool) => (
                 <button
-                  key={t}
+                  key={tool}
                   type="button"
                   className={s.chip}
-                  aria-pressed={dr.tool === t}
+                  aria-pressed={dr.tool === tool}
                   onClick={() => {
-                    dr.setTool(dr.tool === t ? null : t);
+                    dr.setTool(dr.tool === tool ? null : tool);
                     setSheet(null);
                   }}
                 >
-                  {TOOL_TITLES[t]}
+                  {t(TOOL_TITLES[tool])}
                 </button>
               ))}
             {sheet === "draw" && (
@@ -709,7 +709,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
           {t("Алерт")}{alerts.length ? ` (${alerts.length})` : ""}
         </button>
         <button type="button" className={s.chip} aria-pressed={sheet === "draw" || dr.tool !== null} onClick={() => setSheet(sheet === "draw" ? null : "draw")}>
-          {dr.tool ? `Рисую: ${TOOL_TITLES[dr.tool]}` : t("Рисовать")}
+          {dr.tool ? t("Рисую: {tool}", { tool: t(TOOL_TITLES[dr.tool]) }) : t("Рисовать")}
         </button>
         {dr.tool && (
           <button type="button" className={s.chip} onClick={() => { dr.setTool(null); dr.setDraft(null); }} aria-label={t("закончить рисование")}>{t("Готово")}</button>
@@ -721,7 +721,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
           ↷
         </button>
         <span className="caption" data-testid="drawings-count">
-          рисунков: {dr.items.length}
+          {t("рисунков: {n}", { n: dr.items.length })}
         </span>
         {user && dr.sync !== "off" && (
           <span className="caption" data-testid="drawings-sync">
@@ -730,7 +730,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
         )}
         {data.layers?.signals.length ? (
           <Link className="caption" href={`/signals?symbol=${symbol}&tab=all`}>
-            сигналов по инструменту: {data.layers.signals.length}
+            {t("сигналов по инструменту: {n}", { n: data.layers.signals.length })}
           </Link>
         ) : null}
       </div>

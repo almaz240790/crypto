@@ -755,7 +755,7 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
           <span className={s.paneTitle} style={h.color ? { color: h.color } : undefined}>
             {h.title}
           </span>
-          <button type="button" className={s.paneToggle} aria-expanded={!h.collapsed} aria-label={`${h.collapsed ? t("развернуть") : t("свернуть")} панель ${h.title}`} onClick={() => togglePane(h.key)}>
+          <button type="button" className={s.paneToggle} aria-expanded={!h.collapsed} aria-label={t(h.collapsed ? "развернуть панель {name}" : "свернуть панель {name}", { name: h.title })} onClick={() => togglePane(h.key)}>
             {h.collapsed ? "▴" : "▾"}
           </button>
         </div>

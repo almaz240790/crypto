@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { IBM_Plex_Mono, Manrope, Source_Serif_4 } from "next/font/google";
 import { AuthProvider } from "@/components/auth/AuthProvider";
 import { LocaleProvider } from "@/i18n/client";
-import { getLocale } from "@/i18n/server";
+import { getLocale, getT } from "@/i18n/server";
 import { RegisterSW } from "@/components/pwa/Register";
 import "./globals.css";
 
@@ -30,14 +30,17 @@ const mono = IBM_Plex_Mono({
   display: "swap",
 });
 
-export const metadata: Metadata = {
-  title: { default: "PlatformSol", template: "%s — PlatformSol" },
-  description: "Крипто-график для технического анализа: индикаторы, инструменты рисования, автоматическая разметка уровней, зон и ликвидаций.",
-  applicationName: "PlatformSol",
-  metadataBase: new URL("https://platformsol.com"),
-  appleWebApp: { capable: true, title: "PlatformSol", statusBarStyle: "black-translucent" },
-  icons: { icon: "/icons/icon-192.png", apple: "/icons/apple-touch-icon.png" },
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const t = await getT();
+  return {
+    title: { default: "PlatformSol", template: "%s — PlatformSol" },
+    description: t("Крипто-график для технического анализа: индикаторы, инструменты рисования, автоматическая разметка уровней, зон и ликвидаций."),
+    applicationName: "PlatformSol",
+    metadataBase: new URL("https://platformsol.com"),
+    appleWebApp: { capable: true, title: "PlatformSol", statusBarStyle: "black-translucent" },
+    icons: { icon: "/icons/icon-192.png", apple: "/icons/apple-touch-icon.png" },
+  };
+}
 
 export const viewport: Viewport = {
   width: "device-width",

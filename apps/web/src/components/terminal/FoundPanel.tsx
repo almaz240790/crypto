@@ -75,7 +75,7 @@ export function FoundList({ items, stats, selected, onSelect, tf, symbol, canExp
         return (
           <li key={p.id} className={s.found} data-selected={sel || undefined}>
             <button type="button" className={s.objName} aria-pressed={sel} onClick={() => onSelect(sel ? null : p.id)}>
-              <strong>{p.title}</strong>{" "}
+              <strong>{t(p.title)}</strong>{" "}
               <span className="caption">
                 {new Date(p.t * 1000).toLocaleString("ru-RU", { timeZone: "UTC", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })} UTC · {p.significant ? t("значимый") : t("найден")}
               </span>
@@ -155,7 +155,7 @@ export function FiguresList({ items, stats, selected, onSelect }: { items: Figur
         return (
           <li key={f.id} className={s.found} data-selected={sel || undefined}>
             <button type="button" className={s.objName} aria-pressed={sel} onClick={() => onSelect(sel ? null : f.id)}>
-              <strong>{f.title}</strong>{" "}
+              <strong>{t(f.title)}</strong>{" "}
               <span className="caption">
                 {t(FIGURE_STATUS[f.status])} · {t("качество")} {f.quality.toFixed(2)}
                 {f.confirm_t ? ` · ${t("пробой")} ${new Date(f.confirm_t * 1000).toLocaleString("ru-RU", { timeZone: "UTC", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })} UTC` : ""}

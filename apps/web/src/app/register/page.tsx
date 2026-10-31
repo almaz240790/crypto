@@ -3,7 +3,12 @@ import { AuthCard } from "@/components/auth/AuthCard";
 import { RegisterForm } from "@/components/auth/RegisterForm";
 import { getT } from "@/i18n/server";
 
-export const metadata: Metadata = { title: "Регистрация" };
+export async function generateMetadata(): Promise<Metadata> {
+  const t = await getT();
+  return {
+    title: t("Регистрация"),
+  };
+}
 
 function safeNext(v: string | undefined): string {
   return v && v.startsWith("/") && !v.startsWith("//") ? v : "/chart";

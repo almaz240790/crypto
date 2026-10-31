@@ -5,17 +5,20 @@ import { Panel } from "@/components/ui";
 import { FAQ } from "@/content/faq";
 import { getT } from "@/i18n/server";
 
-export const metadata: Metadata = {
-  title: "Поддержка",
-  description: "Вопросы и ответы о сервисе и форма обращения. Отвечаем на email, обычно в течение суток.",
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const t = await getT();
+  return {
+    title: t("Поддержка"),
+    description: t("Вопросы и ответы о сервисе и форма обращения. Отвечаем на email, обычно в течение суток."),
+  };
+}
 
 export default async function SupportPage() {
   const t = await getT();
   return (
     <>
       <Header />
-      <main className="container" style={{ padding: "24px 0", display: "grid", gap: 16, maxWidth: 900 }}>
+      <main className="container" style={{ paddingBlock: 24, display: "grid", gap: 16, maxWidth: 900 }}>
         <div>
           <h1>{t("Поддержка")}</h1>
           <p className="text-2">{t("Сначала посмотрите ответы ниже. Если не нашли — напишите: к обращению сами прикрепятся страница, тариф и версия приложения.")}</p>
@@ -25,9 +28,9 @@ export default async function SupportPage() {
           <div style={{ padding: "4px 16px" }}>
             {FAQ.map((f) => (
               <details key={f.q} style={{ padding: "10px 0", borderBottom: "1px solid var(--border)" }}>
-                <summary style={{ cursor: "pointer", fontWeight: 500 }}>{f.q}</summary>
+                <summary style={{ cursor: "pointer", fontWeight: 500 }}>{t(f.q)}</summary>
                 <p className="text-2" style={{ margin: "8px 0 0" }}>
-                  {f.a}
+                  {t(f.a)}
                 </p>
               </details>
             ))}
