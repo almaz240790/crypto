@@ -7,9 +7,12 @@ import type { NextRequest } from "next/server";
  */
 export const dynamic = "force-dynamic";
 
-/** if-none-match / etag / age — ревалидация /v1/chart: повторный запрос получает 304 без тела (план 2B.4). */
+/**
+ * if-none-match / etag / age — ревалидация /v1/chart: повторный запрос получает 304 без тела (план 2B.4).
+ * cdn-cache-control — свежесть для edge (Cloudflare перед этим прокси); браузер его не читает.
+ */
 const PASS_REQ = ["content-type", "authorization", "cookie", "accept", "user-agent", "accept-language", "if-none-match"];
-const PASS_RES = ["content-type", "cache-control", "content-disposition", "retry-after", "etag", "age"];
+const PASS_RES = ["content-type", "cache-control", "cdn-cache-control", "content-disposition", "retry-after", "etag", "age"];
 /** Статусы без тела: Response с телом для них бросает исключение. */
 const NULL_BODY = new Set([204, 205, 304]);
 
