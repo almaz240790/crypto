@@ -105,8 +105,8 @@ test("панели: фандинг в процентах с 4 знаками, OI
   await ready(page);
   await page.getByRole("button", { name: /Индикаторы/ }).click();
   const dlg = page.getByRole("dialog", { name: "Индикаторы" });
-  await dlg.getByLabel(/Funding/).check();
-  await dlg.getByLabel(/Open interest/).check();
+  await dlg.getByLabel(/Фандинг/).check();
+  await dlg.getByLabel(/Открытый интерес/).check();
   await page.getByRole("button", { name: "Готово" }).click();
   await expect(page.getByTestId("pane-oi")).toBeVisible();
   // панели 1 и 2: фандинг и OI (порядок добавления)
@@ -236,29 +236,39 @@ test("1W: открытый интерес не совпадает со свеч�
   await expect(objects4h.getByTestId("liq-unavailable")).toHaveCount(0);
 });
 
-test("светлая тема: слои, индикаторы и фигуры перечитывают токены сразу после переключения", async ({ page }) => {
+test("светлая тема: индикаторы и разметка перечитывают токены сразу после переключения, без пересборки сцены", async ({ page }) => {
+  // фигуры рисует OverlayPrimitive тоном figure (--chart-figure), а не отдельной LineSeries; «Подробный» их включает
+  await page.addInitScript(() => {
+    localStorage.setItem("pl-terminal", JSON.stringify({ layers_v: 5, type: "candles", indicators: [{ id: "ema", params: { period: 50 } }], markup: { preset: "detailed", overrides: {} }, panels: [], scale: "linear", overlay: null }));
+  });
   const calls: string[] = [];
   await mock(page, calls);
   await page.goto("/chart/BTCUSDT/4h");
   await ready(page);
   const token = (name: string) => page.evaluate((n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim().toLowerCase(), name);
+  type Overlay = { sceneVersion: number; objects: { layer: string; color: string }[]; labels: { layer: string; color: string }[] };
+  const overlay = () => page.evaluate(() => (document.querySelector('[data-testid="terminal"]') as HTMLElement & { __overlay: () => Overlay }).__overlay());
   const lineColors = async () => (await seriesOf(page)).filter((s) => s.type === "Line").map((s) => (s.color ?? "").toLowerCase());
-  await expect.poll(async () => (await lineColors()).length).toBeGreaterThan(1);
+  const figureColors = async () => (await overlay()).objects.filter((o) => o.layer === "figures").map((o) => o.color.toLowerCase());
+  await expect.poll(async () => (await lineColors()).length).toBeGreaterThan(0);
+  await expect.poll(async () => (await figureColors()).length).toBeGreaterThan(0);
   const darkInd = await token("--ind-1");
-  const darkAccent = await token("--accent");
+  const darkFigure = await token("--chart-figure");
   expect(await lineColors()).toContain(darkInd);
-  expect(await lineColors()).toContain(darkAccent);
+  expect(new Set(await figureColors())).toEqual(new Set([darkFigure]));
+  const version = (await overlay()).sceneVersion;
   await page.evaluate(() => {
     document.documentElement.dataset.theme = "light";
   });
   const lightInd = await token("--ind-1");
-  const lightAccent = await token("--accent");
+  const lightFigure = await token("--chart-figure");
   expect(lightInd).not.toBe(darkInd);
-  // EMA (--ind-1) и линия фигуры (--accent) — в светлой палитре, тёмной не осталось
+  expect(lightFigure).not.toBe(darkFigure);
+  // EMA (--ind-1) и фигура (--chart-figure) — в светлой палитре, тёмной не осталось; сцена та же (перерисовка)
   await expect.poll(lineColors).toContain(lightInd);
-  await expect.poll(lineColors).toContain(lightAccent);
-  expect(await lineColors()).not.toContain(darkAccent);
+  await expect.poll(async () => [...new Set(await figureColors())]).toEqual([lightFigure]);
   expect(await lineColors()).not.toContain(darkInd);
+  expect((await overlay()).sceneVersion).toBe(version);
 });
 
 test("светлая тема: линия наложенного инструмента перекрашивается сразу, тёмной охры на белом нет", async ({ page }) => {
@@ -305,21 +315,21 @@ test("наложение с более длинной историей: точк
   }
 });
 
-test("ширина окна через 900 px: шрифт шкал и формат цены основной серии переключаются сразу", async ({ page }) => {
+test("ширина области графика через 640 px: шрифт шкал и формат цены основной серии переключаются сразу", async ({ page }) => {
   const calls: string[] = [];
   await mock(page, calls);
   await page.goto("/chart/BTCUSDT/4h");
   await ready(page);
-  // шаг цены BTCUSDT 0.1 приходит вместе со свечами: формат — один знак
+  // шаг цены BTCUSDT 0.1 приходит вместе со свечами: формат — один знак; шрифт шкал десктопа — 12 px (VIEW)
   await expect.poll(() => formatWith(page, 0, 0, 80723.7)).toBe("80 723.7");
-  expect(await fontSize(page)).toBe(11);
-  // окно уже 900 px (поворот планшета): мельче шрифт и крупные цены целым числом — как у подписей уровней
-  await page.setViewportSize({ width: 800, height: 900 });
-  await expect.poll(() => fontSize(page)).toBe(10);
-  expect(await formatWith(page, 0, 0, 80723.7)).toBe("80 724");
-  await page.setViewportSize({ width: 1600, height: 900 });
+  expect(await fontSize(page)).toBe(12);
+  // область графика уже 640 px (телефон, узкое окно): 11 px и крупные цены целым числом — как у подписей уровней
+  await page.setViewportSize({ width: 600, height: 900 });
   await expect.poll(() => fontSize(page)).toBe(11);
-  expect(await formatWith(page, 0, 0, 80723.7)).toBe("80 723.7");
+  await expect.poll(() => formatWith(page, 0, 0, 80723.7)).toBe("80 724");
+  await page.setViewportSize({ width: 1600, height: 900 });
+  await expect.poll(() => fontSize(page)).toBe(12);
+  await expect.poll(() => formatWith(page, 0, 0, 80723.7)).toBe("80 723.7");
 });
 
 test("подпись горизонтальной линии — с точностью инструмента (шаг 1e-7), как на шкале", async ({ page }) => {

@@ -5,8 +5,8 @@ import type { ThemeTokens, Tone } from "./types";
 
 /** Ширина ценовой шкалы не меньше этой: «81 118» моноширинным 11 px. */
 const PRICE_SCALE_MIN_PX = 48;
-/** Пустых баров справа от последней свечи. */
-export const RIGHT_OFFSET = 5;
+/** Шрифт шкал по умолчанию, пока не известен вид устройства (VIEW.desktop.scaleFontPx). */
+const DEFAULT_SCALE_FONT_PX = 12;
 
 /** Прозрачность для hex-цвета #rrggbb → rgba(). Токены задаются в hex (план 5.3). */
 export function alpha(hex: string, a: number): string {
@@ -15,14 +15,19 @@ export function alpha(hex: string, a: number): string {
   return `rgba(${parseInt(m[1]!, 16)}, ${parseInt(m[2]!, 16)}, ${parseInt(m[3]!, 16)}, ${a})`;
 }
 
-/** Настройки LWC из токенов: без градиентов и свечений, сетка — токен границы (план 5.6). */
-export function chartOptions(t: ThemeTokens): DeepPartial<ChartOptions> {
+/**
+ * Настройки LWC из токенов: без градиентов и свечений, сетка — токен границы (план 5.6). Шрифт шкал —
+ * из вида устройства (12 / 11 px). Вид шкалы времени (шаг бара, отступ справа) здесь не задаётся: эти настройки
+ * применяются заново при каждой смене темы, а applyOptions с barSpacing или rightOffset сбрасывает масштаб
+ * пользователя. Их ставит Terminal один раз при создании (rightOffsetPixels — setRightOffsetPx).
+ */
+export function chartOptions(t: ThemeTokens, fontSize: number = DEFAULT_SCALE_FONT_PX): DeepPartial<ChartOptions> {
   return {
     layout: {
       background: { type: ColorType.Solid, color: t.surface },
       textColor: t.text2,
       fontFamily: t.fontMono,
-      fontSize: 11,
+      fontSize,
       // логотип TradingView в углу графика выключен; атрибуция по лицензии — ссылкой в подвале сайта
       attributionLogo: false,
       panes: { separatorColor: t.border, separatorHoverColor: alpha(t.accent, 0.2), enableResize: true },
@@ -35,7 +40,7 @@ export function chartOptions(t: ThemeTokens): DeepPartial<ChartOptions> {
     },
     // минимальная ширина шкалы — страховка: если браузер неверно измерит текст, цены всё равно не обрежутся
     rightPriceScale: { borderColor: t.border, scaleMargins: { top: 0.08, bottom: 0.2 }, minimumWidth: PRICE_SCALE_MIN_PX },
-    timeScale: { borderColor: t.border, timeVisible: true, secondsVisible: false, rightOffset: RIGHT_OFFSET, barSpacing: 7, minBarSpacing: 2 },
+    timeScale: { borderColor: t.border, timeVisible: true, secondsVisible: false, minBarSpacing: 2 },
     // колесо и трекпад обрабатывает Terminal сам (см. onWheel): горизонтальный жест — прокрутка,
     // вертикальный и pinch — масштаб вокруг курсора; встроенная обработка слишком резкая на трекпаде
     handleScale: { axisPressedMouseMove: true, pinch: true, mouseWheel: false },

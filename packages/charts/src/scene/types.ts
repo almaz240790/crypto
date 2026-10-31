@@ -193,6 +193,8 @@ export interface LevelRow {
   estimate?: boolean;
   /** Виды исходных зон (ob/sd/fvg) — для подписи в списке. */
   kinds?: readonly string[];
+  /** Вид и направление каждой исходной зоны (у смешанной группы — разные): названия в списке словами. */
+  parts?: readonly { kind: string; dir: "up" | "down" }[];
   /** От закрытия последней закрытой свечи, %. */
   distancePct: number;
   onChart: boolean;

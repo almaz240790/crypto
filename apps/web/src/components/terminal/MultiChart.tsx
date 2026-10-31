@@ -1,7 +1,7 @@
 "use client";
 
 /** Мультичарт (план 3.17, v2; только десктоп): 2 или 4 графика с независимыми инструментом и таймфреймом. */
-import type { Timeframe } from "@platform/charts";
+import { createChartStore, NONE, type MarkupSettings, type Timeframe } from "@platform/charts";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/components/auth/AuthProvider";
@@ -11,7 +11,7 @@ import { formatPrice } from "@/lib/format";
 import { INTRADAY, TIMEFRAMES } from "@/lib/timeframes";
 import { getInstruments, type Instrument } from "@/lib/user";
 import s from "./terminal.module.css";
-import { TerminalView, type CrosshairInfo, type LayerKey } from "./TerminalView";
+import { ChartSurface, type CrosshairInfo } from "./chart/ChartSurface";
 import { useTerminalData } from "./useTerminalData";
 import { useT } from "@/i18n/client";
 
@@ -27,8 +27,11 @@ const DEFAULT: Saved = {
     { symbol: "BNBUSDT", tf: "1d" },
   ],
 };
-const LAYERS: Record<LayerKey, boolean> = { structure: true, zones: true, levels: true, signals: true, patterns: false, figures: true, volume_profile: false, sr: false, liq_map: false };
+/** Ячейки — пресет «Компактный» (план 2B.2): ближайшие поддержка, сопротивление и зона, бюджет ячейки. */
+const MARKUP: MarkupSettings = { preset: "compact", overrides: {} };
 const DESKTOP = "(min-width: 900px)";
+const NO_INDICATORS: { id: string; params: Record<string, number> }[] = [];
+const NO_PANELS: never[] = [];
 
 function load(): Saved {
   try {
@@ -46,6 +49,7 @@ function ChartCell({ cell, instruments, authed, onChange }: { cell: Cell; instru
   const t = useT();
   const data = useTerminalData(cell.symbol, cell.tf, authed ? getAccessToken() : null);
   const [cross, setCross] = useState<CrosshairInfo | null>(null);
+  const [store] = useState(createChartStore);
   const last = data.current ?? data.candles?.[data.candles.length - 1] ?? null;
   const price = data.price ? Number(data.price) : last?.close ?? null;
   const tfs = TIMEFRAMES.filter((t) => authed || !INTRADAY.includes(t));
@@ -72,7 +76,7 @@ function ChartCell({ cell, instruments, authed, onChange }: { cell: Cell; instru
         <Link href={`/chart/${cell.symbol}/${cell.tf}`} className={s.multiOpen}>{t("открыть в терминале")}</Link>
       </div>
       <div className={s.multiChart}>
-        <TerminalView candles={data.candles ?? []} current={data.current} tf={cell.tf} type="candles" indicators={[]} layersOn={LAYERS} layers={data.layers} figures={data.figures?.items} derivatives={null} panels={[]} tick={data.tick} dataKey={cell.symbol} onNeedOlder={data.loadOlder} onCrosshair={setCross} />
+        <ChartSurface store={store} device="cell" markup={MARKUP} authed={authed} candles={data.candles ?? []} current={data.current} tf={cell.tf} type="candles" indicators={NO_INDICATORS} layers={data.layers} figures={data.figures?.items} alerts={NONE} derivatives={null} panels={NO_PANELS} tick={data.tick} dataKey={cell.symbol} onNeedOlder={data.loadOlder} onCrosshair={setCross} />
       </div>
     </section>
   );
@@ -123,7 +127,7 @@ export function MultiChart() {
             {n}
           </button>
         ))}
-        <span className="caption">{t("Инструмент и таймфрейм у каждого графика свои; слои — структура, зоны, уровни, сигналы, фигуры. Рисунки и индикаторы — в терминале.")}</span>
+        <span className="caption">{t("Инструмент и таймфрейм у каждого графика свои; на графиках — ближайшие поддержка, сопротивление и зона. Рисунки и индикаторы — в терминале.")}</span>
       </div>
       <div className={s.multiGrid} data-count={saved.count}>
         {cells.map((c, i) => (

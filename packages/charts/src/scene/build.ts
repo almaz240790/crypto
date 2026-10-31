@@ -114,7 +114,7 @@ function buildIndex(input: SceneInput, preset: ResolvedPreset, drawn: ReadonlySe
     zoneIds.add(id);
     const d = zoneDistance(g, ref);
     const signed = d === 0 ? 0 : g.bottom > ref ? pct(g.bottom, ref) : pct(g.top, ref);
-    rows.push({ id, layer: "zones", kind: g.dir === "up" ? "demand" : g.dir === "down" ? "supply" : "zone", price: g.bottom, priceTo: g.top, kinds: g.kinds, distancePct: signed, onChart: false });
+    rows.push({ id, layer: "zones", kind: g.dir === "up" ? "demand" : g.dir === "down" ? "supply" : "zone", price: g.bottom, priceTo: g.top, kinds: g.kinds, parts: g.parts, distancePct: signed, onChart: false });
   });
   if (a.liq) {
     const m = a.liq;

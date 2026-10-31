@@ -8,8 +8,8 @@ import type { Timeframe } from "@/lib/timeframes";
 import s from "./terminal.module.css";
 import { useT } from "@/i18n/client";
 import type { T } from "@/i18n";
-import type { LiqMap, SrLevel } from "@platform/charts";
-import type { ZoneGroup } from "@/lib/zones";
+import type { LevelRow, SceneIndex } from "@platform/charts";
+import { zoneCode, zoneName } from "@/lib/zones";
 
 /** Панель «Найдено на графике» (план 3.17, 2A.10): свечные паттерны с контекстом и исторической
  * отработкой. Тексты — только разрешённые формулировки 2A.10.6. */
@@ -179,49 +179,71 @@ export function FiguresList({ items, stats, selected, onSelect, tick = null }: {
 }
 
 
-/** Поле вопроса о графике (план 3.17, 4B.7): Premium; остальным — пояснение из ответа сервера. */
-/** Уровни списком (план 2A.4, 2A.6): на графике подписи могут скрываться при наложении, здесь видны все. */
-export function LevelsList({ sr, liq, tick, zones = [], liqUnavailable = false }: { sr: SrLevel[]; liq: LiqMap | null; tick: string | null; zones?: ZoneGroup[]; liqUnavailable?: boolean }) {
+/**
+ * Уровни списком (план 2A.4, 2A.6): каталог сцены (scene.index) — по 3 уровня на сторону, 2 зоны, по 3 скопления
+ * ликвидаций, независимо от слоёв: на графике подписи может отрезать пресет или бюджет, здесь видны все.
+ */
+export function LevelsList({ index, tick }: { index: SceneIndex | null; tick: string | null }) {
   const t = useT();
   // точность — по шагу цены инструмента, как на шкале (в том числе для шага в записи 1.000E-7)
   const px = (p: number) => formatPrice(p, tick);
-  if (sr.length === 0 && !liq && zones.length === 0 && !liqUnavailable) return null;
-  const res = sr.filter((l) => l.side === "resistance").sort((a, b) => b.price - a.price);
-  const sup = sr.filter((l) => l.side === "support").sort((a, b) => b.price - a.price);
+  const rows = index?.levels ?? [];
+  const liqUnavailable = index?.liqUnavailable ?? false;
+  const of = (...kinds: LevelRow["kind"][]) => rows.filter((r) => kinds.includes(r.kind));
+  const res = of("resistance");
+  const sup = of("support");
+  const zones = of("demand", "supply", "zone");
+  const shorts = of("liq-short");
+  const longs = of("liq-long");
+  if (res.length + sup.length + zones.length + shorts.length + longs.length === 0 && !liqUnavailable) return null;
+  const liqTitle = t("Оценка по приросту открытого интереса для плеч 10–100×, не данные биржи.");
   return (
     <>
       <strong className={s.objHead}>{t("Уровни")}</strong>
       <ul className={s.levelList} aria-label={t("уровни поддержки и сопротивления")}>
-        {[...(liq?.topShorts ?? [])].sort((a, b) => b.price - a.price).map((b) => (
-          <li key={`ls${b.price}`} title={t("Оценка по приросту открытого интереса для плеч 10–100×, не данные биржи.")}>
-            <span className={s.levelLiq}>{t("Ликвидации шортов")}</span> <span className="num">{px(b.price)}</span> <strong className={`num ${s.levelLiq}`}>≈ {formatUsdCompact(b.short)}</strong>
+        {shorts.map((b) => (
+          <li key={b.id} title={liqTitle}>
+            <span className={s.levelLiq}>{t("Ликвидации шортов")}</span> <span className="num">{px(b.price)}</span> <strong className={`num ${s.levelLiq}`}>≈ {formatUsdCompact(b.amountUsd ?? 0)}</strong>
           </li>
         ))}
         {res.map((l) => (
-          <li key={`r${l.price}`}>
-            <strong className="down">R</strong> <span className="caption">{t("сопротивление")}</span> <span className="num">{px(l.price)}</span> <span className="caption">{t("касаний: {n}", { n: l.touches })}</span>
+          <li key={l.id}>
+            <strong className="down">R</strong> <span className="caption">{t("сопротивление")}</span> <span className="num">{px(l.price)}</span> <span className="caption">{t("касаний: {n}", { n: l.touches ?? 0 })}</span>
           </li>
         ))}
         {zones.map((z) => (
-          <li key={`z${z.bottom}`}>
-            <strong className={z.dir === "up" ? "up" : z.dir === "down" ? "down" : ""}>{z.codes.join("+")}</strong> <span className="caption">{z.names.map((n) => t(n)).join(" + ")}</span> <span className={`num ${s.levelRange}`}>{px(z.bottom)}–{px(z.top)}</span>
+          <li key={z.id}>
+            <strong className={z.kind === "demand" ? "up" : z.kind === "supply" ? "down" : ""}>{(z.kinds ?? []).map(zoneCode).join("+")}</strong> <span className="caption">{zoneNames(z).map((n) => t(n)).join(" + ")}</span>{" "}
+            <span className={`num ${s.levelRange}`}>
+              {px(z.price)}–{px(z.priceTo ?? z.price)}
+            </span>
           </li>
         ))}
         {sup.map((l) => (
-          <li key={`s${l.price}`}>
-            <strong className="up">S</strong> <span className="caption">{t("поддержка")}</span> <span className="num">{px(l.price)}</span> <span className="caption">{t("касаний: {n}", { n: l.touches })}</span>
+          <li key={l.id}>
+            <strong className="up">S</strong> <span className="caption">{t("поддержка")}</span> <span className="num">{px(l.price)}</span> <span className="caption">{t("касаний: {n}", { n: l.touches ?? 0 })}</span>
           </li>
         ))}
-        {[...(liq?.topLongs ?? [])].sort((a, b) => b.price - a.price).map((b) => (
-          <li key={`ll${b.price}`} title={t("Оценка по приросту открытого интереса для плеч 10–100×, не данные биржи.")}>
-            <span className={s.levelLiq}>{t("Ликвидации лонгов")}</span> <span className="num">{px(b.price)}</span> <strong className={`num ${s.levelLiq}`}>≈ {formatUsdCompact(b.long)}</strong>
+        {longs.map((b) => (
+          <li key={b.id} title={liqTitle}>
+            <span className={s.levelLiq}>{t("Ликвидации лонгов")}</span> <span className="num">{px(b.price)}</span> <strong className={`num ${s.levelLiq}`}>≈ {formatUsdCompact(b.amountUsd ?? 0)}</strong>
           </li>
         ))}
       </ul>
-      {liq && <p className={`caption ${s.levelNote}`}>{t("Карта ликвидаций — расчётная оценка: суммы позиций с плечом 10–100×, которые закроются принудительно при подходе цены. Считается по приросту открытого интереса, а не по данным биржи.")}</p>}
-      {!liq && liqUnavailable && <p className={`caption ${s.levelNote}`} data-testid="liq-unavailable">{t("Карта ликвидаций на этом таймфрейме недоступна: мало данных открытого интереса.")}</p>}
+      {shorts.length + longs.length > 0 && <p className={`caption ${s.levelNote}`}>{t("Карта ликвидаций — расчётная оценка: суммы позиций с плечом 10–100×, которые закроются принудительно при подходе цены. Считается по приросту открытого интереса, а не по данным биржи.")}</p>}
+      {shorts.length + longs.length === 0 && liqUnavailable && <p className={`caption ${s.levelNote}`} data-testid="liq-unavailable">{t("Карта ликвидаций на этом таймфрейме недоступна: мало данных открытого интереса.")}</p>}
     </>
   );
+}
+
+/** Названия исходных зон словами (ключи перевода), в порядке ob → sd → fvg. */
+function zoneNames(z: LevelRow): string[] {
+  const out: string[] = [];
+  for (const p of z.parts ?? (z.kinds ?? []).map((kind) => ({ kind, dir: z.kind === "supply" ? ("down" as const) : ("up" as const) }))) {
+    const n = zoneName(p.kind, p.dir);
+    if (!out.includes(n)) out.push(n);
+  }
+  return out;
 }
 
 /** Готовые вопросы: человеку без опыта проще начать с примера. */

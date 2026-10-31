@@ -4,7 +4,8 @@ import type { ActiveIndicator, PanelKey } from "./TerminalView";
 export type Template = { id: string; title: string; indicators: ActiveIndicator[]; panels: PanelKey[] };
 
 export const TEMPLATES: Template[] = [
-  { id: "clean", title: "Чистый", indicators: [], panels: [] },
+  // «Без индикаторов», а не «Чистый»: так называется пресет разметки (план 2B.2)
+  { id: "clean", title: "Без индикаторов", indicators: [], panels: [] },
   { id: "platform", title: "Система PlatformSol", indicators: [{ id: "ema", params: { period: 50 } }], panels: ["funding", "oi"] },
   {
     id: "osc",

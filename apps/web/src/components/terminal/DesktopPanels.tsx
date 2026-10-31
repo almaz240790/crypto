@@ -1,16 +1,16 @@
 "use client";
 
-import { TOOL_TITLES, type Drawing, type DrawingType, type LiqMap, type SrLevel } from "@platform/charts";
+import { LAYER_KEYS, TOOL_TITLES, type Drawing, type DrawingType, type LayerKey, type MarkupSettings, type PanelKey, type PresetId, type SceneIndex } from "@platform/charts";
 import type React from "react";
 import { useState } from "react";
 import s from "./terminal.module.css";
 import { AskBox, FiguresList, FoundList, LevelsList } from "./FoundPanel";
 import { TEMPLATES } from "./templates";
 import type { FigureOnChart, FigureStat, PatternOnChart, PatternStat } from "@/lib/chart";
-import type { LayerKey, PanelKey } from "./TerminalView";
+import { PANELS } from "./chart/ChartSurface";
+import { MarkupPicker } from "./MarkupPicker";
 import { useT } from "@/i18n/client";
 import { ToolIcon } from "./ToolIcon";
-import type { ZoneGroup } from "@/lib/zones";
 
 const TOOLS: { t: DrawingType; key?: string }[] = [
   { t: "hline", key: "Alt+H" },
@@ -58,7 +58,11 @@ type Props = {
   onSelect: (id: string | null) => void;
   onLock: (id: string) => void;
   onRemove: (id: string) => void;
-  layers: Record<LayerKey, boolean>;
+  /** Разметка: пресет с поправками и итоговые слои (resolvePreset). */
+  markup: MarkupSettings;
+  custom: boolean;
+  onMarkup: (id: PresetId) => void;
+  layers: Readonly<Record<LayerKey, boolean>>;
   onLayer: (k: LayerKey) => void;
   panels: PanelKey[];
   onPanel: (k: PanelKey) => void;
@@ -71,11 +75,12 @@ type Props = {
   layoutsLimit: number | null;
   /** Перетаскивание левого края панели (ширина хранится в TerminalPage). */
   onResize?: { start: (e: React.PointerEvent<HTMLElement>) => void; step: (delta: number) => void; active: boolean };
-  found: { count?: number; items: PatternOnChart[]; stats: Record<string, PatternStat>; selected: number | null; onSelect: (id: number | null) => void; tf: string; symbol: string; canExplain: boolean; askAccess: "guest" | "plan" | "ok" | null; sr: SrLevel[]; liq: LiqMap | null; liqUnavailable?: boolean; tick: string | null; zones: ZoneGroup[]; figures: FigureOnChart[]; figureStats: Record<string, FigureStat>; selectedFigure: number | null; onSelectFigure: (id: number | null) => void };
+  found: { count?: number; items: PatternOnChart[]; stats: Record<string, PatternStat>; selected: number | null; onSelect: (id: number | null) => void; tf: string; symbol: string; canExplain: boolean; askAccess: "guest" | "plan" | "ok" | null; index: SceneIndex | null; tick: string | null; figures: FigureOnChart[]; figureStats: Record<string, FigureStat>; selectedFigure: number | null; onSelectFigure: (id: number | null) => void };
 };
 
-const LAYER_LABEL: Record<LayerKey, string> = { structure: "Структура", zones: "Зоны", levels: "Макс./мин. дня и недели", signals: "Сигналы", patterns: "Паттерны", figures: "Фигуры", volume_profile: "Профиль объёма", sr: "Поддержка и сопротивление", liq_map: "Карта ликвидаций (оценка)" };
-const PANEL_LABEL: Record<PanelKey, string> = { funding: "Funding", oi: "Open interest", liq: "Ликвидации", ls: "L/S ratio" };
+export const LAYER_LABEL: Record<LayerKey, string> = { structure: "Структура", zones: "Зоны", levels: "Макс./мин. дня и недели", signals: "Сигналы", patterns: "Паттерны", figures: "Фигуры", volume_profile: "Профиль объёма", sr: "Поддержка и сопротивление", liq_map: "Карта ликвидаций (оценка)" };
+/** Слои в «Слоях»: «Сигналы» — только вошедшим (M24). */
+export const layerKeysFor = (authed: boolean): LayerKey[] => (Object.keys(LAYER_LABEL) as LayerKey[]).filter((k) => LAYER_KEYS.includes(k) && (authed || k !== "signals"));
 
 /** Правая панель объектов (десктоп): рисунки, слои, раскладки и шаблоны. */
 export function ObjectsPanel(p: Props) {
@@ -112,7 +117,7 @@ export function ObjectsPanel(p: Props) {
       {tab === "found" && (
         <div className={s.objScroll}>
           <AskBox symbol={p.found.symbol} tf={p.found.tf} access={p.found.askAccess} />
-          <LevelsList sr={p.found.sr} liq={p.found.liq} tick={p.found.tick} zones={p.found.zones} liqUnavailable={!!p.found.liqUnavailable && p.layers.liq_map} />
+          <LevelsList index={p.found.index} tick={p.found.tick} />
           <strong className={s.objHead}>{t("Фигуры")}</strong>
           <FiguresList items={p.found.figures} stats={p.found.figureStats} selected={p.found.selectedFigure} onSelect={p.found.onSelectFigure} tick={p.found.tick} />
           <strong className={s.objHead}>{t("Свечные паттерны")}</strong>
@@ -141,18 +146,21 @@ export function ObjectsPanel(p: Props) {
       )}
       {tab === "layers" && (
         <ul className={s.objList}>
-          {(Object.keys(LAYER_LABEL) as LayerKey[]).map((k) => (
+          <li>
+            <MarkupPicker markup={p.markup} custom={p.custom} onSelect={p.onMarkup} />
+          </li>
+          {layerKeysFor(p.authed).map((k) => (
             <li key={k}>
               <label>
                 <input type="checkbox" checked={p.layers[k]} onChange={() => p.onLayer(k)} /> {t(LAYER_LABEL[k])}
-                {k === "liq_map" && p.found.liqUnavailable && <span className="caption">{t("нет данных открытого интереса на этом таймфрейме")}</span>}
+                {k === "liq_map" && p.found.index?.liqUnavailable && <span className="caption">{t("нет данных открытого интереса на этом таймфрейме")}</span>}
               </label>
             </li>
           ))}
-          {(Object.keys(PANEL_LABEL) as PanelKey[]).map((k) => (
-            <li key={k}>
+          {PANELS.map((pn) => (
+            <li key={pn.id}>
               <label>
-                <input type="checkbox" checked={p.panels.includes(k)} onChange={() => p.onPanel(k)} /> {t(PANEL_LABEL[k])}
+                <input type="checkbox" checked={p.panels.includes(pn.id)} onChange={() => p.onPanel(pn.id)} /> {t(pn.title)}
               </label>
             </li>
           ))}

@@ -8,7 +8,8 @@ const OVERLAY_SCALE = "overlay";
 import { createBuffer, EDGE, needsNewer, needsOlder, prependOlder, pushLatest, replaceNewest, type BufferState } from "./buffer";
 import { heikinAshi } from "./heikin";
 import { LayerManager } from "./layers";
-import { chartOptions, RIGHT_OFFSET, seriesColors } from "./theme";
+import { INTERACTION, VIEW } from "./presets";
+import { chartOptions, seriesColors } from "./theme";
 import type { Candle, ChartType, ThemeTokens } from "./types";
 
 export type TerminalOptions = {
@@ -19,6 +20,10 @@ export type TerminalOptions = {
   /** Запрос свежих свечей после выгрузки правого края. Ответ — terminal.replaceNewest(). */
   onNeedNewer?: () => void;
   onVisibleRange?: (range: LogicalRange | null) => void;
+  /** Свободная зона справа от последней свечи, px (timeScale.rightOffsetPixels; VIEW[device].rightOffsetPx). */
+  rightOffsetPx?: number;
+  /** Шрифт шкал, px (VIEW[device].scaleFontPx). */
+  fontSize?: number;
 };
 
 export type PaneSeries = ISeriesApi<"Line" | "Histogram">;
@@ -26,38 +31,15 @@ export type PaneSeries = ISeriesApi<"Line" | "Histogram">;
 /**
  * Обёртка над Lightweight Charts v5 (план 2A.2, 2B.2): основная серия (свечи / бары / линия / HA),
  * объём внизу основной панели, дополнительные панели для индикаторов, буфер свечей с ленивой подгрузкой,
- * тема из токенов, слои. Без React — его обёртка живёт в apps/web.
+ * тема из токенов, слои. Без React — его обёртка живёт в apps/web. Константы вида и жестов — в presets.ts.
  */
 const MIN_STRETCH = 0.01;
-/** Главной панели (свечам) — не меньше половины высоты, сколько бы индикаторов ни добавили. */
-const MAIN_MIN_SHARE = 0.5;
-/** Масштаб колесом: множитель на пиксель deltaY (300 px ≈ ×2.1); с Ctrl/⌘ (pinch) — втрое сильнее. */
-const WHEEL_ZOOM = 0.0025;
-/** Прокрутка горизонтальным жестом: доля «один пиксель — один бар». */
-const WHEEL_SCROLL = 0.6;
-const MIN_VISIBLE_BARS = 10;
-/** Объём занимает нижние 14 % основной панели и не налезает на свечи. */
-const VOLUME_TOP = 0.86;
-/** Целевой шаг бара при сбросе вида (план 2A.7): около 8 px на десктопе, около 6 px на телефоне. */
-export const VIEW_BAR_PX = { desktop: 8, phone: 6 } as const;
-/** Сколько свечей показывать при сбросе вида: не меньше и не больше, какой бы ни была ширина. */
-export const VIEW_MIN_BARS = 40;
-export const VIEW_MAX_BARS = 150;
-/** Ширина области ещё неизвестна (график не размечен) — столько свечей. */
-const VIEW_FALLBACK_BARS = 100;
+/** Шаг бара до первого сброса вида (сброс ставит шаг от ширины, см. presets.barsForWidth). */
+const INITIAL_BAR_SPACING = 7;
+/** Свечей при сбросе вида, если контроллер не передал число (ширина ещё неизвестна). */
+const FALLBACK_BARS = 100;
 /** Формат цены до того, как известен шаг инструмента (как у LWC по умолчанию). */
 const DEFAULT_PRICE_FORMAT: PriceFormat = { type: "price", precision: 2, minMove: 0.01 };
-/** Размер шрифта шкал по умолчанию (как в chartOptions); на телефоне TerminalView ставит мельче. */
-const DEFAULT_FONT_PX = 11;
-
-/**
- * Сколько свечей показать при сбросе вида: ширина области графика / целевой шаг бара минус пустые бары
- * справа, в пределах VIEW_MIN_BARS…VIEW_MAX_BARS. Не фиксированные 150: на телефоне это 2 px на свечу.
- */
-export function barsForWidth(width: number, barPx: number, rightOffset = RIGHT_OFFSET): number {
-  if (!(width > 0) || !(barPx > 0)) return VIEW_FALLBACK_BARS;
-  return Math.min(VIEW_MAX_BARS, Math.max(VIEW_MIN_BARS, Math.round(width / barPx) - rightOffset));
-}
 
 export class Terminal {
   readonly chart: IChartApi;
@@ -82,19 +64,25 @@ export class Terminal {
   private overlay: ISeriesApi<"Line"> | null = null;
   /** Свечи наложенного инструмента целиком; на графике — только на времени свечей буфера (см. overlayData). */
   private overlayCandles: readonly Candle[] = [];
-  private fontSize = DEFAULT_FONT_PX;
+  private overlayLast: number | null = null;
+  private fontSize: number;
+  private rightOffsetPx: number;
   private readonly container: HTMLElement;
 
   constructor(container: HTMLElement, opts: TerminalOptions) {
     this.opts = opts;
     this.tokens = opts.tokens;
     this.type = opts.type ?? "candles";
-    this.chart = createChart(container, { ...chartOptions(opts.tokens), autoSize: true });
+    this.fontSize = opts.fontSize ?? VIEW.desktop.scaleFontPx;
+    this.rightOffsetPx = opts.rightOffsetPx ?? VIEW.desktop.rightOffsetPx;
+    const o = chartOptions(opts.tokens, this.fontSize);
+    // шаг бара и отступ справа — только при создании: смена темы их не трогает (см. chartOptions)
+    this.chart = createChart(container, { ...o, timeScale: { ...o.timeScale, barSpacing: INITIAL_BAR_SPACING, rightOffsetPixels: this.rightOffsetPx }, autoSize: true });
     this.container = container;
     container.addEventListener("wheel", this.onWheel, { passive: false });
     this.main = this.createMain(this.type);
     this.volume = this.chart.addSeries(HistogramSeries, { priceFormat: { type: "volume" }, priceScaleId: "", lastValueVisible: false, priceLineVisible: false });
-    this.volume.priceScale().applyOptions({ scaleMargins: { top: VOLUME_TOP, bottom: 0 } });
+    this.volume.priceScale().applyOptions({ scaleMargins: { top: VIEW.desktop.volumeTop, bottom: 0 } });
     this.layers.attach({ chart: this.chart, main: this.main });
     this.chart.timeScale().subscribeVisibleLogicalRangeChange((r) => this.onRange(r));
   }
@@ -145,18 +133,34 @@ export class Terminal {
   }
 
   /**
-   * Размер шрифта шкал (на телефоне мельче). Хранится в Terminal: смена темы заново применяет chartOptions,
-   * и без этого шкалы возвращались к 11 px до смены инструмента.
+   * Размер шрифта шкал (12 px десктоп, 11 px телефон и ячейка). Хранится в Terminal: смена темы заново
+   * применяет chartOptions, и без этого шкалы возвращались к размеру по умолчанию.
    */
   setFontSize(px: number): void {
+    if (px === this.fontSize) return;
     this.fontSize = px;
     this.chart.applyOptions({ layout: { fontSize: px } });
   }
 
+  /**
+   * Свободная зона справа от последней свечи в пикселях (timeScale.rightOffsetPixels): LWC сохраняет её
+   * при масштабировании жестом, подписи уровней и полоса карты ликвидаций живут в ней. Применение опции
+   * возвращает вид к правому краю, поэтому вызывается только при создании и смене класса устройства.
+   */
+  setRightOffsetPx(px: number): void {
+    if (px === this.rightOffsetPx) return;
+    this.rightOffsetPx = px;
+    this.chart.timeScale().applyOptions({ rightOffsetPixels: px });
+  }
+
+  /** Текущая свободная зона справа, px. */
+  get rightOffsetPixels(): number {
+    return this.rightOffsetPx;
+  }
+
   setTheme(tokens: ThemeTokens): void {
     this.tokens = tokens;
-    const o = chartOptions(tokens);
-    this.chart.applyOptions({ ...o, layout: { ...o.layout, fontSize: this.fontSize } });
+    this.chart.applyOptions(chartOptions(tokens, this.fontSize));
     const c = seriesColors(tokens);
     if (this.type === "bars") this.main.applyOptions(c.bars);
     else if (this.type === "line") this.main.applyOptions(c.line);
@@ -239,7 +243,7 @@ export class Terminal {
 
   /**
    * Раскладка всех панелей сразу (план 2A.7): желаемые высоты дополнительных панелей в пикселях,
-   * главная получает остаток, но не меньше MAIN_MIN_SHARE высоты. Высоты задаются stretch-факторами
+   * главная получает остаток, но не меньше VIEW.mainMinShare высоты. Высоты задаются stretch-факторами
    * в пикселях — так панели не «плывут» после сворачивания и добавления.
    */
   layoutPanes(heights: Map<IPaneApi<Time>, number>): void {
@@ -249,7 +253,7 @@ export class Terminal {
     if (total <= 0) return;
     const want = panes.slice(1).map((p) => Math.max(1, heights.get(p) ?? p.getHeight()));
     const sum = want.reduce((a, b) => a + b, 0);
-    const room = total * (1 - MAIN_MIN_SHARE);
+    const room = total * (1 - VIEW.desktop.mainMinShare);
     const k = sum > room ? room / sum : 1;
     const others = want.map((h) => h * k);
     const main = total - others.reduce((a, b) => a + b, 0);
@@ -322,6 +326,7 @@ export class Terminal {
       if (this.overlay) this.chart.removeSeries(this.overlay);
       this.overlay = null;
       this.overlayCandles = [];
+      this.overlayLast = null;
       return;
     }
     this.overlayCandles = candles;
@@ -334,6 +339,13 @@ export class Terminal {
     this.applyOverlay();
   }
 
+  /** y последнего значения наложенного инструмента (его метка на шкале — препятствие для наших меток). */
+  overlayLastCoordinate(): number | null {
+    const s = this.overlay;
+    if (!s || this.overlayLast === null) return null;
+    return s.priceToCoordinate(this.overlayLast) as number | null;
+  }
+
   /** Точки наложения на времени свечей буфера. */
   private overlayData(): { time: Time; value: number }[] {
     const times = new Set(this.buffer.candles.map((c) => c.time));
@@ -341,21 +353,57 @@ export class Terminal {
   }
 
   private applyOverlay(): void {
-    this.overlay?.setData(this.overlayData());
+    if (!this.overlay) {
+      this.overlayLast = null;
+      return;
+    }
+    const data = this.overlayData();
+    this.overlayLast = data[data.length - 1]?.value ?? null;
+    this.overlay.setData(data);
   }
 
-  /** Масштаб вокруг точки (x в пикселях контейнера; без x — вокруг центра видимой области). */
+  /** Индекс последней свечи буфера на шкале времени (null — свечей нет). */
+  private lastIndex(): number | null {
+    const c = this.buffer.candles;
+    if (c.length === 0) return null;
+    return this.chart.timeScale().timeToIndex(c[c.length - 1]!.time as Time, true) ?? c.length - 1;
+  }
+
+  /**
+   * Масштаб (колесо, «+/−»). Последняя свеча в кадре — масштаб у правого края: свечей n / factor, свободная
+   * зона справа остаётся rightOffsetPx пикселей (как в TradingView). Иначе — вокруг точки (x в пикселях
+   * контейнера; без x — вокруг центра видимой области).
+   */
   zoom(factor: number, anchorX?: number): void {
     const ts = this.chart.timeScale();
     const r = ts.getVisibleLogicalRange();
     if (!r || factor <= 0) return;
+    const maxBars = Math.max(INTERACTION.minVisibleBars, this.buffer.candles.length * 2);
+    const clampBars = (n: number) => Math.min(maxBars, Math.max(INTERACTION.minVisibleBars, n));
+    const last = this.lastIndex();
+    if (last !== null && r.to >= last) {
+      const n = clampBars(Math.max(INTERACTION.minVisibleBars, last + 1 - r.from) / factor);
+      ts.setVisibleLogicalRange(this.rightEdgeRange(last, n));
+      return;
+    }
     const width = r.to - r.from;
     const mid = (r.from + r.to) / 2;
     const anchor = anchorX === undefined ? mid : (ts.coordinateToLogical(anchorX) ?? mid);
-    const maxBars = Math.max(MIN_VISIBLE_BARS, this.buffer.candles.length * 2);
-    const next = Math.min(maxBars, Math.max(MIN_VISIBLE_BARS, width / factor));
+    const next = clampBars(width / factor);
     const left = width > 0 ? (anchor - r.from) / width : 0.5;
     ts.setVisibleLogicalRange({ from: anchor - left * next, to: anchor + (1 - left) * next });
+  }
+
+  /**
+   * Диапазон «n свечей до последней и rightOffsetPx пикселей справа»: шаг s = (W − R) / n,
+   * { from: L + 1 − n, to: L + R / s }. LWC считает шаг как W / (to − from + 1), поэтому шаг выходит ровно s,
+   * а отступ справа — R / s баров, т. е. R пикселей.
+   */
+  private rightEdgeRange(last: number, n: number): { from: number; to: number } {
+    const w = this.chart.timeScale().width() || this.container.clientWidth;
+    const r = Math.min(this.rightOffsetPx, w / 2);
+    const s = w > r && n > 0 ? (w - r) / n : 1;
+    return { from: last + 1 - n, to: last + r / s };
   }
 
   /** Прокрутка на n баров (положительное — вправо, к новым свечам). */
@@ -370,27 +418,27 @@ export class Terminal {
     e.preventDefault();
     if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
       const spacing = this.chart.timeScale().options().barSpacing || 1;
-      this.scrollBars((e.deltaX / spacing) * WHEEL_SCROLL);
+      this.scrollBars((e.deltaX / spacing) * INTERACTION.wheelScroll);
       return;
     }
-    const gain = e.ctrlKey || e.metaKey ? WHEEL_ZOOM * 3 : WHEEL_ZOOM;
+    const gain = e.ctrlKey || e.metaKey ? INTERACTION.wheelZoom * 3 : INTERACTION.wheelZoom;
     const x = e.clientX - this.container.getBoundingClientRect().left;
     this.zoom(Math.exp(-e.deltaY * gain), x);
   };
 
   /**
-   * Сброс вида (первая загрузка, кнопка ⟲, двойной клик/тап — план 2A.7): последние свечи с шагом около
-   * barPx пикселей на бар и автомасштаб цены. Число свечей — от ширины области, см. barsForWidth.
-   * Индексы — по шкале времени (индекс последней и первой свечи буфера), а не по длине буфера: на шкале
-   * бывают и точки других серий.
+   * Сброс вида (первая загрузка, кнопка ⟲, двойной клик/тап — план 2A.7): последние n свечей (контроллер
+   * считает n по ширине области — presets.barsForWidth) и свободная зона справа rightOffsetPx пикселей,
+   * автомасштаб цены. Индексы — по шкале времени (индекс последней и первой свечи буфера), а не по длине
+   * буфера: на шкале бывают и точки других серий. Свечей меньше n — показываются все.
    */
-  resetView(barPx: number = VIEW_BAR_PX.desktop): void {
+  resetView(n: number = FALLBACK_BARS): void {
     const ts = this.chart.timeScale();
-    const width = ts.width() || this.container.clientWidth;
-    const n = barsForWidth(width, barPx);
-    const c = this.buffer.candles;
-    const last = c.length > 0 ? (ts.timeToIndex(c[c.length - 1]!.time as Time, true) ?? c.length - 1) : -1;
-    ts.setVisibleLogicalRange({ from: Math.max(this.firstIndex(), last + 1 - n), to: last + 1 + RIGHT_OFFSET });
+    const last = this.lastIndex();
+    if (last !== null) {
+      const from = Math.max(this.firstIndex(), last + 1 - Math.max(1, Math.round(n)));
+      ts.setVisibleLogicalRange(this.rightEdgeRange(last, last + 1 - from));
+    }
     this.chart.priceScale("right").applyOptions({ autoScale: true });
   }
 

@@ -67,6 +67,14 @@ export class DrawingController {
     return this.opts.touch ? HANDLE_TOUCH_PX / 2 : HANDLE_PX;
   }
 
+  /**
+   * Рисунок пользователя под точкой (x, y) панели — та же геометрия, что у выбора и перетаскивания. Разметка
+   * графика (наведение и клик по объектам сцены) уступает рисункам: они важнее.
+   */
+  hitAt(x: number, y: number): string | null {
+    return hitTest(this.opts.getDrawings(), x, y, this.proj.projector(), this.tolerance)?.id ?? null;
+  }
+
   private local(e: PointerEvent): { x: number; y: number } {
     const r = this.el.getBoundingClientRect();
     return { x: e.clientX - r.left, y: e.clientY - r.top };

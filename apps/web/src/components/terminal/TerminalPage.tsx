@@ -1,7 +1,7 @@
 "use client";
 
 import type React from "react";
-import { CHART_TYPES, INDICATORS, TOOL_TITLES, defaultParams, positionStats, secondsToClose, tokensFromElement, type Candle, type ChartType, type DrawingType, type ScaleMode, type Timeframe } from "@platform/charts";
+import { CHART_TYPES, INDICATORS, TOOL_TITLES, createChartStore, defaultParams, formatCountdown, positionStats, resolvePreset, secondsToClose, selectPreset, setLayerOverride, tokensFromElement, type AlertLine, type Candle, type ChartType, type DrawingType, type LayerKey, type PanelKey, type PresetId, type ScaleMode, type Timeframe } from "@platform/charts";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -16,7 +16,11 @@ import { DrawToolbar, ObjectsPanel } from "./DesktopPanels";
 import { AskBox, FiguresList, FoundList, LevelsList } from "./FoundPanel";
 import { download, snapshotPng } from "./snapshot";
 import { TEMPLATES } from "./templates";
-import { IND_COLOR_VAR, PANELS, TerminalView, indicatorColor, type ActiveIndicator, type CrosshairInfo, type LayerKey, type PanelKey, type TerminalControls } from "./TerminalView";
+import { ChartSurface, IND_COLOR_VAR, PANELS, indicatorColor, type CrosshairInfo, type TerminalControls } from "./chart/ChartSurface";
+import { ChartStoreContext, useChartStore } from "./chart/useChartStore";
+import { MarkupPicker } from "./MarkupPicker";
+import { LAYER_LABEL, layerKeysFor } from "./DesktopPanels";
+import { DEFAULT_SAVED, isLegacySave, layoutData, migrateLayout, migrateSaved, type SavedV5 } from "./state/useTerminalSettings";
 import { useDrawings } from "./useDrawings";
 import { deleteLayout, getLayout, listLayouts, putLayout } from "@/lib/drawings";
 import { createAlert, getAlerts, type Alert } from "@/lib/alerts";
@@ -24,12 +28,9 @@ import { getCandles, toCandle } from "@/lib/chart";
 import { useTerminalData } from "./useTerminalData";
 import { useT } from "@/i18n/client";
 import { getBillingMe } from "@/lib/billing";
-import { mergeZones } from "@/lib/zones";
-import { LIQ_MIN_OI_COVERAGE, formatCompactValue, formatIndicatorValue, liquidationMap, oiCoverage, supportResistance } from "@platform/charts";
+import { formatCompactValue, formatIndicatorValue } from "@platform/charts";
 
 const TYPE_LABEL: Record<ChartType, string> = { candles: "Свечи", bars: "Бары", line: "Линия", heikin: "Heikin Ashi" };
-const LAYER_LABEL: Record<LayerKey, string> = { structure: "Структура", zones: "Зоны", levels: "Макс./мин. дня и недели", signals: "Сигналы", patterns: "Паттерны", figures: "Фигуры", volume_profile: "Профиль объёма", sr: "Поддержка и сопротивление", liq_map: "Карта ликвидаций (оценка)" };
-const DEFAULT_INDICATORS: ActiveIndicator[] = [{ id: "ema", params: { period: 50 } }];
 const TOOLS: DrawingType[] = ["hline", "hray", "vline", "trend", "ray", "extended", "channel", "rect", "fib", "position-long", "position-short", "note", "ruler"];
 const STORAGE = "pl-terminal";
 const OBJECTS_W_KEY = "pl-objects-w";
@@ -38,45 +39,36 @@ const OBJECTS_W_MIN = 240;
 const OBJECTS_W_MAX = 600;
 const clampW = (w: number) => Math.round(Math.min(OBJECTS_W_MAX, Math.max(OBJECTS_W_MIN, w)));
 
-type Saved = { type: ChartType; indicators: ActiveIndicator[]; layers: Record<LayerKey, boolean>; layers_v?: number; panels: PanelKey[]; scale: ScaleMode; overlay: string | null; updated_at?: number };
-/** Версия набора слоёв по умолчанию: при смене старые сохранённые слои сбрасываются на чистый график. */
-const LAYERS_VERSION = 4;
-/** График как инструмент теханализа (ADR-0006): структура включена, сигналы — нет. */
-const DEFAULT_LAYERS: Record<LayerKey, boolean> = { structure: true, zones: true, levels: false, signals: false, patterns: false, figures: true, volume_profile: false, sr: true, liq_map: true };
-
-/** Слои из сохранённого состояния: старую версию заменяем чистым набором. */
-function migrate(p: Partial<Saved>): Partial<Saved> {
-  if (p.layers_v === LAYERS_VERSION) return p;
-  return { ...p, layers: DEFAULT_LAYERS, layers_v: LAYERS_VERSION };
-}
+/** Однократное уведомление о новой разметке после миграции сохранения v4 и раньше (ADR-0008). */
+const MARKUP_NOTICE_KEY = "pl-markup-notice";
+const TOAST_MS = 2500;
+const NOTICE_MS = 8000;
 const SCALE_LABEL: Record<ScaleMode, string> = { linear: "линейная", log: "логарифмическая", percent: "проценты" };
 
-function load(): Saved {
-  const base: Saved = { type: "candles", indicators: DEFAULT_INDICATORS, layers: DEFAULT_LAYERS, layers_v: LAYERS_VERSION, panels: [], scale: "linear", overlay: null };
+/** Настройки из localStorage, приведённые к версии 5; legacy — найдено сохранение старше v5. */
+function readSaved(): { saved: SavedV5; legacy: boolean } {
   try {
     const raw = localStorage.getItem(STORAGE);
-    if (!raw) return base;
-    const parsed = migrate(JSON.parse(raw) as Partial<Saved>);
-    return { ...base, ...parsed, layers: { ...base.layers, ...(parsed.layers ?? {}) } };
+    if (!raw) return { saved: { ...DEFAULT_SAVED }, legacy: false };
+    const parsed: unknown = JSON.parse(raw);
+    return { saved: migrateSaved(parsed), legacy: isLegacySave(parsed) };
   } catch {
-    return base;
+    return { saved: { ...DEFAULT_SAVED }, legacy: false };
   }
 }
+const load = (): SavedV5 => readSaved().saved;
 
 /** Тренд старшего таймфрейма простыми словами. */
 const TREND_WORD: Record<string, string> = { up: "вверх", down: "вниз", flat: "боковик" };
 const TREND_TONE: Record<string, string> = { up: "up", down: "down" };
 
-function fmtCountdown(sec: number): string {
-  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), ss = sec % 60;
-  return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${String(ss).padStart(2, "0")}` : `${m}:${String(ss).padStart(2, "0")}`;
-}
-
 export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) {
   const t = useT();
   const router = useRouter();
   const { user } = useAuth();
-  const [saved, setSaved] = useState<Saved | null>(null);
+  const [saved, setSaved] = useState<SavedV5 | null>(null);
+  /** Состояние графика (сцена, выбор, видимая часть) — для листовых компонентов и «Найдено». */
+  const [store] = useState(createChartStore);
   const [instruments, setInstruments] = useState<Instrument[]>([]);
   const [sheet, setSheet] = useState<"indicators" | "layers" | "draw" | "found" | "alert" | "ask" | null>(null);
   // вопросы о графике — Premium (админы и владелец — всегда); тариф узнаём один раз после входа
@@ -92,11 +84,20 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
   const askAccess: "guest" | "plan" | "ok" | null = !user ? "guest" : user.role === "admin" || user.role === "owner" || plan === "premium" ? "ok" : plan === null ? null : "plan";
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [alertDraft, setAlertDraft] = useState<{ price: string; op: "cross_up" | "cross_down" | "enter_range"; price2: string; frequency: "once" | "every" | "once_per_bar" }>({ price: "", op: "cross_up", price2: "", frequency: "once" });
-  const [foundSel, setFoundSel] = useState<number | null>(null);
-  const [figureSel, setFigureSel] = useState<number | null>(null);
+  // выбор паттерна и фигуры — общий с графиком: id объекта сцены в хранилище («pat:<id>», «fig:<id>»)
+  const selection = useChartStore((x) => x.selection, store);
+  const foundSel = selection?.startsWith("pat:") ? Number(selection.slice(4)) : null;
+  const figureSel = selection?.startsWith("fig:") ? Number(selection.slice(4)) : null;
+  const setFoundSel = useCallback((id: number | null) => store.select(id === null ? null : `pat:${id}`), [store]);
+  const setFigureSel = useCallback((id: number | null) => store.select(id === null ? null : `fig:${id}`), [store]);
   const [cross, setCross] = useState<CrosshairInfo | null>(null);
   const controls = useRef<TerminalControls | null>(null);
-  const [visibleFrom, setVisibleFrom] = useState<number | null>(null);
+  const onReady = useCallback((c: TerminalControls | null) => {
+    controls.current = c;
+  }, []);
+  const visibleFrom = useChartStore((x) => x.visible.fromTime, store);
+  // каталог сцены: «Найдено → Уровни» и пояснение «нет данных OI» — независимо от слоёв
+  const sceneIndex = useChartStore((x) => x.sceneIndex, store);
   const [bars, setBars] = useState<"shown" | "hidden">("shown");
   const [objects, setObjects] = useState<"shown" | "hidden">("shown");
   // ширина панели объектов (десктоп): 240–600 px, хранится локально
@@ -139,28 +140,22 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
   };
   const [layouts, setLayouts] = useState<{ name: string }[]>([]);
   const [toast, setToast] = useState<string | null>(null);
+  /** Найдено сохранение старше версии слоёв 5 (локально или на сервере): разметка сброшена на «Чистый». */
+  const [legacyFound, setLegacyFound] = useState(false);
   const areaRef = useRef<HTMLDivElement>(null);
   const closeSheet = useCallback(() => setSheet(null), []);
   const dr = useDrawings(symbol, !!user);
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
   const data = useTerminalData(symbol, tf, user ? getAccessToken() : null);
-  // «Найдено» — по видимой части графика, а не по всей загруженной истории
-  // поддержка/сопротивление и карта ликвидаций: по закрытым свечам, пересчёт раз в свечу
-  const srLevels = useMemo(() => supportResistance(data.candles ?? []), [data.candles]);
-  const zoneGroups = useMemo(() => {
-    const cs = data.candles ?? [];
-    const st = data.layers?.structure;
-    return st && cs.length ? mergeZones(st.zones, cs[cs.length - 1]!.close).slice(0, 2) : [];
-  }, [data.candles, data.layers]);
-  const oiPoints = useMemo(() => data.derivatives?.oi.map((x) => ({ t: x.t, v: Number(x.v) })) ?? null, [data.derivatives]);
-  const liqMap = useMemo(() => liquidationMap(data.candles ?? [], oiPoints), [data.candles, oiPoints]);
-  // открытого интереса меньше чем у половины свечей — оценки нет; объём вместо OI под этим именем не показываем
-  const liqUnavailable = useMemo(() => !!data.derivatives && (data.candles?.length ?? 0) > 0 && oiCoverage(data.candles ?? [], oiPoints) < LIQ_MIN_OI_COVERAGE, [data.candles, data.derivatives, oiPoints]);
   // «Найдено»: значимые паттерны и неотменённые фигуры на видимом участке
   const foundCount = (data.patterns?.items ?? []).filter((p) => p.significant && (visibleFrom === null || p.t >= visibleFrom)).length + (data.figures?.items ?? []).filter((f) => f.status !== "invalidated" && (visibleFrom === null || f.end_t >= visibleFrom)).length;
 
   useEffect(() => {
-    queueMicrotask(() => setSaved(load()));
+    queueMicrotask(() => {
+      const r = readSaved();
+      setSaved(r.saved);
+      if (r.legacy) setLegacyFound(true);
+    });
     getInstruments()
       .then((r) => setInstruments(r))
       .catch(() => {});
@@ -172,6 +167,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
       const tag = (e.target as HTMLElement | null)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
       if (e.key === "Escape") {
+        store.select(null);
         dr.setTool(null);
         dr.setDraft(null);
         dr.actions.select(null);
@@ -194,17 +190,33 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [dr, router, symbol]);
+  }, [dr, router, symbol, store]);
   useEffect(() => {
     if (!user) return;
     listLayouts()
       .then((r) => setLayouts(r))
       .catch(() => {});
   }, [user]);
-  const say = (t: string) => {
-    setToast(t);
-    setTimeout(() => setToast(null), 2500);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const say = (text: string, ms = TOAST_MS) => {
+    setToast(text);
+    clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), ms);
   };
+  // сохранение старше v5 сброшено на «Чистый»: один раз объясняем, где прежний вид
+  useEffect(() => {
+    if (!legacyFound) return;
+    try {
+      if (localStorage.getItem(MARKUP_NOTICE_KEY)) return;
+      localStorage.setItem(MARKUP_NOTICE_KEY, "1");
+    } catch {
+      return;
+    }
+    const text = t("Разметка графика обновлена: по умолчанию «Чистый». Прежний вид — «Подробный» в «Разметке».");
+    queueMicrotask(() => setToast(text));
+    clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), NOTICE_MS);
+  }, [legacyFound, t]);
   const loadAlerts = useCallback(() => {
     if (!user) return;
     getAlerts({ symbol, status: "active" })
@@ -235,7 +247,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
   };
   const saveLayout = (name: string) => {
     const cur = saved ?? load();
-    putLayout({ type: cur.type, indicators: cur.indicators, layers: cur.layers, panels: cur.panels, symbol, tf }, Date.now(), name)
+    putLayout(layoutData(cur, symbol, tf), Date.now(), name)
       .then(() => {
         setLayouts((l) => (l.some((x) => x.name === name) ? l : [...l, { name }]));
         say(t("Раскладка «{name}» сохранена", { name }));
@@ -246,8 +258,9 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
     getLayout(name)
       .then((r) => {
         if (!r.data) return;
-        const d = r.data as Partial<Saved> & { symbol?: string; tf?: string };
-        setSaved({ ...(saved ?? load()), ...d, updated_at: Date.now() });
+        const d = r.data as { symbol?: string; tf?: string };
+        // раскладка проходит ту же миграцию: v4 применяется как «Чистый»
+        setSaved({ ...migrateLayout(r.data, saved ?? load()), updated_at: Date.now() });
         if (d.symbol && d.tf && (d.symbol !== symbol || d.tf !== tf)) router.push(`/chart/${d.symbol}/${d.tf}`);
         say(t("Раскладка «{name}» применена", { name }));
       })
@@ -284,7 +297,10 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
       .then((r) => {
         if (!r.data) return;
         const local = load();
-        if (r.updated_at > (local.updated_at ?? 0)) setSaved({ ...local, ...migrate(r.data as Partial<Saved>), updated_at: r.updated_at });
+        if (r.updated_at > (local.updated_at ?? 0)) {
+          setSaved({ ...migrateLayout(r.data, local), updated_at: r.updated_at });
+          if (isLegacySave(r.data)) setLegacyFound(true);
+        }
       })
       .catch(() => {});
   }, [user]);
@@ -349,7 +365,28 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
       const has = cur.panels.includes(k);
       return { ...cur, panels: has ? cur.panels.filter((x) => x !== k) : [...cur.panels, k], updated_at: Date.now() };
     });
-  const toggleLayer = (k: LayerKey) => setSaved((p) => ({ ...(p ?? load()), layers: { ...(p ?? load()).layers, [k]: !(p ?? load()).layers[k] }, updated_at: Date.now() }));
+  // слой поверх пресета — поправка («Свой»); выбор пресета поправки сбрасывает
+  const authed = !!user;
+  const resolved = useMemo(() => resolvePreset(st.markup, "desktop", { authed }), [st.markup, authed]);
+  const toggleLayer = (k: LayerKey) =>
+    setSaved((p) => {
+      const cur = p ?? load();
+      const on = resolvePreset(cur.markup, "desktop", { authed }).layers[k];
+      return { ...cur, markup: setLayerOverride(cur.markup, k, !on), updated_at: Date.now() };
+    });
+  const selectMarkup = (id: PresetId) => setSaved((p) => ({ ...(p ?? load()), markup: selectPreset(id), updated_at: Date.now() }));
+  // активные ценовые алерты на графике: одна ссылка, пока список не изменился
+  const alertLines = useMemo<AlertLine[]>(
+    () =>
+      alerts
+        .filter((a) => a.type === "price" && typeof a.condition.price === "string")
+        .map((a) => {
+          const op = a.condition.op === "cross_down" ? "cross_down" : a.condition.op === "enter_range" ? "enter_range" : "cross_up";
+          const price2 = typeof a.condition.price2 === "string" ? Number(a.condition.price2) : undefined;
+          return { id: a.id, price: Number(a.condition.price), op, ...(price2 !== undefined && Number.isFinite(price2) ? { price2 } : {}) };
+        }),
+    [alerts],
+  );
   const indicatorIds = useMemo(() => new Set(st.indicators.map((i) => i.id)), [st.indicators]);
   const sel = dr.selected;
   const pos = useMemo(() => {
@@ -379,6 +416,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
   const fmtP = (v: number | null) => (v == null ? "—" : formatPrice(v, data.tick));
   const fmtV = (v: { value: number | null; price: boolean }) => (v.value == null ? "—" : v.price ? formatPrice(v.value, data.tick) : formatIndicatorValue(v.value));
   return (
+    <ChartStoreContext.Provider value={store}>
     <div className={s.page} data-bars={bars}>
       <button type="button" className={`${s.chip} ${s.fsBtn}`} onClick={() => setBars(bars === "shown" ? "hidden" : "shown")} aria-label={bars === "shown" ? t("скрыть панели") : t("показать панели")}>
         {bars === "shown" ? "⤢" : "⤡"}
@@ -440,7 +478,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
         <span>{t("цена")}{" "}<strong>{formatPrice(price == null ? null : String(price), data.tick)}</strong>
         </span>
         <span className={change == null ? "" : change >= 0 ? "up" : "down"}>{formatPct(change)}</span>
-        <span>{t("до закрытия")}{" "}<strong>{countdown == null ? "—" : fmtCountdown(countdown)}</strong>
+        <span>{t("до закрытия")}{" "}<strong>{countdown == null ? "—" : formatCountdown(countdown)}</strong>
         </span>
         {bias && (
           <span title={t("Направление старших таймфреймов, с которым система ищет входы: день (D1) и неделя (W1).")}>
@@ -451,7 +489,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
         {data.derivatives?.funding_current && (
           <span className={s.desktopOnly} title={t("Ставка финансирования фьючерса: плюс — лонги платят шортам, минус — наоборот.")}>
             {t("Фандинг")} <strong>{(Number(data.derivatives.funding_current) * 100).toFixed(4)} %</strong>
-            {data.derivatives.next_funding_t && <> · {t("через")} {fmtCountdown(Math.max(0, data.derivatives.next_funding_t - now))}</>}
+            {data.derivatives.next_funding_t && <> · {t("через")} {formatCountdown(Math.max(0, data.derivatives.next_funding_t - now))}</>}
           </span>
         )}
         <span className={`caption ${s.live}`} data-on={data.connected || undefined}>{data.connected ? t("онлайн") : t("без связи")}</span>
@@ -507,7 +545,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
           <div className={s.empty}>{t("Таймфреймы 1m–15m доступны после входа с подпиской Pro.")}{" "}<Link href="/pricing">{t("Подписка")}</Link>
           </div>
         ) : (
-          <TerminalView sr={srLevels} liq={liqMap} candles={data.candles ?? []} current={data.current} tf={tf} type={st.type} indicators={st.indicators} layersOn={st.layers} layers={data.layers} patterns={data.patterns?.items} highlight={foundSel} figures={data.figures?.items} highlightFigure={figureSel} alertLines={alerts.filter((a) => a.type === "price" && typeof a.condition.price === "string").map((a) => ({ id: a.id, price: Number(a.condition.price), label: a.condition.op === "cross_up" ? "↑" : a.condition.op === "cross_down" ? "↓" : "↔" }))} derivatives={data.derivatives} panels={st.panels} tick={data.tick} dataKey={symbol} onNeedOlder={data.loadOlder} drawings={drawingsProps} onCrosshair={setCross} onVisibleFrom={setVisibleFrom} onReady={(c) => { controls.current = c; }} scale={st.scale} overlay={overlayCandles} />
+          <ChartSurface store={store} markup={st.markup} authed={authed} candles={data.candles ?? []} current={data.current} tf={tf} type={st.type} indicators={st.indicators} layers={data.layers} patterns={data.patterns?.items} figures={data.figures?.items} alerts={alertLines} derivatives={data.derivatives} panels={st.panels} tick={data.tick} dataKey={symbol} onNeedOlder={data.loadOlder} drawings={drawingsProps} onCrosshair={setCross} onReady={onReady} scale={st.scale} overlay={overlayCandles} />
         )}
         {sel && (
           <div className={s.card} role="region" aria-label={t("выбранный рисунок")}>
@@ -612,7 +650,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
             {sheet === "ask" && <AskBox symbol={symbol} tf={tf} access={askAccess} heading={false} />}
             {sheet === "found" && (
               <>
-                <LevelsList sr={srLevels} liq={liqMap} tick={data.tick} zones={zoneGroups} liqUnavailable={liqUnavailable && st.layers.liq_map} />
+                <LevelsList index={sceneIndex} tick={data.tick} />
                 <strong className={s.objHead}>{t("Фигуры")}</strong>
                 <FiguresList items={data.figures?.items ?? []} stats={data.figures?.stats ?? {}} selected={figureSel} onSelect={setFigureSel} tick={data.tick} />
                 <strong className={s.objHead}>{t("Свечные паттерны")}</strong>
@@ -670,12 +708,15 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
                     </label>
                   )),
                 ]
-              : (Object.keys(LAYER_LABEL) as LayerKey[]).map((k) => (
-                  <label key={k}>
-                    <input type="checkbox" checked={st.layers[k]} onChange={() => toggleLayer(k)} /> {t(LAYER_LABEL[k])}
-                    {k === "liq_map" && liqUnavailable && <span className="caption">{t("нет данных открытого интереса на этом таймфрейме")}</span>}
-                  </label>
-                ))}
+              : [
+                  <MarkupPicker key="markup" markup={st.markup} custom={resolved.custom} onSelect={selectMarkup} />,
+                  ...layerKeysFor(authed).map((k) => (
+                    <label key={k}>
+                      <input type="checkbox" checked={resolved.layers[k]} onChange={() => toggleLayer(k)} /> {t(LAYER_LABEL[k])}
+                      {k === "liq_map" && sceneIndex?.liqUnavailable && <span className="caption">{t("нет данных открытого интереса на этом таймфрейме")}</span>}
+                    </label>
+                  )),
+                ]}
           </BottomSheet>
         )}
         </div>
@@ -686,7 +727,10 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
           onSelect={dr.actions.select}
           onLock={dr.actions.lock}
           onRemove={dr.actions.remove}
-          layers={st.layers}
+          markup={st.markup}
+          custom={resolved.custom}
+          onMarkup={selectMarkup}
+          layers={resolved.layers}
           onLayer={toggleLayer}
           panels={st.panels}
           onPanel={togglePanel}
@@ -697,7 +741,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
           onDeleteLayout={removeLayout}
           authed={!!user}
           layoutsLimit={user ? null : 0}
-          found={{ count: foundCount, items: data.patterns?.items ?? [], stats: data.patterns?.stats ?? {}, selected: foundSel, onSelect: setFoundSel, tf, symbol, canExplain: !!user, askAccess, sr: srLevels, liq: liqMap, liqUnavailable, tick: data.tick, zones: zoneGroups, figures: data.figures?.items ?? [], figureStats: data.figures?.stats ?? {}, selectedFigure: figureSel, onSelectFigure: setFigureSel }}
+          found={{ count: foundCount, items: data.patterns?.items ?? [], stats: data.patterns?.stats ?? {}, selected: foundSel, onSelect: setFoundSel, tf, symbol, canExplain: !!user, askAccess, index: sceneIndex, tick: data.tick, figures: data.figures?.items ?? [], figureStats: data.figures?.stats ?? {}, selectedFigure: figureSel, onSelectFigure: setFigureSel }}
         />
       </div>
       <div className={s.bottom}>
@@ -741,5 +785,6 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
         ) : null}
       </div>
     </div>
+    </ChartStoreContext.Provider>
   );
 }

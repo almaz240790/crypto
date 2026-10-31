@@ -925,3 +925,32 @@
 .objScroll .objList {
   overflow: visible;
 }
+
+/* выбор разметки графика (план 2B.2): пресеты сверху вкладки «Слои», пояснение — одной строкой под названием */
+.markup {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+  padding: 0 0 8px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.markupItem {
+  display: grid;
+  gap: 1px;
+}
+
+.markupItem label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
+
+.markupNote {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--text-2);
+  padding-left: 22px;
+}
