@@ -493,7 +493,8 @@
 .card {
   width: 442px;
   margin: 82px auto -51px;
-  padding: 44px 32px 40px;
+  /* низ карточки уходит за край блока, но не глубже нижнего отступа: текст не режется */
+  padding: 44px 32px 72px;
   border-radius: 28px;
   background: var(--lp-card);
   box-shadow: 0 10px 40px color-mix(in srgb, var(--lp-ink) 14%, transparent);
@@ -858,7 +859,7 @@
     width: auto;
     max-width: 358px;
     margin: 80px auto -56px;
-    padding: 28px 20px 40px;
+    padding: 28px 20px 76px;
   }
 
   .card h3 {

@@ -9,10 +9,13 @@ import { getT } from "@/i18n/server";
 
 export const dynamic = "force-dynamic";
 
-export const metadata: Metadata = {
-  title: "Отработка свечных паттернов",
-  description: "Историческая отработка свечных паттернов по закрытым свечам: число случаев, доля хода ≥ 1 ATR в сторону паттерна, интервал Уилсона 95 %. Паттерны не являются сигналами.",
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const t = await getT();
+  return {
+    title: t("Отработка свечных паттернов"),
+    description: t("Историческая отработка свечных паттернов по закрытым свечам: число случаев, доля хода ≥ 1 ATR в сторону паттерна, интервал Уилсона 95 %. Паттерны не являются сигналами."),
+  };
+}
 
 const TFS = ["15m", "1h", "4h", "1d", "1w"];
 const HORIZONS = [3, 5, 10];
@@ -28,7 +31,7 @@ async function Row({ it, tf, scope, horizon }: { it: PatternStatItem; tf: string
   return (
     <tr>
       <Td>
-        <Link href={`/stats/patterns?tf=${tf}&scope=${scope}&horizon=${horizon}&type=${it.type}`}>{it.title}</Link>
+        <Link href={`/stats/patterns?tf=${tf}&scope=${scope}&horizon=${horizon}&type=${it.type}`}>{it.title.split(" / ").map((x) => t(x)).join(" / ")}</Link>
       </Td>
       <Td num>{it.n}</Td>
       <Td num>{it.low_n ? <span className="caption">{t("мало данных")}</span> : pct(it.success_rate)}</Td>
@@ -65,7 +68,7 @@ export default async function PatternStatsPage({ searchParams }: { searchParams:
           <div>
             <h1>{t("Отработка свечных паттернов")}</h1>
             <p className="text-2">
-              Доля случаев, когда после подтверждения паттерна на закрытии свечи цена прошла ≥ 1 ATR в его сторону за {horizon} {horizon === 3 ? t("свечи") : t("свечей")}. Считается автоматически из отметок детектора, без ручного ввода. При n &lt; 30 процент не показывается. Паттерны не являются сигналами.{" "}
+              {t("Доля случаев, когда после подтверждения паттерна на закрытии свечи цена прошла ≥ 1 ATR в его сторону за {h} {candles}. Считается автоматически из отметок детектора, без ручного ввода. При n < 30 процент не показывается. Паттерны не являются сигналами.", { h: horizon, candles: horizon === 3 ? t("свечи") : t("свечей") })}{" "}
               <Link href="/stats">{t("Статистика сигналов")}</Link>.
             </p>
           </div>
@@ -83,18 +86,18 @@ export default async function PatternStatsPage({ searchParams }: { searchParams:
         </p>
         <div className={s.filters}>
           <label>
-            таймфрейм{" "}
-            {TFS.map((t) => (
-              <Link key={t} href={link({ tf: t })} aria-current={t === tf ? "true" : undefined} style={{ marginRight: 8, fontWeight: t === tf ? 600 : 400 }}>
-                {t === "4h" ? "H4" : t.toUpperCase()}
+            {t("таймфрейм")}{" "}
+            {TFS.map((x) => (
+              <Link key={x} href={link({ tf: x })} aria-current={x === tf ? "true" : undefined} style={{ marginRight: 8, fontWeight: x === tf ? 600 : 400 }}>
+                {x === "4h" ? "H4" : x.toUpperCase()}
               </Link>
             ))}
           </label>
           <label>
-            горизонт{" "}
+            {t("горизонт")}{" "}
             {HORIZONS.map((h) => (
               <Link key={h} href={link({ horizon: h })} aria-current={h === horizon ? "true" : undefined} style={{ marginRight: 8, fontWeight: h === horizon ? 600 : 400 }}>
-                {h} св.
+                {t("{h} св.", { h })}
               </Link>
             ))}
           </label>
@@ -194,7 +197,7 @@ export default async function PatternStatsPage({ searchParams }: { searchParams:
                 <tbody>
                   {figItems.map((it) => (
                     <tr key={it.type} data-testid="figure-stat-row">
-                      <Td>{it.title}</Td>
+                      <Td>{t(it.title)}</Td>
                       <Td num>{it.n}</Td>
                       <Td num>{it.low_n ? <span className="caption">{t("мало данных")}</span> : pct(it.success_rate)}</Td>
                       <Td num>{it.low_n ? "—" : `${pct(it.ci_low)} – ${pct(it.ci_high)}`}</Td>
@@ -208,7 +211,7 @@ export default async function PatternStatsPage({ searchParams }: { searchParams:
             )}
           </Panel>
         )}
-        <p className="caption">{DISCLAIMER}</p>
+        <p className="caption">{t(DISCLAIMER)}</p>
       </main>
       <Footer />
     </>

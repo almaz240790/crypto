@@ -54,9 +54,9 @@ export function useLocale(): LocaleState {
 
 /** Переключатель языка: две кнопки, активная подсвечена. */
 export function LanguageSwitch() {
-  const { locale, setLocale } = useLocale();
+  const { locale, setLocale, t } = useLocale();
   return (
-    <span role="group" aria-label="язык" style={{ display: "inline-flex", gap: 2 }}>
+    <span role="group" aria-label={t("Язык")} style={{ display: "inline-flex", gap: 2 }}>
       {(["ru", "en"] as Locale[]).map((l) => (
         <button
           key={l}

@@ -10,15 +10,15 @@ import { countryOptions } from "@/lib/countries";
 import { useAuth } from "./AuthProvider";
 import s from "./AuthCard.module.css";
 import { Social } from "./Social";
-import { useT } from "@/i18n/client";
+import { useLocale } from "@/i18n/client";
 
 const MIN = 10;
 
 export function RegisterForm({ next }: { next: string }) {
-  const t = useT();
+  const { locale, t } = useLocale();
   const router = useRouter();
   const { reload } = useAuth();
-  const countries = useMemo(() => countryOptions("ru"), []);
+  const countries = useMemo(() => countryOptions(locale), [locale]);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
@@ -38,14 +38,14 @@ export function RegisterForm({ next }: { next: string }) {
     e.preventDefault();
     setError(null);
     if (password.length < MIN) {
-      setPwError(`минимум ${MIN} символов`);
+      setPwError(t("минимум {n} символов", { n: MIN }));
       return;
     }
     setBusy(true);
     try {
       const n = await pwnedCount(password);
       if (n && n > 0) {
-        setPwError(`этот пароль встречается в утечках (${n.toLocaleString("ru-RU")} раз), выберите другой`);
+        setPwError(t("этот пароль встречается в утечках ({n} раз), выберите другой", { n: n.toLocaleString(locale) }));
         return;
       }
       await register({
@@ -84,7 +84,7 @@ export function RegisterForm({ next }: { next: string }) {
           setPwError(null);
         }}
         error={pwError}
-        hint={`не короче ${MIN} символов; проверяется по базе утечек`}
+        hint={t("не короче {n} символов; проверяется по базе утечек", { n: MIN })}
       />
       <Input label={t("Имя (необязательно)")} name="name" autoComplete="name" maxLength={100} value={name} onChange={(e) => setName(e.target.value)} />
       <Select label={t("Страна")} name="country" value={country} onChange={(e) => setCountry(e.target.value)} hint={t("нужна для соблюдения ограничений по юрисдикциям")}>
@@ -98,7 +98,7 @@ export function RegisterForm({ next }: { next: string }) {
       <label className={s.check}>
         <input type="checkbox" name="terms" checked={terms} onChange={(e) => setTerms(e.target.checked)} required />
         <span>
-          Я принимаю условия использования и понимаю: {DISCLAIMER}
+          {t("Я принимаю условия использования и понимаю:")} {t(DISCLAIMER)}
         </span>
       </label>
       <label className={s.check}>

@@ -50,7 +50,7 @@ function ChartCell({ cell, instruments, authed, onChange }: { cell: Cell; instru
   const price = data.price ? Number(data.price) : last?.close ?? null;
   const tfs = TIMEFRAMES.filter((t) => authed || !INTRADAY.includes(t));
   return (
-    <section className={s.multiCell} aria-label={`график ${cell.symbol} ${cell.tf}`}>
+    <section className={s.multiCell} aria-label={t("график {symbol} {tf}", { symbol: cell.symbol, tf: cell.tf })}>
       <div className={s.multiHead}>
         <select aria-label={t("инструмент")} value={cell.symbol} onChange={(e) => onChange({ ...cell, symbol: e.target.value })}>
           {(instruments.length ? instruments : [{ symbol: cell.symbol } as Instrument]).map((i) => (

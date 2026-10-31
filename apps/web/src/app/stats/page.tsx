@@ -18,11 +18,13 @@ import { getT } from "@/i18n/server";
 
 export const dynamic = "force-dynamic";
 
-export const metadata: Metadata = {
-  title: "Статистика сигналов",
-  description:
-    "Открытая статистика торговых сигналов PlatformSol: live, форвард-тест и бэктест помечены отдельно, полная история сделок, просадки и распределение результата в R.",
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const t = await getT();
+  return {
+    title: t("Статистика сигналов"),
+    description: t("Открытая статистика торговых сигналов PlatformSol: live, форвард-тест и бэктест помечены отдельно, полная история сделок, просадки и распределение результата в R."),
+  };
+}
 
 const SCOPES: { key: "live" | "forward" | "backtest"; label: string; note: string }[] = [
   { key: "live", label: "Live", note: "Сигналы, опубликованные пользователям. Это единственная область, которую мы считаем результатом сервиса." },

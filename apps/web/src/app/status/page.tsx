@@ -3,14 +3,18 @@ import { Footer, Header } from "@/components/site";
 import { Badge, EmptyState, Panel, Table, Td, Th } from "@/components/ui";
 import { API_URL } from "@/lib/api";
 import { formatTimeUTC } from "@/lib/format";
+import { componentTitle, statusDetail } from "@/lib/statusText";
 import { getT } from "@/i18n/server";
 
 export const dynamic = "force-dynamic";
 
-export const metadata: Metadata = {
-  title: "Статус системы",
-  description: "Состояние данных с биржи, движка сигналов, трекера и уведомлений PlatformSol. Инциденты за 7 дней.",
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const t = await getT();
+  return {
+    title: t("Статус системы"),
+    description: t("Состояние данных с биржи, движка сигналов, трекера и уведомлений PlatformSol. Инциденты за 7 дней."),
+  };
+}
 
 type Status = {
   status: "ok" | "degraded" | "down";
@@ -34,14 +38,14 @@ async function load(): Promise<Status | null> {
 export default async function StatusPage() {
   const t = await getT();
   const st = await load();
-  const titles = new Map((st?.components ?? []).map((c) => [c.key, c.title]));
+  const titles = new Map((st?.components ?? []).map((c) => [c.key, componentTitle(t, c.key, c.title)]));
   return (
     <>
       <Header />
-      <main className="container" style={{ padding: "24px 0", display: "grid", gap: 16, maxWidth: 900 }}>
+      <main className="container" style={{ paddingBlock: 24, display: "grid", gap: 16, maxWidth: 900 }}>
         <div>
           <h1>{t("Статус системы")}</h1>
-          <p className="text-2">Проверяется каждую минуту. Обновлено {st ? formatTimeUTC(st.generated_at) : "—"}.</p>
+          <p className="text-2">{t("Проверяется каждую минуту. Обновлено {time}.", { time: st ? formatTimeUTC(st.generated_at) : "—" })}</p>
         </div>
         {!st ? (
           <Panel>
@@ -50,7 +54,7 @@ export default async function StatusPage() {
         ) : (
           <>
             <Panel title={t("Общий статус: {s}", { s: t(LABEL[st.status]) })} flush>
-              <Table compact stack={false}>
+              <Table compact>
                 <thead>
                   <tr>
                     <Th>{t("Компонент")}</Th>
@@ -62,12 +66,16 @@ export default async function StatusPage() {
                 <tbody>
                   {st.components.map((c) => (
                     <tr key={c.key}>
-                      <Td>{c.title}</Td>
-                      <Td>
+                      <Td>{titles.get(c.key)}</Td>
+                      <Td mobile="right">
                         <Badge tone={TONE[c.status]}>{t(LABEL[c.status])}</Badge>
                       </Td>
-                      <Td className="text-2">{c.detail}</Td>
-                      <Td num>{c.uptime_7d.toFixed(2)} %</Td>
+                      <Td className="text-2" mobile="secondary">
+                        {statusDetail(t, c.detail)}
+                      </Td>
+                      <Td num mobile="right">
+                        {c.uptime_7d.toFixed(2)} %
+                      </Td>
                     </tr>
                   ))}
                 </tbody>
@@ -77,7 +85,7 @@ export default async function StatusPage() {
               {st.incidents.length === 0 ? (
                 <EmptyState text={t("Инцидентов не было.")} />
               ) : (
-                <Table compact stack={false}>
+                <Table compact>
                   <thead>
                     <tr>
                       <Th>{t("Открыт")}</Th>
@@ -90,17 +98,19 @@ export default async function StatusPage() {
                   <tbody>
                     {st.incidents.map((i) => (
                       <tr key={i.component + i.opened_at}>
-                        <Td className="num" style={{ textAlign: "left" }}>
+                        <Td className="num" style={{ textAlign: "left" }} mobile="secondary">
                           {formatTimeUTC(i.opened_at)}
                         </Td>
-                        <Td className="num" style={{ textAlign: "left" }}>
+                        <Td className="num" style={{ textAlign: "left" }} mobile="secondary">
                           {i.closed_at ? formatTimeUTC(i.closed_at) : t("ещё открыт")}
                         </Td>
                         <Td>{titles.get(i.component) ?? i.component}</Td>
-                        <Td>
+                        <Td mobile="right">
                           <Badge tone={i.severity === "down" ? "down" : "warn"}>{t(LABEL[i.severity as "degraded" | "down"])}</Badge>
                         </Td>
-                        <Td className="text-2">{i.message}</Td>
+                        <Td className="text-2" mobile="secondary">
+                          {statusDetail(t, i.message)}
+                        </Td>
                       </tr>
                     ))}
                   </tbody>

@@ -34,7 +34,7 @@ export function DrawToolbar({ tool, onTool, magnet, onMagnet, canUndo, canRedo, 
   return (
     <div className={s.toolbar} role="toolbar" aria-label={t("панель рисования")}>
       {TOOLS.map((x) => (
-        <button key={x.t} type="button" className={s.tool} aria-pressed={tool === x.t} title={`${TOOL_TITLES[x.t]}${x.key ? ` (${x.key})` : ""}`} aria-label={TOOL_TITLES[x.t]} onClick={() => onTool(tool === x.t ? null : x.t)}>
+        <button key={x.t} type="button" className={s.tool} aria-pressed={tool === x.t} title={`${t(TOOL_TITLES[x.t])}${x.key ? ` (${x.key})` : ""}`} aria-label={t(TOOL_TITLES[x.t])} onClick={() => onTool(tool === x.t ? null : x.t)}>
           <ToolIcon name={x.t} />
         </button>
       ))}
@@ -125,14 +125,14 @@ export function ObjectsPanel(p: Props) {
           {p.drawings.map((d) => (
             <li key={d.id} className={s.objRow} data-selected={d.id === p.selectedId || undefined}>
               <button type="button" className={s.objName} onClick={() => p.onSelect(d.id)}>
-                {TOOL_TITLES[d.type]}
+                {t(TOOL_TITLES[d.type])}
                 {d.text ? ` · ${d.text}` : ""}
                 <span className="caption"> {d.timeframe ?? t("все TF")}</span>
               </button>
-              <button type="button" className={s.tool} aria-label={`${d.locked ? t("разблокировать") : t("заблокировать")} ${TOOL_TITLES[d.type]}`} title={d.locked ? t("Разблокировать") : t("Заблокировать")} onClick={() => p.onLock(d.id)}>
+              <button type="button" className={s.tool} aria-label={`${d.locked ? t("разблокировать") : t("заблокировать")} ${t(TOOL_TITLES[d.type])}`} title={d.locked ? t("Разблокировать") : t("Заблокировать")} onClick={() => p.onLock(d.id)}>
                 {d.locked ? "🔒" : "🔓"}
               </button>
-              <button type="button" className={s.tool} aria-label={`удалить ${TOOL_TITLES[d.type]}`} title={t("Удалить")} disabled={d.locked} onClick={() => p.onRemove(d.id)}>
+              <button type="button" className={s.tool} aria-label={t("удалить {name}", { name: t(TOOL_TITLES[d.type]) })} title={t("Удалить")} disabled={d.locked} onClick={() => p.onRemove(d.id)}>
                 ✕
               </button>
             </li>
@@ -160,9 +160,9 @@ export function ObjectsPanel(p: Props) {
       {tab === "layouts" && (
         <div className={s.objList}>
           <strong>{t("Шаблоны индикаторов")}</strong>
-          {TEMPLATES.map((t) => (
-            <button key={t.id} type="button" className={s.chip} onClick={() => p.onTemplate(t.id)}>
-              {t.title}
+          {TEMPLATES.map((tpl) => (
+            <button key={tpl.id} type="button" className={s.chip} onClick={() => p.onTemplate(tpl.id)}>
+              {t(tpl.title)}
             </button>
           ))}
           <strong>{t("Мои раскладки")}</strong>
@@ -192,7 +192,7 @@ export function ObjectsPanel(p: Props) {
               <button type="submit" className={s.chip} disabled={!name.trim() || (p.layoutsLimit !== null && p.layouts.length >= p.layoutsLimit)}>{t("Сохранить")}</button>
             </form>
           )}
-          {p.layoutsLimit !== null && <span className="caption">лимит подписки: {p.layoutsLimit}</span>}
+          {p.layoutsLimit !== null && <span className="caption">{t("лимит подписки: {n}", { n: p.layoutsLimit })}</span>}
         </div>
       )}
     </aside>

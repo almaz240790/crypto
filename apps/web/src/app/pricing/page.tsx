@@ -4,10 +4,13 @@ import { Footer, Header } from "@/components/site";
 import { getT } from "@/i18n/server";
 import s from "./page.module.css";
 
-export const metadata: Metadata = {
-  title: "Подписка",
-  description: "Подписка Free, Pro и Premium на крипто-график для технического анализа. Оплата криптовалютой на 1, 3 или 12 месяцев без автопродления.",
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const t = await getT();
+  return {
+    title: t("Подписка"),
+    description: t("Подписка Free, Pro и Premium на крипто-график для технического анализа. Оплата криптовалютой на 1, 3 или 12 месяцев без автопродления."),
+  };
+}
 
 export default async function PricingPage() {
   const t = await getT();
