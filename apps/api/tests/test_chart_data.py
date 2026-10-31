@@ -298,6 +298,24 @@ def _fixture_minutes() -> list[datetime]:
     return out
 
 
+def _forming(inst_id: int, t: datetime, prev: Candle) -> dict[str, Any]:
+    """Формирующаяся минута, как её пишет market-data (``is_closed = false``, перезаписывается
+    раз в секунду): нарочно крайние high/low и большой объём — попадание в свёртку видно сразу."""
+    return {
+        "instrument_id": inst_id,
+        "timeframe": "1m",
+        "open_time": t,
+        "open": prev.close,
+        "high": prev.close + 1000,
+        "low": Decimal("0.01"),
+        "close": prev.close + 500,
+        "volume": Decimal(10**6),
+        "quote_volume": Decimal(10**8),
+        "trades": 10**6,
+        "is_closed": False,
+    }
+
+
 def _m1_before(s: Any, inst_id: int, before: datetime | None) -> list[Candle]:
     from app.chart_data import _rows_to_candles
 
@@ -394,7 +412,8 @@ def test_sql_aggregate_equals_python_aggregate() -> None:
 
 @db_only
 def test_current_bar_and_through_equal_fold() -> None:
-    """current_candle и current_through из SQL равны fold() по минутам текущего интервала."""
+    """current_candle и current_through из SQL равны fold() по закрытым минутам текущего
+    интервала; формирующаяся минута (``is_closed = false``) в свёртку и в through не входит."""
     from app.chart_data import current_bar, current_candle
     from app.db import SessionLocal
 
@@ -404,7 +423,8 @@ def test_current_bar_and_through_equal_fold() -> None:
             inst = _instrument_row(s, "CURTESTUSDT")
             _insert_m1(s, _m1_rows(inst.id, _fixture_minutes(), seed=11))
             m1 = _m1_before(s, inst.id, None)
-            now = FIX_END - timedelta(seconds=30)
+            _insert_m1(s, [_forming(inst.id, FIX_END, m1[-1])])
+            now = FIX_END + timedelta(seconds=30)
             for tf in (Timeframe.M5, Timeframe.M15, Timeframe.H1, Timeframe.H4, Timeframe.D1,
                        Timeframe.W1):  # fmt: skip
                 start = bucket_start(tf, now)
@@ -419,7 +439,105 @@ def test_current_bar_and_through_equal_fold() -> None:
             # в текущем интервале нет минут — None; у 1m текущей свечи нет
             assert current_bar(s, inst.id, Timeframe.H1, FIX_END + timedelta(hours=5)) is None
             assert current_bar(s, inst.id, Timeframe.M1, now) is None
+            # в интервале только формирующаяся минута — свёртки нет
+            later = FIX_END + timedelta(hours=2)
+            _insert_m1(s, [_forming(inst.id, later, m1[-1])])
+            assert current_bar(s, inst.id, Timeframe.H1, later + timedelta(seconds=30)) is None
         finally:
+            s.rollback()
+
+
+def _fold_minute(bar: dict[str, Any], m: Candle) -> dict[str, Any]:
+    """foldMinute клиента (packages/charts/src/live.ts) на полях ответа: та же корзина."""
+
+    def s(x: Decimal) -> str:
+        return format(x.normalize(), "f")
+
+    return {
+        **bar,
+        "h": s(max(Decimal(bar["h"]), m.high)),
+        "l": s(min(Decimal(bar["l"]), m.low)),
+        "c": s(m.close),
+        "v": s(Decimal(bar["v"]) + m.volume),
+    }
+
+
+@db_only
+def test_open_bar_and_current_through_agree(monkeypatch: pytest.MonkeyPatch) -> None:
+    """/candles: незакрытая свеча ответа — ровно fold() закрытых минут интервала до
+    ``current_through``, формирующаяся минута не входит ни в неё, ни в историю 5m/15m/1h.
+    Клиент, досворачивающий минуты новее ``current_through`` (включая закрытую версию
+    формирующейся), получает ту же свечу, что и полная свёртка, — без потерь и двойного счёта.
+    Для 4h снимок биржи в порции заменяется той же свёрткой; без закрытых минут — остаётся."""
+    from types import SimpleNamespace
+
+    from fastapi.testclient import TestClient
+    from sqlalchemy import insert
+
+    from app import auth
+    from app.chart_data import load_candles
+    from app.db import SessionLocal
+    from app.main import app
+    from app.models.market import Candle as CandleRow
+    from app.routers import chart
+    from app.routers.public import optional_user
+
+    now = FIX_END + timedelta(seconds=40)  # 00:23:40, минута 00:23 формируется
+    monkeypatch.setattr(chart, "_now", lambda: now)
+    with SessionLocal() as s:
+        s.begin()
+        try:
+            inst = _instrument_row(s, "OPENTESTUSDT")
+            _insert_m1(s, _m1_rows(inst.id, _fixture_minutes(), seed=5))
+            closed = _m1_before(s, inst.id, None)
+            forming = _forming(inst.id, FIX_END, closed[-1])
+            _insert_m1(s, [forming])
+            for tf in AGG_TFS:
+                got, _ = load_candles(s, inst.id, tf, None, 500)
+                assert got[-1].open_time == bucket_start(tf, now), tf
+                assert got == aggregate(closed, tf)[-len(got) :], tf
+            app.dependency_overrides[auth.get_db] = lambda: s
+            app.dependency_overrides[optional_user] = lambda: SimpleNamespace(id=1, role="admin")
+            client = TestClient(app)
+            sym = "symbol=OPENTESTUSDT"
+            # закрытая версия формирующейся минуты, как её потом доставит WebSocket
+            p = closed[-1].close
+            final = Candle(FIX_END, p, p + 3, p - 2, p + 1, Decimal(7), Decimal(70), 9)
+            for tf in (Timeframe.M5, Timeframe.M15, Timeframe.H1, Timeframe.H4):
+                body = client.get(f"/v1/chart/candles?{sym}&tf={tf.value}").json()
+                start = bucket_start(tf, now)
+                inside = [c for c in closed if c.open_time >= start]
+                want = chart.candle_dict(fold(inside, start), open_=True)
+                opened = [c for c in body["candles"] if c["open"]]
+                live = body["current"] or opened[-1]
+                assert live == want, tf
+                assert len(opened) == (0 if body["current"] else 1), tf
+                assert body["current_through"] == int(closed[-1].open_time.timestamp()), tf
+                # клиент: минуты ≤ current_through пропускает, новее — сворачивает
+                assert int(final.open_time.timestamp()) > body["current_through"]
+                live = _fold_minute(live, final)
+                assert live == chart.candle_dict(fold([*inside, final], start), open_=True), tf
+            # 4h: снимок биржи текущего интервала (с формирующейся минутой) в порции
+            start4 = bucket_start(Timeframe.H4, now)
+            snap = {**forming, "timeframe": "4h", "open_time": start4, "open": closed[0].open}
+            s.execute(insert(CandleRow), [snap])
+            body = client.get(f"/v1/chart/candles?{sym}&tf=4h").json()
+            bar4 = fold([c for c in closed if c.open_time >= start4], start4)
+            assert body["current"] is None
+            assert body["candles"][-1] == chart.candle_dict(bar4, open_=True)
+            assert body["current_through"] == int(closed[-1].open_time.timestamp())
+            # закрытых минут в новом интервале ещё нет: снимок как есть, current_through null
+            nxt = start4 + Timeframe.H4.delta
+            monkeypatch.setattr(chart, "_now", lambda: nxt + timedelta(seconds=20))
+            s.execute(insert(CandleRow), [{**snap, "open_time": nxt}])
+            _insert_m1(s, [_forming(inst.id, nxt, closed[-1])])
+            body = client.get(f"/v1/chart/candles?{sym}&tf=4h").json()
+            assert body["current"] is None and body["current_through"] is None
+            assert body["candles"][-1]["t"] == int(nxt.timestamp())
+            assert body["candles"][-1]["open"] is True
+            assert body["candles"][-1]["v"] == "1000000"
+        finally:
+            app.dependency_overrides.clear()
             s.rollback()
 
 
@@ -519,6 +637,82 @@ def test_found_counts_equal_items() -> None:
             s.rollback()
 
 
+@db_only
+def test_chart_signals_follow_plan_on_db(monkeypatch: pytest.MonkeyPatch) -> None:
+    """/v1/chart/signals и ``signals`` в /layers по правам тарифа, как /v1/signals: биллинг
+    включён, Free — только градация A, через 12 ч после закрытия свечи, только BTC, ETH и
+    инструменты вотчлиста; Pro — все live-сигналы инструмента."""
+    from types import SimpleNamespace
+
+    from fastapi.testclient import TestClient
+
+    from app import auth
+    from app import entitlements as ent_mod
+    from app.config import settings
+    from app.db import SessionLocal
+    from app.main import app
+    from app.models import Signal, Strategy, StrategyVersion, User, Watchlist, WatchlistItem
+    from app.routers import chart
+    from app.routers.public import optional_user
+
+    now = datetime(2026, 10, 28, 12, tzinfo=UTC)
+    monkeypatch.setattr(chart, "_now", lambda: now)
+    monkeypatch.setattr(chart, "_redis", lambda: None)
+    monkeypatch.setattr(settings, "billing_enabled", True)
+    plan = SimpleNamespace(name="free")
+    monkeypatch.setattr(ent_mod, "plan_for", lambda *a, **k: plan.name)
+    with SessionLocal() as s:
+        s.begin()
+        try:
+            inst = _instrument_row(s, "SIGTESTUSDT")
+            stamp = datetime.now(tz=UTC).strftime("%H%M%S%f")
+            strat = Strategy(slug="chart-signals-" + stamp, name="t")
+            user = User(email=f"chart-signals-{stamp}@example.com", role="user")
+            s.add_all([strat, user])
+            s.flush()
+            ver = StrategyVersion(strategy_id=strat.id, version="9.9.9", params={}, status="live")
+            s.add(ver)
+            s.flush()
+            for i, (grade, hours) in enumerate((("A", 13), ("A", 1), ("B", 14), ("C", 30))):
+                s.add(
+                    Signal(
+                        public_id=f"cs{stamp[-8:]}{i}", strategy_version_id=ver.id,
+                        instrument_id=inst.id, direction="long",
+                        candle_close_time=now - timedelta(hours=hours), entry_market=Decimal(100),
+                        stop_loss=Decimal(95), tp1=Decimal(105), tp2=Decimal(110),
+                        tp3=Decimal(120), rr_tp2=Decimal(2), score=80, grade=grade,
+                        input_hash="x" * 64,
+                    )
+                )  # fmt: skip
+            s.flush()
+            app.dependency_overrides[auth.get_db] = lambda: s
+            app.dependency_overrides[auth.current_user] = lambda: user
+            app.dependency_overrides[optional_user] = lambda: user
+            client = TestClient(app)
+            urls = ("/v1/chart/signals?symbol=SIGTESTUSDT", "/v1/chart/layers?symbol=SIGTESTUSDT")
+
+            def seen(url: str) -> list[tuple[str, int]]:
+                r = client.get(url)
+                assert r.status_code == 200, (url, r.text)
+                return sorted((x["grade"], x["t"]) for x in r.json()["signals"])
+
+            for url in urls:  # Free: инструмент не BTC/ETH и не в вотчлисте
+                assert seen(url) == [], url
+            wl = Watchlist(user_id=user.id)
+            s.add(wl)
+            s.flush()
+            s.add(WatchlistItem(watchlist_id=wl.id, instrument_id=inst.id))
+            s.flush()
+            for url in urls:
+                assert seen(url) == [("A", int((now - timedelta(hours=13)).timestamp()))], url
+            plan.name = "pro"
+            for url in urls:
+                assert [g for g, _ in seen(url)] == ["A", "A", "B", "C"], url
+        finally:
+            app.dependency_overrides.clear()
+            s.rollback()
+
+
 # --- бюджет серверного времени (план 2B.4: p95 < 300 мс; B16: ≤ тривиальный запрос + 60 мс) ---
 
 BUDGET_P95_MS = 300.0
@@ -535,8 +729,13 @@ def _timed(client: Any, url: str, n: int) -> list[float]:
     return sorted(out)
 
 
+BUDGET_NOW = datetime(2026, 10, 25, 23, 58, 40, tzinfo=UTC)
+"""Воскресенье: текущая неделя почти полная (10 077 закрытых минут), 23:58 формируется. Время
+запроса заморожено — результат не зависит от того, попал ли запуск на смену часа или недели."""
+
+
 @db_only
-def test_candles_server_time_budget() -> None:
+def test_candles_server_time_budget(monkeypatch: pytest.MonkeyPatch) -> None:
     """Свечи 1h (500 корзин = 30 000 минут) и 1w (текущая неделя до 10 080 минут) укладываются в
     p95 < 300 мс и p50 ≤ p50 тривиального запроса + 60 мс: агрегат в SQL, а не в Python."""
     from fastapi.testclient import TestClient
@@ -544,14 +743,21 @@ def test_candles_server_time_budget() -> None:
     from app import auth
     from app.db import SessionLocal
     from app.main import app
+    from app.routers import chart
 
-    now = datetime.now(tz=UTC).replace(second=0, microsecond=0)
-    minutes = [now - timedelta(minutes=i) for i in range(21 * 24 * 60, -1, -1)]
+    now = BUDGET_NOW
+    monkeypatch.setattr(chart, "_now", lambda: now)
+    last = now.replace(second=0) - timedelta(minutes=1)  # последняя закрытая минута, 23:57
+    minutes = [last - timedelta(minutes=i) for i in range(21 * 24 * 60, -1, -1)]
     with SessionLocal() as s:
         s.begin()
         try:
             inst = _instrument_row(s, "BUDGETTESTUSDT")
-            _insert_m1(s, _m1_rows(inst.id, minutes, seed=3))
+            rows = _m1_rows(inst.id, minutes, seed=3)
+            _insert_m1(s, rows)
+            prev = Candle(last, rows[-1]["open"], rows[-1]["high"], rows[-1]["low"],
+                          rows[-1]["close"], rows[-1]["volume"])  # fmt: skip
+            _insert_m1(s, [_forming(inst.id, last + timedelta(minutes=1), prev)])
             s.execute(text("analyze candles"))
             app.dependency_overrides[auth.get_db] = lambda: s
             client = TestClient(app)
@@ -560,10 +766,13 @@ def test_candles_server_time_budget() -> None:
             trivial = "/v1/chart/candles?symbol=NOSUCHUSDT&tf=1h"  # 404 после одного запроса
             body = client.get(h1).json()
             assert len(body["candles"]) == 500 and body["has_older"] is True
-            assert body["current_through"] == int(now.timestamp())
+            assert body["candles"][-1]["open"] is True and body["current"] is None
+            assert body["current_through"] == int(last.timestamp())
             body = client.get(w1).json()
-            assert body["current"]["t"] == int(bucket_start(Timeframe.W1, now).timestamp())
-            assert body["current_through"] == int(now.timestamp())
+            week = bucket_start(Timeframe.W1, now)
+            assert (now - week) > timedelta(days=6, hours=23)
+            assert body["current"]["t"] == int(week.timestamp())
+            assert body["current_through"] == int(last.timestamp())
             base = _timed(client, trivial, BUDGET_SAMPLES)
             base_p50 = base[len(base) // 2]
             for url in (h1, w1):

@@ -31,7 +31,12 @@ from app.chart_data import (
     signal_layer,
 )
 from app.config import settings
-from app.entitlements import Entitlements, entitlements_for
+from app.entitlements import (
+    Entitlements,
+    allowed_instrument_ids,
+    entitlements_for,
+    visible_since,
+)
 from app.http_cache import (
     CANDLES_HISTORY,
     CANDLES_LATEST,
@@ -40,6 +45,7 @@ from app.http_cache import (
     OBJECTS,
     PRIVATE_NO_CACHE,
     PRIVATE_NO_STORE,
+    Policy,
     json_response,
 )
 from app.models import Instrument, User
@@ -70,6 +76,11 @@ def _ts(x: int | None) -> datetime | None:
     return datetime.fromtimestamp(x, tz=UTC) if x else None
 
 
+def _now() -> datetime:
+    """Время запроса — одно на обработчик (тесты подменяют, чтобы не зависеть от часов)."""
+    return datetime.now(tz=UTC)
+
+
 def _redis() -> Any | None:
     try:
         return redis.from_url(settings.redis_url, socket_timeout=2)
@@ -85,6 +96,21 @@ def _signal_scopes(user: User, ent: Entitlements) -> list[str]:
     return scopes
 
 
+def _visible_signals(
+    db: Session, user: User, inst: Instrument, now: datetime
+) -> list[dict[str, Any]]:
+    """Сигналы инструмента по правам тарифа — те же ограничения, что у ``/v1/signals``: версии
+    (live; forward — Premium и админам), градации, задержка после закрытия свечи и инструменты
+    (Free — BTC, ETH и вотчлист; чужой инструмент — пустой список)."""
+    ent = entitlements_for(db, user, now)
+    allowed = allowed_instrument_ids(db, user, ent)
+    if allowed is not None and inst.id not in allowed:
+        return []
+    return signal_layer(
+        db, inst, _signal_scopes(user, ent), ent.signal_grades, visible_since(ent, now)
+    )
+
+
 @router.get("/candles")
 def candles(
     request: Request,
@@ -97,14 +123,16 @@ def candles(
 ) -> Response:
     """Закрытые свечи порцией (по умолчанию последние 500) и текущая незакрытая свеча.
 
-    ``current_through`` — open time самой новой минуты, свёрнутой в незакрытую свечу (``current``
-    или последнюю свечу с ``open: true``): клиент досворачивает минуты новее неё."""
+    Незакрытая свеча (``current`` или последняя в ``candles`` с ``open: true``) для tf ≥ 5m —
+    свёртка закрытых минут текущего интервала, ``current_through`` — open time самой новой из них
+    (одним запросом со свёрткой): клиент досворачивает минуты новее неё. ``null`` — свёртки нет
+    (история, 1m, в интервале ещё нет закрытых минут: тогда открытая 4h/1d/1w — снимок биржи)."""
     timeframe = _tf(tf)
     ent = entitlements_for(db, user)
     if timeframe in INTRADAY and not ent.intraday:
         raise HTTPException(403, "таймфреймы 1m–15m доступны на тарифе Pro")
     inst = _instrument(db, symbol)
-    now = datetime.now(tz=UTC)
+    now = _now()
     b = _ts(before)
     rows, has_older = load_candles(db, inst.id, timeframe, b, limit)
     # последняя хранимая свеча tf может быть ещё не закрыта — помечаем
@@ -112,12 +140,17 @@ def candles(
     cur = None
     through: datetime | None = None
     if b is None and timeframe is not Timeframe.M1:
-        last_open = rows[-1].open_time if rows else None
         bar = current_bar(db, inst.id, timeframe, now)
         if bar is not None:
             c, through = bar
-            if last_open is None or c.open_time > last_open:
+            if rows and rows[-1].open_time == c.open_time:
+                # та же корзина: открытая свеча порции (снимок биржи 4h/1d/1w или корзина
+                # 5m/15m/1h другого запроса) заменяется свёрткой, согласованной с through
+                out[-1] = candle_dict(c, open_=True)
+            elif not rows or c.open_time > rows[-1].open_time:
                 cur = candle_dict(c, open_=True)
+            else:
+                through = None  # порция новее интервала now — свёртка к ней не относится
     payload = {
         "symbol": inst.symbol,
         "tf": timeframe.value,
@@ -129,6 +162,7 @@ def candles(
         "tick_size": _dec(inst.tick_size),
         "server_time": now.isoformat(),
     }
+    cache: Policy
     if timeframe in INTRADAY:
         cache = PRIVATE_NO_STORE  # права тарифа
     elif b is not None and b <= bucket_start(timeframe, now):
@@ -155,7 +189,7 @@ def layers(
     пользователя и кэшируется публично. Сигналы для графика — ``/v1/chart/signals``."""
     timeframe = _tf(tf)
     inst = _instrument(db, symbol)
-    now = datetime.now(tz=UTC)
+    now = _now()
     structure = None
     if timeframe in LAYER_TFS:
         structure = layers_cached(db, _redis(), inst, timeframe, now)
@@ -168,9 +202,7 @@ def layers(
             "server_time": now.isoformat(),
         }
         return json_response(request, payload, LAYERS_CHART)
-    signals: list[dict[str, Any]] = []
-    if user is not None:
-        signals = signal_layer(db, inst, _signal_scopes(user, entitlements_for(db, user)))
+    signals = _visible_signals(db, user, inst, now) if user is not None else []
     payload = {
         "symbol": inst.symbol,
         "tf": timeframe.value,
@@ -188,13 +220,15 @@ def chart_signals(
     user: User = Depends(auth.current_user),
     db: Session = Depends(auth.get_db),
 ) -> Response:
-    """Сигналы инструмента для слоя графика (нужен вход): live, forward — по правам тарифа.
-    Те же элементы, что ``signals`` в ``/layers`` без ``view``."""
+    """Сигналы инструмента для слоя графика (нужен вход) по правам тарифа, как ``/v1/signals``:
+    live (forward — Premium), градации, задержка, инструменты. Те же элементы, что ``signals``
+    в ``/layers`` без ``view``."""
     inst = _instrument(db, symbol)
+    now = _now()
     payload = {
         "symbol": inst.symbol,
-        "signals": signal_layer(db, inst, _signal_scopes(user, entitlements_for(db, user))),
-        "server_time": datetime.now(tz=UTC).isoformat(),
+        "signals": _visible_signals(db, user, inst, now),
+        "server_time": now.isoformat(),
     }
     return json_response(request, payload, PRIVATE_NO_STORE)
 
@@ -369,7 +403,7 @@ def derivatives(
     wanted = _parse_series(series) if series is not None else None
     inst = _instrument(db, symbol)
     until = _ts(before)
-    end = until or datetime.now(tz=UTC)
+    end = until or _now()
     since = end - timeframe.delta * limit
     payload = {
         "symbol": inst.symbol,

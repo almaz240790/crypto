@@ -5,6 +5,11 @@
 TimescaleDB) по 1m на лету, текущая свеча — тем же агрегатом по 1m текущего интервала
 (continuous aggregates — отдельная миграция, когда объём запросов это оправдает). Колонки
 Numeric, поэтому агрегат в БД точный и совпадает с :func:`aggregate` / :func:`fold`.
+
+В агрегаты идут только закрытые минуты (``is_closed``): формирующуюся минуту market-data
+перезаписывает раз в секунду, а WebSocket отдаёт её один раз, закрытой. Так незакрытая свеча
+ответа — ровно свёртка закрытых минут до ``current_through``, и клиент досворачивает минуты
+новее без потерь и двойного счёта.
 """
 
 from __future__ import annotations
@@ -102,22 +107,21 @@ _AGG_COLUMNS = (
     "sum(volume), sum(quote_volume), CAST(sum(trades) AS bigint)"
 )
 _BEFORE = "(CAST(:b AS timestamptz) is null or open_time < CAST(:b AS timestamptz))"
+_CLOSED_M1 = "instrument_id=:i and timeframe='1m' and is_closed"
+"""Минуты для агрегатов: только закрытые (формирующаяся перезаписывается раз в секунду)."""
 _LAST_M1_SQL = text(
-    "select open_time from candles where instrument_id=:i and timeframe='1m' "
-    f"and {_BEFORE} order by open_time desc limit 1"
+    f"select open_time from candles where {_CLOSED_M1} and {_BEFORE} "
+    "order by open_time desc limit 1"
 )
 _BUCKETS_SQL = text(
     f"select time_bucket(:w, open_time) as t, {_AGG_COLUMNS} from candles "
-    f"where instrument_id=:i and timeframe='1m' and open_time >= :lo and {_BEFORE} "
+    f"where {_CLOSED_M1} and open_time >= :lo and {_BEFORE} "
     "group by 1 order by 1"
 )
-_OLDER_M1_SQL = text(
-    "select exists(select 1 from candles "
-    "where instrument_id=:i and timeframe='1m' and open_time < :lo)"
-)
+_OLDER_M1_SQL = text(f"select exists(select 1 from candles where {_CLOSED_M1} and open_time < :lo)")
 _CURRENT_SQL = text(
     f"select {_AGG_COLUMNS}, max(open_time), count(*) from candles "
-    "where instrument_id=:i and timeframe='1m' and open_time >= :s"
+    f"where {_CLOSED_M1} and open_time >= :s"
 )
 
 
@@ -128,11 +132,12 @@ def load_candles(
 
     Возвращает (свечи, есть ли ещё слева).
 
-    5m/15m/1h — SQL-агрегат по окну времени из ``limit`` корзин, которое кончается корзиной
-    самой новой минуты раньше ``before``: ``[top − (limit−1)·size, before)``. Левая корзина окна
-    всегда полная (окно выровнено по корзинам), ``has_older`` — есть ли минуты левее окна.
-    Отличие от прежнего окна по строкам — только у пропусков в данных: корзины без минут не
-    отдаются, и порция короче ``limit``, но не пустая, пока слева есть данные.
+    5m/15m/1h — SQL-агрегат закрытых минут по окну времени из ``limit`` корзин, которое кончается
+    корзиной самой новой закрытой минуты раньше ``before``: ``[top − (limit−1)·size, before)``.
+    Левая корзина окна всегда полная (окно выровнено по корзинам), ``has_older`` — есть ли минуты
+    левее окна. Отличие от прежнего окна по строкам — только у пропусков в данных: корзины без
+    минут не отдаются, и порция короче ``limit``, но не пустая, пока слева есть данные.
+    Хранимые 4h/1d/1w отдаются как есть (последняя может быть незакрытым снимком биржи).
     """
     limit = max(1, min(limit, PAGE))
     if tf in STORED:
@@ -173,8 +178,9 @@ def bucket_start(tf: Timeframe, now: datetime) -> datetime:
 def current_bar(
     db: Session, instrument_id: int, tf: Timeframe, now: datetime
 ) -> tuple[Candle, datetime] | None:
-    """Незакрытая свеча tf одним SQL-агрегатом по минутам текущего интервала (для tf ≥ 5m)
-    и open time самой новой минуты в ней (``current_through``). Без минут — ``None``."""
+    """Незакрытая свеча tf одним SQL-агрегатом по закрытым минутам текущего интервала (для
+    tf ≥ 5m) и open time самой новой минуты в ней (``current_through``) — из того же запроса,
+    поэтому свеча и время всегда согласованы. Закрытых минут в интервале нет — ``None``."""
     if tf is Timeframe.M1:
         return None
     start = bucket_start(tf, now)
@@ -344,16 +350,28 @@ def chart_view(structure: dict[str, Any] | None) -> dict[str, Any] | None:
 
 
 def signal_layer(
-    db: Session, inst: Instrument, scope_statuses: list[str], limit: int = 50
+    db: Session,
+    inst: Instrument,
+    scope_statuses: list[str],
+    grades: Collection[str] | None = None,
+    closed_by: datetime | None = None,
+    limit: int = 50,
 ) -> list[dict[str, Any]]:
-    """Сигналы инструмента для слоя: вход, стоп, цели, статус, события на шкале времени."""
-    rows = db.execute(
+    """Сигналы инструмента для слоя: вход, стоп, цели, статус, события на шкале времени.
+
+    ``grades`` — видимые градации (``None`` — все), ``closed_by`` — только сигналы с закрытием
+    свечи не позже (задержка тарифа; ``None`` — без задержки): те же ограничения, что у
+    ``/v1/signals``."""
+    q = (
         select(Signal, StrategyVersion.version)
         .join(StrategyVersion, StrategyVersion.id == Signal.strategy_version_id)
         .where(Signal.instrument_id == inst.id, StrategyVersion.status.in_(scope_statuses))
-        .order_by(Signal.candle_close_time.desc())
-        .limit(limit)
-    ).all()
+    )
+    if grades is not None:
+        q = q.where(Signal.grade.in_(list(grades)))
+    if closed_by is not None:
+        q = q.where(Signal.candle_close_time <= closed_by)
+    rows = db.execute(q.order_by(Signal.candle_close_time.desc()).limit(limit)).all()
     ids = [s.id for s, _ in rows]
     events: dict[int, list[dict[str, Any]]] = {}
     if ids:
