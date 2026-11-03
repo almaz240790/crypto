@@ -1,12 +1,13 @@
 import type { ViewPreset } from "../presets";
-import { volumeProfile } from "../scene/layers/profile";
-import type { LabelSpec, Scene, SceneObject, SlotKey } from "../scene/types";
+import { volumeProfile, type VpRow } from "../scene/layers/profile";
+import type { LabelSpec, ProfileObject, Scene, SceneObject, SlotKey } from "../scene/types";
 import type { ChartTheme } from "../theme";
 import type { Candle } from "../types";
 import { layoutAxis } from "./axis";
 import { layoutLabels } from "./labels";
 import type { TextMeasurer } from "./measure";
 import type { AxisCandidate, AxisFixed, AxisLayout, CandleBand, LabelCandidate, LayoutResult, Obstacles, Rect, Slot, Viewport } from "./types";
+import { LABEL_GAP } from "./types";
 
 /**
  * Проекция сцены на экран в одном кадре (план 2B.2): координаты объектов, свободная зона и полоса справа,
@@ -32,6 +33,12 @@ export interface ProjectOptions {
   measure: TextMeasurer;
   /** Живая цена: полоса текущей цены, сторона меток шкалы. */
   lastPrice: number | null;
+  /**
+   * Что показывает залитая метка цены LWC: закрытие последней видимой свечи (lastValueData(false)). live —
+   * это живая свеча: тогда под меткой отсчёт до закрытия; история прокручена — отсчёта нет, полоса скрытых
+   * делений — под меткой LWC, а не под живой ценой. Без поля — живая цена, live.
+   */
+  plaque?: { price: number; up: boolean; live: boolean } | null;
   hovered: string | null;
   /** y последнего значения наложенного инструмента (метка LWC) — препятствие на шкале. */
   overlayY?: number | null;
@@ -40,6 +47,12 @@ export interface ProjectOptions {
   uiRev?: number;
   /** Идёт жест (диапазон менялся меньше 150 мс назад): только подписи с приоритетом ≥ 80 и выбранная (план 2A.7). */
   gesture?: boolean;
+  /**
+   * Строки профиля объёма из кэша на устоявшийся диапазон (OverlayPrimitive: пересчёт через 150 мс после жеста,
+   * во время жеста — прежние строки); без него — по видимым свечам этого кадра. profileKey входит в ключ кадра.
+   */
+  profileRows?: (obj: ProfileObject) => readonly VpRow[];
+  profileKey?: string;
 }
 
 export type ScreenGeom =
@@ -47,7 +60,7 @@ export type ScreenGeom =
   | { kind: "box"; x1: number; x2: number; y1: number; y2: number }
   | { kind: "glyph"; x: number; y: number; r: number }
   | { kind: "polyline"; paths: readonly (readonly (readonly [number, number])[])[]; dots: readonly (readonly [number, number])[] }
-  | { kind: "heat"; x1: number; dimmed: boolean; rows: readonly { y1: number; y2: number; w: number; alpha: number; topId: string | null }[] }
+  | { kind: "heat"; x1: number; dimmed: boolean; rows: readonly { y1: number; y2: number; w: number; alpha: number; topId: string | null; selected?: boolean }[] }
   | { kind: "profile"; x1: number; dimmed: boolean; rows: readonly { y1: number; y2: number; w: number; poc: boolean; value: boolean }[] };
 
 export interface ScreenObject {
@@ -66,6 +79,8 @@ export interface ScreenScene {
   yLast: number | null;
   /** Центр отсчёта до закрытия под ценой (DOM-зеркало на шкале); null — не показывается. */
   countdownY: number | null;
+  /** Залитая метка цены на шкале: её y и направление свечи (цвет образца «Цена» в легенде); null — вне шкалы. */
+  plaque: { y: number; up: boolean; live: boolean } | null;
 }
 
 /** Радиус значка, px. */
@@ -102,6 +117,8 @@ export function screenFrameKey(scene: Scene, proj: SceneProjector, visibleCandle
     opts.uiRev ?? 0,
     opts.gesture ? 1 : 0,
     r2(opts.overlayY),
+    opts.profileKey ?? "",
+    opts.plaque ? `${opts.plaque.price}:${opts.plaque.live ? 1 : 0}` : "",
   ].join("|");
 }
 
@@ -143,6 +160,11 @@ type Ctx = {
   opts: ProjectOptions;
   candleAt: Map<number, Candle>;
   candles: readonly Candle[];
+  /** Полоса справа (reserved) занята картой ликвидаций или профилем: подписи уровней кончаются левее неё. */
+  gutterBusy: boolean;
+  /** Карта ликвидаций и профиль вместе: полоса делится пополам (профиль слева, карта справа). */
+  gutterShared: boolean;
+  profile(obj: ProfileObject): readonly VpRow[];
 };
 
 function project(obj: SceneObject, c: Ctx): ScreenGeom | null {
@@ -197,8 +219,9 @@ function project(obj: SceneObject, c: Ctx): ScreenGeom | null {
       if (!g) return null;
       const { heatMin, heatMax, dimmed } = c.opts.theme.alphas;
       const k = g.mode === "overlay" ? dimmed : 1;
-      const width = g.x1 - g.x0;
-      const tops = new Map(obj.tops.map((t) => [t.price, t.id]));
+      const width = (g.x1 - g.x0) / (c.gutterShared && g.mode === "reserved" ? 2 : 1);
+      // полоса корзины ведёт к скоплению, в которое она входит (выбранное — первым)
+      const tops = [...obj.tops].sort((a, b) => (a.id === obj.selectedTop ? -1 : b.id === obj.selectedTop ? 1 : 0));
       const rows = [];
       for (const b of obj.bars) {
         const ya = proj.y(b.price + obj.step / 2);
@@ -207,16 +230,20 @@ function project(obj: SceneObject, c: Ctx): ScreenGeom | null {
         const y1 = Math.min(ya, yb);
         const y2 = Math.max(ya, yb);
         if (y2 < 0 || y1 > H) continue;
-        rows.push({ y1, y2, w: width * b.weight, alpha: k * (heatMin + (heatMax - heatMin) * b.weight), topId: tops.get(b.price) ?? null });
+        const top = tops.find((t) => b.price >= t.lo - obj.step / 4 && b.price <= t.hi + obj.step / 4) ?? null;
+        const selected = top !== null && top.id === obj.selectedTop;
+        rows.push({ y1, y2, w: width * b.weight, alpha: k * (selected ? heatMax : heatMin + (heatMax - heatMin) * b.weight), topId: top?.id ?? null, selected });
       }
       return rows.length > 0 ? { kind: "heat", x1: g.x1, dimmed: g.mode === "overlay", rows } : null;
     }
     case "profile": {
       const g = vp.gutter;
       if (!g) return null;
-      const overlay = obj.emphasis === "dimmed" || g.mode === "overlay";
-      const maxW = overlay ? W * PROFILE_OVERLAY_SHARE : g.x1 - g.x0;
-      const prof = volumeProfile(c.candles, obj.rows, obj.valueArea);
+      // делит полосу с картой ликвидаций — левая половина полосы, приглушённо; без полосы — поверх свечей
+      const half = obj.emphasis === "dimmed" && g.mode === "reserved";
+      const overlay = g.mode === "overlay";
+      const maxW = overlay ? W * PROFILE_OVERLAY_SHARE : half ? (g.x1 - g.x0) / 2 : g.x1 - g.x0;
+      const prof = c.profile(obj);
       const maxV = prof.reduce((m, r) => Math.max(m, r.volume), 0);
       if (maxV <= 0) return null;
       const rows = [];
@@ -226,7 +253,7 @@ function project(obj: SceneObject, c: Ctx): ScreenGeom | null {
         if (ya === null || yb === null) continue;
         rows.push({ y1: Math.min(ya, yb), y2: Math.max(ya, yb), w: (maxW * r.volume) / maxV, poc: r.poc, value: r.value });
       }
-      return rows.length > 0 ? { kind: "profile", x1: overlay ? W : g.x1, dimmed: overlay, rows } : null;
+      return rows.length > 0 ? { kind: "profile", x1: overlay ? W : half ? g.x0 + (g.x1 - g.x0) / 2 : g.x1, dimmed: overlay || half, rows } : null;
     }
   }
 }
@@ -236,31 +263,38 @@ function slotsFor(obj: SceneObject, geom: ScreenGeom, label: LabelSpec, w: numbe
   const { vp, proj } = c;
   const out: Slot[] = [];
   const add = (key: SlotKey, x: number, y: number, clampX = false) => out.push({ key, x, y, clampX });
+  // полоса справа занята картой или профилем — подписи уровней кончаются у её левого края, а не на полосах
+  const busy = c.gutterBusy && vp.gutter !== null ? vp.gutter.x0 - LABEL_GAP : null;
+  const rightEdge = busy ?? vp.width - 4;
+  // колонка свечи с запасом раскладки: место у свечи пробоя или у свинга начинается за ней, а не на ней
+  const col = Math.max(1, 0.4 * proj.barSpacing()) + 1 + LABEL_GAP + 1;
   for (const key of label.slots) {
     switch (key) {
       case "free-above":
       case "free-below": {
         if (geom.kind !== "hline" || !vp.free) break;
-        const x = vp.free.x1 - 4 - w;
-        if (x < vp.free.x0) break;
+        const x = (busy ?? vp.free.x1 - 4) - w;
+        // у занятой полосы подпись может выйти левее свободной зоны: свечи там проверяет раскладка
+        if (busy === null && x < vp.free.x0) break;
         add(key, x, key === "free-above" ? geom.y - LINE_PAD - h : geom.y + LINE_PAD);
         break;
       }
       case "line-end-above":
       case "line-end-below":
         if (geom.kind !== "hline") break;
-        add(key, Math.min(geom.x2, vp.width) - 4 - w, key === "line-end-above" ? geom.y - LINE_PAD - h : geom.y + LINE_PAD);
+        add(key, Math.min(geom.x2 - 4, rightEdge) - w, key === "line-end-above" ? geom.y - LINE_PAD - h : geom.y + LINE_PAD);
         break;
       case "line-start-above":
+      case "line-start-below":
         if (geom.kind !== "hline") break;
-        add(key, Math.max(geom.x1, 0) + 4, geom.y - LINE_PAD - h);
+        add(key, Math.max(geom.x1, 0) + (obj.kind === "hline" && obj.from !== null && geom.x1 > 0 ? col : 4), key === "line-start-above" ? geom.y - LINE_PAD - h : geom.y + LINE_PAD);
         break;
       case "break-above":
       case "break-below": {
         if (geom.kind !== "hline" || obj.kind !== "hline" || obj.to === null) break;
         const xt = proj.x(obj.to);
         if (xt === null) break;
-        add(key, xt - proj.barSpacing() / 2 - 2 - w, key === "break-above" ? geom.y - LINE_PAD - h : geom.y + LINE_PAD);
+        add(key, xt - col - w, key === "break-above" ? geom.y - LINE_PAD - h : geom.y + LINE_PAD);
         break;
       }
       case "box-top-left":
@@ -271,7 +305,7 @@ function slotsFor(obj: SceneObject, geom: ScreenGeom, label: LabelSpec, w: numbe
       case "box-free": {
         if (geom.kind !== "box" || !vp.free) break;
         const mid = (geom.y1 + geom.y2) / 2;
-        add(key, vp.free.x0 + 4, Math.min(Math.max(mid - h / 2, geom.y1), geom.y2 - h));
+        add(key, busy !== null ? Math.min(vp.free.x0 + 4, busy - w) : vp.free.x0 + 4, Math.min(Math.max(mid - h / 2, geom.y1), geom.y2 - h));
         break;
       }
       case "glyph-above":
@@ -298,7 +332,7 @@ function slotsFor(obj: SceneObject, geom: ScreenGeom, label: LabelSpec, w: numbe
   return out;
 }
 
-function candidate(id: string, objectId: string, obj: SceneObject, label: LabelSpec, geom: ScreenGeom, c: Ctx, bypass: boolean, anchorY?: number): LabelCandidate {
+function candidate(id: string, objectId: string, obj: SceneObject, label: LabelSpec, geom: ScreenGeom, c: Ctx, bypass: boolean, anchorY?: number, extra: Pick<LabelCandidate, "rank" | "cap" | "selected"> = obj.emphasis === "selected" ? { selected: true } : {}): LabelCandidate {
   const t = c.opts.theme.type;
   const px = t.labelPx;
   const textW = c.opts.measure.measure(label.text, label.font, px, label.font === "sans" ? t.labelWeight : 500).w;
@@ -317,7 +351,7 @@ function candidate(id: string, objectId: string, obj: SceneObject, label: LabelS
     tone: label.tone,
     slots: slotsFor(obj, geom, label, w, h, c, anchorY),
     bypassBudget: bypass,
-    ...(obj.emphasis === "selected" ? { selected: true } : {}),
+    ...extra,
     ...(label.icon ? { icon: label.icon } : {}),
   };
 }
@@ -327,14 +361,31 @@ export function projectScene(scene: Scene, proj: SceneProjector, visibleCandles:
   const { view } = opts;
   const { free, gutter } = freeAndGutter(proj, view);
   const viewport: Viewport = { width: proj.width, height: proj.height, insetTop: view.insetTopPx, volumeTopY: view.volumeTop * proj.height, free, gutter };
-  const c: Ctx = { proj, vp: viewport, opts, candleAt: new Map(visibleCandles.map((x) => [x.time, x])), candles: visibleCandles };
+  const shared = scene.objects.some((o) => o.kind === "profile" && o.emphasis === "dimmed") && scene.objects.some((o) => o.kind === "heat");
+  const c: Ctx = {
+    proj,
+    vp: viewport,
+    opts,
+    candleAt: new Map(visibleCandles.map((x) => [x.time, x])),
+    candles: visibleCandles,
+    gutterBusy: false,
+    gutterShared: shared,
+    profile: (obj) => opts.profileRows?.(obj) ?? volumeProfile(visibleCandles, obj.rows, obj.valueArea),
+  };
   const objects: ScreenObject[] = [];
   for (const obj of scene.objects) {
     const geom = project(obj, c);
     if (geom) objects.push({ obj, geom });
   }
-  const yLastRaw = opts.lastPrice === null ? null : proj.y(opts.lastPrice);
-  const yLast = yLastRaw !== null && Number.isFinite(yLastRaw) && yLastRaw >= 0 && yLastRaw <= proj.height ? yLastRaw : null;
+  c.gutterBusy = gutter?.mode === "reserved" && objects.some((o) => o.geom.kind === "heat" || o.geom.kind === "profile");
+  const onScale = (p: number | null) => {
+    const y = p === null ? null : proj.y(p);
+    return y !== null && Number.isFinite(y) && y >= 0 && y <= proj.height ? y : null;
+  };
+  const yLast = onScale(opts.lastPrice);
+  const pl = opts.plaque === undefined ? (opts.lastPrice === null ? null : { price: opts.lastPrice, up: true, live: true }) : opts.plaque;
+  const yPlaque = pl ? onScale(pl.price) : null;
+  const plaque = pl && yPlaque !== null ? { y: yPlaque, up: pl.up, live: pl.live } : null;
   // подписи
   const cands: LabelCandidate[] = [];
   for (const { obj, geom } of objects) {
@@ -342,11 +393,16 @@ export function projectScene(scene: Scene, proj: SceneProjector, visibleCandles:
     const hovered = opts.hovered !== null && opts.hovered === obj.id;
     if (geom.kind === "heat" && obj.kind === "heat") {
       if (gutter?.mode !== "reserved") continue;
+      // кандидаты по убыванию суммы на каждой стороне: крупнейшее за кадром или под объёмом уступает
+      // следующему видимому; не больше topsPerSide на сторону; рамка и «сверх бюджета» — только у выбранного
+      const rank = { long: 0, short: 0 };
       for (const top of obj.tops) {
-        if (opts.gesture && top.label.priority < GESTURE_MIN_PRIORITY && !selected) continue;
+        const r = rank[top.side]++;
+        const isSel = obj.selectedTop === top.id;
+        if (opts.gesture && top.label.priority < GESTURE_MIN_PRIORITY && !isSel) continue;
         const ym = proj.y(top.price);
-        if (ym === null) continue;
-        cands.push(candidate(`${top.id}#label`, top.id, obj, top.label, geom, c, selected || opts.hovered === top.id, ym));
+        if (ym === null || ym < 0 || ym > proj.height) continue;
+        cands.push(candidate(`${top.id}#label`, top.id, obj, top.label, geom, c, isSel || opts.hovered === top.id, ym, { rank: r, cap: { key: `${obj.id}:${top.side}`, max: obj.topsPerSide }, ...(isSel ? { selected: true } : {}) }));
       }
       continue;
     }
@@ -381,12 +437,13 @@ export function projectScene(scene: Scene, proj: SceneProjector, visibleCandles:
     axisCands.push({ id: `${obj.id}#axis`, objectId: obj.id, price: obj.price, y, text: obj.axis.text, tone: obj.axis.tone, style: obj.axis.style, priority: obj.emphasis === "selected" ? 95 : obj.axis.priority, group: obj.axis.group, side });
   }
   const fixed: AxisFixed[] = [];
-  const countdownY = yLast !== null && view.axis.countdown ? yLast + view.axisLabelPx : null;
-  if (yLast !== null) fixed.push({ id: "last", y: yLast, h: view.axisLabelPx });
+  // отсчёт — только под живой ценой: у метки последней видимой свечи истории отсчёта нет
+  const countdownY = plaque !== null && plaque.live && view.axis.countdown ? plaque.y + view.axisLabelPx : null;
+  if (plaque !== null) fixed.push({ id: "last", y: plaque.y, h: view.axisLabelPx });
   if (countdownY !== null) fixed.push({ id: "countdown", y: countdownY, h: view.axisLabelPx });
   if (opts.overlayY != null && Number.isFinite(opts.overlayY)) fixed.push({ id: "overlay", y: opts.overlayY, h: view.axisLabelPx });
   const axis = layoutAxis(axisCands, fixed, { height: proj.height, labelH: view.axisLabelPx, gap: view.axisGapPx, maxShift: 1.5 * view.axisLabelPx, tickFontPx: view.scaleFontPx }, view.axis);
-  return { frameKey: screenFrameKey(scene, proj, visibleCandles, opts), viewport, objects, obstacles, labels, axis, yLast, countdownY };
+  return { frameKey: screenFrameKey(scene, proj, visibleCandles, opts), viewport, objects, obstacles, labels, axis, yLast, countdownY, plaque };
 }
 
 export interface SceneHit {

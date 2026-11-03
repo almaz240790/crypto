@@ -12,11 +12,11 @@ import { OverlayPrimitive } from "../render/OverlayPrimitive";
 import { buildScene, sceneHover, selectionId } from "../scene/build";
 import { deriveAnalytics, NONE, type AlertLine, type Analytics, type ExternalObject, type SceneInput, type SceneSelection } from "../scene/input";
 import type { SceneText } from "../scene/text";
-import type { HoverInfo, Scene, SceneObject } from "../scene/types";
+import type { HoverInfo, LegendEntry, LegendKey, Scene, SceneObject } from "../scene/types";
 import type { SceneFigure, ScenePattern, SceneSignal, SceneStructure } from "../scene/wire";
 import type { ChartStore, HoverSnapshot } from "../store/chartStore";
 import { createTerminal, type Terminal, type TerminalOptions } from "../terminal";
-import { readChartTheme, tokensFromElement, type ChartTheme } from "../theme";
+import { contrastText, readChartTheme, tokensFromElement, toneColor, type ChartTheme } from "../theme";
 import { TF_SECONDS, type Candle, type ChartType, type Device, type Timeframe } from "../types";
 import { AxisCountdown } from "./axisCountdown";
 import { Dirty } from "./stages";
@@ -104,6 +104,8 @@ const NO_UI: readonly Rect[] = [];
 const NO_HIDDEN: ReadonlySet<string> = new Set();
 /** Высота метки LWC на шкале: fontSize · 17 / 12 (development.mjs). */
 const axisLabelHeight = (fontPx: number) => Math.round((fontPx * 17) / 12);
+/** Отступы текста отсчёта: 8 px слева (как у метки LWC) и 4 px справа. */
+const COUNTDOWN_PAD_PX = 12;
 
 type HoveredParam = MouseEventParams<Time> & { hoveredInfo?: { objectId?: unknown } };
 
@@ -143,6 +145,8 @@ export class ChartController {
   private hoverNext: HoverSnapshot | null = null;
   private hoverQueued = false;
   private pendingFocus: string | null = null;
+  /** Подпись последней легенды из кадра: store меняется, только когда изменился состав или цвет «Цены». */
+  private legendSig = "";
   /** Вид двигал пользователь после последнего сброса: смена ширины области его не сбрасывает. */
   private userMoved = false;
   /** Правый край (логический), заданный последним сбросом. */
@@ -197,10 +201,12 @@ export class ChartController {
     this.overlay.onAxisChanged = () => {
       // полосы меток сменились без смены масштаба: LWC держит деления в кэше, пока формат не применён заново
       if (this.priceFormat && !this.destroyed) this.terminal.setPriceFormat(this.priceFormat);
+      if (this.terminal.scale === "percent" && !this.destroyed) this.terminal.setPercentTickFilter((q) => this.percentTickHidden(q));
     };
     this.overlay.onFrame = (screen) => {
       this.lastScreen = screen;
       this.placeCountdown();
+      this.updateLegend(screen);
     };
     this.terminal.layers.add(new PrimitiveLayer("overlay", this.overlay));
     this.countdown = new AxisCountdown(this.el);
@@ -325,6 +331,22 @@ export class ChartController {
     // деления под метками шкалы пустые: y деления — через текущую основную серию (она меняется со сменой типа)
     this.priceFormat = withHiddenTicks(instrumentPriceFormat(this.inputs.tick, narrow), (p) => this.overlay.isTickHidden(this.terminal.mainSeries.priceToCoordinate(p) as number | null));
     this.terminal.setPriceFormat(this.priceFormat);
+    // процентная шкала подписывает деления своим форматом (localization), не форматом серии — фильтр и туда
+    this.terminal.setPercentTickFilter((q) => this.percentTickHidden(q));
+  }
+
+  /**
+   * Деление процентной шкалы q % — под меткой разметки? В процентном режиме LWC считает от закрытия первой
+   * видимой свечи (firstValue: левый край строгого видимого диапазона): цена деления = база · (1 + q / 100).
+   */
+  private percentTickHidden(q: number): boolean {
+    const c = this.terminal.candles;
+    const ts = this.terminal.chart.timeScale();
+    const r = ts.getVisibleLogicalRange();
+    if (!r || c.length === 0) return false;
+    const first = (ts.timeToIndex(c[0]!.time as Time, true) as number | null) ?? 0;
+    const base = c[Math.min(c.length - 1, Math.max(0, Math.floor(r.from) - first))]!.close;
+    return this.overlay.isTickHidden(this.terminal.mainSeries.priceToCoordinate(base * (1 + q / 100)) as number | null);
   }
 
   private stageTheme(): void {
@@ -333,6 +355,7 @@ export class ChartController {
     this.terminal.setTheme(this.theme.tokens);
     this.overlay.setTheme(this.theme);
     this.store.patch({ status: { ...this.store.getState().status, theme: this.theme.mode, themeVersion: this.themeVersion } });
+    this.placeCountdown(); // цвет отсчёта — из новой палитры
   }
 
   private stageView(): void {
@@ -377,12 +400,14 @@ export class ChartController {
     this.stats.sceneBuilds++;
     this.scene = scene;
     this.overlay.setScene(scene);
+    // легенда до первого кадра — по всей сцене; кадр оставит только то, что на экране (updateLegend)
+    this.legendSig = "";
     this.store.patch({ sceneIndex: scene.index, legend: scene.legend });
     this.refreshHover();
     const pf = this.pendingFocus;
     if (pf !== null) {
       this.pendingFocus = null;
-      if (this.store.getState().selection === pf) this.scrollTo(this.objectTime(pf));
+      if (this.store.getState().selection === pf) this.scrollTo(this.objectSpan(pf));
     }
   }
 
@@ -413,8 +438,8 @@ export class ChartController {
         return;
       }
     }
-    const time = target.time ?? (target.objectId !== undefined ? this.objectTime(target.objectId) : null);
-    this.scrollTo(time);
+    const span = target.time !== undefined ? ([target.time, target.time] as const) : target.objectId !== undefined ? this.objectSpan(target.objectId) : null;
+    this.scrollTo(span);
   }
 
   private sceneHas(id: string): boolean {
@@ -422,38 +447,61 @@ export class ChartController {
     return !!scene && (scene.byId.has(id) || scene.objects.some((o) => o.groupId === id));
   }
 
-  /** Время объекта за кадром — прокрутить так, чтобы оно оказалось на 70 % ширины, сохранив число баров. */
-  private scrollTo(time: number | null): void {
-    if (time == null) return;
+  /**
+   * Объект целиком за кадром — прокрутить, сохранив число баров: ушёл влево — его правый конец на 70 % ширины,
+   * вправо — левый. Объект, который хоть частью в кадре (уровень и зона открыты вправо — видны всегда, пока
+   * их цена на шкале), вид не двигает: цену в кадр приводит автомасштаб (autoscaleInfo выбранного).
+   */
+  private scrollTo(span: readonly [from: number, to: number] | null): void {
+    if (!span) return;
     const ts = this.terminal.chart.timeScale();
     const r = ts.getVisibleLogicalRange();
     const c = this.terminal.candles;
     if (!r || c.length === 0) return;
     const first = (ts.timeToIndex(c[0]!.time as Time, true) as number | null) ?? 0;
-    const logical = first + timeToIndex(c, time, TF_SECONDS[this.inputs.tf]);
-    if (logical >= r.from && logical <= r.to) return;
+    const step = TF_SECONDS[this.inputs.tf];
+    const at = (t: number) => (Number.isFinite(t) ? first + timeToIndex(c, t, step) : t);
+    const lo = at(span[0]);
+    const hi = at(span[1]);
+    if (hi >= r.from && lo <= r.to) return;
     const width = r.to - r.from;
-    const from = logical - 0.7 * width;
+    const target = hi < r.from ? hi : lo;
+    const from = target - 0.7 * width;
     ts.setVisibleLogicalRange({ from, to: from + width });
   }
 
-  private objectTime(id: string): number | null {
+  /** Время объекта от и до (unix с); открытый край — ±∞. Карта ликвидаций и профиль от времени не зависят. */
+  private objectSpan(id: string): readonly [number, number] | null {
     const scene = this.scene;
     if (!scene) return null;
-    const obj = scene.byId.get(id) ?? scene.objects.find((o) => o.groupId === id);
-    if (!obj) return null;
-    switch (obj.kind) {
-      case "hline":
-        return obj.from;
-      case "box":
-        return obj.from;
-      case "glyph":
-        return obj.time;
-      case "polyline":
-        return obj.paths[0]?.[0]?.[0] ?? null;
-      default:
-        return null;
+    const objs = scene.objects.filter((o) => o.id === id || o.groupId === id);
+    const one = scene.byId.get(id);
+    if (one && !objs.includes(one)) objs.push(one);
+    let lo = Infinity;
+    let hi = -Infinity;
+    const take = (a: number, b: number) => {
+      lo = Math.min(lo, a);
+      hi = Math.max(hi, b);
+    };
+    for (const obj of objs) {
+      switch (obj.kind) {
+        case "hline":
+          take(obj.from ?? -Infinity, obj.to ?? Infinity);
+          break;
+        case "box":
+          take(obj.from, obj.to ?? Infinity);
+          break;
+        case "glyph":
+          take(obj.time, obj.time);
+          break;
+        case "polyline":
+          for (const path of obj.paths) for (const [t] of path) take(t, t);
+          break;
+        default:
+          break;
+      }
     }
+    return lo <= hi ? [lo, hi] : null;
   }
 
   // ── история и видимая часть ──
@@ -496,25 +544,56 @@ export class ChartController {
 
   private updateCountdown(): void {
     const last = this.terminal.candles[this.terminal.candles.length - 1];
-    const text = last && this.view.axis.countdown ? formatCountdown(secondsToClose(this.inputs.tf, last.time, Math.floor(Date.now() / 1000))) : "";
+    const days = this.inputs.text?.["countdown.days"];
+    const text = last && this.view.axis.countdown ? formatCountdown(secondsToClose(this.inputs.tf, last.time, Math.floor(Date.now() / 1000)), days) : "";
     this.countdown.setText(text);
     this.placeCountdown();
   }
 
+  /**
+   * Отсчёт под меткой цены: ширина — шкалы цены, а если текст длиннее («6д 23:59» на узкой шкале телефона) —
+   * плашка растёт влево; фон — цвет свечи, текст — по правилу LWC для метки цены (contrastText).
+   */
   private placeCountdown(): void {
     const screen = this.lastScreen;
     const last = this.terminal.candles[this.terminal.candles.length - 1];
     const y = screen?.countdownY ?? null;
+    const px = this.view.scaleFontPx;
     if (!last || y === null || !this.view.axis.countdown) {
-      this.countdown.place(null, true, this.view.scaleFontPx);
+      this.countdown.place(null, null, px);
       this.overlay.setCountdownRect(null);
       return;
     }
     const chart = this.terminal.chart;
-    const h = axisLabelHeight(this.view.scaleFontPx);
-    const rect = { x: chart.timeScale().width(), y: Math.round(y - h / 2), w: chart.priceScale("right").width(), h };
-    this.countdown.place(rect, last.close >= last.open, this.view.scaleFontPx);
+    const h = axisLabelHeight(px);
+    const x = chart.timeScale().width();
+    const scaleW = chart.priceScale("right").width();
+    const w = Math.max(scaleW, Math.ceil(this.overlay.textWidth(this.countdown.value, "mono", px, 400)) + COUNTDOWN_PAD_PX);
+    const rect = { x: x + scaleW - w, y: Math.round(y - h / 2), w, h };
+    const bg = toneColor(this.theme, last.close >= last.open ? "up" : "down");
+    this.countdown.place(rect, { bg, fg: contrastText(this.theme, bg) }, px);
     this.overlay.setCountdownRect(this.countdown.shown);
+  }
+
+  /**
+   * Легенда «?» — только то, что есть в кадре (план 2B.2, §9): объект за краем или ниже шкалы её не добавляет,
+   * «Макс. объём» — только когда POC нарисован; образец «Цена» — цветом свечи, чью цену показывает метка.
+   */
+  private updateLegend(screen: ScreenScene): void {
+    const scene = this.scene;
+    if (!scene) return;
+    const keys = new Set<LegendKey>();
+    for (const { obj, geom } of screen.objects) {
+      const k = scene.legendOf.get(obj.id);
+      if (!k || (k === "poc" && (geom.kind !== "profile" || geom.dimmed))) continue;
+      keys.add(k);
+    }
+    const up = screen.plaque?.up ?? true;
+    const legend: LegendEntry[] = scene.legend.filter((e) => e.key === "price" || e.key === "selection" || keys.has(e.key)).map((e) => (e.key === "price" ? { ...e, tone: up ? ("up" as const) : ("down" as const) } : e));
+    const sig = `${scene.version}|${up ? 1 : 0}|${legend.map((e) => e.key).join(",")}`;
+    if (sig === this.legendSig) return;
+    this.legendSig = sig;
+    this.store.patch({ legend });
   }
 
   // ── наведение, клик, наблюдатели ──

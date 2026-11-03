@@ -159,13 +159,22 @@ export function formatUsd(v: number): string {
   return `${v < 0 ? "−" : ""}$${formatCompactValue(Math.abs(v))}`;
 }
 
-/** Время до закрытия свечи: «1:23:45», «12:05», «0:07». */
-export function formatCountdown(sec: number): string {
+/**
+ * Время до закрытия свечи: «1:23:45», «12:05», «0:07». От суток — дни и часы с минутами по шаблону `days`
+ * («{d}д {hm}» → «6д 23:59»): «167:59:59» на недельной свече не помещался в узкую шкалу телефона.
+ */
+export function formatCountdown(sec: number, days?: string): string {
   const s = Math.max(0, Math.floor(sec));
+  const two = (n: number) => String(n).padStart(2, "0");
+  if (days && s >= 86_400) {
+    const d = Math.floor(s / 86_400);
+    const rest = s % 86_400;
+    return days.replace("{d}", String(d)).replace("{hm}", `${Math.floor(rest / 3600)}:${two(Math.floor((rest % 3600) / 60))}`);
+  }
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
   const ss = s % 60;
-  return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${String(ss).padStart(2, "0")}` : `${m}:${String(ss).padStart(2, "0")}`;
+  return h > 0 ? `${h}:${two(m)}:${two(ss)}` : `${m}:${two(ss)}`;
 }
 
 /** Процент со знаком: «+1.24 %», «−0.50 %», «0.00 %». */

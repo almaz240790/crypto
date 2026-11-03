@@ -159,6 +159,20 @@ export const PLAQUE = { padX: 4, padY: 2, radius: 2, weight: 600 } as const;
 
 let warnedMissing = false;
 
+/**
+ * Цвет текста на заливке — по правилу LWC для метки цены (generateContrastColors): яркость
+ * 0.199·R + 0.687·G + 0.114·B > 160 — тёмный текст, иначе светлый. Тёмный и светлый — из палитры темы
+ * (фон области и основной текст), чтобы отсчёт под ценой читался так же, как метка цены над ним.
+ */
+export function contrastText(theme: Pick<ChartTheme, "palette">, bg: string): string {
+  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(bg.trim());
+  const { surface, text } = theme.palette;
+  const [dark, light] = (luminance(surface) ?? 1) < (luminance(text) ?? 0) ? [surface, text] : [text, surface];
+  if (!m) return light;
+  const gray = 0.199 * parseInt(m[1]!, 16) + 0.687 * parseInt(m[2]!, 16) + 0.114 * parseInt(m[3]!, 16);
+  return gray > 160 ? dark : light;
+}
+
 /** Относительная яркость hex-цвета (WCAG): тёмная ли поверхность. */
 function luminance(hex: string): number | null {
   const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex.trim());

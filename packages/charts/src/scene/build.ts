@@ -7,7 +7,7 @@ import { makeCtx, type Built, type LayerBuilder } from "./layers/common";
 import { buildExternal } from "./layers/external";
 import { buildFigures } from "./layers/figures";
 import { buildLevels, LEVEL_KEYS } from "./layers/levels";
-import { buildLiq, liqTopId } from "./layers/liq";
+import { buildLiq, liqClusters, liqTopId } from "./layers/liq";
 import { buildPatterns } from "./layers/patterns";
 import { buildProfile } from "./layers/profile";
 import { buildSignals } from "./layers/signals";
@@ -117,9 +117,10 @@ function buildIndex(input: SceneInput, preset: ResolvedPreset, drawn: ReadonlySe
     rows.push({ id, layer: "zones", kind: g.dir === "up" ? "demand" : g.dir === "down" ? "supply" : "zone", price: g.bottom, priceTo: g.top, kinds: g.kinds, parts: g.parts, distancePct: signed, onChart: false });
   });
   if (a.liq) {
-    const m = a.liq;
-    for (const b of m.topShorts) rows.push({ id: liqTopId("short", m.buckets.indexOf(b)), layer: "liq_map", kind: "liq-short", price: b.price, amountUsd: b.short, estimate: true, distancePct: pct(b.price, ref), onChart: false });
-    for (const b of m.topLongs) rows.push({ id: liqTopId("long", m.buckets.indexOf(b)), layer: "liq_map", kind: "liq-long", price: b.price, amountUsd: b.long, estimate: true, distancePct: pct(b.price, ref), onChart: false });
+    // те же скопления, что у подписей на графике: у одного id одна цена и одна сумма
+    for (const side of ["short", "long"] as const)
+      for (const c of liqClusters(a.liq, side).slice(0, INDEX_LIMITS.liqPerSide))
+        rows.push({ id: liqTopId(side, c.bucket), layer: "liq_map", kind: side === "long" ? "liq-long" : "liq-short", price: c.price, amountUsd: c.amount, estimate: true, distancePct: pct(c.price, ref), onChart: false });
   }
   const st = input.structure;
   if (st) {
@@ -167,13 +168,17 @@ export function buildScene(input: SceneInput, preset: ResolvedPreset, prev?: Sce
   const objects: SceneObject[] = [];
   const legendKeys = new Set<LegendKey>();
   const byId = new Map<string, SceneObject>();
+  const legendOf = new Map<string, LegendKey>();
   const drawn = new Set<string>();
   for (const layer of DRAW_ORDER) {
     for (const b of byLayer.get(layer) ?? []) {
       objects.push(b.obj);
       byId.set(b.obj.id, b.obj);
       drawn.add(b.obj.id);
-      if (b.legend) legendKeys.add(b.legend);
+      if (b.legend) {
+        legendKeys.add(b.legend);
+        legendOf.set(b.obj.id, b.legend);
+      }
       if (b.obj.kind === "heat")
         for (const top of b.obj.tops) {
           byId.set(top.id, b.obj);
@@ -187,6 +192,7 @@ export function buildScene(input: SceneInput, preset: ResolvedPreset, prev?: Sce
     objects,
     byId,
     legend: buildLegend(input, legendKeys),
+    legendOf,
     index: buildIndex(input, preset, drawn, version),
     selected: input.selection.selected,
   };

@@ -4,7 +4,7 @@ import { priceFormatter } from "../priceFormat";
 import { buildScene, sceneHover } from "../scene/build";
 import { deriveAnalytics, identity, NO_SELECTION, type ExternalObject, type SceneInput } from "../scene/input";
 import { pickEvents } from "../scene/layers/structure";
-import { mergeTops } from "../scene/layers/liq";
+import { liqClusters } from "../scene/layers/liq";
 import { volumeProfile } from "../scene/layers/profile";
 import { RU_TEXT } from "../scene/text";
 import type { Scene } from "../scene/types";
@@ -113,7 +113,8 @@ describe("построители слоёв: пограничные случаи
     expect(eql).toMatchObject({ to: T0 + 32 * H, label: { text: "Равные мин." } });
     const choch = s.byId.get("choch:" + (T0 + 20 * H))!;
     expect(choch).toMatchObject({ from: T0 + 20 * H, to: T0 + 21 * H });
-    expect(choch.label?.slots[0]).toBe("break-above");
+    // смена вниз: уровень — минимум, свечи до пробоя над ним — подпись под линией
+    expect(choch.label?.slots[0]).toBe("break-below");
     expect(s.byId.get("sweep:" + (T0 + 50 * H) + ":2")).toMatchObject({ side: "below", hover: { title: "Снятие ликвидности под минимумом" } });
     expect(pickEvents(structure.events, 1, false).map((e) => e.type)).toEqual(["choch"]);
   });
@@ -201,16 +202,18 @@ describe("построители слоёв: пограничные случаи
     expect(s.byId.has("ext:nan")).toBe(false);
   });
 
-  it("ликвидации: соседние корзины склеиваются, сумма общая", () => {
+  it("ликвидации: корзины рядом с пиком склеиваются, сумма общая, цена — у пика", () => {
     const b = (price: number, long: number, short = 0) => ({ price, long, short });
-    const buckets = [b(1, 0), b(2, 5), b(3, 4), b(4, 0), b(5, 3), b(6, 0, 7)];
+    const buckets = [b(1, 0), b(2, 5), b(3, 4), b(4, 2), b(5, 3), b(6, 0, 7), b(7, 1)];
     const m = { step: 1, buckets, max: 9, topLong: buckets[1]!, topShort: buckets[5]!, topLongs: [buckets[1]!, buckets[2]!, buckets[4]!], topShorts: [buckets[5]!] };
-    expect(mergeTops(m, "long", 2)).toEqual([
-      { bucket: 1, price: 2, amount: 9 },
-      { bucket: 4, price: 5, amount: 3 },
+    // пик 2 (5) берёт соседа 3 (4); 4 (2) не рядом с пиком 2 — к новому пику 5 (3); 7 (1) — отдельно
+    expect(liqClusters(m, "long")).toEqual([
+      { bucket: 1, price: 2, amount: 9, lo: 2, hi: 3, n: 2 },
+      { bucket: 4, price: 5, amount: 5, lo: 4, hi: 5, n: 2 },
+      { bucket: 6, price: 7, amount: 1, lo: 7, hi: 7, n: 1 },
     ]);
-    expect(mergeTops(m, "short", 0)).toEqual([]);
-    expect(mergeTops({ ...m, topShorts: [b(99, 0, 1)] }, "short", 2)).toEqual([]);
+    expect(liqClusters(m, "short")).toEqual([{ bucket: 5, price: 6, amount: 7, lo: 6, hi: 6, n: 1 }]);
+    expect(liqClusters({ ...m, buckets: [b(1, 0)] }, "short")).toEqual([]);
   });
 
   it("профиль объёма: пустой и плоский вход, зона стоимости расширяется в обе стороны", () => {

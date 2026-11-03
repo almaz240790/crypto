@@ -16,6 +16,7 @@ export type SlotKey =
   | "line-end-above"
   | "line-end-below"
   | "line-start-above"
+  | "line-start-below" // отрезок структуры: сразу за свечой-свингом, на стороне без свечей
   | "break-above"
   | "break-below" // структура: у свечи пробоя, в сторону от хвоста
   | "box-top-left"
@@ -121,11 +122,15 @@ export interface PolylineObject extends SceneObjectBase {
   dots?: readonly TimePrice[];
 }
 
-/** Подпись суммы у крупнейшего скопления ликвидаций. */
+/** Подпись суммы у скопления ликвидаций (корзина-пик и соседние с ней, scene/layers/liq.ts). */
 export interface HeatTop {
   id: string;
   side: "long" | "short";
+  /** Цена корзины-пика: здесь подпись. */
   price: number;
+  /** Цены крайних корзин скопления (у одной корзины lo = hi = price). */
+  lo: number;
+  hi: number;
   amountUsd: number;
   label: LabelSpec;
   hover: HoverInfo;
@@ -136,7 +141,12 @@ export interface HeatObject extends SceneObjectBase {
   kind: "heat";
   step: number;
   bars: readonly { price: number; long: number; short: number; weight: number }[];
+  /** Кандидаты в подписи по убыванию суммы на каждой стороне; раскладка берёт видимые. */
   tops: readonly HeatTop[];
+  /** Сколько подписей сумм на сторону (limits.liqTopPerSide). */
+  topsPerSide: number;
+  /** Выбранное скопление: только его подпись с рамкой и сверх бюджета, его полосы подсвечены. */
+  selectedTop: string | null;
 }
 
 /** Строки профиля зависят от видимого участка, поэтому их считает отрисовка. */
@@ -220,6 +230,8 @@ export interface Scene {
   /** По id объекта и id подписей сумм ликвидаций (они ведут к объекту карты). */
   byId: ReadonlyMap<string, SceneObject>;
   legend: readonly LegendEntry[];
+  /** Строка легенды каждого объекта по id: легенда «?» собирается по тому, что попало в кадр. */
+  legendOf: ReadonlyMap<string, LegendKey>;
   index: SceneIndex;
   selected: string | null;
 }

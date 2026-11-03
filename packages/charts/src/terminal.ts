@@ -4,6 +4,8 @@ import { BarSeries, CandlestickSeries, HistogramSeries, LineSeries, PriceScaleMo
 /** Режим ценовой шкалы (план 2A.3): линейная, логарифмическая, процентная (для сравнения инструментов). */
 export type ScaleMode = "linear" | "log" | "percent";
 const SCALE_MODES: Record<ScaleMode, PriceScaleMode> = { linear: PriceScaleMode.Normal, log: PriceScaleMode.Logarithmic, percent: PriceScaleMode.Percentage };
+/** Деление процентной шкалы так же, как PercentageFormatter LWC: знак «−» (U+2212), два знака, «%». */
+export const formatPercentTick = (p: number): string => `${p < 0 ? "−" : ""}${Math.abs(p).toFixed(2)}%`;
 const OVERLAY_SCALE = "overlay";
 import { createBuffer, EDGE, needsNewer, needsOlder, prependOlder, pushLatest, replaceNewest, type BufferState } from "./buffer";
 import { heikinAshi } from "./heikin";
@@ -308,6 +310,20 @@ export class Terminal {
     this.scaleMode = mode;
     this.chart.priceScale("right").applyOptions({ mode: SCALE_MODES[mode] });
     this.overlay?.applyOptions({ priceScaleId: mode === "percent" ? "right" : OVERLAY_SCALE });
+  }
+
+  get scale(): ScaleMode {
+    return this.scaleMode;
+  }
+
+  /**
+   * Процентная шкала: деления подписывает localization.tickmarksPercentageFormatter, а не формат цены серии,
+   * поэтому фильтр «деление под меткой разметки — пустое» (withHiddenTicks) ставится и сюда. hidden получает
+   * значение деления в процентах; текст остальных — как у PercentageFormatter LWC («−5.00%»). Повторный вызов
+   * заново подписывает деления (полосы меток сменились без смены масштаба).
+   */
+  setPercentTickFilter(hidden: (percent: number) => boolean): void {
+    this.chart.applyOptions({ localization: { tickmarksPercentageFormatter: (ps: number[]) => ps.map((p) => (hidden(p) ? "" : formatPercentTick(p))) } });
   }
 
   /** Фиксация шкалы: автомасштаб выключен, пока пользователь не сбросит вид. */

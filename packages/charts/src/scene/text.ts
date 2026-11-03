@@ -48,6 +48,8 @@ export type TextKey =
   | "liq.estimate"
   | "liq.unavailable"
   | "liq.note"
+  | "liq.cluster"
+  | "countdown.days"
   | "vp.poc"
   // подсказка при наведении
   | "hover.touches"
@@ -212,6 +214,8 @@ export const RU_STRINGS: { readonly [K in TextKey]: string } = {
   "liq.estimate": "оценка",
   "liq.unavailable": "нет данных открытого интереса на этом таймфрейме",
   "liq.note": "по приросту открытого интереса, плечи 10–100×, не данные биржи",
+  "liq.cluster": "сумма по {n} соседним ценам",
+  "countdown.days": "{d}д {hm}",
   "vp.poc": "Макс. объём",
 
   "hover.touches": "касаний: {n}",

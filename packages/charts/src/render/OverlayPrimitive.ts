@@ -17,7 +17,8 @@ import { canvasMeasurer, type TextMeasurer } from "../layout/measure";
 import { hitTestScreen, projectScene, screenFrameKey, type ScreenScene } from "../layout/project";
 import type { AxisLayout, AxisPlaced, LayoutResult, PlacedLabel, Rect, Viewport } from "../layout/types";
 import { hitTolerance, type LabelBudget, type ViewPreset } from "../presets";
-import type { Scene, SceneObject } from "../scene/types";
+import { volumeProfile, type VpRow } from "../scene/layers/profile";
+import type { ProfileObject, Scene, SceneObject } from "../scene/types";
 import { toneColor, type ChartTheme } from "../theme";
 import type { Candle } from "../types";
 import { AxisViewPool, type AxisViewSpec } from "./axisViews";
@@ -151,6 +152,10 @@ export class OverlayPrimitive implements ISeriesPrimitive<Time> {
   private settle: ReturnType<typeof setTimeout> | null = null;
   private countdownRect: Rect | null = null;
   private layouts = 0;
+  /** Кэш строк профиля объёма на устоявшийся видимый диапазон. */
+  private vp: { key: string; rows: readonly VpRow[] } | null = null;
+  /** Сколько раз считался профиль (тест: во время жеста — 0 новых). */
+  profileComputations = 0;
 
   constructor(private readonly opts: OverlayOptions) {
     this.view = opts.view;
@@ -223,6 +228,11 @@ export class OverlayPrimitive implements ISeriesPrimitive<Time> {
     this.requestUpdate?.();
   }
 
+  /** Ширина текста шрифтом холста темы (отсчёт до закрытия под ценой — плашка не уже текста). */
+  textWidth(text: string, font: "sans" | "mono", px: number, weight?: number): number {
+    return text ? this.measure.measure(text, font, px, weight).w : 0;
+  }
+
   /** Положение DOM-отсчёта до закрытия (для переписи подписей). */
   setCountdownRect(rect: Rect | null): void {
     this.countdownRect = rect;
@@ -250,19 +260,26 @@ export class OverlayPrimitive implements ISeriesPrimitive<Time> {
       if (this.lastRange !== "") this.lastMove = now;
       this.lastRange = rangeKey;
     }
-    const gesture = !!this.opts.coarse && now - this.lastMove < GESTURE_SETTLE_MS;
+    const moving = now - this.lastMove < GESTURE_SETTLE_MS;
+    const gesture = !!this.opts.coarse && moving;
     if (gesture) this.scheduleSettle();
     const last = candles[candles.length - 1];
+    // метка цены LWC — закрытие последней видимой свечи; живая свеча за краем — отсчёта под ней нет
+    const shown = proj.visible[proj.visible.length - 1];
+    const bar = shown ?? last;
+    const profile = this.profileFor(scene, proj.visible, r, last, moving);
     const opts = {
       view: this.view,
       theme: this.theme,
       measure: this.measure,
       lastPrice: last ? last.close : null,
+      plaque: bar ? { price: bar.close, up: bar.close >= bar.open, live: bar === last } : null,
       hovered: this.hovered,
       overlayY: this.opts.overlayY?.() ?? null,
       ui: this.ui,
       uiRev: this.uiRev,
       gesture,
+      ...profile,
     };
     const key = screenFrameKey(scene, proj, proj.visible, opts);
     if (this.screen && this.screen.frameKey === key) return;
@@ -283,6 +300,27 @@ export class OverlayPrimitive implements ISeriesPrimitive<Time> {
     }
     this.scaleKey = scaleKey;
     this.onFrame?.(screen);
+  }
+
+  /**
+   * Строки профиля объёма на устоявшийся диапазон (spec §4.2): пересчёт, когда видимый диапазон не менялся
+   * GESTURE_SETTLE_MS; во время перетаскивания и щипка — прежние строки, а через 150 мс после жеста — кадр с новыми.
+   */
+  private profileFor(scene: Scene, visible: readonly Candle[], r: { from: number; to: number } | null, last: Candle | undefined, moving: boolean): { profileRows?: () => readonly VpRow[]; profileKey?: string } {
+    const obj = scene.objects.find((o): o is ProfileObject => o.kind === "profile");
+    if (!obj) {
+      this.vp = null;
+      return {};
+    }
+    const tail = visible[visible.length - 1];
+    const want = [scene.version, obj.rows, obj.valueArea, r ? `${r.from.toFixed(2)}:${r.to.toFixed(2)}` : "-", visible.length, tail ? `${tail.time}:${tail.high}:${tail.low}:${tail.volume}` : "-", last?.time ?? "-"].join("|");
+    if (!this.vp || (this.vp.key !== want && !moving)) {
+      this.vp = { key: want, rows: volumeProfile(visible, obj.rows, obj.valueArea) };
+      this.profileComputations++;
+    }
+    else if (this.vp.key !== want) this.scheduleSettle();
+    const rows = this.vp.rows;
+    return { profileRows: () => rows, profileKey: this.vp.key };
   }
 
   private scheduleSettle(): void {

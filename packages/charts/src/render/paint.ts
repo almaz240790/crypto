@@ -84,7 +84,18 @@ export function paintBottom(s: PaintScope, screen: ScreenScene, theme: ChartThem
         if (!(r.w > 0)) continue;
         ctx.fillStyle = alpha(color, r.alpha);
         const top = Math.round(r.y1 * vpr);
-        ctx.fillRect(Math.round((geom.x1 - r.w) * hpr), top, Math.max(1, Math.round(r.w * hpr)), Math.max(1, Math.round((r.y2 - r.y1) * vpr) - ROW_GAP));
+        const x = Math.round((geom.x1 - r.w) * hpr);
+        const w = Math.max(1, Math.round(r.w * hpr));
+        const h = Math.max(1, Math.round((r.y2 - r.y1) * vpr) - ROW_GAP);
+        ctx.fillRect(x, top, w, h);
+        // полосы выбранного скопления — рамкой выделения (выбор одной суммы, а не всей карты)
+        if (r.selected) {
+          ctx.strokeStyle = toneColor(theme, "selection");
+          ctx.lineWidth = Math.max(1, Math.round(hpr));
+          ctx.beginPath();
+          ctx.rect(x + 0.5, top + 0.5, Math.max(1, w - 1), Math.max(1, h - 1));
+          ctx.stroke();
+        }
       }
     } else if (geom.kind === "profile") {
       const color = toneColor(theme, obj.tone);
@@ -138,11 +149,32 @@ function paintHalo(s: PaintScope, { geom }: ScreenObject, theme: ChartTheme, opa
   }
 }
 
+/** Отрезок кончается левее своей подписи в свободной зоне — пунктир от конца отрезка до плашки. */
+function paintLeaders(s: PaintScope, screen: ScreenScene, theme: ChartTheme): void {
+  const { ctx, hpr, vpr } = s;
+  for (const p of screen.labels.placed) {
+    if (p.slot !== "free-above" && p.slot !== "free-below") continue;
+    const so = screen.objects.find((o) => o.obj.id === p.objectId);
+    if (!so || so.geom.kind !== "hline" || so.geom.x2 >= p.rect.x - 1) continue;
+    ctx.globalAlpha = so.obj.emphasis === "selected" ? 1 : theme.alphas.line;
+    ctx.strokeStyle = toneColor(theme, so.obj.tone);
+    ctx.lineWidth = Math.max(1, Math.round(hpr));
+    ctx.setLineDash(LINE_DASH.dotted.map((d) => d * hpr));
+    const y = crispY(so.geom.y, vpr, ctx.lineWidth);
+    ctx.beginPath();
+    ctx.moveTo(Math.round(so.geom.x2 * hpr), y);
+    ctx.lineTo(Math.round((p.rect.x + p.rect.w) * hpr), y);
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+}
+
 /** Линии, ломаные и значки. Линия выбранного — толщиной 2 и непрозрачная. */
 export function paintNormal(s: PaintScope, screen: ScreenScene, theme: ChartTheme): void {
   const { ctx, hpr, vpr } = s;
   ctx.save();
   ctx.lineCap = "butt";
+  paintLeaders(s, screen, theme);
   for (const { obj, geom } of screen.objects) {
     const color = toneColor(theme, obj.tone);
     const selected = obj.emphasis === "selected";

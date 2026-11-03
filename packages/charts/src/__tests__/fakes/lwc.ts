@@ -152,6 +152,12 @@ export class FakeTerminal {
   setPriceFormat(): void {
     this.calls.push("setPriceFormat");
   }
+  scale: "linear" | "log" | "percent" = "linear";
+  percentHidden: ((p: number) => boolean) | null = null;
+  setPercentTickFilter(hidden: (p: number) => boolean): void {
+    this.percentHidden = hidden;
+    this.calls.push("setPercentTickFilter");
+  }
   resetView(n?: number): { from: number; to: number } | null {
     this.calls.push(`resetView:${n}`);
     return { ...this.env.chart.state.range };

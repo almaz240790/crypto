@@ -7,7 +7,7 @@ const layerRank = new Map(LAYER_ORDER.map((l, i) => [l, i]));
 
 /** Порядок раскладки: приоритет по убыванию, затем порядок слоёв, затем id — результат детерминирован. */
 export function compareCandidates(a: LabelCandidate, b: LabelCandidate): number {
-  return b.priority - a.priority || (layerRank.get(a.layer) ?? 99) - (layerRank.get(b.layer) ?? 99) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  return b.priority - a.priority || (layerRank.get(a.layer) ?? 99) - (layerRank.get(b.layer) ?? 99) || (a.rank ?? 0) - (b.rank ?? 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 }
 
 export const intersects = (a: Rect, b: Rect): boolean => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
@@ -38,18 +38,20 @@ function inside(r: Rect, vp: Viewport): boolean {
  * Жадная раскладка подписей на холсте. Кандидаты по порядку compareCandidates; у каждого места по порядку;
  * место свободно, если плашка внутри области и, увеличенная на 2 px, не задевает колонку свечи, препятствие
  * и уже размещённую подпись. Первое свободное место — подпись; бюджеты (всего и по слою) действуют, если
- * не bypassBudget. Нет места — подпись выброшена с причиной. Шрифт не уменьшается никогда.
+ * не bypassBudget (и лимит группы cap). Нет места — подпись выброшена с причиной, и место достаётся следующему
+ * кандидату (суммы ликвидаций: крупнейшее видимое скопление). Шрифт не уменьшается никогда.
  */
 export function layoutLabels(candidates: readonly LabelCandidate[], obstacles: Obstacles, viewport: Viewport, budget: LabelBudget): LayoutResult {
   const sorted = [...candidates].sort(compareCandidates);
   const placed: PlacedLabel[] = [];
   const dropped: { id: string; reason: DropReason }[] = [];
   const perLayer = new Map<string, number>();
+  const perGroup = new Map<string, number>();
   let total = 0;
   for (const c of sorted) {
     if (!c.bypassBudget) {
       const cap = budget.perLayer[c.layer];
-      if (total >= budget.canvas || (cap !== undefined && (perLayer.get(c.layer) ?? 0) >= cap)) {
+      if (total >= budget.canvas || (cap !== undefined && (perLayer.get(c.layer) ?? 0) >= cap) || (c.cap && (perGroup.get(c.cap.key) ?? 0) >= c.cap.max)) {
         dropped.push({ id: c.id, reason: "budget" });
         continue;
       }
@@ -76,6 +78,7 @@ export function layoutLabels(candidates: readonly LabelCandidate[], obstacles: O
     if (!c.bypassBudget) {
       total++;
       perLayer.set(c.layer, (perLayer.get(c.layer) ?? 0) + 1);
+      if (c.cap) perGroup.set(c.cap.key, (perGroup.get(c.cap.key) ?? 0) + 1);
     }
   }
   return { placed, dropped };

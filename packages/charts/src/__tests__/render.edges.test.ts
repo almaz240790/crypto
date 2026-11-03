@@ -128,7 +128,7 @@ describe("OverlayPrimitive: края", () => {
 
   it("тепловая карта: полосы в отладочном снимке; выбранные группа и значок — в автомасштабе", () => {
     const { prim } = setup();
-    const heat: HeatObject = { kind: "heat", id: "liq:map", layer: "liq_map", tone: "liq", priority: 25, hover: { title: "Ликвидации" }, emphasis: "normal", step: 1, bars: [{ price: 100, long: 1, short: 0, weight: 1 }, { price: 102, long: 0, short: 1, weight: 0.5 }], tops: [] };
+    const heat: HeatObject = { kind: "heat", id: "liq:map", layer: "liq_map", tone: "liq", priority: 25, hover: { title: "Ликвидации" }, emphasis: "normal", step: 1, bars: [{ price: 100, long: 1, short: 0, weight: 1 }, { price: 102, long: 0, short: 1, weight: 0.5 }], tops: [], topsPerSide: 2, selectedTop: null };
     const glyph: GlyphObject = { kind: "glyph", id: "pat:1", groupId: "g", layer: "patterns", tone: "muted", priority: 10, hover: { title: "x" }, emphasis: "selected", time: T0 + 10 * H, price: 93, side: "at", shape: "diamond" };
     prim.setScene(sceneOf([heat, glyph, line(99, "fig:1:tgt", { groupId: "g" })], 2, "g"));
     prim.updateAllViews();

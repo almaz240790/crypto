@@ -270,13 +270,53 @@ describe("ChartController: стадии сцены", () => {
     expect(term.env.chart.state.range).toEqual({ from: 0, to: 10 }); // объекта ещё нет в сцене
     flush();
     expect(ctrl.sceneObject(row.id)?.emphasis).toBe("selected");
-    const r = term.env.chart.state.range;
-    expect(r.to - r.from).toBeCloseTo(10);
-    expect(r.from).not.toBe(0); // время зоны — на 70 % ширины (зона старше буфера: левее первой свечи)
-    // нарисованный объект в кадре — вид не двигается
-    const before = { ...term.env.chart.state.range };
+    // зона открыта вправо и началась до кадра — она в кадре, вид не двигается (цену приводит автомасштаб)
+    expect(term.env.chart.state.range).toEqual({ from: 0, to: 10 });
+    expect(ctrl.overlay.autoscaleInfo()?.priceRange).toBeDefined();
     ctrl.handle.focus({ objectId: row.id });
-    expect(term.env.chart.state.range).toEqual(before);
+    expect(term.env.chart.state.range).toEqual({ from: 0, to: 10 });
+  });
+
+  it("focus: уровень и зона открыты вправо — видны в кадре, вид не двигается, даже если первое касание далеко слева", () => {
+    const { ctrl, store, term, flush } = setup({ candles: fx.candles });
+    ctrl.set({ text: RU_TEXT, structure: fx.structure });
+    flush();
+    const n = fx.candles.length;
+    const scene = ctrl.currentScene!;
+    const open = scene.objects.filter((o) => (o.kind === "hline" && o.to === null) || (o.kind === "box" && o.to === null));
+    expect(open.length).toBeGreaterThan(0);
+    for (const o of open) {
+      term.env.chart.state.range = { from: n - 112, to: n - 1 };
+      ctrl.handle.focus({ objectId: o.id });
+      flush();
+      expect(store.getState().selection).toBe(o.id);
+      expect(term.env.chart.state.range).toEqual({ from: n - 112, to: n - 1 });
+    }
+    // строки «Найдено», отрезанные лимитом (выбор → пересборка сцены), тоже не уводят вид в историю
+    for (const row of ctrl.currentScene!.index.levels.filter((r) => r.layer === "sr" || r.layer === "zones")) {
+      term.env.chart.state.range = { from: n - 112, to: n - 1 };
+      ctrl.handle.focus({ objectId: row.id });
+      flush();
+      expect(term.env.chart.state.range).toEqual({ from: n - 112, to: n - 1 });
+    }
+  });
+
+  it("focus: отрезок целиком левее кадра — его правый конец на 70 % ширины", () => {
+    const { ctrl, term, flush } = setup({ candles: fx.candles });
+    ctrl.set({ text: RU_TEXT, structure: fx.structure, markup: { preset: "structure", overrides: {} } });
+    flush();
+    const n = fx.candles.length;
+    const seg = ctrl.currentScene!.objects.find((o) => o.kind === "hline" && o.to !== null && o.layer === "structure");
+    expect(seg).toBeDefined();
+    if (!seg || seg.kind !== "hline" || seg.to === null) return;
+    const toIdx = fx.candles.findIndex((c) => c.time >= seg.to!);
+    // кадр правее конца отрезка — прокрутка; вид после неё содержит конец на 70 %
+    term.env.chart.state.range = { from: n + 50, to: n + 150 };
+    ctrl.handle.focus({ objectId: seg.id });
+    flush();
+    const r = term.env.chart.state.range;
+    expect(r.to - r.from).toBeCloseTo(100);
+    expect(r.from + 0.7 * (r.to - r.from)).toBeCloseTo(toIdx, 0);
   });
 
   it("ширина области сменилась, а вид после сброса не трогали — сброс заново; после масштаба или прокрутки — нет", () => {

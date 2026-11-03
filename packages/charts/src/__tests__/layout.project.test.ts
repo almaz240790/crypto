@@ -166,6 +166,70 @@ describe("projectScene: свойства на фикстурах", () => {
     }
   });
 
+  it("«Структура» на реальных свечах (шаг ~9 / 6 px): видна подпись пробоя или смены направления", () => {
+    for (const name of ["btc-4h-rich", "pepe-4h"] as const)
+      for (const device of ["desktop", "phone"] as const) {
+        const { screen, proj, visible, view } = run(name, { preset: "structure", overrides: {} }, device);
+        checkInvariants(screen, proj, visible, view);
+        const words = screen.labels.placed.filter((p) => p.layer === "structure" && /^(Пробой|Смена) /.test(p.text));
+        expect(words.length, `${name} ${device}: ${JSON.stringify(screen.labels.dropped)}`).toBeGreaterThan(0);
+      }
+  });
+
+  it("«Карта ликвидаций»: крупнейшие скопления за кадром — подписи у следующих видимых, не больше 2 на сторону", () => {
+    const wide = run("btc-4h-rich", { preset: "liquidity", overrides: {} }, "desktop", { priceRange: [70000, 92000] });
+    const heat = wide.scene.byId.get("liq:map");
+    if (heat?.kind !== "heat") throw new Error("heat");
+    // узкий диапазон цен вокруг закрытия: топ-1 каждой стороны вне кадра
+    const close = loadFixture("btc-4h-rich").candles.at(-1)!.close;
+    const inRange = (lo: number, hi: number) => heat.tops.filter((t) => t.price > lo && t.price < hi);
+    const lo = close * 0.97;
+    const hi = close * 1.03;
+    const narrow = run("btc-4h-rich", { preset: "liquidity", overrides: {} }, "desktop", { priceRange: [lo, hi] });
+    const placed = narrow.screen.labels.placed.filter((p) => p.layer === "liq_map");
+    if (inRange(lo, hi).length > 0) expect(placed.length).toBeGreaterThan(0);
+    for (const p of placed) {
+      const t = heat.tops.find((x) => x.id === p.objectId)!;
+      expect(t.price).toBeGreaterThan(lo);
+      expect(t.price).toBeLessThan(hi);
+    }
+    for (const side of ["long", "short"] as const) expect(placed.filter((p) => heat.tops.find((t) => t.id === p.objectId)?.side === side).length).toBeLessThanOrEqual(heat.topsPerSide);
+    // по стороне — сначала крупнейшее видимое
+    for (const side of ["long", "short"] as const) {
+      const vis = heat.tops.filter((t) => t.side === side && placed.some((p) => p.objectId === t.id));
+      const order = heat.tops.filter((t) => t.side === side).map((t) => t.id);
+      expect(vis.map((t) => order.indexOf(t.id))).toEqual([...vis.map((t) => order.indexOf(t.id))].sort((a, b) => a - b));
+    }
+  });
+
+  it("выбор одной суммы ликвидаций выделяет только её (рамка, сверх бюджета) и её полосы", () => {
+    const base = run("btc-4h-rich", { preset: "liquidity", overrides: {} }, "desktop", { priceRange: [70000, 92000] });
+    const heat = base.scene.byId.get("liq:map");
+    if (heat?.kind !== "heat") throw new Error("heat");
+    const pick = heat.tops.find((t) => t.side === "short" && t.price < 92000 && t.price > 70000)!;
+    const sel = run("btc-4h-rich", { preset: "liquidity", overrides: {} }, "desktop", { priceRange: [70000, 92000], selected: pick.id });
+    const sums = sel.screen.labels.placed.filter((p) => p.layer === "liq_map");
+    expect(sums.filter((p) => p.selected).map((p) => p.objectId)).toEqual([pick.id]);
+    expect(sums.filter((p) => p.bypassBudget).map((p) => p.objectId)).toEqual([pick.id]);
+    const g = sel.screen.objects.find((o) => o.geom.kind === "heat")!.geom;
+    if (g.kind !== "heat") throw new Error("heat");
+    const rows = g.rows.filter((r) => r.selected);
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every((r) => r.topId === pick.id)).toBe(true);
+    // вся карта (клик по полосе вне скоплений) — без выделенных сумм
+    const map = run("btc-4h-rich", { preset: "liquidity", overrides: {} }, "desktop", { priceRange: [70000, 92000], selected: "liq:map" });
+    expect(map.screen.labels.placed.some((p) => p.selected)).toBe(false);
+  });
+
+  it("полоса занята картой: подписи уровней кончаются левее полосы и не лежат на её полосах", () => {
+    for (const device of ["desktop", "phone"] as const) {
+      const { screen } = run("btc-4h-rich", { preset: "liquidity", overrides: {} }, device, { priceRange: [70000, 92000] });
+      const g = screen.viewport.gutter!;
+      expect(g.mode).toBe("reserved");
+      for (const p of screen.labels.placed.filter((x) => x.layer !== "liq_map")) expect(p.rect.x + p.rect.w).toBeLessThanOrEqual(g.x0 + 1e-6);
+    }
+  });
+
   it("история прокручена (последняя свеча за краем): нет свободной зоны, карта приглушена и без сумм", () => {
     const { screen } = run("btc-4h-rich", { preset: "liquidity", overrides: {} }, "desktop", { scrollBars: 40 });
     expect(screen.viewport.free).toBeNull();
@@ -177,7 +241,7 @@ describe("projectScene: свойства на фикстурах", () => {
     expect(screen.labels.placed.some((p) => p.layer === "liq_map")).toBe(false);
   });
 
-  it("профиль: один — в полосе с подписью POC; с картой — поверх свечей, без подписи", () => {
+  it("профиль: один — в полосе с подписью POC; с картой — левая половина полосы, без подписи, карта — правая", () => {
     const alone = run("btc-4h-rich", { preset: "clean", overrides: { volume_profile: true } }, "desktop").screen;
     const vp = alone.objects.find((o) => o.geom.kind === "profile")!.geom;
     if (vp.kind !== "profile") throw new Error("profile");
@@ -189,8 +253,14 @@ describe("projectScene: свойства на фикстурах", () => {
     const vp2 = both.objects.find((o) => o.geom.kind === "profile")!.geom;
     if (vp2.kind !== "profile") throw new Error("profile");
     expect(vp2.dimmed).toBe(true);
-    expect(vp2.x1).toBe(1000);
-    expect(Math.max(...vp2.rows.map((r) => r.w))).toBeCloseTo(250, 6);
+    const g = both.viewport.gutter!;
+    const mid = (g.x0 + g.x1) / 2;
+    expect(vp2.x1).toBe(mid);
+    // на свечи профиль не заходит: строки — в левой половине полосы
+    expect(Math.max(...vp2.rows.map((r) => r.w))).toBeCloseTo(mid - g.x0, 6);
+    const heat = both.objects.find((o) => o.geom.kind === "heat")!.geom;
+    if (heat.kind !== "heat") throw new Error("heat");
+    expect(heat.rows.every((r) => heat.x1 - r.w >= mid - 1e-6)).toBe(true);
     expect(both.labels.placed.some((p) => p.objectId === "vp")).toBe(false);
   });
 
@@ -277,7 +347,7 @@ describe("свободная зона и полоса", () => {
 describe("hitTestScreen", () => {
   const obj = (id: string, kind: SceneObject["kind"]): SceneObject => ({ id, kind, layer: "sr", tone: "up", priority: 50, emphasis: "normal", hover: { title: id } }) as SceneObject;
   const screen = (objects: ScreenScene["objects"], placed: ScreenScene["labels"]["placed"] = []): ScreenScene =>
-    ({ frameKey: "", viewport: { width: 500, height: 400, insetTop: 0, volumeTopY: 400, free: null, gutter: null }, objects, obstacles: { candles: candleBand({ x: () => 0, y: () => 0, visibleLogical: () => null, barSpacing: () => 8, lastBarX: () => null, width: 1, height: 1 }, []), rects: [] }, labels: { placed, dropped: [] }, axis: { placed: [], hiddenBands: [], dropped: [] }, yLast: null, countdownY: null }) as ScreenScene;
+    ({ frameKey: "", viewport: { width: 500, height: 400, insetTop: 0, volumeTopY: 400, free: null, gutter: null }, objects, obstacles: { candles: candleBand({ x: () => 0, y: () => 0, visibleLogical: () => null, barSpacing: () => 8, lastBarX: () => null, width: 1, height: 1 }, []), rects: [] }, labels: { placed, dropped: [] }, axis: { placed: [], hiddenBands: [], dropped: [] }, yLast: null, countdownY: null, plaque: null }) as ScreenScene;
 
   const line = { obj: obj("line", "hline"), geom: { kind: "hline" as const, x1: 0, x2: 500, y: 100 } };
   const glyph = { obj: obj("glyph", "glyph"), geom: { kind: "glyph" as const, x: 200, y: 108, r: 4 } };

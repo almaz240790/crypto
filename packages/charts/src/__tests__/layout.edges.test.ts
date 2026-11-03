@@ -64,7 +64,7 @@ describe("projectScene: пограничные случаи геометрии",
   });
 
   it("без полосы — ни карты, ни профиля; плоские свечи — без профиля", () => {
-    const heat: SceneObject = { ...base, layer: "liq_map", tone: "liq", id: "liq:map", kind: "heat", step: 10, bars: [{ price: 2500, long: 1, short: 0, weight: 1 }], tops: [] };
+    const heat: SceneObject = { ...base, layer: "liq_map", tone: "liq", id: "liq:map", kind: "heat", step: 10, bars: [{ price: 2500, long: 1, short: 0, weight: 1 }], tops: [], topsPerSide: 2, selectedTop: null };
     const prof: SceneObject = { ...base, layer: "volume_profile", tone: "muted", id: "vp", kind: "profile", rows: 10, valueArea: 0.7, label: label(["gutter-mid"]) };
     expect(projectScene(scene([heat, prof]), proj(), candles, opts({ view: VIEW.cell })).objects).toHaveLength(0);
     // карта вне цен — без строк
@@ -116,9 +116,11 @@ describe("projectScene: пограничные случаи геометрии",
       step: 10,
       bars: [{ price: 300, long: 1, short: 0, weight: 1 }],
       tops: [
-        { id: "liq:L:1", side: "long", price: 300, amountUsd: 1e6, label: label(["gutter-mid"], { priority: 25, font: "mono" }), hover: { title: "t" } },
-        { id: "liq:L:2", side: "long", price: 5000, amountUsd: 1e6, label: label(["gutter-mid"], { priority: 25 }), hover: { title: "t" } },
+        { id: "liq:L:1", side: "long", price: 300, lo: 300, hi: 300, amountUsd: 1e6, label: label(["gutter-mid"], { priority: 25, font: "mono" }), hover: { title: "t" } },
+        { id: "liq:L:2", side: "long", price: 5000, lo: 5000, hi: 5000, amountUsd: 1e6, label: label(["gutter-mid"], { priority: 25 }), hover: { title: "t" } },
       ],
+      topsPerSide: 2,
+      selectedTop: null,
     };
     const s = projectScene(scene([heat]), proj(), [], opts({ hovered: "liq:L:1" }));
     expect(s.labels.placed.map((p) => [p.objectId, p.bypassBudget])).toEqual([["liq:L:1", true]]);

@@ -32,7 +32,11 @@ function events(ctx: LayerCtx, out: Built[]): void {
     const to = Math.max(ctx.snap(e.t), from + ctx.step);
     const priority = lastOf.get(e.type) === e ? 60 : 45;
     const word = text.fill(e.type === "bos" ? text["structure.bos"] : text["structure.choch"], { dir: arrow(e.dir) });
-    const slots: SlotKey[] = e.dir === "up" ? ["break-below", "break-above", "line-end-above", "line-start-above"] : ["break-above", "break-below", "line-end-above", "line-start-above"];
+    // между свингом и пробоем свечи по другую сторону уровня (пробой вверх — под ним): подпись — на свободной
+    // стороне у свечи пробоя или сразу за свингом; у последнего пробоя и смены последний вариант — свободная
+    // зона справа, отрезок продолжается до подписи пунктиром (render/paint.ts)
+    const near: SlotKey[] = e.dir === "up" ? ["break-above", "line-start-above", "break-below"] : ["break-below", "line-start-below", "break-above"];
+    const slots: SlotKey[] = priority === 60 || selected ? [...near, ...(e.dir === "up" ? (["free-above", "free-below"] as const) : (["free-below", "free-above"] as const))] : near;
     const title = text[`hover.${e.type}.${e.dir}`];
     const obj = hline({
       id,

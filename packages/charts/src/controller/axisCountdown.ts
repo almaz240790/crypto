@@ -5,12 +5,13 @@ import type { Rect } from "../layout/types";
  * requestUpdate примитива в LWC 5.2.1 — полная перерисовка всех панелей и шкал, и раз в секунду это стоило
  * ~15 мс скрипта на телефоне. Элемент лежит над шкалой (pointer-events: none), y берёт из места «countdown»
  * в раскладке шкалы (деления под ним пустые), двигается только при смене y; текст меняет таймер 1 Гц.
- * Цвета — переменные --chart-*: смена темы перекрашивает его без участия контроллера.
+ * Цвета — из палитры темы (фон — цвет свечи, текст — по правилу LWC для метки цены); смена темы —
+ * контроллер ставит отсчёт заново.
  */
 export class AxisCountdown {
   readonly el: HTMLDivElement;
   private rect: Rect | null = null;
-  private up = true;
+  private colors = "";
   private text = "";
   private font = "";
 
@@ -28,16 +29,15 @@ export class AxisCountdown {
     st.overflow = "hidden";
     st.fontFamily = "var(--font-mono)";
     st.fontVariantNumeric = "tabular-nums";
-    st.color = "var(--chart-plaque)";
     st.display = "none";
     host.appendChild(el);
     this.el = el;
   }
 
-  /** Место на шкале (координаты контейнера графика, CSS px) и направление последней свечи; null — скрыть. */
-  place(rect: Rect | null, up: boolean, fontPx: number): void {
+  /** Место на шкале (координаты контейнера графика, CSS px) и цвета фона и текста; null — скрыть. */
+  place(rect: Rect | null, colors: { bg: string; fg: string } | null, fontPx: number): void {
     const st = this.el.style;
-    if (!rect || !this.text) {
+    if (!rect || !colors || !this.text) {
       if (this.rect !== null || st.display !== "none") st.display = "none";
       this.rect = null;
       return;
@@ -56,11 +56,18 @@ export class AxisCountdown {
       st.fontSize = font;
       this.font = font;
     }
-    if (up !== this.up || st.display === "none") {
-      st.background = up ? "var(--chart-up)" : "var(--chart-down)";
-      this.up = up;
+    const key = `${colors.bg}|${colors.fg}`;
+    if (key !== this.colors) {
+      st.background = colors.bg;
+      st.color = colors.fg;
+      this.colors = key;
     }
     st.display = "block";
+  }
+
+  /** Текущий текст (ширину плашки считает контроллер). */
+  get value(): string {
+    return this.text;
   }
 
   setText(text: string): void {

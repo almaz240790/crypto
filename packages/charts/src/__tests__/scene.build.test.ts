@@ -210,13 +210,50 @@ describe("buildScene: инварианты", () => {
     const heat = liq.byId.get("liq:map");
     expect(heat?.kind).toBe("heat");
     if (heat?.kind !== "heat") return;
-    expect(heat.tops.filter((t) => t.side === "long").length).toBeLessThanOrEqual(2);
-    expect(heat.tops.filter((t) => t.side === "short").length).toBeLessThanOrEqual(2);
+    // кандидаты в подписи — по убыванию суммы на стороне; на графике — не больше topsPerSide видимых
+    expect(heat.topsPerSide).toBe(2);
+    expect(heat.selectedTop).toBeNull();
+    for (const side of ["long", "short"] as const) {
+      const amounts = heat.tops.filter((t) => t.side === side).map((t) => t.amountUsd);
+      expect(amounts.length).toBeGreaterThanOrEqual(3);
+      expect([...amounts].sort((a, b) => b - a)).toEqual(amounts);
+    }
     expect(heat.bars.every((b) => b.weight > 0 && b.weight <= 1)).toBe(true);
     for (const t of heat.tops) {
       expect(liq.byId.get(t.id)).toBe(heat);
       expect(liq.index.levels.find((r) => r.id === t.id)?.onChart ?? true).toBe(true);
       expect(sceneHover(liq, t.id)?.estimate).toBe(true);
+    }
+    // одна сумма у одного id: строка «Найдено», подпись на графике и подсказка
+    for (const r of liq.index.levels.filter((x) => x.layer === "liq_map")) {
+      const t = heat.tops.find((x) => x.id === r.id)!;
+      expect(t).toBeDefined();
+      expect(t.price).toBe(r.price);
+      expect(t.amountUsd).toBe(r.amountUsd);
+      expect(sceneHover(liq, r.id)?.amountUsd).toBe(r.amountUsd);
+      const h = sceneHover(liq, r.id)!;
+      expect(h.price! <= r.price && r.price <= (h.priceTo ?? h.price!)).toBe(true);
+    }
+  });
+
+  it("каждая строка «Найдено → Уровни» при выборе рисуется и выделена — при любом пресете и выключенном слое", () => {
+    for (const name of ["btc-4h-rich", "pepe-4h"] as const) {
+      for (const markup of [preset("clean"), preset("liquidity"), preset("detailed"), preset("structure")]) {
+        const base = scene(name, markup);
+        expect(base.index.levels.length).toBeGreaterThan(0);
+        for (const r of base.index.levels) {
+          const s = scene(name, markup, { selected: r.id });
+          const obj = s.byId.get(r.id);
+          expect(obj, `${name} ${markup.preset} ${r.id}`).toBeDefined();
+          expect(obj!.emphasis, r.id).toBe("selected");
+          expect(s.index.levels.find((x) => x.id === r.id)?.onChart, r.id).toBe(true);
+          if (obj!.kind === "heat") {
+            // выделено одно скопление, а не вся карта; слой выключен — на графике только оно
+            expect(obj!.selectedTop).toBe(r.id);
+            if (markup.preset === "clean" || markup.preset === "structure") expect(obj!.tops.map((t) => t.id)).toEqual([r.id]);
+          }
+        }
+      }
     }
   });
 
