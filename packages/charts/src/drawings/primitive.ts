@@ -1,5 +1,6 @@
 import type { IChartApi, IPrimitivePaneRenderer, IPrimitivePaneView, ISeriesApi, ISeriesPrimitive, SeriesAttachedParameter, SeriesType, Time } from "lightweight-charts";
 import type { ThemeTokens } from "../types";
+import { formatPriceLabel } from "../format";
 import { alpha } from "../theme";
 import { channelOffset, extend, fibLevels, lineAt, type Projector } from "./geometry";
 import { HANDLE_PX, type Drawing, type Point } from "./types";
@@ -78,6 +79,7 @@ class Renderer implements IPrimitivePaneRenderer {
     private readonly proj: Projector,
     private readonly tokens: ThemeTokens,
     private readonly touch: boolean,
+    private readonly precision: number | null,
   ) {}
 
   draw(target: Parameters<IPrimitivePaneRenderer["draw"]>[0]): void {
@@ -129,7 +131,7 @@ class Renderer implements IPrimitivePaneRenderer {
       case "hray": {
         const x0 = d.type === "hline" ? 0 : a!.x;
         line(ctx, x0, a!.y, width, a!.y);
-        this.label(ctx, fmt(d.points[0]!.price), x0, a!.y, color);
+        this.label(ctx, formatDrawingPrice(d.points[0]!.price, this.precision), x0, a!.y, color);
         break;
       }
       case "vline":
@@ -190,7 +192,7 @@ class Renderer implements IPrimitivePaneRenderer {
           if (y === null) continue;
           ctx.setLineDash(level === 0 || level === 1 ? [] : [4, 3]);
           line(ctx, left, y, right, y);
-          this.label(ctx, `${level} · ${fmt(price)}`, right, y, color);
+          this.label(ctx, `${level} · ${formatDrawingPrice(price, this.precision)}`, right, y, color);
         }
         break;
       }
@@ -209,16 +211,16 @@ class Renderer implements IPrimitivePaneRenderer {
         ctx.setLineDash([]);
         ctx.strokeStyle = this.tokens.text2;
         line(ctx, x, yE, x + w, yE);
-        this.label(ctx, `вход ${fmt(entry.price)}`, x, yE, this.tokens.text2);
+        this.label(ctx, `вход ${formatDrawingPrice(entry.price, this.precision)}`, x, yE, this.tokens.text2);
         ctx.strokeStyle = this.tokens.down;
         line(ctx, x, yS, x + w, yS);
-        this.label(ctx, `стоп ${fmt(stop.price)}`, x, yS, this.tokens.down);
+        this.label(ctx, `стоп ${formatDrawingPrice(stop.price, this.precision)}`, x, yS, this.tokens.down);
         if (c && target) {
           ctx.strokeStyle = this.tokens.up;
           line(ctx, x, c.y, x + w, c.y);
           const risk = Math.abs(entry.price - stop.price);
           const rr = risk ? Math.abs(target.price - entry.price) / risk : 0;
-          this.label(ctx, `цель ${fmt(target.price)} · R:R ${rr.toFixed(2)}`, x, c.y, this.tokens.up);
+          this.label(ctx, `цель ${formatDrawingPrice(target.price, this.precision)} · R:R ${rr.toFixed(2)}`, x, c.y, this.tokens.up);
         }
         break;
       }
@@ -262,7 +264,13 @@ function line(ctx: Ctx, x1: number, y1: number, x2: number, y2: number): void {
   ctx.stroke();
 }
 
-function fmt(p: number): string {
+/**
+ * Цена в подписи рисунка (горизонтальная линия, уровни Фибоначчи, вход/стоп/цель позиции): с точностью
+ * инструмента и разрядами — как на шкале, в шапке и в списках. Без шага цены (precision = null) — прежняя
+ * грубая запись.
+ */
+export function formatDrawingPrice(p: number, precision: number | null): string {
+  if (precision !== null) return formatPriceLabel(p, precision);
   return p >= 1000 ? p.toFixed(1) : p >= 1 ? p.toFixed(2) : p.toPrecision(4);
 }
 
@@ -274,7 +282,7 @@ class View implements IPrimitivePaneView {
   renderer(): IPrimitivePaneRenderer | null {
     const s = this.source;
     if (!s.projector) return null;
-    return new Renderer(s.drawings, s.draft, s.selectedId, s.projector.projector(), s.tokens, s.touch);
+    return new Renderer(s.drawings, s.draft, s.selectedId, s.projector.projector(), s.tokens, s.touch, s.precision);
   }
 }
 
@@ -284,6 +292,8 @@ export class DrawingsPrimitive implements ISeriesPrimitive<Time> {
   selectedId: string | null = null;
   projector: TimeProjector | null = null;
   touch = false;
+  /** Знаков после запятой у цен в подписях — по шагу цены инструмента; null — шаг ещё неизвестен. */
+  precision: number | null = null;
   private requestUpdate: (() => void) | null = null;
   private readonly views = [new View(this)];
 
@@ -299,7 +309,7 @@ export class DrawingsPrimitive implements ISeriesPrimitive<Time> {
     this.requestUpdate = null;
   }
 
-  update(patch: Partial<Pick<DrawingsPrimitive, "drawings" | "draft" | "selectedId" | "tokens" | "touch">>): void {
+  update(patch: Partial<Pick<DrawingsPrimitive, "drawings" | "draft" | "selectedId" | "tokens" | "touch" | "precision">>): void {
     Object.assign(this, patch);
     this.requestUpdate?.();
   }

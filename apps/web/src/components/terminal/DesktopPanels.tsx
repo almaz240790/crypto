@@ -71,7 +71,7 @@ type Props = {
   layoutsLimit: number | null;
   /** Перетаскивание левого края панели (ширина хранится в TerminalPage). */
   onResize?: { start: (e: React.PointerEvent<HTMLElement>) => void; step: (delta: number) => void; active: boolean };
-  found: { count?: number; items: PatternOnChart[]; stats: Record<string, PatternStat>; selected: number | null; onSelect: (id: number | null) => void; tf: string; symbol: string; canExplain: boolean; askAccess: "guest" | "plan" | "ok" | null; sr: SrLevel[]; liq: LiqMap | null; tick: string | null; zones: ZoneGroup[]; figures: FigureOnChart[]; figureStats: Record<string, FigureStat>; selectedFigure: number | null; onSelectFigure: (id: number | null) => void };
+  found: { count?: number; items: PatternOnChart[]; stats: Record<string, PatternStat>; selected: number | null; onSelect: (id: number | null) => void; tf: string; symbol: string; canExplain: boolean; askAccess: "guest" | "plan" | "ok" | null; sr: SrLevel[]; liq: LiqMap | null; liqUnavailable?: boolean; tick: string | null; zones: ZoneGroup[]; figures: FigureOnChart[]; figureStats: Record<string, FigureStat>; selectedFigure: number | null; onSelectFigure: (id: number | null) => void };
 };
 
 const LAYER_LABEL: Record<LayerKey, string> = { structure: "Структура", zones: "Зоны", levels: "Макс./мин. дня и недели", signals: "Сигналы", patterns: "Паттерны", figures: "Фигуры", volume_profile: "Профиль объёма", sr: "Поддержка и сопротивление", liq_map: "Карта ликвидаций (оценка)" };
@@ -112,9 +112,9 @@ export function ObjectsPanel(p: Props) {
       {tab === "found" && (
         <div className={s.objScroll}>
           <AskBox symbol={p.found.symbol} tf={p.found.tf} access={p.found.askAccess} />
-          <LevelsList sr={p.found.sr} liq={p.found.liq} tick={p.found.tick} zones={p.found.zones} />
+          <LevelsList sr={p.found.sr} liq={p.found.liq} tick={p.found.tick} zones={p.found.zones} liqUnavailable={!!p.found.liqUnavailable && p.layers.liq_map} />
           <strong className={s.objHead}>{t("Фигуры")}</strong>
-          <FiguresList items={p.found.figures} stats={p.found.figureStats} selected={p.found.selectedFigure} onSelect={p.found.onSelectFigure} />
+          <FiguresList items={p.found.figures} stats={p.found.figureStats} selected={p.found.selectedFigure} onSelect={p.found.onSelectFigure} tick={p.found.tick} />
           <strong className={s.objHead}>{t("Свечные паттерны")}</strong>
           <FoundList items={p.found.items} stats={p.found.stats} selected={p.found.selected} onSelect={p.found.onSelect} tf={p.found.tf} symbol={p.found.symbol} canExplain={p.found.canExplain} />
         </div>
@@ -145,6 +145,7 @@ export function ObjectsPanel(p: Props) {
             <li key={k}>
               <label>
                 <input type="checkbox" checked={p.layers[k]} onChange={() => p.onLayer(k)} /> {t(LAYER_LABEL[k])}
+                {k === "liq_map" && p.found.liqUnavailable && <span className="caption">{t("нет данных открытого интереса на этом таймфрейме")}</span>}
               </label>
             </li>
           ))}

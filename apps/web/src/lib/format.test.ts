@@ -22,6 +22,13 @@ describe("decimalsFromTick", () => {
     expect(decimalsFromTick("1.00000000")).toBe(0);
     expect(decimalsFromTick(null)).toBe(2);
   });
+  it("экспоненциальная запись шага (str(Decimal) в старом API)", () => {
+    expect(decimalsFromTick("1.000E-7")).toBe(7);
+    expect(decimalsFromTick("1E-7")).toBe(7);
+    expect(decimalsFromTick("0.0000001")).toBe(7);
+    expect(decimalsFromTick("2.5E-6")).toBe(7);
+    expect(decimalsFromTick("0.1")).toBe(1);
+  });
 });
 
 describe("formatPrice", () => {
@@ -31,6 +38,15 @@ describe("formatPrice", () => {
     expect(formatPrice(1234567, "1")).toBe(`1${NB}234${NB}567`);
     expect(formatPrice(null)).toBe("—");
     expect(formatPrice("abc")).toBe("—");
+  });
+  it("монета дешевле цента (шаг 1e-7): не «0.00»", () => {
+    expect(formatPrice("0.004928", "1.000E-7")).toBe("0.0049280");
+    expect(formatPrice(0.004928, "0.0000001")).toBe("0.0049280");
+    expect(formatPrice("0.0000123", "1E-7")).toBe("0.0000123");
+  });
+  it("BTC, шаг 0.1", () => {
+    expect(formatPrice(77365.12, "0.1")).toBe(`77${NB}365.1`);
+    expect(formatPrice("1113.3", "0.1")).toBe(`1${NB}113.3`);
   });
 });
 

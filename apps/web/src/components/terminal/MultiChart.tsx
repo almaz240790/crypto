@@ -67,12 +67,12 @@ function ChartCell({ cell, instruments, authed, onChange }: { cell: Cell; instru
           ))}
         </select>
         <span className="caption">
-          {cross ? `O ${formatPrice(String(cross.candle.open))} C ${formatPrice(String(cross.candle.close))}` : price != null ? formatPrice(String(price)) : data.error ? t("нет данных") : "…"}
+          {cross ? `O ${formatPrice(cross.candle.open, data.tick)} C ${formatPrice(cross.candle.close, data.tick)}` : price != null ? formatPrice(price, data.tick) : data.error ? t("нет данных") : "…"}
         </span>
         <Link href={`/chart/${cell.symbol}/${cell.tf}`} className={s.multiOpen}>{t("открыть в терминале")}</Link>
       </div>
       <div className={s.multiChart}>
-        <TerminalView candles={data.candles ?? []} current={data.current} tf={cell.tf} type="candles" indicators={[]} layersOn={LAYERS} layers={data.layers} figures={data.figures?.items} derivatives={null} panels={[]} tick={data.tick} onNeedOlder={data.loadOlder} onCrosshair={setCross} />
+        <TerminalView candles={data.candles ?? []} current={data.current} tf={cell.tf} type="candles" indicators={[]} layersOn={LAYERS} layers={data.layers} figures={data.figures?.items} derivatives={null} panels={[]} tick={data.tick} dataKey={cell.symbol} onNeedOlder={data.loadOlder} onCrosshair={setCross} />
       </div>
     </section>
   );

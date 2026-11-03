@@ -15,6 +15,7 @@ from app import auth
 from app.chart_data import (
     LAYER_TFS,
     PAGE,
+    _dec,
     candle_dict,
     current_candle,
     layers_cached,
@@ -78,7 +79,8 @@ def candles(
         "candles": out,
         "current": cur,
         "has_older": has_older,
-        "tick_size": str(inst.tick_size) if inst.tick_size is not None else None,
+        # фиксированная запись: str(Decimal) даёт '1.000E-7', и клиент считал 6 знаков вместо 7
+        "tick_size": _dec(inst.tick_size),
         "server_time": now.isoformat(),
     }
 

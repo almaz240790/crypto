@@ -1,8 +1,8 @@
 "use client";
 
-import { createTerminal, formatPriceLabel, formatPriceShort, formatTicks, tokensFromElement, type LiqMap, type SrLevel, type Candle, type ChartType, type ScaleMode, type Terminal, type Timeframe } from "@platform/charts";
+import { COMPACT_FORMAT, PERCENT_FORMAT, VALUE_FORMAT, VIEW_BAR_PX, alignToCandles, bucketStart, createTerminal, formatPriceLabel, formatPriceShort, instrumentPriceFormat, tickPrecision, tokensFromElement, type LiqMap, type SrLevel, type Candle, type ChartType, type ScaleMode, type Terminal, type Timeframe } from "@platform/charts";
 import { DrawingController, DrawingsPrimitive, INDICATORS, defaultParams, indicatorById, visibleOn, type Drawing, type DrawingType, type DrawingsState, type IndicatorSpec, type Layer, type LayerContext, type Point, TF_SECONDS } from "@platform/charts";
-import { LineSeries, createSeriesMarkers, type ISeriesApi, type ISeriesMarkersPluginApi, type SeriesMarker, type Time, type UTCTimestamp } from "lightweight-charts";
+import { LineSeries, createSeriesMarkers, type ISeriesApi, type ISeriesMarkersPluginApi, type PriceFormat, type SeriesMarker, type Time, type UTCTimestamp } from "lightweight-charts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { BoxPrimitive } from "@/components/chart/BoxPrimitive";
 import { LevelsPrimitive, type HLine } from "@/components/chart/LevelsPrimitive";
@@ -29,7 +29,8 @@ export const indicatorColor = (id: string): IndColor => INDICATOR_COLOR[id] ?? "
 export type ActiveIndicator = { id: string; params: Record<string, number> };
 export type LayerKey = "structure" | "zones" | "levels" | "signals" | "patterns" | "figures" | "volume_profile" | "sr" | "liq_map";
 export type PanelKey = "funding" | "oi" | "liq" | "ls";
-export type CrosshairInfo = { candle: Candle; values: { label: string; value: number | null; color: string }[] };
+/** price — значение в ценах инструмента (наложенные индикаторы): форматируется по шагу цены. */
+export type CrosshairInfo = { candle: Candle; values: { label: string; value: number | null; color: string; price: boolean }[] };
 /** Управление видом снаружи (кнопки «+/−», горячие клавиши). */
 export type TerminalControls = { zoom: (factor: number) => void; reset: () => void; clearCrosshair: () => void };
 const LONG_PRESS_MS = 300;
@@ -63,6 +64,8 @@ type Props = {
   derivatives: Derivatives | null;
   panels: PanelKey[];
   tick: string | null;
+  /** Инструмент: при его смене (как и таймфрейма) свечи заменяются и вид сбрасывается; иначе новые свечи дописываются. */
+  dataKey?: string;
   onNeedOlder: (before: number) => Promise<{ candles: Candle[]; hasOlder: boolean } | null>;
   /** Перекрестие: свеча под курсором/пальцем и значения индикаторов (план 2A.7). */
   onCrosshair?: (info: CrosshairInfo | null) => void;
@@ -112,13 +115,6 @@ function vpTokens(t: ReturnType<typeof tokensFromElement>): VpTokens {
   return { bar: alpha(t.accent, 0.18), value: alpha(t.accent, 0.3), poc: alpha(t.warn, 0.7), text: t.text2 };
 }
 
-function precisionOf(tick: string | null): { precision: number; minMove: number } {
-  if (!tick) return { precision: 2, minMove: 0.01 };
-  const t = tick.replace(/0+$/, "");
-  const i = t.indexOf(".");
-  return { precision: i < 0 ? 0 : t.length - i - 1, minMove: Number(tick) || 0.01 };
-}
-
 type Pane = { spec: IndicatorSpec; paneIndex: number | null; series: Record<string, ISeriesApi<"Line" | "Histogram">>; colorKey: string; base?: string };
 const OVERLAY_SECONDARY_ALPHA = 0.55;
 /** Полупрозрачный вариант токена (hex → rgba). */
@@ -157,9 +153,28 @@ const MOBILE_QUERY = "(max-width: 899px)";
 const MOBILE_SCALE_FONT_PX = 10;
 const DESKTOP_SCALE_FONT_PX = 11;
 const SWIPE_PX = 24;
+/** Целевой шаг бара при сбросе вида: на телефоне свечи уже, но не палочки в 2 px (план 2A.7). */
+const viewBarPx = () => (window.matchMedia(MOBILE_QUERY).matches ? VIEW_BAR_PX.phone : VIEW_BAR_PX.desktop);
+/** Формат шкалы индикатора на отдельной панели: объём и OBV — компактно, остальное — значения. */
+const COMPACT_INDICATORS = new Set(["volume", "obv"]);
+const indicatorFormat = (id: string): PriceFormat => (COMPACT_INDICATORS.has(id) ? COMPACT_FORMAT : VALUE_FORMAT);
+
+/** Индекс свечи с временем time в отсортированном массиве (−1 — нет такой). */
+function indexOfTime(candles: readonly Candle[], time: number): number {
+  let lo = 0;
+  let hi = candles.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const t = candles[mid]!.time;
+    if (t === time) return mid;
+    if (t < time) lo = mid + 1;
+    else hi = mid - 1;
+  }
+  return -1;
+}
 
 /** Обёртка React над Terminal из packages/charts: данные, индикаторы, слои, тема. */
-export function TerminalView({ candles, current, tf, type, indicators, layersOn, layers, patterns, highlight, figures, highlightFigure, alertLines, sr, liq, derivatives, panels, tick, onNeedOlder, drawings, onCrosshair, onVisibleFrom, onReady, scale = "linear", overlay = null }: Props) {
+export function TerminalView({ candles, current, tf, type, indicators, layersOn, layers, patterns, highlight, figures, highlightFigure, alertLines, sr, liq, derivatives, panels, tick, dataKey = "", onNeedOlder, drawings, onCrosshair, onVisibleFrom, onReady, scale = "linear", overlay = null }: Props) {
   const t = useT();
   const ref = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -174,13 +189,12 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
   const drawPrimRef = useRef<DrawingsPrimitive | null>(null);
   const ctrlRef = useRef<DrawingController | null>(null);
   const drawingsRef = useRef(drawings);
-  const candlesRef = useRef<Candle[]>([]);
   const needOlderRef = useRef(onNeedOlder);
   const onCrosshairRef = useRef(onCrosshair);
   const onVisibleFromRef = useRef(onVisibleFrom);
   const onReadyRef = useRef(onReady);
   const visibleFromRef = useRef<number | null>(null);
-  const valuesRef = useRef<Map<string, { label: string; values: (number | null)[]; color: string }>>(new Map());
+  const valuesRef = useRef<Map<string, { label: string; values: (number | null)[]; color: string; price: boolean }>>(new Map());
   const stickyRef = useRef(false);
   // слои зависят от времени текущей свечи (меняется раз в свечу) и содержимого линий алертов, а не от каждого тика
   const lastT = current?.time ?? null;
@@ -191,6 +205,33 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
   const collapsedRef = useRef<Set<string>>(new Set());
   const paneObsRef = useRef<ResizeObserver | null>(null);
   const swipeRef = useRef<{ key: string; y: number } | null>(null);
+  /**
+   * Одна модель свечей — буфер Terminal (term.candles): подгруженная слева история попадает в индикаторы,
+   * перекрестие, проектор рисунков и профиль объёма. historyRev растёт при каждой подгрузке слева.
+   */
+  const [historyRev, setHistoryRev] = useState(0);
+  /** Смена темы: все слои, индикаторы и панели перечитывают токены сразу, а не к закрытию свечи. */
+  const [themeRev, setThemeRev] = useState(0);
+  /**
+   * Узкий экран (телефон, планшет вертикально): шрифт шкал, формат цены и подписи уровней. Следим за
+   * matchMedia: при переходе через 900 px (поворот, окно уже) всё переключается сразу и вместе, а не к
+   * пересчёту слоёв и не только при смене инструмента.
+   */
+  const [narrow, setNarrow] = useState(() => typeof window !== "undefined" && window.matchMedia(MOBILE_QUERY).matches);
+  /** Что загружено в график: смена инструмента или таймфрейма — замена и сброс вида, иначе — дописывание. */
+  const loadedRef = useRef<{ key: string; tf: Timeframe; candles: Candle[] } | null>(null);
+  /** Поколение данных: ответ на запрос истории для прежнего инструмента отбрасывается. */
+  const genRef = useRef(0);
+
+  // профиль объёма и проектор рисунков читают ту же модель свечей, что и график
+  const syncModel = useCallback(() => {
+    const term = termRef.current;
+    if (!term) return;
+    const all = term.candles;
+    vpRef.current?.setCandles(all);
+    drawPrimRef.current?.projector?.setBars(all.map((c) => c.time), TF_SECONDS[tfRef.current]);
+    drawPrimRef.current?.update({});
+  }, []);
 
   // панели под графиком в порядке сверху вниз: индикаторы в отдельных панелях и крипто-панели
   const paneEntries = useCallback(() => {
@@ -269,15 +310,22 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
       tokens: tokensFromElement(el),
       type,
       onNeedOlder: (before) => {
-        void needOlderRef.current(before).then((r) => {
-          if (!r) return;
-          term.addOlder(r.candles, r.hasOlder);
-        });
+        const gen = genRef.current;
+        needOlderRef
+          .current(before)
+          .then((r) => {
+            if (gen !== genRef.current) return; // пока грузилось, сменились инструмент или таймфрейм
+            if (!r) return term.olderFailed();
+            term.addOlder(r.candles, r.hasOlder);
+            syncModel();
+            setHistoryRev((h) => h + 1);
+          })
+          .catch(() => term.olderFailed());
       },
       onVisibleRange: (r) => {
-        const all = candlesRef.current;
-        const i = r ? Math.min(all.length - 1, Math.max(0, Math.floor(r.from))) : -1;
-        const t = i >= 0 ? (all[i]?.time ?? null) : null;
+        // время первой видимой свечи — прямо со шкалы, а не по индексу в отдельном массиве
+        const vr = r ? termRef.current?.chart.timeScale().getVisibleRange() : null;
+        const t = vr ? (vr.from as number) : null;
         if (t === visibleFromRef.current) return;
         visibleFromRef.current = t;
         // счётчик «Найдено» обновляем после паузы, а не на каждой свече во время перетаскивания
@@ -290,9 +338,11 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
     // после загрузки веб-шрифта шкалу нужно перемерить: иначе ширина подписей посчитана по запасному шрифту
     void document.fonts?.ready.then(() => termRef.current?.chart.applyOptions({ layout: { fontFamily: tokensFromElement(el).fontMono } }));
     termRef.current = term;
+    // новый график пуст: следующие данные — замена, а не дописывание (и после повторного монтирования в StrictMode)
+    loadedRef.current = null;
     onReadyRef.current?.({
       zoom: (f) => term.zoom(f),
-      reset: () => term.resetView(150),
+      reset: () => term.resetView(viewBarPx()),
       clearCrosshair: () => {
         stickyRef.current = false;
         delete el.dataset.sticky;
@@ -323,7 +373,7 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
           const d = drawingsRef.current;
           return d ? visibleOn(d.state, tfRef.current) : [];
         },
-        getCandles: () => candlesRef.current,
+        getCandles: () => term.candles,
         tfSeconds: TF_SECONDS[tfRef.current],
         timeframe: null,
         touch: prim.touch,
@@ -339,16 +389,19 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
       },
     );
     ctrlRef.current = ctrl;
-    const obs = new MutationObserver(() => {
-      term.setTheme(tokensFromElement(el));
-      prim.update({ tokens: tokensFromElement(el) });
-      vp.setTokens(vpTokens(tokensFromElement(el)));
-    });
+    // тема: фон, свечи, рисунки и профиль — сразу; слои, индикаторы и панели — через themeRev
+    const onTheme = () => {
+      const tk = tokensFromElement(el);
+      term.setTheme(tk);
+      prim.update({ tokens: tk });
+      vp.setTokens(vpTokens(tk));
+      setThemeRev((v) => v + 1);
+    };
+    const obs = new MutationObserver(onTheme);
     obs.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    const onMq = () => term.setTheme(tokensFromElement(el));
-    mq.addEventListener("change", onMq);
-    const onDbl = () => term.resetView(120);
+    mq.addEventListener("change", onTheme);
+    const onDbl = () => term.resetView(viewBarPx());
     el.addEventListener("dblclick", onDbl);
     // перекрестие → свеча и значения индикаторов; на телефоне long-press (300 мс) включает «липкий» режим
     const emit = (time: number | null) => {
@@ -356,10 +409,10 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
         if (!stickyRef.current) onCrosshairRef.current?.(null);
         return;
       }
-      const all = candlesRef.current;
-      const i = all.findIndex((c) => c.time === time);
+      const all = term.candles;
+      const i = indexOfTime(all, time);
       if (i < 0) return;
-      const values = [...valuesRef.current.values()].map((v) => ({ label: v.label, value: v.values[i] ?? null, color: v.color }));
+      const values = [...valuesRef.current.values()].map((v) => ({ label: v.label, value: v.values[i] ?? null, color: v.color, price: v.price }));
       onCrosshairRef.current?.({ candle: all[i]!, values });
     };
     term.chart.subscribeCrosshairMove((p) => emit(typeof p.time === "number" ? p.time : null));
@@ -407,7 +460,7 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
       paneObs.disconnect();
       paneObsRef.current = null;
       obs.disconnect();
-      mq.removeEventListener("change", onMq);
+      mq.removeEventListener("change", onTheme);
       el.removeEventListener("dblclick", onDbl);
       el.removeEventListener("pointerdown", onPDown);
       el.removeEventListener("pointermove", onPMove);
@@ -432,38 +485,55 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // данные
+  // данные: смена инструмента или таймфрейма — замена свечей и сброс вида; закрытие свечи — дописывание,
+  // масштаб, прокрутка и подгруженная слева история пользователя сохраняются (план 2A.7)
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
-    const all = current ? [...candles, current] : candles;
-    term.setCandles(all, true);
-    term.resetView(150);
-    candlesRef.current = all;
-    vpRef.current?.setCandles(all);
-    drawPrimRef.current?.projector?.setBars(all.map((c) => c.time), TF_SECONDS[tf]);
-    drawPrimRef.current?.update({});
-    const { precision, minMove } = precisionOf(tick);
-    // на телефоне крупные цены без дробной части и шрифт мельче — шкала занимает меньше места
-    const narrow = window.matchMedia(MOBILE_QUERY).matches;
-    term.chart.applyOptions({
-      layout: { fontSize: narrow ? MOBILE_SCALE_FONT_PX : DESKTOP_SCALE_FONT_PX },
-      localization: { priceFormatter: (p: number) => (narrow ? formatPriceShort(p, precision) : formatPriceLabel(p, precision)), tickmarksPriceFormatter: (ps: number[]) => formatTicks(ps) },
-    });
-    void minMove;
+    const prev = loadedRef.current;
+    const same = prev !== null && prev.key === dataKey && prev.tf === tf;
+    if (same && prev.candles.length === 0 && candles.length === 0) return;
+    const n = prev?.candles.length ?? 0;
+    const append = same && n > 0 && candles.length >= n && candles[0]?.time === prev.candles[0]?.time && candles[n - 1]?.time === prev.candles[n - 1]?.time;
+    loadedRef.current = { key: dataKey, tf, candles };
+    if (append) {
+      // закрывшиеся свечи заменяют текущую с тем же временем; новая текущая придёт через term.update(current)
+      for (const c of candles.slice(n)) term.update(c);
+    } else {
+      genRef.current++;
+      const all = current ? [...candles, current] : candles;
+      term.setCandles(all, true);
+      if (all.length > 0) term.resetView(viewBarPx());
+    }
+    syncModel();
+    // текущая свеча обновляется своим эффектом ниже; здесь она нужна только при замене
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [candles, tick]);
+  }, [candles, tf, dataKey, syncModel]);
+
+  useEffect(() => {
+    const mq = window.matchMedia(MOBILE_QUERY);
+    const onChange = () => setNarrow(mq.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+
+  // формат цены инструмента: точность и минимальный шаг из шага цены — основной серии, наложенным линиям и
+  // подписям рисунков; на телефоне крупные цены без дробной части и шрифт мельче — шкала занимает меньше места.
+  // Шрифт хранит Terminal: смена темы его не сбрасывает
+  useEffect(() => {
+    const term = termRef.current;
+    if (!term) return;
+    term.setFontSize(narrow ? MOBILE_SCALE_FONT_PX : DESKTOP_SCALE_FONT_PX);
+    term.setPriceFormat(instrumentPriceFormat(tick, narrow));
+    drawPrimRef.current?.update({ precision: tickPrecision(tick) });
+  }, [tick, narrow]);
 
   useEffect(() => {
     const term = termRef.current;
-    if (term && current) term.update(current);
-    if (current) {
-      const all = [...candles, current];
-      candlesRef.current = all;
-      vpRef.current?.setCandles(all);
-      drawPrimRef.current?.projector?.setBars(all.map((c) => c.time), TF_SECONDS[tf]);
-    }
-  }, [current, candles, tf]);
+    if (!term || !current) return;
+    term.update(current);
+    syncModel();
+  }, [current, syncModel]);
 
   // рисунки: синхронизируем примитив и контроллер с внешним состоянием
   useEffect(() => {
@@ -479,19 +549,21 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
     termRef.current?.setScaleMode(scale);
   }, [scale]);
 
+  // наложенный инструмент: цвет — токен --warn, перечитывается и при смене темы (themeRev)
   useEffect(() => {
     const term = termRef.current;
     if (!term || !ref.current) return;
     term.setOverlay(overlay, tokensFromElement(ref.current).warn);
-  }, [overlay]);
+  }, [overlay, themeRev]);
 
   useEffect(() => {
     termRef.current?.setType(type);
-    // маркеры привязаны к старой серии — пересоздать при следующем расчёте слоёв
+    // маркеры привязаны к старой серии — пересоздать при следующем расчёте слоёв; проектор рисунков — новый
     markersRef.current = null;
-  }, [type]);
+    syncModel();
+  }, [type, syncModel]);
 
-  // индикаторы: по активному списку создаём панели/серии, считаем на всех свечах
+  // индикаторы: по активному списку создаём панели/серии, считаем на всех свечах буфера (и подгруженных слева)
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
@@ -514,7 +586,7 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
         for (const k of [...valuesRef.current.keys()]) if (k.startsWith(`${id}.`)) valuesRef.current.delete(k);
       }
     }
-    const all = current ? [...candles, current] : candles;
+    const all = term.candles;
     for (const ind of indicators) {
       const spec = indicatorById(ind.id);
       if (!spec) continue;
@@ -523,7 +595,9 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
         const paneIndex = spec.pane === "separate" ? term.addPane(PANE_INDICATOR_PX) : null;
         const series: Pane["series"] = {};
         for (const sp of spec.series) {
-          series[sp.key] = sp.kind === "histogram" ? term.addHistogram(paneIndex ?? 0, color(sp.color)) : term.addLine(paneIndex ?? 0, color(sp.color), sp.width ?? 1);
+          // наложенные линии — в ценах инструмента (формат шкалы цены), на отдельной панели — свой формат
+          const fmt = paneIndex === null ? undefined : indicatorFormat(spec.id);
+          series[sp.key] = sp.kind === "histogram" ? term.addHistogram(paneIndex ?? 0, color(sp.color), fmt) : term.addLine(paneIndex ?? 0, color(sp.color), sp.width ?? 1, fmt);
           // у линий на графике цены метки на шкале не нужны: их значения есть в карточке, а шкала остаётся читаемой
           if (spec.pane === "overlay") series[sp.key]!.applyOptions({ lastValueVisible: false });
         }
@@ -534,14 +608,16 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
       }
       const ck = indicatorColor(ind.id);
       const base = indColor(ck);
-      if (pane.colorKey !== ck) {
+      // цвет перечитывается и при смене темы: у светлой и тёмной темы свои оттенки --ind-*
+      const colorKey = `${ck}|${themeRev}`;
+      if (pane.colorKey !== colorKey) {
         spec.series.forEach((sp, i) => pane!.series[sp.key]?.applyOptions({ color: seriesColor(spec, i, base) }));
-        pane.colorKey = ck;
+        pane.colorKey = colorKey;
         pane.base = base;
       }
       const out = spec.compute(all, { ...defaultParams(spec), ...ind.params });
       const short = SHORT_TITLE[spec.id] ?? spec.title;
-      spec.series.forEach((sp, i) => valuesRef.current.set(`${ind.id}.${sp.key}`, { label: spec.series.length === 1 || sp.label === spec.title || sp.label === short ? short : `${short} ${sp.label}`, values: out[sp.key] ?? [], color: seriesColor(spec, i, base) }));
+      spec.series.forEach((sp, i) => valuesRef.current.set(`${ind.id}.${sp.key}`, { label: spec.series.length === 1 || sp.label === spec.title || sp.label === short ? short : `${short} ${sp.label}`, values: out[sp.key] ?? [], color: seriesColor(spec, i, base), price: spec.pane === "overlay" }));
       for (const sp of spec.series) {
         const values = out[sp.key] ?? [];
         const data = all.map((c, i) => ({ time: c.time as UTCTimestamp, value: values[i] })).filter((d) => d.value != null) as { time: UTCTimestamp; value: number }[];
@@ -549,9 +625,11 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
       }
     }
     requestAnimationFrame(relayout);
-  }, [indicators, candles, current, paneAdded, relayout]);
+  }, [indicators, candles, current, historyRev, themeRev, paneAdded, relayout]);
 
-  // крипто-панели (план 2A.4): funding, OI, ликвидации — данные с сервера, выровнены по корзинам tf
+  // крипто-панели (план 2A.4): funding, OI, ликвидации — данные с сервера. Ставятся только после свечей и
+  // только на время свечей (alignToCandles): точка левее первой свечи или между свечами меняла шкалу времени,
+  // и с панелью OI график открывался на 84 дня в прошлом
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
@@ -564,38 +642,48 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
         collapsedRef.current.delete(k);
       }
     }
-    if (!derivatives) return;
-    const asLine = (rows: { t: number; v: string }[]) => rows.map((r) => ({ time: r.t as UTCTimestamp, value: Number(r.v) }));
+    const model = term.candles;
+    if (!derivatives || model.length === 0) return;
+    const times = model.map((c) => c.time);
+    const lastEnd = times[times.length - 1]! + TF_SECONDS[tf];
+    const asLine = (rows: { t: number; v: string }[], k = 1) => alignToCandles(rows, times, lastEnd).map(({ time, row }) => ({ time: time as UTCTimestamp, value: Number(row.v) * k }));
+    const liqRows = alignToCandles(derivatives.liquidations, times, lastEnd, (a, b) => ({ t: b.t, long: String(Number(a.long) + Number(b.long)), short: String(Number(a.short) + Number(b.short)) }));
+    // цвета — заново при каждой смене темы; формат шкалы — свой у каждой панели (проценты, компактно)
+    const colors: Record<PanelKey, string[]> = { funding: [tokens.warn], oi: [tokens.accent], ls: [tokens.accent, tokens.warn], liq: [tokens.up, tokens.down] };
     for (const k of panels) {
       let p = cryptoRef.current.get(k);
       if (!p) {
         const paneIndex = term.addPane(PANE_CRYPTO_PX);
         const series: ISeriesApi<"Line" | "Histogram">[] = [];
-        if (k === "funding") series.push(term.addLine(paneIndex, tokens.warn, 1));
-        else if (k === "oi") series.push(term.addLine(paneIndex, tokens.accent, 1));
-        else if (k === "ls") series.push(term.addLine(paneIndex, tokens.accent, 1), term.addLine(paneIndex, tokens.warn, 1));
-        else series.push(term.addHistogram(paneIndex, tokens.up), term.addHistogram(paneIndex, tokens.down));
+        if (k === "funding") series.push(term.addLine(paneIndex, tokens.warn, 1, PERCENT_FORMAT));
+        else if (k === "oi") series.push(term.addLine(paneIndex, tokens.accent, 1, COMPACT_FORMAT));
+        else if (k === "ls") series.push(term.addLine(paneIndex, tokens.accent, 1, VALUE_FORMAT), term.addLine(paneIndex, tokens.warn, 1, VALUE_FORMAT));
+        else series.push(term.addHistogram(paneIndex, tokens.up, COMPACT_FORMAT), term.addHistogram(paneIndex, tokens.down, COMPACT_FORMAT));
         p = { paneIndex, series };
         cryptoRef.current.set(k, p);
         paneAdded(k, series[0]!);
       }
-      if (k === "funding") p.series[0]!.setData(asLine(derivatives.funding.map((r) => ({ t: r.t, v: String(Number(r.v) * 100) }))) as never);
+      p.series.forEach((sr, i) => sr.applyOptions({ color: colors[k][i] }));
+      if (k === "funding") p.series[0]!.setData(asLine(derivatives.funding, 100) as never);
       else if (k === "oi") p.series[0]!.setData(asLine(derivatives.oi) as never);
       else if (k === "ls") {
         p.series[0]!.setData(asLine(derivatives.ls_ratio ?? []) as never);
         p.series[1]!.setData(asLine(derivatives.ls_top ?? []) as never);
       } else {
-        p.series[0]!.setData(derivatives.liquidations.map((r) => ({ time: r.t as UTCTimestamp, value: Number(r.long), color: tokens.up })) as never);
-        p.series[1]!.setData(derivatives.liquidations.map((r) => ({ time: r.t as UTCTimestamp, value: -Number(r.short), color: tokens.down })) as never);
+        p.series[0]!.setData(liqRows.map(({ time, row }) => ({ time: time as UTCTimestamp, value: Number(row.long), color: tokens.up })) as never);
+        p.series[1]!.setData(liqRows.map(({ time, row }) => ({ time: time as UTCTimestamp, value: -Number(row.short), color: tokens.down })) as never);
       }
     }
     requestAnimationFrame(relayout);
-  }, [derivatives, panels, paneAdded, relayout]);
+  }, [derivatives, panels, candles, historyRev, themeRev, tf, paneAdded, relayout]);
 
-  // слои: зоны (прямоугольники), структура (отрезки BOS/CHoCH, свинги), уровни, сигналы
+  // слои: зоны (прямоугольники), структура (отрезки BOS/CHoCH, свинги), уровни, сигналы. Токены читаются при
+  // каждом пересчёте, в том числе сразу после смены темы (themeRev): тёмная палитра на белом не остаётся
   useEffect(() => {
     const term = termRef.current;
-    if (!term || candles.length === 0) return;
+    // та же модель свечей, что у графика: с подгруженной слева историей отрезки не обрезаются по первой порции
+    const model = term?.candles ?? [];
+    if (!term || model.length === 0) return;
     const el = ref.current!;
     const tokens = tokensFromElement(el);
     const alpha = (hex: string, a: number) => {
@@ -609,16 +697,17 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
     auxRef.current.forEach((sr) => term.chart.removeSeries(sr));
     auxRef.current = [];
     if (!boxRef.current) return;
-    const first = candles[0]!.time;
-    const last = lastT ?? candles[candles.length - 1]!.time;
-    const step = (candles[1]?.time ?? first + 1) - first;
-    const snap = (t: number) => Math.floor(t / step) * step;
+    const first = model[0]!.time;
+    const last = lastT ?? model[model.length - 1]!.time;
+    const step = TF_SECONDS[tf];
+    // начало свечи tf (неделя — с понедельника, как у Binance; от эпохи вышел бы четверг)
+    const snap = (t: number) => bucketStart(tf, t);
     // все горизонтальные линии — в одном canvas-слое: на графике тонкая линия и короткий код (R, S, SL, TP1…),
     // цена — меткой на шкале; длинных надписей поверх свечей нет
     const hlines: HLine[] = [];
-    const { precision } = precisionOf(tick);
-    const short = window.matchMedia(MOBILE_QUERY).matches;
-    const fp = (p: number) => (short ? formatPriceShort(p, precision) : formatPriceLabel(p, precision));
+    const precision = tickPrecision(tick);
+    // тот же признак узкой шкалы, что у формата основной серии: подписи уровней и цена на шкале — в одном формате
+    const fp = (p: number) => (narrow ? formatPriceShort(p, precision) : formatPriceLabel(p, precision));
     // axis — цвет метки на шкале (сплошной токен) или false, если метка не нужна
     const seg = (from: number, to: number | null, price: number, c: string, style: 0 | 1 | 2 | 3, width: 1 | 2 = 1, tag?: string, priority = 0, axis: string | false = false) => {
       const a = Math.max(snap(from), first);
@@ -631,7 +720,7 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
     const markers: SeriesMarker<Time>[] = [];
     if (st && layersOn.zones) {
       // только активные зоны, пересекающиеся склеены; заливка без рамки, как FVG в терминалах; спрос — зелёный, предложение — красный
-      const price = candles[candles.length - 1]!.close;
+      const price = (candles[candles.length - 1] ?? model[model.length - 1]!).close;
       for (const g of mergeZones(st.zones, price).slice(0, ZONES_MAX)) {
         const c = g.dir === "up" ? tokens.up : g.dir === "down" ? tokens.down : tokens.accent;
         boxes.push({ id: `z-${g.fromT}-${g.bottom}`, from: Math.max(snap(g.fromT), first) as Time, to: null, top: g.top, bottom: g.bottom, fill: alpha(c, ZONE_FILL_ALPHA), stroke: "transparent", label: g.codes.join("+"), labelColor: alpha(c, 0.8), labelSize: TAG_PX });
@@ -694,9 +783,14 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
         for (const ln of f.lines) {
           const a = snap(ln.a[0]);
           const b = Math.max(snap(ln.b[0]), a + step);
-          if (b < first) continue;
+          // только в пределах свечей: точка правее последней свечи добавляла на шкалу времени пустое деление,
+          // и каждое пересоздание линии (новая свеча, подгрузка истории) сдвигало вид пользователя на бар
+          const t0 = Math.max(a, first);
+          const t1 = Math.min(b, last);
+          if (t1 <= t0) continue;
+          const at = (x: number) => Number(ln.a[1]) + ((Number(ln.b[1]) - Number(ln.a[1])) * (x - a)) / Math.max(1, b - a);
           const ls = term.chart.addSeries(LineSeries, { color, lineWidth: hl ? 2 : 1, lineStyle: style, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
-          ls.setData([{ time: Math.max(a, first) as UTCTimestamp, value: Number(ln.a[1]) + ((Number(ln.b[1]) - Number(ln.a[1])) * (Math.max(a, first) - a)) / Math.max(1, b - a) }, { time: Math.min(b, last + step) as UTCTimestamp, value: Number(ln.b[1]) }]);
+          ls.setData([{ time: t0 as UTCTimestamp, value: at(t0) }, { time: t1 as UTCTimestamp, value: at(t1) }]);
           auxRef.current.push(ls);
         }
         if (f.status === "confirmed" && f.target && f.confirm_t) seg(f.confirm_t, null, Number(f.target), tokens.up, 1, 1, "TGT", 2);
@@ -728,7 +822,7 @@ export function TerminalView({ candles, current, tf, type, indicators, layersOn,
     markers.sort((a, b) => (a.time as number) - (b.time as number));
     if (!markersRef.current) markersRef.current = createSeriesMarkers(main, markers);
     else markersRef.current.setMarkers(markers);
-  }, [layers, layersOn, candles, lastT, tf, type, patterns, highlight, figures, highlightFigure, alertKey, t, tick, srLevels, liqMap]);
+  }, [layers, layersOn, candles, lastT, tf, type, patterns, highlight, figures, highlightFigure, alertKey, t, tick, narrow, srLevels, liqMap, historyRev, themeRev]);
 
   return (
     <div className={s.chart}>

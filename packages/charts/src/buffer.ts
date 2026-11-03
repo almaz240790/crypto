@@ -2,8 +2,8 @@ import type { Candle } from "./types";
 
 export const MAX_CANDLES = 5000;
 export const PAGE = 500;
-export const EDGE = 100;
 /** За сколько свечей до левого края просим следующую порцию. */
+export const EDGE = 100;
 
 export type BufferState = {
   candles: Candle[];
@@ -27,15 +27,20 @@ function sortUnique(candles: Candle[]): Candle[] {
   return [...map.values()].sort((a, b) => a.time - b.time);
 }
 
-/** Пришла порция старых свечей (все старше первой в буфере). Лишнее справа выгружается. */
+/**
+ * Пришла порция старых свечей (все старше первой в буфере). Свежие свечи справа никогда не выгружаются:
+ * если буфер полон, из порции берётся только самая новая часть, а дальше влево история не грузится
+ * (needsOlder молчит), — иначе живые обновления перестали бы попадать на график.
+ */
 export function prependOlder(state: BufferState, older: Candle[], hasOlder: boolean): BufferState {
   const first = state.candles[0]?.time ?? Infinity;
-  const merged = [...sortUnique(older).filter((c) => c.time < first), ...state.candles];
-  const over = Math.max(0, merged.length - MAX_CANDLES);
+  const fresh = sortUnique(older).filter((c) => c.time < first);
+  const room = Math.max(0, MAX_CANDLES - state.candles.length);
+  const kept = fresh.slice(Math.max(0, fresh.length - room));
   return {
-    candles: over ? merged.slice(0, merged.length - over) : merged,
-    hasOlder,
-    trimmedRight: state.trimmedRight + over,
+    candles: [...kept, ...state.candles],
+    hasOlder: hasOlder || kept.length < fresh.length,
+    trimmedRight: state.trimmedRight,
   };
 }
 
@@ -58,9 +63,9 @@ export function replaceNewest(state: BufferState, newest: Candle[]): BufferState
   return { candles: over ? merged.slice(over) : merged, hasOlder: state.hasOlder || over > 0, trimmedRight: 0 };
 }
 
-/** Нужна ли порция слева для видимого диапазона (индексы логической шкалы). */
+/** Нужна ли порция слева для видимого диапазона (индексы логической шкалы); в полный буфер не грузим. */
 export function needsOlder(state: BufferState, visibleFrom: number): boolean {
-  return state.hasOlder && visibleFrom < EDGE;
+  return state.hasOlder && state.candles.length < MAX_CANDLES && visibleFrom < EDGE;
 }
 
 /** Нужна ли перезагрузка правого края. */

@@ -6,7 +6,7 @@
  * снятия ликвидности, маркеры событий трекера, свечные паттерны на сигнальной свече.
  * Без рисования и настройки индикаторов. Тема — из CSS-токенов.
  */
-import { createTerminal, tokensFromElement, type Layer as ChartLayer, type LayerContext, type Terminal } from "@platform/charts";
+import { createTerminal, tickFormat, tokensFromElement, type Layer as ChartLayer, type LayerContext, type Terminal } from "@platform/charts";
 import { LineSeries, createSeriesMarkers, type IPriceLine, type ISeriesApi, type ISeriesMarkersPluginApi, type SeriesMarker, type Time, type UTCTimestamp } from "lightweight-charts";
 import { useEffect, useRef, useState } from "react";
 import { PATTERN_LABEL, type PatternOnChart } from "@/lib/chart";
@@ -100,13 +100,8 @@ function snap(t: UTCTimestamp, step: number): UTCTimestamp {
   return (Math.floor(t / step) * step) as UTCTimestamp;
 }
 
-function precisionOf(tick: string | null): { precision: number; minMove: number } {
-  if (!tick) return { precision: 2, minMove: 0.01 };
-  const t = tick.replace(/0+$/, "");
-  const i = t.indexOf(".");
-  const p = i < 0 ? 0 : t.length - i - 1;
-  return { precision: p, minMove: Number(tick) || 0.01 };
-}
+/** Точность и шаг цены — общим расчётом пакета графика (понимает и запись 1.000E-7). */
+const precisionOf = (tick: string | null) => tickFormat(tick);
 
 export function SignalChart({ candles, tf, signal, analysis, events, patterns = [], highlight, tick, lastPrice, height = 380 }: Props) {
   const t = useT();

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { channelOffset, distToSegment, extend, fibLevels, hitTest, lineAt, magnetSnap, positionStats, rulerInfo, type Projector } from "../drawings/geometry";
 import { addDrawing, alive, canRedo, canUndo, clearDrawings, createState, mergeRemote, redo, removeDrawing, resolve, toggleLock, undo, updateDrawing, visibleOn } from "../drawings/store";
 import { HANDLE_TOUCH_PX, UNDO_STEPS, pointsNeeded, type Drawing } from "../drawings/types";
+import { formatDrawingPrice } from "../drawings/primitive";
 import type { Candle } from "../types";
 
 const d = (id: string, type: Drawing["type"] = "trend", points = [{ time: 0, price: 100 }, { time: 60, price: 110 }]): Drawing => ({ id, type, points, style: { color: "accent", width: 1, dashed: false }, locked: false, timeframe: null, updated_at: 0 });
@@ -114,5 +115,18 @@ describe("слияние с сервером (два устройства)", () 
     const merged = mergeRemote(local, [other, remoteNewer]);
     expect(merged.items.map((x) => x.id)).toEqual(["b", "a"]);
     expect(visibleOn(mergeRemote(local, [gone]), "4h")).toEqual([]);
+  });
+});
+
+describe("цены в подписях рисунков", () => {
+  it("с точностью инструмента и разрядами, как на шкале и в шапке", () => {
+    // шаг 1e-7: семь знаков, а не четыре значащие цифры («0.004700» вместо 0.0046999)
+    expect(formatDrawingPrice(0.0046999, 7)).toBe("0.0046999");
+    expect(formatDrawingPrice(2344.158, 2)).toBe("2 344.16");
+    expect(formatDrawingPrice(80432.61, 1)).toBe("80 432.6");
+  });
+  it("шаг цены ещё неизвестен — прежняя запись", () => {
+    expect(formatDrawingPrice(80432.61, null)).toBe("80432.6");
+    expect(formatDrawingPrice(0.0046999, null)).toBe("0.004700");
   });
 });

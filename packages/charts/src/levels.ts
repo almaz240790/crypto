@@ -105,17 +105,29 @@ export const LIQ_DEFAULTS: LiqOptions = {
   top: 3,
 };
 
+/** Минимальная доля закрытых свечей с точкой открытого интереса, при которой карта ликвидаций строится. */
+export const LIQ_MIN_OI_COVERAGE = 0.5;
+
+/** Доля закрытых свечей окна карты, для которых есть точка открытого интереса с тем же временем. */
+export function oiCoverage(candles: readonly Candle[], oi: readonly { t: number; v: number }[] | null, lookback = LIQ_DEFAULTS.lookback): number {
+  const cs = closedTail(candles, lookback);
+  if (cs.length === 0 || !oi || oi.length === 0) return 0;
+  const has = new Set(oi.map((x) => x.t));
+  return cs.filter((c) => has.has(c.time)).length / cs.length;
+}
+
 /**
  * Расчётная карта ликвидаций — оценка, не данные биржи. Позиции «открываются» по типичной цене свечи
- * с весом прироста открытого интереса в USDT (если OI нет — объёма × цена), по половине в лонг и шорт. Для каждого плеча
- * считается цена ликвидации; уровни, до которых цена уже доходила после открытия, считаются сработавшими.
+ * с весом прироста открытого интереса в USDT, по половине в лонг и шорт. Для каждого плеча считается цена
+ * ликвидации; уровни, до которых цена уже доходила после открытия, считаются сработавшими.
+ * Если открытый интерес есть меньше чем у половины свечей (нет данных, другой таймфрейм корзин), карты нет:
+ * подменять OI объёмом под названием «Ликвидации» нельзя — суммы получаются в разы больше всего OI.
  */
 export function liquidationMap(candles: readonly Candle[], oi: readonly { t: number; v: number }[] | null, opts: Partial<LiqOptions> = {}): LiqMap | null {
   const o = { ...LIQ_DEFAULTS, ...opts };
   const cs = closedTail(candles, o.lookback);
-  if (cs.length < 2) return null;
+  if (cs.length < 2 || oiCoverage(cs, oi, o.lookback) < LIQ_MIN_OI_COVERAGE) return null;
   const oiAt = new Map((oi ?? []).map((x) => [x.t, x.v]));
-  const useOi = cs.filter((c) => oiAt.has(c.time)).length >= cs.length / 2;
   // после свечи i: минимум low и максимум high до конца — сработала ли ликвидация
   const n = cs.length;
   const minAfter = new Array<number>(n).fill(Infinity);
@@ -132,15 +144,11 @@ export function liquidationMap(candles: readonly Candle[], oi: readonly { t: num
   let prevOi: number | null = null;
   for (let i = 0; i < n; i++) {
     const c = cs[i]!;
-    let w = 0;
-    if (useOi) {
-      const v = oiAt.get(c.time);
-      w = v != null && prevOi != null ? Math.max(0, v - prevOi) : 0;
-      if (v != null) prevOi = v;
-    }
-    const entry = (c.high + c.low + c.close) / 3;
-    if (!useOi) w = c.volume * entry;
+    const v = oiAt.get(c.time);
+    const w = v != null && prevOi != null ? Math.max(0, v - prevOi) : 0;
+    if (v != null) prevOi = v;
     if (w <= 0) continue;
+    const entry = (c.high + c.low + c.close) / 3;
     for (const [lev, share] of o.leverages) {
       const half = (w * share) / 2;
       const longLiq = entry * (1 - 1 / lev + o.mmr);

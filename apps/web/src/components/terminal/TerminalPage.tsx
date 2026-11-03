@@ -25,7 +25,7 @@ import { useTerminalData } from "./useTerminalData";
 import { useT } from "@/i18n/client";
 import { getBillingMe } from "@/lib/billing";
 import { mergeZones } from "@/lib/zones";
-import { liquidationMap, supportResistance } from "@platform/charts";
+import { LIQ_MIN_OI_COVERAGE, formatCompactValue, formatIndicatorValue, liquidationMap, oiCoverage, supportResistance } from "@platform/charts";
 
 const TYPE_LABEL: Record<ChartType, string> = { candles: "Свечи", bars: "Бары", line: "Линия", heikin: "Heikin Ashi" };
 const LAYER_LABEL: Record<LayerKey, string> = { structure: "Структура", zones: "Зоны", levels: "Макс./мин. дня и недели", signals: "Сигналы", patterns: "Паттерны", figures: "Фигуры", volume_profile: "Профиль объёма", sr: "Поддержка и сопротивление", liq_map: "Карта ликвидаций (оценка)" };
@@ -152,7 +152,10 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
     const st = data.layers?.structure;
     return st && cs.length ? mergeZones(st.zones, cs[cs.length - 1]!.close).slice(0, 2) : [];
   }, [data.candles, data.layers]);
-  const liqMap = useMemo(() => liquidationMap(data.candles ?? [], data.derivatives?.oi.map((x) => ({ t: x.t, v: Number(x.v) })) ?? null), [data.candles, data.derivatives]);
+  const oiPoints = useMemo(() => data.derivatives?.oi.map((x) => ({ t: x.t, v: Number(x.v) })) ?? null, [data.derivatives]);
+  const liqMap = useMemo(() => liquidationMap(data.candles ?? [], oiPoints), [data.candles, oiPoints]);
+  // открытого интереса меньше чем у половины свечей — оценки нет; объём вместо OI под этим именем не показываем
+  const liqUnavailable = useMemo(() => !!data.derivatives && (data.candles?.length ?? 0) > 0 && oiCoverage(data.candles ?? [], oiPoints) < LIQ_MIN_OI_COVERAGE, [data.candles, data.derivatives, oiPoints]);
   // «Найдено»: значимые паттерны и неотменённые фигуры на видимом участке
   const foundCount = (data.patterns?.items ?? []).filter((p) => p.significant && (visibleFrom === null || p.t >= visibleFrom)).length + (data.figures?.items ?? []).filter((f) => f.status !== "invalidated" && (visibleFrom === null || f.end_t >= visibleFrom)).length;
 
@@ -372,7 +375,9 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
     [dr.state, dr.tool, dr.magnet, dr.draft, dr.actions, dr.setDraft],
   );
 
-  const fmtV = (v: number | null) => (v == null ? "—" : Math.abs(v) >= 1000 ? v.toFixed(1) : Math.abs(v) >= 1 ? v.toFixed(2) : v.toPrecision(3));
+  // карточка перекрестия: цены — по шагу цены инструмента (как шкала), объём — компактно, индикаторы панелей — значениями
+  const fmtP = (v: number | null) => (v == null ? "—" : formatPrice(v, data.tick));
+  const fmtV = (v: { value: number | null; price: boolean }) => (v.value == null ? "—" : v.price ? formatPrice(v.value, data.tick) : formatIndicatorValue(v.value));
   return (
     <div className={s.page} data-bars={bars}>
       <button type="button" className={`${s.chip} ${s.fsBtn}`} onClick={() => setBars(bars === "shown" ? "hidden" : "shown")} aria-label={bars === "shown" ? t("скрыть панели") : t("показать панели")}>
@@ -399,7 +404,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
         <button type="button" className={s.chip} onClick={() => controls.current?.zoom(0.8)} aria-label={t("отдалить")} title={t("Отдалить (клавиша −)")}>
           −
         </button>
-        <button type="button" className={s.chip} onClick={() => controls.current?.reset()} aria-label={t("показать последние свечи")} title={t("Последние 150 свечей (двойной клик по графику)")}>
+        <button type="button" className={s.chip} onClick={() => controls.current?.reset()} aria-label={t("показать последние свечи")} title={t("Последние свечи (двойной клик по графику)")}>
           ⟲
         </button>
         <select aria-label={t("тип графика")} value={st.type} onChange={(e) => setSaved({ ...st, type: e.target.value as ChartType, updated_at: Date.now() })}>
@@ -432,7 +437,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
         <button type="button" className={`${s.chip} ${s.desktopOnly}`} aria-pressed={objects === "shown"} onClick={() => setObjects(objects === "shown" ? "hidden" : "shown")}>{t("Объекты")}</button>
       </div>
       <div className={s.strip} aria-label={t("состояние")}>
-        <span>{t("цена")}{" "}<strong>{formatPrice(price == null ? null : String(price))}</strong>
+        <span>{t("цена")}{" "}<strong>{formatPrice(price == null ? null : String(price), data.tick)}</strong>
         </span>
         <span className={change == null ? "" : change >= 0 ? "up" : "down"}>{formatPct(change)}</span>
         <span>{t("до закрытия")}{" "}<strong>{countdown == null ? "—" : fmtCountdown(countdown)}</strong>
@@ -442,7 +447,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
             {t("Тренд")}: {t("день")} <strong className={TREND_TONE[bias.d1_trend] ?? ""}>{t(TREND_WORD[bias.d1_trend] ?? bias.d1_trend)}</strong> · {t("неделя")} <strong className={TREND_TONE[bias.w1_trend] ?? ""}>{t(TREND_WORD[bias.w1_trend] ?? bias.w1_trend)}</strong>
           </span>
         )}
-        {data.layers?.structure?.atr && <span className={s.desktopOnly} title={t("Средний размах одной свечи (ATR 14): насколько обычно ходит цена за свечу.")}>{t("Ход за свечу")} <strong>{formatPrice(data.layers.structure.atr)}</strong></span>}
+        {data.layers?.structure?.atr && <span className={s.desktopOnly} title={t("Средний размах одной свечи (ATR 14): насколько обычно ходит цена за свечу.")}>{t("Ход за свечу")} <strong>{formatPrice(data.layers.structure.atr, data.tick)}</strong></span>}
         {data.derivatives?.funding_current && (
           <span className={s.desktopOnly} title={t("Ставка финансирования фьючерса: плюс — лонги платят шортам, минус — наоборот.")}>
             {t("Фандинг")} <strong>{(Number(data.derivatives.funding_current) * 100).toFixed(4)} %</strong>
@@ -467,19 +472,19 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
           </button>
           <span>{new Date(cross.candle.time * 1000).toLocaleString("ru-RU", { timeZone: "UTC", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })} UTC</span>
           <span>
-            O <strong>{fmtV(cross.candle.open)}</strong>
+            O <strong>{fmtP(cross.candle.open)}</strong>
           </span>
           <span>
-            H <strong>{fmtV(cross.candle.high)}</strong>
+            H <strong>{fmtP(cross.candle.high)}</strong>
           </span>
           <span>
-            L <strong>{fmtV(cross.candle.low)}</strong>
+            L <strong>{fmtP(cross.candle.low)}</strong>
           </span>
           <span className={cross.candle.close >= cross.candle.open ? "up" : "down"}>
-            C <strong>{fmtV(cross.candle.close)}</strong> {(((cross.candle.close - cross.candle.open) / cross.candle.open) * 100).toFixed(2)} %
+            C <strong>{fmtP(cross.candle.close)}</strong> {(((cross.candle.close - cross.candle.open) / cross.candle.open) * 100).toFixed(2)} %
           </span>
           <span>
-            V <strong>{fmtV(cross.candle.volume)}</strong>
+            V <strong>{formatCompactValue(cross.candle.volume)}</strong>
           </span>
           {cross.values.length > 0 && (
             <button type="button" className={`${s.ohlcMore} ${s.mobileOnly}`} aria-expanded={ohlcMore} onClick={() => setOhlcMore(!ohlcMore)}>
@@ -488,7 +493,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
           )}
           {cross.values.map((v) => (
             <span key={v.label} className={s.ohlcVal}>
-              <span style={{ color: v.color }}>{v.label}</span> <strong>{fmtV(v.value)}</strong>
+              <span style={{ color: v.color }}>{v.label}</span> <strong>{fmtV(v)}</strong>
             </span>
           ))}
           {cross.candle.open_ && <span className="caption">{t("свеча не закрыта")}</span>}
@@ -502,7 +507,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
           <div className={s.empty}>{t("Таймфреймы 1m–15m доступны после входа с подпиской Pro.")}{" "}<Link href="/pricing">{t("Подписка")}</Link>
           </div>
         ) : (
-          <TerminalView sr={srLevels} liq={liqMap} candles={data.candles ?? []} current={data.current} tf={tf} type={st.type} indicators={st.indicators} layersOn={st.layers} layers={data.layers} patterns={data.patterns?.items} highlight={foundSel} figures={data.figures?.items} highlightFigure={figureSel} alertLines={alerts.filter((a) => a.type === "price" && typeof a.condition.price === "string").map((a) => ({ id: a.id, price: Number(a.condition.price), label: a.condition.op === "cross_up" ? "↑" : a.condition.op === "cross_down" ? "↓" : "↔" }))} derivatives={data.derivatives} panels={st.panels} tick={data.tick} onNeedOlder={data.loadOlder} drawings={drawingsProps} onCrosshair={setCross} onVisibleFrom={setVisibleFrom} onReady={(c) => { controls.current = c; }} scale={st.scale} overlay={overlayCandles} />
+          <TerminalView sr={srLevels} liq={liqMap} candles={data.candles ?? []} current={data.current} tf={tf} type={st.type} indicators={st.indicators} layersOn={st.layers} layers={data.layers} patterns={data.patterns?.items} highlight={foundSel} figures={data.figures?.items} highlightFigure={figureSel} alertLines={alerts.filter((a) => a.type === "price" && typeof a.condition.price === "string").map((a) => ({ id: a.id, price: Number(a.condition.price), label: a.condition.op === "cross_up" ? "↑" : a.condition.op === "cross_down" ? "↓" : "↔" }))} derivatives={data.derivatives} panels={st.panels} tick={data.tick} dataKey={symbol} onNeedOlder={data.loadOlder} drawings={drawingsProps} onCrosshair={setCross} onVisibleFrom={setVisibleFrom} onReady={(c) => { controls.current = c; }} scale={st.scale} overlay={overlayCandles} />
         )}
         {sel && (
           <div className={s.card} role="region" aria-label={t("выбранный рисунок")}>
@@ -607,9 +612,9 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
             {sheet === "ask" && <AskBox symbol={symbol} tf={tf} access={askAccess} heading={false} />}
             {sheet === "found" && (
               <>
-                <LevelsList sr={srLevels} liq={liqMap} tick={data.tick} zones={zoneGroups} />
+                <LevelsList sr={srLevels} liq={liqMap} tick={data.tick} zones={zoneGroups} liqUnavailable={liqUnavailable && st.layers.liq_map} />
                 <strong className={s.objHead}>{t("Фигуры")}</strong>
-                <FiguresList items={data.figures?.items ?? []} stats={data.figures?.stats ?? {}} selected={figureSel} onSelect={setFigureSel} />
+                <FiguresList items={data.figures?.items ?? []} stats={data.figures?.stats ?? {}} selected={figureSel} onSelect={setFigureSel} tick={data.tick} />
                 <strong className={s.objHead}>{t("Свечные паттерны")}</strong>
                 <FoundList items={data.patterns?.items ?? []} stats={data.patterns?.stats ?? {}} selected={foundSel} onSelect={setFoundSel} tf={tf} symbol={symbol} canExplain={!!user} />
               </>
@@ -668,6 +673,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
               : (Object.keys(LAYER_LABEL) as LayerKey[]).map((k) => (
                   <label key={k}>
                     <input type="checkbox" checked={st.layers[k]} onChange={() => toggleLayer(k)} /> {t(LAYER_LABEL[k])}
+                    {k === "liq_map" && liqUnavailable && <span className="caption">{t("нет данных открытого интереса на этом таймфрейме")}</span>}
                   </label>
                 ))}
           </BottomSheet>
@@ -691,7 +697,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
           onDeleteLayout={removeLayout}
           authed={!!user}
           layoutsLimit={user ? null : 0}
-          found={{ count: foundCount, items: data.patterns?.items ?? [], stats: data.patterns?.stats ?? {}, selected: foundSel, onSelect: setFoundSel, tf, symbol, canExplain: !!user, askAccess, sr: srLevels, liq: liqMap, tick: data.tick, zones: zoneGroups, figures: data.figures?.items ?? [], figureStats: data.figures?.stats ?? {}, selectedFigure: figureSel, onSelectFigure: setFigureSel }}
+          found={{ count: foundCount, items: data.patterns?.items ?? [], stats: data.patterns?.stats ?? {}, selected: foundSel, onSelect: setFoundSel, tf, symbol, canExplain: !!user, askAccess, sr: srLevels, liq: liqMap, liqUnavailable, tick: data.tick, zones: zoneGroups, figures: data.figures?.items ?? [], figureStats: data.figures?.stats ?? {}, selectedFigure: figureSel, onSelectFigure: setFigureSel }}
         />
       </div>
       <div className={s.bottom}>
