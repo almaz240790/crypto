@@ -502,14 +502,15 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
         <span className={`caption ${s.live}`} data-on={data.connected || undefined}>{data.connected ? t("онлайн") : t("без связи")}</span>
         {st.type === "heikin" && <span className="caption">{t("Heikin Ashi: паттерны и сигналы считаются по обычным свечам")}</span>}
       </div>
-      {toast && (
-        <p role="status" className="caption" style={{ margin: 0, padding: "2px 12px" }}>
-          {toast}
-        </p>
-      )}
       <div className={s.area} ref={areaRef} data-objects={objects} style={{ "--objects-w": `${objW}px` } as React.CSSProperties}>
         <DrawToolbar tool={dr.tool} onTool={(t) => dr.setTool(t)} magnet={dr.magnet} onMagnet={dr.setMagnet} canUndo={dr.canUndo} canRedo={dr.canRedo} onUndo={dr.actions.undo} onRedo={dr.actions.redo} />
         <div className={s.chartCol}>
+          {/* сообщение — плашкой поверх графика, а не строкой сетки страницы: график не сжимается */}
+          {toast && (
+            <p role="status" className={s.toast}>
+              {toast}
+            </p>
+          )}
       {cross && (
         <div className={s.ohlc} data-testid="ohlc" aria-live="polite" data-more={ohlcMore || undefined}>
           <button type="button" className={s.ohlcClose} aria-label={t("закрыть карточку")} onClick={() => { controls.current?.clearCrosshair(); setCross(null); }}>

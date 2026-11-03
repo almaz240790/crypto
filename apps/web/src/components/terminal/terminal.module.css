@@ -314,6 +314,27 @@
   min-height: 0;
 }
 
+/* короткое сообщение терминала поверх графика по центру сверху */
+.toast {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  z-index: 6;
+  max-width: min(520px, calc(100% - 24px));
+  margin: 0;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 18px;
+  text-align: center;
+  transform: translateX(-50%);
+  pointer-events: none;
+  box-shadow: 0 4px 16px color-mix(in srgb, var(--bg) 60%, transparent);
+}
+
 .chart {
   position: relative;
   height: 100%;
