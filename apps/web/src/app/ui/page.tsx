@@ -19,6 +19,7 @@ import {
 } from "@/components/ui";
 import { formatDuration, formatPct, formatPrice, formatR, formatTimeUTC } from "@/lib/format";
 import s from "./page.module.css";
+import { UiChromeDemo } from "./UiChromeDemo";
 
 export const metadata: Metadata = { title: "Дизайн-система", robots: { index: false } };
 
@@ -218,6 +219,10 @@ export default function UiPage() {
               </Tooltip>
             </div>
           </div>
+        </Panel>
+
+        <Panel title="Элементы терминала" className={s.wide}>
+          <UiChromeDemo />
         </Panel>
 
         <Panel title="Пустое состояние">

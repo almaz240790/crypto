@@ -64,3 +64,13 @@
   width: max-content;
   font-size: var(--fs-table);
 }
+
+.demoRow {
+  display: grid;
+  gap: var(--gap-2);
+  justify-items: start;
+}
+
+.wide {
+  grid-column: 1 / -1;
+}

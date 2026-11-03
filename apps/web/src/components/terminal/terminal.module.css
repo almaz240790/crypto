@@ -516,7 +516,7 @@
 }
 
 /* на телефоне значения индикаторов скрыты, пока не нажать «индикаторы (n)» */
-@media (max-width: 899px) {
+@media (max-width: 899.98px) {
   .ohlc:not([data-more]) .ohlcVal {
     display: none;
   }
@@ -571,7 +571,7 @@
   font-size: 13px;
 }
 
-@media (max-width: 640px) {
+@media (max-width: 639.98px) {
   .page {
     height: calc(100dvh - 48px);
   }

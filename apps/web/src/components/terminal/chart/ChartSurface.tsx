@@ -11,6 +11,7 @@ import { chartText } from "./chartText";
 import { useChartStore } from "./useChartStore";
 import { LegendChip, LiqUnavailableNote } from "./LegendChip";
 import { ObjectTooltip } from "./ObjectTooltip";
+import { MQ } from "@/lib/breakpoints";
 
 /** Цвет индикатора — токен дизайн-системы (план 5.3): палитра --ind-1…6 и смысловые цвета. */
 export type IndColor = "ind1" | "ind2" | "ind3" | "ind4" | "ind5" | "ind6" | "accent" | "up" | "down" | "warn";
@@ -112,8 +113,8 @@ const SHORT_TITLE: Record<string, string> = { bb: "BB", keltner: "KC", vwap: "VW
 const PANE_CRYPTO_PX = 80;
 /** На телефоне раскрыта одна панель индикатора (последняя добавленная), остальные свёрнуты до заголовка. */
 const MAX_EXPANDED_MOBILE = 1;
-/** Свёртывание панелей на узком экране — по media query до D (PaneManager). */
-const MOBILE_QUERY = "(max-width: 899px)";
+/** Свёртывание панелей на узком экране — по media query (lib/breakpoints) до D (PaneManager). */
+const MOBILE_QUERY = MQ.mobile;
 /** Формат шкалы индикатора на отдельной панели: объём и OBV — компактно, остальное — значения. */
 const COMPACT_INDICATORS = new Set(["volume", "obv"]);
 const indicatorFormat = (id: string): PriceFormat => (COMPACT_INDICATORS.has(id) ? COMPACT_FORMAT : VALUE_FORMAT);
@@ -163,7 +164,7 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
   const historyRev = useChartStore((st) => st.status.historyRev, store);
   const themeVersion = useChartStore((st) => st.status.themeVersion, store);
   /** Палец: подсказка объекта — закреплённая карточка внизу графика (план 2A.7). */
-  const [coarse] = useState(() => typeof window !== "undefined" && window.matchMedia("(pointer: coarse)").matches);
+  const [coarse] = useState(() => typeof window !== "undefined" && window.matchMedia(MQ.coarse).matches);
   /** Что загружено в график: смена инструмента или таймфрейма — замена и сброс вида, иначе — дописывание. */
   const loadedRef = useRef<{ key: string; tf: Timeframe; candles: Candle[] } | null>(null);
 
@@ -262,7 +263,7 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     };
     onReadyRef.current?.({ zoom: ctrl.handle.zoom, reset: ctrl.handle.reset, clearCrosshair, focus: ctrl.handle.focus, snapshot: ctrl.handle.snapshot });
     const prim = new DrawingsPrimitive(tokensFromElement(el));
-    prim.touch = typeof window !== "undefined" && window.matchMedia("(pointer: coarse)").matches;
+    prim.touch = typeof window !== "undefined" && window.matchMedia(MQ.coarse).matches;
     drawPrimRef.current = prim;
     term.layers.add(new PrimitiveLayer("drawings", prim));
     const dctrl = new DrawingController(

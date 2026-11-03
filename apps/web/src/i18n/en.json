@@ -1295,5 +1295,12 @@
   "сумма по {n} соседним ценам": "sum over {n} adjacent prices",
   "{d}д {hm}": "{d}d {hm}",
   "не является инвестиционной рекомендацией": "not investment advice",
-  "Карты ликвидаций на этом таймфрейме нет": "No liquidation map on this timeframe"
+  "Карты ликвидаций на этом таймфрейме нет": "No liquidation map on this timeframe",
+  "1м": "1m",
+  "5м": "5m",
+  "15м": "15m",
+  "1ч": "1h",
+  "4ч": "4h",
+  "1Д": "1D",
+  "1Н": "1W"
 }

@@ -14,6 +14,7 @@ import s from "./terminal.module.css";
 import { ChartSurface, type CrosshairInfo } from "./chart/ChartSurface";
 import { useTerminalData } from "./useTerminalData";
 import { useT } from "@/i18n/client";
+import { MQ } from "@/lib/breakpoints";
 
 type Cell = { symbol: string; tf: Timeframe };
 type Saved = { count: 2 | 4; cells: Cell[] };
@@ -29,7 +30,7 @@ const DEFAULT: Saved = {
 };
 /** Ячейки — пресет «Компактный» (план 2B.2): ближайшие поддержка, сопротивление и зона, бюджет ячейки. */
 const MARKUP: MarkupSettings = { preset: "compact", overrides: {} };
-const DESKTOP = "(min-width: 900px)";
+const DESKTOP = MQ.desktop;
 const NO_INDICATORS: { id: string; params: Record<string, number> }[] = [];
 const NO_PANELS: never[] = [];
 

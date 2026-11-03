@@ -1,5 +1,5 @@
 import Link from "next/link";
-import type { ButtonHTMLAttributes, ReactNode } from "react";
+import type { ButtonHTMLAttributes, ReactNode, Ref } from "react";
 import s from "./Button.module.css";
 
 type Variant = "default" | "primary" | "ghost" | "danger";
@@ -13,7 +13,7 @@ type Common = {
   className?: string;
 };
 
-type AsButton = Common & ButtonHTMLAttributes<HTMLButtonElement> & { href?: undefined };
+type AsButton = Common & ButtonHTMLAttributes<HTMLButtonElement> & { href?: undefined; ref?: Ref<HTMLButtonElement> };
 type AsLink = Common & { href: string; target?: string; rel?: string };
 
 export type ButtonProps = AsButton | AsLink;

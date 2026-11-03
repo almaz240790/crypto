@@ -1,0 +1,103 @@
+import type { ReactNode, SVGProps } from "react";
+
+/**
+ * Иконки интерфейса (план 2B.9): 24 × 24, обводка 1.75 цветом текста (currentColor), без своих цветов.
+ * Всегда декоративные (aria-hidden): имя даёт кнопка (IconButton label).
+ */
+function Svg({ children, ...rest }: SVGProps<SVGSVGElement> & { children: ReactNode }) {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false" {...rest}>
+      {children}
+    </svg>
+  );
+}
+
+export const IconPlus = () => (
+  <Svg>
+    <path d="M12 5v14M5 12h14" />
+  </Svg>
+);
+export const IconMinus = () => (
+  <Svg>
+    <path d="M5 12h14" />
+  </Svg>
+);
+/** «Показать последние свечи»: стрелка к правому краю. */
+export const IconToEnd = () => (
+  <Svg>
+    <path d="M4 12h12M12 7l5 5-5 5M20 5v14" />
+  </Svg>
+);
+export const IconCamera = () => (
+  <Svg>
+    <path d="M4 8h3l2-3h6l2 3h3v11H4z" />
+    <circle cx="12" cy="13" r="3.5" />
+  </Svg>
+);
+export const IconGrid = () => (
+  <Svg>
+    <path d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z" />
+  </Svg>
+);
+export const IconMagnet = () => (
+  <Svg>
+    <path d="M6 4v8a6 6 0 0 0 12 0V4h-4v8a2 2 0 0 1-4 0V4z" />
+    <path d="M6 8h4M14 8h4" />
+  </Svg>
+);
+export const IconUndo = () => (
+  <Svg>
+    <path d="M9 14L4 9l5-5" />
+    <path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" />
+  </Svg>
+);
+export const IconRedo = () => (
+  <Svg>
+    <path d="M15 14l5-5-5-5" />
+    <path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13" />
+  </Svg>
+);
+export const IconLayers = () => (
+  <Svg>
+    <path d="M12 4l8 4-8 4-8-4z" />
+    <path d="M4 12l8 4 8-4M4 16l8 4 8-4" />
+  </Svg>
+);
+export const IconChevronDown = () => (
+  <Svg width="14" height="14">
+    <path d="M6 9l6 6 6-6" />
+  </Svg>
+);
+export const IconLock = () => (
+  <Svg width="10" height="10" strokeWidth="2.5">
+    <path d="M6 11h12v9H6z" />
+    <path d="M8.5 11V8a3.5 3.5 0 0 1 7 0v3" />
+  </Svg>
+);
+export const IconClose = () => (
+  <Svg>
+    <path d="M6 6l12 12M18 6L6 18" />
+  </Svg>
+);
+export const IconMore = () => (
+  <Svg>
+    <path d="M6 12h.01M12 12h.01M18 12h.01" strokeWidth="3" />
+  </Svg>
+);
+export const IconPanel = () => (
+  <Svg>
+    <path d="M4 5h16v14H4zM14 5v14" />
+  </Svg>
+);
+export const IconView = () => (
+  <Svg>
+    <path d="M7 4v16M17 4v16" />
+    <path d="M5 8h4v8H5zM15 6h4v9h-4z" />
+  </Svg>
+);
+export const IconInfo = () => (
+  <Svg>
+    <circle cx="12" cy="12" r="8.5" />
+    <path d="M12 11v5M12 8h.01" />
+  </Svg>
+);

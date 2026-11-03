@@ -114,6 +114,16 @@
   --gap-4: 16px;
   --gap-5: 24px;
   --gap-6: 32px;
+  /* минимальная зона касания под pointer: coarse (план 2A.7) */
+  --touch-min: 44px;
+
+  /* Слои (z-index) интерфейса терминала: от подписей над графиком до тоста */
+  --z-chart-ui: 5;
+  --z-sheet: 10;
+  --z-drawer: 20;
+  --z-popover: 40;
+  --z-nav: 50;
+  --z-toast: 60;
 
   /* Типографика */
   --fs-caption: 12px;

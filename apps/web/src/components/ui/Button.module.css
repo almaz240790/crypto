@@ -16,7 +16,8 @@
   text-decoration: none;
 }
 
-.btn:hover {
+.btn:hover,
+.btn:not(.primary)[aria-expanded="true"] {
   background: var(--row-hover);
   text-decoration: none;
 }
