@@ -2,7 +2,7 @@
   display: grid;
   grid-template-rows: auto auto 1fr auto;
   grid-template-columns: minmax(0, 1fr);
-  height: calc(100dvh - 56px);
+  height: calc(100dvh - 56px - var(--safe-top));
   min-height: 480px;
   min-width: 0;
   overflow: hidden;
@@ -575,7 +575,7 @@
   }
 
   .page[data-bars="hidden"] {
-    height: 100dvh;
+    height: calc(100dvh - var(--safe-top));
   }
 
   .fsBtn {
@@ -594,7 +594,7 @@
 
 @media (max-width: 640px) {
   .page {
-    height: calc(100dvh - 48px);
+    height: calc(100dvh - 48px - var(--safe-top));
   }
 
   .top {
@@ -819,7 +819,7 @@
 .multi {
   display: grid;
   grid-template-rows: auto 1fr;
-  height: calc(100dvh - 56px);
+  height: calc(100dvh - 56px - var(--safe-top));
   min-height: 480px;
 }
 
