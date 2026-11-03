@@ -1,8 +1,12 @@
-import { CHART_TYPES, LAYERS_VERSION, normalizeMarkup, type ChartType, type MarkupSettings, type PanelKey, type ScaleMode } from "@platform/charts";
+import { CHART_TYPES, INDICATORS, LAYERS_VERSION, defaultParams, normalizeMarkup, resolvePreset, selectPreset, setLayerOverride, type ChartType, type LayerKey, type MarkupSettings, type PanelKey, type PresetId, type ScaleMode } from "@platform/charts";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { getLayout, putLayout } from "@/lib/drawings";
+import { TEMPLATES } from "../templates";
 
 /**
  * Сохранённые настройки терминала, версия слоёв 5 (план 2B.2, ADR-0008): вместо набора слоёв — разметка
- * { preset, overrides }. В B здесь только чистые функции; хук useTerminalSettings появится в C.
+ * { preset, overrides }. Чистые функции миграции и хук useTerminalSettings (план 2B.9): localStorage,
+ * синхронизация с сервером, переключатели индикаторов, панелей, слоёв и пресета.
  */
 
 /** Индикатор в сохранении: id из реестра и параметры. */
@@ -84,3 +88,117 @@ export function migrateLayout(raw: unknown, base: SavedV5): SavedV5 {
 export function layoutData(s: SavedV5, symbol: string, tf: string): Record<string, unknown> {
   return { layers_v: LAYERS_VERSION, type: s.type, indicators: s.indicators, markup: s.markup, panels: s.panels, symbol, tf };
 }
+
+/** Ключ настроек терминала в localStorage. */
+export const STORAGE = "pl-terminal";
+/** Задержка отправки изменённых настроек на сервер. */
+const PUSH_DELAY_MS = 800;
+
+/** Настройки из localStorage, приведённые к версии 5; legacy — найдено сохранение старше v5. */
+function readSaved(): { saved: SavedV5; legacy: boolean } {
+  try {
+    const raw = localStorage.getItem(STORAGE);
+    if (!raw) return { saved: { ...DEFAULT_SAVED }, legacy: false };
+    const parsed: unknown = JSON.parse(raw);
+    return { saved: migrateSaved(parsed), legacy: isLegacySave(parsed) };
+  } catch {
+    return { saved: { ...DEFAULT_SAVED }, legacy: false };
+  }
+}
+const load = (): SavedV5 => readSaved().saved;
+
+/**
+ * Настройки терминала: читаются из localStorage после монтирования (до этого — то же чтение на каждом
+ * рендере), сохраняются туда же; у вошедшего — берутся с сервера, если там новее, и отправляются туда
+ * с задержкой. legacyFound — найдено сохранение старше v5 (разметка сброшена на «Чистый»).
+ */
+export function useTerminalSettings(authed: boolean) {
+  const [saved, setSaved] = useState<SavedV5 | null>(null);
+  const [legacyFound, setLegacyFound] = useState(false);
+  useEffect(() => {
+    queueMicrotask(() => {
+      const r = readSaved();
+      setSaved(r.saved);
+      if (r.legacy) setLegacyFound(true);
+    });
+  }, []);
+  useEffect(() => {
+    if (saved) {
+      try {
+        localStorage.setItem(STORAGE, JSON.stringify(saved));
+      } catch {
+        /* приватный режим */
+      }
+    }
+  }, [saved]);
+  // раскладка: при входе берём с сервера, если она новее локальной; изменения отправляем с задержкой
+  const layoutPulled = useRef(false);
+  useEffect(() => {
+    if (!authed || layoutPulled.current) return;
+    layoutPulled.current = true;
+    getLayout()
+      .then((r) => {
+        if (!r.data) return;
+        const local = load();
+        if (r.updated_at > (local.updated_at ?? 0)) {
+          setSaved({ ...migrateLayout(r.data, local), updated_at: r.updated_at });
+          if (isLegacySave(r.data)) setLegacyFound(true);
+        }
+      })
+      .catch(() => {});
+  }, [authed]);
+  useEffect(() => {
+    if (!authed || !saved || !layoutPulled.current) return;
+    const t = setTimeout(() => {
+      const { updated_at, ...data } = saved;
+      void putLayout(data, updated_at ?? Date.now()).catch(() => {});
+    }, PUSH_DELAY_MS);
+    return () => clearTimeout(t);
+  }, [saved, authed]);
+
+  const st = saved ?? load();
+  /** Изменение настроек с отметкой времени (по ней сервер и локальная копия решают, что новее). */
+  const update = useCallback((fn: (cur: SavedV5) => SavedV5) => setSaved((p) => ({ ...fn(p ?? load()), updated_at: Date.now() })), []);
+  const patch = useCallback((p: Partial<Omit<SavedV5, "layers_v" | "updated_at">>) => update((cur) => ({ ...cur, ...p })), [update]);
+  const toggleIndicator = useCallback(
+    (id: string) =>
+      update((cur) => {
+        const has = cur.indicators.some((i) => i.id === id);
+        const spec = INDICATORS.find((i) => i.id === id)!;
+        return { ...cur, indicators: has ? cur.indicators.filter((i) => i.id !== id) : [...cur.indicators, { id, params: defaultParams(spec) }] };
+      }),
+    [update],
+  );
+  const togglePanel = useCallback(
+    (k: PanelKey) =>
+      update((cur) => {
+        const has = cur.panels.includes(k);
+        return { ...cur, panels: has ? cur.panels.filter((x) => x !== k) : [...cur.panels, k] };
+      }),
+    [update],
+  );
+  // слой поверх пресета — поправка («Свой»); выбор пресета поправки сбрасывает
+  const resolved = useMemo(() => resolvePreset(st.markup, "desktop", { authed }), [st.markup, authed]);
+  const toggleLayer = useCallback(
+    (k: LayerKey) =>
+      update((cur) => {
+        const on = resolvePreset(cur.markup, "desktop", { authed }).layers[k];
+        return { ...cur, markup: setLayerOverride(cur.markup, k, !on) };
+      }),
+    [update, authed],
+  );
+  const selectMarkup = useCallback((id: PresetId) => update((cur) => ({ ...cur, markup: selectPreset(id) })), [update]);
+  const applyTemplate = useCallback(
+    (id: string) => {
+      const t = TEMPLATES.find((x) => x.id === id);
+      if (t) update((cur) => ({ ...cur, indicators: t.indicators, panels: t.panels }));
+    },
+    [update],
+  );
+  /** Именованная раскладка поверх текущих настроек — через ту же миграцию: v4 применяется как «Чистый». */
+  const applyLayout = useCallback((raw: unknown) => update((cur) => migrateLayout(raw, cur)), [update]);
+
+  return { st, resolved, legacyFound, patch, toggleIndicator, togglePanel, toggleLayer, selectMarkup, applyTemplate, applyLayout };
+}
+
+export type TerminalSettings = ReturnType<typeof useTerminalSettings>;

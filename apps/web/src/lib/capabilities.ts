@@ -41,7 +41,7 @@ export const TOOL_GROUPS: { name: string; note: string }[] = [
 /** Графические фигуры движка (packages/engine/engine/figures/types.py). */
 export const FIGURES_COUNT = 15;
 
-/** Слои автоматической разметки без слоя сигналов (TerminalPage, LAYER_LABEL). */
+/** Слои автоматической разметки без слоя сигналов (TerminalShell, LAYER_LABEL). */
 export const AUTO_LAYERS_COUNT = 8;
 
 export const COUNTS = {

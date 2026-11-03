@@ -13,7 +13,7 @@ function Loading() {
   );
 }
 
-const Page = dynamic(() => import("./TerminalPage").then((m) => m.TerminalPage), { ssr: false, loading: () => <Loading /> });
+const Page = dynamic(() => import("./TerminalShell").then((m) => m.TerminalShell), { ssr: false, loading: () => <Loading /> });
 
 export function TerminalClient({ symbol, tf }: { symbol: string; tf: Timeframe }) {
   return <Page symbol={symbol} tf={tf} />;

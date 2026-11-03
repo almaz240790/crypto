@@ -4,7 +4,7 @@ import type { Device, Tone } from "../types";
 /**
  * Состояние графика для React (план 2B.2, architecture §11): неизменяемые срезы, сравнение по Object.is,
  * подписчики уведомляются синхронно. Пишет контроллер (patch) и React (только select). Читают листовые
- * компоненты через useSyncExternalStore — TerminalPage не перерисовывается на каждый кадр.
+ * компоненты через useSyncExternalStore — TerminalShell не перерисовывается на каждый кадр.
  */
 
 export interface HoverSnapshot {

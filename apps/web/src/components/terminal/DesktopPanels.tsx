@@ -73,7 +73,7 @@ type Props = {
   onDeleteLayout: (name: string) => void;
   authed: boolean;
   layoutsLimit: number | null;
-  /** Перетаскивание левого края панели (ширина хранится в TerminalPage). */
+  /** Перетаскивание левого края панели (ширина хранится в useTerminalUi). */
   onResize?: { start: (e: React.PointerEvent<HTMLElement>) => void; step: (delta: number) => void; active: boolean };
   found: { count?: number; items: PatternOnChart[]; stats: Record<string, PatternStat>; selected: number | null; onSelect: (id: number | null) => void; tf: string; symbol: string; canExplain: boolean; askAccess: "guest" | "plan" | "ok" | null; index: SceneIndex | null; tick: string | null; levelSelected: string | null; onLevel: (id: string | null) => void; figures: FigureOnChart[]; figureStats: Record<string, FigureStat>; selectedFigure: number | null; onSelectFigure: (id: number | null) => void };
 };

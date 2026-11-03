@@ -1,7 +1,6 @@
 "use client";
 
-import type React from "react";
-import { CHART_TYPES, INDICATORS, TOOL_TITLES, createChartStore, defaultParams, formatCountdown, positionStats, resolvePreset, secondsToClose, selectPreset, setLayerOverride, type AlertLine, type Candle, type ChartType, type DrawingType, type LayerKey, type PanelKey, type PresetId, type ScaleMode, type Timeframe } from "@platform/charts";
+import { CHART_TYPES, INDICATORS, TOOL_TITLES, createChartStore, formatCountdown, positionStats, secondsToClose, type Candle, type ChartType, type DrawingType, type ScaleMode, type Timeframe } from "@platform/charts";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -9,81 +8,58 @@ import { useAuth } from "@/components/auth/AuthProvider";
 import { getAccessToken } from "@/lib/auth-client";
 import { INTRADAY, TIMEFRAMES } from "@/lib/timeframes";
 import { formatPct, formatPrice } from "@/lib/format";
-import { getInstruments, type Instrument } from "@/lib/user";
+import type { Instrument } from "@/lib/user";
 import s from "./terminal.module.css";
 import { BottomSheet } from "./BottomSheet";
 import { DrawToolbar, ObjectsPanel } from "./DesktopPanels";
 import { AskBox, FiguresList, FoundList, LevelsList } from "./FoundPanel";
 import { download } from "./snapshot";
-import { TEMPLATES } from "./templates";
 import { ChartSurface, IND_COLOR_VAR, PANELS, indicatorColor, type CrosshairInfo, type TerminalControls } from "./chart/ChartSurface";
 import { ChartStoreContext, useChartStore } from "./chart/useChartStore";
 import { MarkupPicker } from "./MarkupPicker";
 import { LAYER_LABEL, layerKeysFor } from "./DesktopPanels";
-import { DEFAULT_SAVED, isLegacySave, layoutData, migrateLayout, migrateSaved, type SavedV5 } from "./state/useTerminalSettings";
+import { useTerminalSettings } from "./state/useTerminalSettings";
+import { useChartAlerts } from "./state/useChartAlerts";
+import { useLayouts } from "./state/useLayouts";
+import { useTerminalUi } from "./state/useTerminalUi";
+import { useInstruments } from "./state/useInstruments";
+import { usePlan } from "./state/usePlan";
 import { useDrawings } from "./useDrawings";
-import { deleteLayout, getLayout, listLayouts, putLayout } from "@/lib/drawings";
-import { createAlert, getAlerts, type Alert } from "@/lib/alerts";
 import { getCandles, toCandle } from "@/lib/chart";
 import { useTerminalData } from "./useTerminalData";
 import { useT } from "@/i18n/client";
-import { getBillingMe } from "@/lib/billing";
 import { formatCompactValue, formatIndicatorValue } from "@platform/charts";
 
 const TYPE_LABEL: Record<ChartType, string> = { candles: "Свечи", bars: "Бары", line: "Линия", heikin: "Heikin Ashi" };
 const TOOLS: DrawingType[] = ["hline", "hray", "vline", "trend", "ray", "extended", "channel", "rect", "fib", "position-long", "position-short", "note", "ruler"];
-const STORAGE = "pl-terminal";
-const OBJECTS_W_KEY = "pl-objects-w";
-const OBJECTS_W_DEFAULT = 300;
-const OBJECTS_W_MIN = 240;
-const OBJECTS_W_MAX = 600;
-const clampW = (w: number) => Math.round(Math.min(OBJECTS_W_MAX, Math.max(OBJECTS_W_MIN, w)));
 
 /** Однократное уведомление о новой разметке после миграции сохранения v4 и раньше (ADR-0008). */
 const MARKUP_NOTICE_KEY = "pl-markup-notice";
-const TOAST_MS = 2500;
 const NOTICE_MS = 8000;
 const SCALE_LABEL: Record<ScaleMode, string> = { linear: "линейная", log: "логарифмическая", percent: "проценты" };
-
-/** Настройки из localStorage, приведённые к версии 5; legacy — найдено сохранение старше v5. */
-function readSaved(): { saved: SavedV5; legacy: boolean } {
-  try {
-    const raw = localStorage.getItem(STORAGE);
-    if (!raw) return { saved: { ...DEFAULT_SAVED }, legacy: false };
-    const parsed: unknown = JSON.parse(raw);
-    return { saved: migrateSaved(parsed), legacy: isLegacySave(parsed) };
-  } catch {
-    return { saved: { ...DEFAULT_SAVED }, legacy: false };
-  }
-}
-const load = (): SavedV5 => readSaved().saved;
 
 /** Тренд старшего таймфрейма простыми словами. */
 const TREND_WORD: Record<string, string> = { up: "вверх", down: "вниз", flat: "боковик" };
 const TREND_TONE: Record<string, string> = { up: "up", down: "down" };
 
-export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) {
+/**
+ * Терминал одного инструмента (план 2B.9): сетка страницы. Создаёт хранилище графика (ChartStore) и держит
+ * handle графика; состояние — в хуках state/* (настройки, алерты, раскладки, интерфейс, инструменты, тариф).
+ */
+export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe }) {
   const t = useT();
   const router = useRouter();
   const { user } = useAuth();
-  const [saved, setSaved] = useState<SavedV5 | null>(null);
+  const authed = !!user;
   /** Состояние графика (сцена, выбор, видимая часть) — для листовых компонентов и «Найдено». */
   const [store] = useState(createChartStore);
-  const [instruments, setInstruments] = useState<Instrument[]>([]);
-  const [sheet, setSheet] = useState<"indicators" | "layers" | "draw" | "found" | "alert" | "ask" | null>(null);
+  const instruments = useInstruments();
+  const { sheet, setSheet, closeSheet, ohlcMore, setOhlcMore, bars, setBars, objects, setObjects, objW, objResize, toast, say, notifyOnce } = useTerminalUi();
   // вопросы о графике — Premium (админы и владелец — всегда); тариф узнаём один раз после входа
-  const [plan, setPlan] = useState<string | null>(null);
-  // карточка значений под перекрестием: на телефоне индикаторы свёрнуты, чтобы не закрывать график
-  const [ohlcMore, setOhlcMore] = useState(false);
-  useEffect(() => {
-    if (!user || user.role === "admin" || user.role === "owner") return;
-    getBillingMe()
-      .then((b) => setPlan(b.plan))
-      .catch(() => setPlan("free"));
-  }, [user]);
-  const askAccess: "guest" | "plan" | "ok" | null = !user ? "guest" : user.role === "admin" || user.role === "owner" || plan === "premium" ? "ok" : plan === null ? null : "plan";
-  const [alerts, setAlerts] = useState<Alert[]>([]);
-  const [alertDraft, setAlertDraft] = useState<{ price: string; op: "cross_up" | "cross_down" | "enter_range"; price2: string; frequency: "once" | "every" | "once_per_bar" }>({ price: "", op: "cross_up", price2: "", frequency: "once" });
+  const { askAccess } = usePlan();
+  const { st, resolved, legacyFound, patch, toggleIndicator, togglePanel, toggleLayer, selectMarkup, applyTemplate, applyLayout } = useTerminalSettings(authed);
+  const { alerts, alertLines, draft: alertDraft, setDraft: setAlertDraft, resetDraft, addPriceAlert } = useChartAlerts({ symbol, authed, say, onCreated: closeSheet });
+  const { layouts, saveLayout, loadLayout, removeLayout } = useLayouts({ authed, symbol, tf, current: st, applyLayout, say });
   // выбор паттерна и фигуры — общий с графиком: id объекта сцены в хранилище («pat:<id>», «fig:<id>»)
   const selection = useChartStore((x) => x.selection, store);
   const foundSel = selection?.startsWith("pat:") ? Number(selection.slice(4)) : null;
@@ -106,67 +82,14 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
   const visibleFrom = useChartStore((x) => x.visible.fromTime, store);
   // каталог сцены: «Найдено → Уровни» и пояснение «нет данных OI» — независимо от слоёв
   const sceneIndex = useChartStore((x) => x.sceneIndex, store);
-  const [bars, setBars] = useState<"shown" | "hidden">("shown");
-  const [objects, setObjects] = useState<"shown" | "hidden">("shown");
-  // ширина панели объектов (десктоп): 240–600 px, хранится локально
-  const [objW, setObjW] = useState(OBJECTS_W_DEFAULT);
-  const [objDrag, setObjDrag] = useState(false);
-  useEffect(() => {
-    try {
-      const v = Number(localStorage.getItem(OBJECTS_W_KEY));
-      if (v) queueMicrotask(() => setObjW(clampW(v)));
-    } catch {
-      /* приватный режим */
-    }
-  }, []);
-  const setObjWidth = useCallback((w: number) => {
-    const v = clampW(w);
-    setObjW(v);
-    try {
-      localStorage.setItem(OBJECTS_W_KEY, String(v));
-    } catch {
-      /* приватный режим */
-    }
-  }, []);
-  const objResize = {
-    active: objDrag,
-    step: (delta: number) => setObjWidth(objW + delta),
-    start: (e: React.PointerEvent<HTMLElement>) => {
-      e.preventDefault();
-      const startX = e.clientX;
-      const startW = objW;
-      setObjDrag(true);
-      const move = (ev: PointerEvent) => setObjWidth(startW + (startX - ev.clientX));
-      const up = () => {
-        setObjDrag(false);
-        window.removeEventListener("pointermove", move);
-        window.removeEventListener("pointerup", up);
-      };
-      window.addEventListener("pointermove", move);
-      window.addEventListener("pointerup", up);
-    },
-  };
-  const [layouts, setLayouts] = useState<{ name: string }[]>([]);
-  const [toast, setToast] = useState<string | null>(null);
-  /** Найдено сохранение старше версии слоёв 5 (локально или на сервере): разметка сброшена на «Чистый». */
-  const [legacyFound, setLegacyFound] = useState(false);
   const areaRef = useRef<HTMLDivElement>(null);
-  const closeSheet = useCallback(() => setSheet(null), []);
-  const dr = useDrawings(symbol, !!user);
+  const dr = useDrawings(symbol, authed);
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
   const data = useTerminalData(symbol, tf, user ? getAccessToken() : null);
   // «Найдено»: значимые паттерны и неотменённые фигуры на видимом участке
   const foundCount = (data.patterns?.items ?? []).filter((p) => p.significant && (visibleFrom === null || p.t >= visibleFrom)).length + (data.figures?.items ?? []).filter((f) => f.status !== "invalidated" && (visibleFrom === null || f.end_t >= visibleFrom)).length;
 
   useEffect(() => {
-    queueMicrotask(() => {
-      const r = readSaved();
-      setSaved(r.saved);
-      if (r.legacy) setLegacyFound(true);
-    });
-    getInstruments()
-      .then((r) => setInstruments(r))
-      .catch(() => {});
     const t = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 1000);
     return () => clearInterval(t);
   }, []);
@@ -199,85 +122,13 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [dr, router, symbol, store]);
-  useEffect(() => {
-    if (!user) return;
-    listLayouts()
-      .then((r) => setLayouts(r))
-      .catch(() => {});
-  }, [user]);
-  const toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const say = (text: string, ms = TOAST_MS) => {
-    setToast(text);
-    clearTimeout(toastTimer.current);
-    toastTimer.current = setTimeout(() => setToast(null), ms);
-  };
   // сохранение старше v5 сброшено на «Чистый»: один раз объясняем, где прежний вид
   useEffect(() => {
-    if (!legacyFound) return;
-    try {
-      if (localStorage.getItem(MARKUP_NOTICE_KEY)) return;
-      localStorage.setItem(MARKUP_NOTICE_KEY, "1");
-    } catch {
-      return;
-    }
-    const text = t("Разметка графика обновлена: по умолчанию «Чистый». Прежний вид — «Подробный» в «Разметке».");
-    queueMicrotask(() => setToast(text));
-    clearTimeout(toastTimer.current);
-    toastTimer.current = setTimeout(() => setToast(null), NOTICE_MS);
-  }, [legacyFound, t]);
-  const loadAlerts = useCallback(() => {
-    if (!user) return;
-    getAlerts({ symbol, status: "active" })
-      .then((r) => setAlerts(r.items))
-      .catch(() => {});
-  }, [user, symbol]);
-  useEffect(() => {
-    loadAlerts();
-  }, [loadAlerts]);
-  const addPriceAlert = (price: string, op: "cross_up" | "cross_down" | "enter_range", price2?: string, drawingId?: string, frequency: "once" | "every" | "once_per_bar" = "once") => {
-    if (!user) return say(t("Алерты доступны после входа"));
-    createAlert({ symbol, type: "price", condition: { op, price, ...(price2 ? { price2 } : {}) }, frequency, drawing_client_id: drawingId ?? null })
-      .then((a) => {
-        say(t("Алерт создан: {text}", { text: a.text }));
-        loadAlerts();
-        setSheet(null);
-      })
-      .catch((e: Error) => say(e.message));
-  };
+    if (legacyFound) notifyOnce(MARKUP_NOTICE_KEY, t("Разметка графика обновлена: по умолчанию «Чистый». Прежний вид — «Подробный» в «Разметке»."), NOTICE_MS);
+  }, [legacyFound, t, notifyOnce]);
   const openAlertSheet = () => {
-    const p = price == null ? "" : String(price);
-    setAlertDraft({ price: p, op: "cross_up", price2: "", frequency: "once" });
+    resetDraft(price);
     setSheet("alert");
-  };
-  const applyTemplate = (id: string) => {
-    const t = TEMPLATES.find((x) => x.id === id);
-    if (t) setSaved({ ...(saved ?? load()), indicators: t.indicators, panels: t.panels, updated_at: Date.now() });
-  };
-  const saveLayout = (name: string) => {
-    const cur = saved ?? load();
-    putLayout(layoutData(cur, symbol, tf), Date.now(), name)
-      .then(() => {
-        setLayouts((l) => (l.some((x) => x.name === name) ? l : [...l, { name }]));
-        say(t("Раскладка «{name}» сохранена", { name }));
-      })
-      .catch((e: Error) => say(e.message));
-  };
-  const loadLayout = (name: string) => {
-    getLayout(name)
-      .then((r) => {
-        if (!r.data) return;
-        const d = r.data as { symbol?: string; tf?: string };
-        // раскладка проходит ту же миграцию: v4 применяется как «Чистый»
-        setSaved({ ...migrateLayout(r.data, saved ?? load()), updated_at: Date.now() });
-        if (d.symbol && d.tf && (d.symbol !== symbol || d.tf !== tf)) router.push(`/chart/${d.symbol}/${d.tf}`);
-        say(t("Раскладка «{name}» применена", { name }));
-      })
-      .catch((e: Error) => say(e.message));
-  };
-  const removeLayout = (name: string) => {
-    deleteLayout(name)
-      .then(() => setLayouts((l) => l.filter((x) => x.name !== name)))
-      .catch((e: Error) => say(e.message));
   };
   const snapshot = () => {
     const c = controls.current;
@@ -286,41 +137,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
     const url = c.snapshot(`${symbol} · ${tf === "4h" ? "H4" : tf.toUpperCase()} · ${new Date().toISOString().slice(0, 16).replace("T", " ")} UTC`, `PlatformSol · ${window.location.href} · ${t("не является инвестиционной рекомендацией")}`);
     if (url) download(url, `platform-${symbol}-${tf}-${Date.now()}.png`);
   };
-  useEffect(() => {
-    if (saved) {
-      try {
-        localStorage.setItem(STORAGE, JSON.stringify(saved));
-      } catch {
-        /* приватный режим */
-      }
-    }
-  }, [saved]);
-  // раскладка: при входе берём с сервера, если она новее локальной; изменения отправляем с задержкой
-  const layoutPulled = useRef(false);
-  useEffect(() => {
-    if (!user || layoutPulled.current) return;
-    layoutPulled.current = true;
-    getLayout()
-      .then((r) => {
-        if (!r.data) return;
-        const local = load();
-        if (r.updated_at > (local.updated_at ?? 0)) {
-          setSaved({ ...migrateLayout(r.data, local), updated_at: r.updated_at });
-          if (isLegacySave(r.data)) setLegacyFound(true);
-        }
-      })
-      .catch(() => {});
-  }, [user]);
-  useEffect(() => {
-    if (!user || !saved || !layoutPulled.current) return;
-    const t = setTimeout(() => {
-      const { updated_at, ...data } = saved;
-      void putLayout(data, updated_at ?? Date.now()).catch(() => {});
-    }, 800);
-    return () => clearTimeout(t);
-  }, [saved, user]);
 
-  const st = saved ?? load();
   // наложенный инструмент (план 2A.3 v2): закрытые свечи цели на том же таймфрейме
   const [overlayCandles, setOverlayCandles] = useState<Candle[] | null>(null);
   const overlaySymbol = st.overlay && st.overlay !== symbol ? st.overlay : null;
@@ -359,41 +176,6 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
   const intradayLocked = !user || (data.error ?? "").includes(t("тарифе"));
   const bias = data.layers?.structure?.bias;
 
-  const toggleIndicator = (id: string) =>
-    setSaved((p) => {
-      const cur = p ?? load();
-      const has = cur.indicators.some((i) => i.id === id);
-      const spec = INDICATORS.find((i) => i.id === id)!;
-      return { ...cur, indicators: has ? cur.indicators.filter((i) => i.id !== id) : [...cur.indicators, { id, params: defaultParams(spec) }], updated_at: Date.now() };
-    });
-  const togglePanel = (k: PanelKey) =>
-    setSaved((p) => {
-      const cur = p ?? load();
-      const has = cur.panels.includes(k);
-      return { ...cur, panels: has ? cur.panels.filter((x) => x !== k) : [...cur.panels, k], updated_at: Date.now() };
-    });
-  // слой поверх пресета — поправка («Свой»); выбор пресета поправки сбрасывает
-  const authed = !!user;
-  const resolved = useMemo(() => resolvePreset(st.markup, "desktop", { authed }), [st.markup, authed]);
-  const toggleLayer = (k: LayerKey) =>
-    setSaved((p) => {
-      const cur = p ?? load();
-      const on = resolvePreset(cur.markup, "desktop", { authed }).layers[k];
-      return { ...cur, markup: setLayerOverride(cur.markup, k, !on), updated_at: Date.now() };
-    });
-  const selectMarkup = (id: PresetId) => setSaved((p) => ({ ...(p ?? load()), markup: selectPreset(id), updated_at: Date.now() }));
-  // активные ценовые алерты на графике: одна ссылка, пока список не изменился
-  const alertLines = useMemo<AlertLine[]>(
-    () =>
-      alerts
-        .filter((a) => a.type === "price" && typeof a.condition.price === "string")
-        .map((a) => {
-          const op = a.condition.op === "cross_down" ? "cross_down" : a.condition.op === "enter_range" ? "enter_range" : "cross_up";
-          const price2 = typeof a.condition.price2 === "string" ? Number(a.condition.price2) : undefined;
-          return { id: a.id, price: Number(a.condition.price), op, ...(price2 !== undefined && Number.isFinite(price2) ? { price2 } : {}) };
-        }),
-    [alerts],
-  );
   const indicatorIds = useMemo(() => new Set(st.indicators.map((i) => i.id)), [st.indicators]);
   const sel = dr.selected;
   const pos = useMemo(() => {
@@ -418,6 +200,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
     }),
     [dr.state, dr.tool, dr.magnet, dr.draft, dr.actions, dr.setDraft],
   );
+
 
   // карточка перекрестия: цены — по шагу цены инструмента (как шкала), объём — компактно, индикаторы панелей — значениями
   const fmtP = (v: number | null) => (v == null ? "—" : formatPrice(v, data.tick));
@@ -452,21 +235,21 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
         <button type="button" className={s.chip} onClick={() => controls.current?.reset()} aria-label={t("показать последние свечи")} title={t("Последние свечи (двойной клик по графику)")}>
           ⟲
         </button>
-        <select aria-label={t("тип графика")} value={st.type} onChange={(e) => setSaved({ ...st, type: e.target.value as ChartType, updated_at: Date.now() })}>
+        <select aria-label={t("тип графика")} value={st.type} onChange={(e) => patch({ type: e.target.value as ChartType })}>
           {CHART_TYPES.map((x) => (
             <option key={x} value={x}>
               {t(TYPE_LABEL[x])}
             </option>
           ))}
         </select>
-        <select aria-label={t("шкала")} value={st.scale} onChange={(e) => setSaved({ ...st, scale: e.target.value as ScaleMode, updated_at: Date.now() })} title={t("Ценовая шкала")}>
+        <select aria-label={t("шкала")} value={st.scale} onChange={(e) => patch({ scale: e.target.value as ScaleMode })} title={t("Ценовая шкала")}>
           {(Object.keys(SCALE_LABEL) as ScaleMode[]).map((m) => (
             <option key={m} value={m}>
               {t(SCALE_LABEL[m])}
             </option>
           ))}
         </select>
-        <select aria-label={t("наложение")} className={s.desktopOnly} value={st.overlay ?? ""} onChange={(e) => setSaved({ ...st, overlay: e.target.value || null, scale: e.target.value && st.scale === "linear" ? "percent" : st.scale, updated_at: Date.now() })} title={t("Наложить второй инструмент (линия закрытий)")}>
+        <select aria-label={t("наложение")} className={s.desktopOnly} value={st.overlay ?? ""} onChange={(e) => patch({ overlay: e.target.value || null, scale: e.target.value && st.scale === "linear" ? "percent" : st.scale })} title={t("Наложить второй инструмент (линия закрытий)")}>
           <option value="">{t("без наложения")}</option>
           {instruments
             .filter((i) => i.symbol !== symbol)
@@ -746,7 +529,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
           onSaveLayout={saveLayout}
           onLoadLayout={loadLayout}
           onDeleteLayout={removeLayout}
-          authed={!!user}
+          authed={authed}
           layoutsLimit={user ? null : 0}
           found={{ count: foundCount, items: data.patterns?.items ?? [], stats: data.patterns?.stats ?? {}, selected: foundSel, onSelect: setFoundSel, tf, symbol, canExplain: !!user, askAccess, index: sceneIndex, tick: data.tick, levelSelected: selection, onLevel: pickLevel, figures: data.figures?.items ?? [], figureStats: data.figures?.stats ?? {}, selectedFigure: figureSel, onSelectFigure: setFigureSel }}
         />
