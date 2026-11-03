@@ -1,18 +1,11 @@
 import { formatUsd } from "../../format";
 import type { LiqBucket, LiqMap } from "../../levels";
-import { INDEX_LIMITS } from "../../presets";
 import type { HeatObject, HeatTop } from "../types";
 import type { LayerBuilder, LayerCtx } from "./common";
 import { emphasize } from "./common";
 
 export const LIQ_MAP_ID = "liq:map";
 export const liqTopId = (side: "long" | "short", bucket: number): string => `liq:${side === "long" ? "L" : "S"}:${bucket}`;
-
-/**
- * Сколько скоплений на сторону сцена отдаёт раскладке как кандидатов в подписи: крупнейшие за кадром
- * или под объёмом заменяются следующими видимыми (не меньше INDEX_LIMITS.liqPerSide — строки «Найдено»).
- */
-export const LIQ_LABEL_CANDIDATES = 8;
 
 /** Скопление ликвидаций одной стороны: крупнейшая корзина и соседние с ней (|i − пик| ≤ 1). */
 export interface LiqCluster {
@@ -87,7 +80,9 @@ export const buildLiq: LayerBuilder = (ctx) => {
   if (!m) return [];
   const sel = ctx.input.selection.selected;
   const all: HeatTop[] = [];
-  for (const side of ["short", "long"] as const) for (const c of liqClusters(m, side).slice(0, Math.max(LIQ_LABEL_CANDIDATES, INDEX_LIMITS.liqPerSide))) all.push(top(ctx, side, c));
+  // все скопления стороны (их не больше трети корзин): крупнейшее за кадром или под объёмом уступает
+  // следующему видимому — на узком диапазоне цен (1h) крупнейшие обычно за краем
+  for (const side of ["short", "long"] as const) for (const c of liqClusters(m, side)) all.push(top(ctx, side, c));
   const selectedTop = sel !== null ? (all.find((t) => t.id === sel)?.id ?? null) : null;
   const selected = sel === LIQ_MAP_ID || selectedTop !== null;
   const layerOn = ctx.preset.layers.liq_map;

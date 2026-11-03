@@ -969,6 +969,14 @@
   border-bottom: 1px solid var(--border);
 }
 
+.markupHead {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--text-2);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
 .markupItem {
   display: grid;
   gap: 1px;
@@ -986,4 +994,8 @@
   line-height: 16px;
   color: var(--text-2);
   padding-left: 22px;
+}
+
+.markupWarn {
+  color: var(--warn);
 }

@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { VIEW } from "../presets";
-import { DEFAULT_ALPHAS, readChartTheme, resetThemeWarnings, toneColor } from "../theme";
+import { contrastText, DEFAULT_ALPHAS, readChartTheme, resetThemeWarnings, toneColor } from "../theme";
 import { TONES } from "../types";
 
 /** Подменяет getComputedStyle: значения CSS-переменных элемента. */
@@ -50,6 +50,20 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   resetThemeWarnings();
+});
+
+describe("contrastText: текст на заливке по правилу LWC для метки цены", () => {
+  const dark = { palette: { surface: "#0b0e10", text: "#eef1f0" } } as Parameters<typeof contrastText>[0];
+  const light = { palette: { surface: "#ffffff", text: "#121614" } } as Parameters<typeof contrastText>[0];
+  it("яркость > 160 — тёмный текст, иначе светлый; тёмный и светлый — из палитры темы", () => {
+    // #22c58b: 0.199·34 + 0.687·197 + 0.114·139 ≈ 157.9 — светлый, как у метки цены LWC
+    expect(contrastText(dark, "#22c58b")).toBe("#eef1f0");
+    expect(contrastText(dark, "#f2555c")).toBe("#eef1f0");
+    expect(contrastText(dark, "#c6f432")).toBe("#0b0e10");
+    expect(contrastText(light, "#0a7f55")).toBe("#ffffff");
+    expect(contrastText(light, "#ffe066")).toBe("#121614");
+    expect(contrastText(dark, "var(--x)")).toBe("#eef1f0");
+  });
 });
 
 describe("тема графика из токенов --chart-*", () => {

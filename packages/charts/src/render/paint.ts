@@ -298,7 +298,7 @@ export function labelColor(theme: ChartTheme, label: Pick<PlacedLabel, "tone">):
   return toneColor(theme, label.tone);
 }
 
-/** Плашки и текст подписей: шрифт не меньше 11 px, текст сплошным цветом, у выбранного — рамка выделения. */
+/** Плашки и текст подписей: шрифт не меньше 11 px, текст сплошным цветом, у выбранного — рамка выделения; плашка суммы ликвидаций — непрозрачная. */
 export function paintTop(s: PaintScope, screen: ScreenScene, theme: ChartTheme): void {
   const { ctx, hpr, vpr } = s;
   const t = theme.type;
@@ -306,13 +306,17 @@ export function paintTop(s: PaintScope, screen: ScreenScene, theme: ChartTheme):
   ctx.setLineDash([]);
   ctx.textAlign = "left";
   ctx.textBaseline = "middle";
+  const gutter = screen.viewport.gutter;
   for (const p of screen.labels.placed) {
     const x = p.rect.x * hpr;
     const y = p.rect.y * vpr;
     const w = p.rect.w * hpr;
     const h = p.rect.h * vpr;
     ctx.globalAlpha = 1;
-    ctx.fillStyle = alpha(theme.palette.plaque, theme.alphas.plaque);
+    // сумма ликвидаций и подпись алерта или выбранного на занятой полосе лежат на плотных полосах карты (до 3:1
+    // к фону) — их плашка непрозрачная
+    const onGutter = gutter !== null && gutter.mode === "reserved" && p.rect.x + p.rect.w > gutter.x0;
+    ctx.fillStyle = alpha(theme.palette.plaque, p.layer === "liq_map" || onGutter ? 1 : theme.alphas.plaque);
     roundRect(ctx, x, y, w, h, t.plaqueRadius * hpr);
     ctx.fill();
     if (p.selected) {

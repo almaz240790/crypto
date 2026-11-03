@@ -1,6 +1,6 @@
 "use client";
 
-import { COMPACT_FORMAT, ChartController, NONE, PERCENT_FORMAT, VALUE_FORMAT, alignToCandles, tickPrecision, tokensFromElement, type AlertLine, type Candle, type ChartHandle, type ChartStore, type ChartType, type Device, type ExternalObject, type MarkupSettings, type PanelKey, type ScaleMode, type Terminal, type Timeframe } from "@platform/charts";
+import { COMPACT_FORMAT, ChartController, INTERACTION, NONE, PERCENT_FORMAT, alpha, resolvePreset, VALUE_FORMAT, alignToCandles, tickPrecision, tokensFromElement, type AlertLine, type Candle, type ChartHandle, type ChartStore, type ChartType, type Device, type ExternalObject, type MarkupSettings, type PanelKey, type ScaleMode, type Terminal, type Timeframe } from "@platform/charts";
 import { DrawingController, DrawingsPrimitive, INDICATORS, defaultParams, indicatorById, visibleOn, type Drawing, type DrawingType, type DrawingsState, type IndicatorSpec, type Layer, type LayerContext, type Point, TF_SECONDS } from "@platform/charts";
 import type { ISeriesApi, PriceFormat, UTCTimestamp } from "lightweight-charts";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -9,7 +9,7 @@ import s from "../terminal.module.css";
 import { useT } from "@/i18n/client";
 import { chartText } from "./chartText";
 import { useChartStore } from "./useChartStore";
-import { LegendChip } from "./LegendChip";
+import { LegendChip, LiqUnavailableNote } from "./LegendChip";
 import { ObjectTooltip } from "./ObjectTooltip";
 
 /** Цвет индикатора — токен дизайн-системы (план 5.3): палитра --ind-1…6 и смысловые цвета. */
@@ -30,7 +30,7 @@ export type { LayerKey, PanelKey } from "@platform/charts";
 /** price — значение в ценах инструмента (наложенные индикаторы): форматируется по шагу цены. */
 export type CrosshairInfo = { candle: Candle; values: { label: string; value: number | null; color: string; price: boolean }[] };
 /** Управление видом снаружи (кнопки «+/−», горячие клавиши, «Найдено»). */
-export type TerminalControls = Pick<ChartHandle, "zoom" | "reset" | "clearCrosshair" | "focus">;
+export type TerminalControls = Pick<ChartHandle, "zoom" | "reset" | "clearCrosshair" | "focus" | "snapshot">;
 /** Панели производных под графиком: заголовки по-русски через t() (M11). */
 export const PANELS: { id: PanelKey; title: string }[] = [
   { id: "funding", title: "Фандинг" },
@@ -38,8 +38,6 @@ export const PANELS: { id: PanelKey; title: string }[] = [
   { id: "liq", title: "Ликвидации" },
   { id: "ls", title: "Лонг/шорт" },
 ];
-const LONG_PRESS_MS = 300;
-const TAP_SLOP_PX = 8;
 
 type Props = {
   candles: Candle[];
@@ -105,13 +103,6 @@ class PrimitiveLayer implements Layer {
 
 type Pane = { spec: IndicatorSpec; paneIndex: number | null; series: Record<string, ISeriesApi<"Line" | "Histogram">>; colorKey: string; base?: string };
 const OVERLAY_SECONDARY_ALPHA = 0.55;
-/** Полупрозрачный вариант токена (hex → rgba). */
-function fade(hex: string, a: number): string {
-  const m = /^#([0-9a-f]{6})$/i.exec(hex);
-  if (!m) return hex;
-  const n = parseInt(m[1]!, 16);
-  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`; // color-ok: из токена
-}
 /** Заголовок панели под графиком (план 2A.7): панели сворачиваются до 24 px, на телефоне раскрыто не больше одной. */
 type PaneHead = { key: string; title: string; top: number; collapsed: boolean; color?: string };
 const PANE_COLLAPSED_PX = 24;
@@ -123,7 +114,6 @@ const PANE_CRYPTO_PX = 80;
 const MAX_EXPANDED_MOBILE = 1;
 /** Свёртывание панелей на узком экране — по media query до D (PaneManager). */
 const MOBILE_QUERY = "(max-width: 899px)";
-const SWIPE_PX = 24;
 /** Формат шкалы индикатора на отдельной панели: объём и OBV — компактно, остальное — значения. */
 const COMPACT_INDICATORS = new Set(["volume", "obv"]);
 const indicatorFormat = (id: string): PriceFormat => (COMPACT_INDICATORS.has(id) ? COMPACT_FORMAT : VALUE_FORMAT);
@@ -270,7 +260,7 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
       ctrl.handle.clearCrosshair();
       onCrosshairRef.current?.(null);
     };
-    onReadyRef.current?.({ zoom: ctrl.handle.zoom, reset: ctrl.handle.reset, clearCrosshair, focus: ctrl.handle.focus });
+    onReadyRef.current?.({ zoom: ctrl.handle.zoom, reset: ctrl.handle.reset, clearCrosshair, focus: ctrl.handle.focus, snapshot: ctrl.handle.snapshot });
     const prim = new DrawingsPrimitive(tokensFromElement(el));
     prim.touch = typeof window !== "undefined" && window.matchMedia("(pointer: coarse)").matches;
     drawPrimRef.current = prim;
@@ -325,17 +315,17 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
         el.dataset.sticky = "1";
         el.dataset.stickyArmed = "1"; // первое отпускание после long-press режим не выключает
         if (navigator.vibrate) navigator.vibrate(10);
-      }, LONG_PRESS_MS);
+      }, INTERACTION.longPressMs);
     };
     const onPMove = (e: PointerEvent) => {
-      if (pressStart && !stickyRef.current && Math.hypot(e.clientX - pressStart.x, e.clientY - pressStart.y) > TAP_SLOP_PX) {
+      if (pressStart && !stickyRef.current && Math.hypot(e.clientX - pressStart.x, e.clientY - pressStart.y) > INTERACTION.tapSlopPx) {
         clearTimeout(pressTimer);
         pressStart = null;
       }
     };
     const onPUp = (e: PointerEvent) => {
       clearTimeout(pressTimer);
-      const wasTap = pressStart !== null && Math.hypot(e.clientX - pressStart.x, e.clientY - pressStart.y) < TAP_SLOP_PX;
+      const wasTap = pressStart !== null && Math.hypot(e.clientX - pressStart.x, e.clientY - pressStart.y) < INTERACTION.tapSlopPx;
       pressStart = null;
       if (stickyRef.current) {
         if (wasTap && !el.dataset.stickyArmed) {
@@ -482,7 +472,7 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     // первая линия — цвет индикатора; остальные линии наложения — тот же цвет бледнее, у панелей — свои смысловые
     const seriesColor = (spec: IndicatorSpec, i: number, base: string) => {
       if (i === 0) return base;
-      if (spec.pane === "overlay") return fade(base, OVERLAY_SECONDARY_ALPHA);
+      if (spec.pane === "overlay") return alpha(base, OVERLAY_SECONDARY_ALPHA);
       // на панели вторая линия нейтральная, чтобы не сливаться с цветом индикатора; гистограмма — свои цвета
       return spec.series[i]!.kind === "histogram" ? color(spec.series[i]!.color) : tokens.text2;
     };
@@ -591,6 +581,7 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
       <div ref={ref} className={s.canvas} data-testid="terminal" />
       <ObjectTooltip store={store} coarse={coarse} />
       {device !== "cell" && <LegendChip store={store} />}
+      {device !== "cell" && <LiqUnavailableNote store={store} on={resolvePreset(markup, "desktop", { authed }).layers.liq_map} />}
       {heads.map((h) => (
         <div
           key={h.key}
@@ -606,8 +597,8 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
             swipeRef.current = null;
             if (!st || st.key !== h.key) return;
             const dy = (e.changedTouches[0]?.clientY ?? st.y) - st.y;
-            if (dy > SWIPE_PX && !h.collapsed) applyCollapsed(h.key, true);
-            else if (dy < -SWIPE_PX && h.collapsed) applyCollapsed(h.key, false);
+            if (dy > INTERACTION.swipePx && !h.collapsed) applyCollapsed(h.key, true);
+            else if (dy < -INTERACTION.swipePx && h.collapsed) applyCollapsed(h.key, false);
           }}
         >
           <span className={s.paneTitle} style={h.color ? { color: h.color } : undefined}>

@@ -6,7 +6,7 @@ import { buildAlerts } from "./layers/alerts";
 import { makeCtx, type Built, type LayerBuilder } from "./layers/common";
 import { buildExternal } from "./layers/external";
 import { buildFigures } from "./layers/figures";
-import { buildLevels, LEVEL_KEYS } from "./layers/levels";
+import { buildLevels, LEVEL_KEYS, levelFits } from "./layers/levels";
 import { buildLiq, liqClusters, liqTopId } from "./layers/liq";
 import { buildPatterns } from "./layers/patterns";
 import { buildProfile } from "./layers/profile";
@@ -120,11 +120,12 @@ function buildIndex(input: SceneInput, preset: ResolvedPreset, drawn: ReadonlySe
     // те же скопления, что у подписей на графике: у одного id одна цена и одна сумма
     for (const side of ["short", "long"] as const)
       for (const c of liqClusters(a.liq, side).slice(0, INDEX_LIMITS.liqPerSide))
-        rows.push({ id: liqTopId(side, c.bucket), layer: "liq_map", kind: side === "long" ? "liq-long" : "liq-short", price: c.price, amountUsd: c.amount, estimate: true, distancePct: pct(c.price, ref), onChart: false });
+        rows.push({ id: liqTopId(side, c.bucket), layer: "liq_map", kind: side === "long" ? "liq-long" : "liq-short", price: c.price, amountUsd: c.amount, estimate: true, ...(c.n > 1 ? { cluster: { lo: c.lo, hi: c.hi, n: c.n } } : {}), distancePct: pct(c.price, ref), onChart: false });
   }
   const st = input.structure;
   if (st) {
     for (const k of LEVEL_KEYS) {
+      if (!levelFits(k, input.tf)) continue;
       const raw = st.levels[k];
       const price = raw == null ? NaN : Number(raw);
       if (Number.isFinite(price)) rows.push({ id: `lvl:${k}`, layer: "levels", kind: k, price, distancePct: pct(price, ref), onChart: false });

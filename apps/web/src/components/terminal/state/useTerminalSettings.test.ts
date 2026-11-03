@@ -23,6 +23,12 @@ describe("migrateSaved", () => {
     expect(migrateSaved({ ...v5, markup: null }).markup.preset).toBe("clean");
   });
 
+  it("порядок панелей сохраняется (порядок добавления), неизвестные ключи и повторы отбрасываются", () => {
+    expect(migrateSaved({ layers_v: 5, panels: ["oi", "funding"] }).panels).toEqual(["oi", "funding"]);
+    expect(migrateSaved({ layers_v: 5, panels: ["ls", "x", "oi", "ls", 3, "funding"] }).panels).toEqual(["ls", "oi", "funding"]);
+    expect(migrateSaved({ ...V4, panels: ["liq", "oi"] }).panels).toEqual(["liq", "oi"]);
+  });
+
   it("мусор → значения по умолчанию", () => {
     expect(migrateSaved(null)).toEqual(DEFAULT_SAVED);
     expect(migrateSaved("x")).toEqual(DEFAULT_SAVED);

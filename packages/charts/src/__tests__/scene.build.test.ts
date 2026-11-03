@@ -52,7 +52,8 @@ function summary(s: Scene) {
     ...(o.emphasis !== "normal" ? { emphasis: o.emphasis } : {}),
     ...(o.label ? { label: o.label.text, priority: o.label.priority } : { priority: o.priority }),
     ...(o.axis ? { axis: o.axis.text } : {}),
-    ...(o.kind === "heat" ? { tops: o.tops.map((t) => `${t.id} ${t.label.text}`) } : {}),
+    // кандидатов в подписи сумм — все скопления; в снимке — по 4 крупнейших на сторону и их число
+    ...(o.kind === "heat" ? { tops: (["short", "long"] as const).flatMap((side) => o.tops.filter((t) => t.side === side).slice(0, 4).map((t) => `${t.id} ${t.label.text}`)), topCount: o.tops.length } : {}),
   }));
 }
 
@@ -168,6 +169,11 @@ describe("buildScene: инварианты", () => {
     expect(zones.length).toBeLessThanOrEqual(2);
     expect(new Set(zones.map((z) => z.label?.text)).size).toBe(zones.length);
     expect(byLayer(levels, "levels").map((o) => o.id)).toEqual(["lvl:pdh", "lvl:pdl", "lvl:pwh", "lvl:pwl"]);
+    // на недельном графике уровни дня — не про эту свечу: только недельные, и в «Найдено» тоже
+    const weekly = scene("btc-1w", preset("levels"));
+    expect(byLayer(weekly, "levels").map((o) => o.id)).toEqual(["lvl:pwh", "lvl:pwl"]);
+    expect(weekly.index.levels.filter((r) => r.layer === "levels").map((r) => r.kind).sort()).toEqual(["pwh", "pwl"]);
+    expect(scene("btc-1w", preset("levels"), { selected: "lvl:pdh" }).byId.has("lvl:pdh")).toBe(false);
     const detailed = scene("btc-4h-rich", preset("detailed"));
     expect(cnt(detailed.objects, (o) => o.id.startsWith("sr:S:"))).toBe(2);
     expect(cnt(detailed.objects, (o) => o.id.startsWith("sr:R:"))).toBe(3);

@@ -1,4 +1,5 @@
 import type { LevelKey } from "../../presets";
+import { TF_SECONDS, type Timeframe } from "../../types";
 import type { TextKey } from "../text";
 import type { Built, LayerBuilder } from "./common";
 import { emphasize, hline } from "./common";
@@ -10,13 +11,18 @@ const LEVEL_TEXT: Readonly<Record<LevelKey, { label: TextKey; hover: TextKey; hi
   pwl: { label: "level.pwl", hover: "hover.pwl", high: false },
 };
 export const LEVEL_KEYS: readonly LevelKey[] = ["pdh", "pdl", "pwh", "pwl"];
+const LEVEL_PERIOD_SEC: Readonly<Record<LevelKey, number>> = { pdh: 86_400, pdl: 86_400, pwh: 604_800, pwl: 604_800 };
 
-/** Максимумы и минимумы вчера и прошлой недели: точками на всю ширину, тон приглушённый. */
+/** Уровень периода короче свечи не показывается: «Макс. вчера» на недельном графике — не про эту свечу. */
+export const levelFits = (k: LevelKey, tf: Timeframe): boolean => TF_SECONDS[tf] <= LEVEL_PERIOD_SEC[k];
+
+/** Максимумы и минимумы вчера и прошлой недели: точками на всю ширину, тон приглушённый; на 1W — только недельные. */
 export const buildLevels: LayerBuilder = (ctx) => {
   const st = ctx.input.structure;
   if (!st) return [];
   const out: Built[] = [];
   for (const k of LEVEL_KEYS) {
+    if (!levelFits(k, ctx.input.tf)) continue;
     const id = `lvl:${k}`;
     const selected = ctx.isSelected(id);
     if (!ctx.preset.limits.levelKeys.includes(k) && !selected) continue;

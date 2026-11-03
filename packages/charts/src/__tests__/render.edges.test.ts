@@ -5,7 +5,7 @@ import { VIEW } from "../presets";
 import { AxisViewPool } from "../render/axisViews";
 import { OverlayPrimitive } from "../render/OverlayPrimitive";
 import { timeToIndex } from "../render/projector";
-import type { GlyphObject, HeatObject, HLineObject, Scene, SceneObject } from "../scene/types";
+import type { GlyphObject, HeatObject, HLineObject, ProfileObject, Scene, SceneObject } from "../scene/types";
 import { bars, fakeElement, H, makeEnv, makeTheme, T0 } from "./fakes/lwc";
 
 /** Края отрисовки: проекция времени, жест на телефоне, препятствия интерфейса, тепловая карта, пул и DOM-отсчёт. */
@@ -29,7 +29,7 @@ const line = (price: number, id = `sr:S:${price}`, extra: Partial<HLineObject> =
 });
 
 function sceneOf(objects: SceneObject[], version = 1, selected: string | null = null): Scene {
-  return { version, key: `k${version}`, objects, byId: new Map(objects.map((o) => [o.id, o])), legend: [], index: { version, levels: [], onChart: new Set(), dropped: new Set(), liqUnavailable: false }, selected };
+  return { version, key: `k${version}`, objects, byId: new Map(objects.map((o) => [o.id, o])), legend: [], legendOf: new Map(), index: { version, levels: [], onChart: new Set(), dropped: new Set(), liqUnavailable: false }, selected };
 }
 
 function setup(o: { coarse?: boolean; now?: () => number; overlayY?: () => number | null; width?: number } = {}) {
@@ -71,6 +71,34 @@ describe("OverlayPrimitive: края", () => {
     now += 500;
     prim.updateAllViews();
     expect(prim.debug().labels).toHaveLength(2);
+  });
+
+  it("профиль объёма: строки — на устоявшийся диапазон; во время жеста прежние, через 150 мс — пересчёт", () => {
+    vi.useFakeTimers();
+    let now = 1000;
+    const { prim, env } = setup({ now: () => now });
+    const vp: ProfileObject = { kind: "profile", id: "vp", layer: "volume_profile", tone: "muted", priority: 10, hover: { title: "vp" }, emphasis: "normal", rows: 12, valueArea: 0.7, label: { text: "Макс. объём", tone: "muted", priority: 30, slots: ["gutter-mid"], font: "sans", show: "always" } };
+    prim.setScene(sceneOf([vp]));
+    prim.updateAllViews();
+    expect(prim.profileComputations).toBe(1);
+    // тот же кадр — без пересчёта
+    prim.updateAllViews();
+    expect(prim.profileComputations).toBe(1);
+    // перетаскивание: диапазон меняется каждые 10 мс — строки прежние
+    for (let i = 1; i <= 5; i++) {
+      env.chart.state.range = { from: i, to: 114 + i };
+      now += 10;
+      prim.updateAllViews();
+    }
+    expect(prim.profileComputations).toBe(1);
+    // пауза: таймер просит кадр, кадр считает профиль по новому диапазону
+    const before = env.series.updates;
+    vi.advanceTimersByTime(200);
+    expect(env.series.updates).toBeGreaterThan(before);
+    now += 500;
+    prim.updateAllViews();
+    expect(prim.profileComputations).toBe(2);
+    vi.useRealTimers();
   });
 
   it("мышь: смена диапазона подписи не упрощает", () => {
@@ -167,19 +195,24 @@ describe("AxisViewPool", () => {
 });
 
 describe("AxisCountdown (DOM-зеркало)", () => {
-  it("место, цвет по направлению свечи, текст; без текста — скрыт", () => {
+  it("место, цвета фона и текста, текст; без текста или цветов — скрыт", () => {
     const host = fakeElement();
     const cd = new AxisCountdown(host);
     const st = cd.el.style as unknown as Record<string, string>;
-    cd.place({ x: 800, y: 300, w: 60, h: 17 }, true, 12);
+    const up = { bg: "#22c58b", fg: "#0b0e10" };
+    cd.place({ x: 800, y: 300, w: 60, h: 17 }, up, 12);
     expect(st.display).toBe("none");
     cd.setText("1:23");
-    cd.place({ x: 800, y: 300, w: 60, h: 17 }, true, 12);
-    expect(st).toMatchObject({ left: "800px", top: "300px", width: "60px", height: "17px", fontSize: "12px", display: "block", background: "var(--chart-up)" });
+    expect(cd.value).toBe("1:23");
+    cd.place({ x: 800, y: 300, w: 60, h: 17 }, up, 12);
+    expect(st).toMatchObject({ left: "800px", top: "300px", width: "60px", height: "17px", fontSize: "12px", display: "block", background: "#22c58b", color: "#0b0e10" });
     expect(cd.shown).toEqual({ x: 800, y: 300, w: 60, h: 17 });
-    cd.place({ x: 800, y: 300, w: 60, h: 17 }, false, 12);
-    expect(st.background).toBe("var(--chart-down)");
-    cd.place(null, false, 12);
+    cd.place({ x: 800, y: 300, w: 60, h: 17 }, { bg: "#f2555c", fg: "#e6e9ec" }, 12);
+    expect(st).toMatchObject({ background: "#f2555c", color: "#e6e9ec" });
+    cd.place({ x: 800, y: 300, w: 60, h: 17 }, null, 12);
+    expect(cd.shown).toBeNull();
+    cd.place({ x: 800, y: 300, w: 60, h: 17 }, up, 12);
+    cd.place(null, up, 12);
     expect(cd.shown).toBeNull();
     cd.setText("");
     expect(st.display).toBe("none");

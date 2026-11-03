@@ -73,6 +73,11 @@ describe("суммы и отсчёт", () => {
     expect(formatCountdown(7)).toBe("0:07");
     expect(formatCountdown(-3)).toBe("0:00");
     expect(formatCountdown(59.9)).toBe("0:59");
+    // от суток — дни по шаблону: «167:59:59» на недельной свече не помещался в узкую шкалу телефона
+    expect(formatCountdown(604_799, "{d}д {hm}")).toBe("6д 23:59");
+    expect(formatCountdown(86_400, "{d}d {hm}")).toBe("1d 0:00");
+    expect(formatCountdown(86_399, "{d}д {hm}")).toBe("23:59:59");
+    expect(formatCountdown(604_799)).toBe("167:59:59");
   });
 
   it("formatSignedPercent: ноль без знака", () => {

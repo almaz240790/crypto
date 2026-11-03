@@ -198,6 +198,61 @@ test.describe("перепись подписей: десктоп 1440×900", () 
     checkGutter(await census(page));
   });
 
+  test("процентная шкала: деления под метками уровней и ценой пустые (фильтр и в localization)", async ({ page }) => {
+    await open(page);
+    await setState(page, "levels");
+    await closeSheets(page);
+    await page.getByLabel("шкала").selectOption("percent");
+    // деления процентной шкалы подписаны в процентах; метки уровней — ценой (решение ADR-0008)
+    await expect.poll(async () => tickTexts(await census(page)).some((t) => /%$/.test(t))).toBe(true);
+    const c = await census(page);
+    expect(violations(c)).toEqual([]);
+    expect(c.overlay.axis.filter((a) => a.style === "outline").length).toBeGreaterThan(0);
+    for (const a of c.overlay.axis.filter((x) => x.style === "outline")) expect(a.text).not.toMatch(/%$/);
+  });
+
+  test("цвета смысла на холсте: «Поддержка» — зелёным, «Сопротивление» — красным (пиксели, не токены)", async ({ page }) => {
+    await open(page);
+    const c = await census(page);
+    // пиксель с наибольшей насыщенностью внутри плашки: текст подписи (вес 600, сплошной цвет тона)
+    const sample = (r: { x: number; y: number; w: number; h: number }) =>
+      page.evaluate((r) => {
+        const el = document.querySelector('[data-testid="terminal"]') as HTMLElement;
+        const canvases = [...el.querySelectorAll("canvas")];
+        const area = (c: HTMLCanvasElement) => c.getBoundingClientRect().width * c.getBoundingClientRect().height;
+        const max = Math.max(...canvases.map(area));
+        // у панели LWC два холста одного размера (основной и верхний): подписи — на одном из них
+        let best = [0, 0, 0];
+        let chroma = -1;
+        for (const pane of canvases.filter((c) => area(c) === max)) {
+          const k = pane.width / pane.getBoundingClientRect().width;
+          const d = pane.getContext("2d")!.getImageData(Math.round(r.x * k), Math.round(r.y * k), Math.max(1, Math.round(r.w * k)), Math.max(1, Math.round(r.h * k))).data;
+          for (let i = 0; i < d.length; i += 4) {
+            if (d[i + 3]! < 250) continue;
+            const px = [d[i]!, d[i + 1]!, d[i + 2]!];
+            const ch = Math.max(...px) - Math.min(...px);
+            if (ch > chroma) {
+              chroma = ch;
+              best = px;
+            }
+          }
+        }
+        return best;
+      }, r);
+    // токены тёмной темы (tokens.css): --up #22c58b, --down #f2555c
+    const near = (p: number[], hex: string) => {
+      const q = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+      return p.every((v, i) => Math.abs(v - q[i]!) <= 24);
+    };
+    const sup = c.overlay.labels.find((l) => l.text === "Поддержка");
+    const res = c.overlay.labels.find((l) => l.text === "Сопротивление");
+    expect(sup && res, "обе подписи на графике").toBeTruthy();
+    const ps = await sample(sup!.rect);
+    const pr = await sample(res!.rect);
+    expect(near(ps, "#22c58b"), `Поддержка: ${ps}`).toBe(true);
+    expect(near(pr, "#f2555c"), `Сопротивление: ${pr}`).toBe(true);
+  });
+
   test("смена темы: цвета подписей — новые --chart-*, сцена не пересобирается", async ({ page }) => {
     await open(page, { fixture: "rich", authed: true });
     await setState(page, "detailed");
@@ -299,6 +354,9 @@ test.describe("перепись подписей: десктоп 1440×900", () 
     await expect(page.getByRole("status")).toContainText("Разметка графика обновлена");
     const sheet = await layersSheet(page);
     await expect(sheet.getByRole("radio", { name: "Чистый", exact: true })).toBeChecked();
+    // уведомление отсылает к «Разметке»: заголовок виден над пресетами (и называет группу радиокнопок)
+    await expect(sheet.getByText("Разметка", { exact: true })).toBeVisible();
+    await expect(sheet.getByRole("radiogroup", { name: "Разметка" })).toBeVisible();
     const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("pl-terminal") ?? "{}"));
     expect(saved).toMatchObject({ layers_v: 5, markup: { preset: "clean", overrides: {} } });
     expect(saved.layers).toBeUndefined();
@@ -362,12 +420,14 @@ test("алерты rich: обе линии на графике", async ({ page }
 
 /**
  * Снимки-эталоны (§14.3): 4 вида для проверки владельцем. Обновляются только намеренно
- * (PW_BASELINES=1 npx playwright test chart.render --update-snapshots). Сравнение включается переменной
- * PW_BASELINES: сглаживание текста на холсте отличается между сборками Chromium (headless shell в CI и
- * полный Chrome локально), и порог 0.2 % пикселей иначе ложно срабатывает.
+ * (npx playwright test chart.render --update-snapshots). Сравниваются в обычной проверке перед коммитом
+ * (npx playwright test, Chromium /opt/pw-browsers). В CI (CI=1) сравнение выключено, пока эталоны не сняты
+ * в его Chromium: сглаживание текста на холсте отличается между сборками, и порог 0.2 % пикселей ложно
+ * срабатывает; там смысл цветов держат проверка пикселей подписей и перепись (ADR-0008). PW_BASELINES=1
+ * включает сравнение и в CI.
  */
 test.describe("снимки-эталоны", () => {
-  test.skip(!process.env.PW_BASELINES, "сравнение снимков — по PW_BASELINES=1");
+  test.skip(!!process.env.CI && !process.env.PW_BASELINES, "в CI сравнение снимков — по PW_BASELINES=1");
   const shot = async (page: Page, name: string) => {
     await page.mouse.move(1, 1);
     await census(page);

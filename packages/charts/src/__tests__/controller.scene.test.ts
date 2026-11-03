@@ -346,6 +346,73 @@ describe("ChartController: стадии сцены", () => {
     expect(resets()).toBe(n0 + 3);
   });
 
+  it("легенда «?» — по кадру: только то, что на экране; «Цена» цветом свечи, чью цену показывает метка", () => {
+    const { ctrl, store, term, flush } = setup({ candles: fx.candles });
+    const n = fx.candles.length;
+    const tail = fx.candles.slice(n - 112);
+    term.env.chart.state.range = { from: n - 112, to: n - 1 };
+    term.env.priceState.top = Math.max(...tail.map((c) => c.high)) * 1.01;
+    term.env.priceState.bottom = Math.min(...tail.map((c) => c.low)) * 0.99;
+    ctrl.set({ text: RU_TEXT, tf: "4h", structure: fx.structure, markup: { preset: "detailed", overrides: {} } });
+    flush();
+    ctrl.overlay.updateAllViews();
+    // часть объектов «Подробного» — за кадром: в легенде их нет
+    expect(store.getState().legend.length).toBeLessThan(ctrl.currentScene!.legend.length);
+    const scene = ctrl.currentScene!;
+    const onScreen = new Set(ctrl.overlay.debug().objects.map((o) => scene.legendOf.get(o.id)).filter(Boolean));
+    const keys = store.getState().legend.map((l) => l.key);
+    expect(keys).toContain("price");
+    expect(keys).toContain("selection");
+    for (const k of keys) if (k !== "price" && k !== "selection") expect(onScreen.has(k), k).toBe(true);
+    const last = fx.candles.at(-1)!;
+    expect(store.getState().legend.find((l) => l.key === "price")?.tone).toBe(last.close >= last.open ? "up" : "down");
+  });
+
+  it("процентная шкала: фильтр делений и в localization (деление под меткой — пустое)", () => {
+    const { ctrl, term, flush } = setup();
+    ctrl.set({ text: RU_TEXT });
+    flush();
+    ctrl.overlay.updateAllViews();
+    expect(term.calls).toContain("setPercentTickFilter");
+    const candles = term.candles;
+    const hidden = term.percentHidden!;
+    const bands = ctrl.overlay.debug().hiddenBands;
+    expect(bands.length).toBeGreaterThan(0);
+    // деление q % — цена база · (1 + q / 100), база — закрытие первой видимой свечи
+    const r = term.env.chart.state.range;
+    const base = candles[Math.max(0, Math.floor(r.from))]!.close;
+    const [y0, y1] = bands[0]!;
+    const price = term.env.series.coordinateToPrice((y0 + y1) / 2);
+    expect(hidden((price / base - 1) * 100)).toBe(true);
+    const free = term.env.series.coordinateToPrice(-1000);
+    expect(hidden((free / base - 1) * 100)).toBe(false);
+  });
+
+  it("снимок: кадр LWC, подпись сверху и строка снизу из web, фон и шрифт — из темы", () => {
+    const { ctrl, term, el, flush } = setup();
+    ctrl.set({ text: RU_TEXT });
+    flush();
+    const ops: string[] = [];
+    const ctx = {
+      fillStyle: "",
+      font: "",
+      textBaseline: "",
+      fillRect: (x: number, y: number, w: number, h: number) => ops.push(`rect ${ctx.fillStyle} ${x},${y},${w},${h}`),
+      drawImage: (_src: unknown, x: number, y: number) => ops.push(`image ${x},${y}`),
+      fillText: (t: string, x: number, y: number) => ops.push(`text ${ctx.fillStyle} ${ctx.font} ${t} ${x},${y}`),
+    };
+    const canvas = { width: 0, height: 0, getContext: () => ctx, toDataURL: () => "data:image/png;base64,AA" };
+    (el.ownerDocument as unknown as { createElement: () => unknown }).createElement = () => canvas;
+    (term.env.chart as unknown as { takeScreenshot: () => unknown }).takeScreenshot = () => ({ width: 800, height: 400 });
+    expect(ctrl.handle.snapshot("BTCUSDT · H4", "низ")).toBe("data:image/png;base64,AA");
+    const theme = ctrl.overlay.theme;
+    expect(canvas).toMatchObject({ width: 800, height: 456 });
+    expect(ops).toEqual([`rect ${theme.palette.surface} 0,0,800,456`, "image 0,28", `text ${theme.palette.structure} 13px ${theme.type.mono} BTCUSDT · H4 10,14`, `text ${theme.palette.structure} 13px ${theme.type.mono} низ 10,442`]);
+    // без 2d-контекста — пустая строка, без исключения
+    canvas.getContext = () => null as never;
+    expect(ctrl.handle.snapshot("x", "y")).toBe("");
+  });
+
   it("мышь: клик без hoveredInfo — попадание по кадру примитива", () => {
     const { ctrl, store, term, flush } = setup();
     ctrl.set({ text: RU_TEXT, structure: fx.structure });

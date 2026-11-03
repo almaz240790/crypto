@@ -211,6 +211,8 @@ describe("projectScene: свойства на фикстурах", () => {
     const sums = sel.screen.labels.placed.filter((p) => p.layer === "liq_map");
     expect(sums.filter((p) => p.selected).map((p) => p.objectId)).toEqual([pick.id]);
     expect(sums.filter((p) => p.bypassBudget).map((p) => p.objectId)).toEqual([pick.id]);
+    // выбранная сумма раскладывается первой: место у неё не отнимет подпись соседнего уровня
+    expect(sums.find((p) => p.selected)!.priority).toBe(95);
     const g = sel.screen.objects.find((o) => o.geom.kind === "heat")!.geom;
     if (g.kind !== "heat") throw new Error("heat");
     const rows = g.rows.filter((r) => r.selected);
@@ -221,12 +223,19 @@ describe("projectScene: свойства на фикстурах", () => {
     expect(map.screen.labels.placed.some((p) => p.selected)).toBe(false);
   });
 
-  it("полоса занята картой: подписи уровней кончаются левее полосы и не лежат на её полосах", () => {
+  it("полоса занята картой: подписи уровней кончаются левее полосы и не лежат на её полосах; алерт — на полосе, только если левее места нет", () => {
+    const fx = loadFixture("btc-4h-rich");
+    const close = fx.candles.at(-1)!.close;
     for (const device of ["desktop", "phone"] as const) {
-      const { screen } = run("btc-4h-rich", { preset: "liquidity", overrides: {} }, device, { priceRange: [70000, 92000] });
+      const alerts: AlertLine[] = [{ id: 1, op: "cross_up", price: close * 1.01 }];
+      const { screen } = run("btc-4h-rich", { preset: "liquidity", overrides: {} }, device, { priceRange: [70000, 92000], alerts });
       const g = screen.viewport.gutter!;
       expect(g.mode).toBe("reserved");
-      for (const p of screen.labels.placed.filter((x) => x.layer !== "liq_map")) expect(p.rect.x + p.rect.w).toBeLessThanOrEqual(g.x0 + 1e-6);
+      for (const p of screen.labels.placed.filter((x) => x.layer !== "liq_map" && x.layer !== "alerts")) expect(p.rect.x + p.rect.w).toBeLessThanOrEqual(g.x0 + 1e-6);
+      const alert = screen.labels.placed.find((p) => p.layer === "alerts");
+      expect(alert, device).toBeDefined();
+      // на полосе — только последним вариантом: слева от неё место было занято
+      if (alert!.rect.x + alert!.rect.w > g.x0) expect(["free-above", "free-below", "line-end-above", "line-end-below"]).toContain(alert!.slot);
     }
   });
 
@@ -312,6 +321,16 @@ describe("projectScene: свойства на фикстурах", () => {
     expect(screenFrameKey(a.scene, { ...a.proj, width: 999 }, a.visible, a.opts)).not.toBe(a.screen.frameKey);
     // детерминированность
     expect(JSON.stringify(projectScene(a.scene, a.proj, a.visible, a.opts).labels)).toBe(JSON.stringify(a.screen.labels));
+  });
+
+  it("история прокручена: метка цены LWC — у последней видимой свечи, отсчёта нет, деления пустые под этой меткой", () => {
+    const fx = loadFixture("btc-4h-rich");
+    const n = fx.candles.length;
+    const shown = fx.candles[n - 1 - 120]!;
+    const { screen, proj } = run("btc-4h-rich", { preset: "detailed", overrides: {} }, "desktop", { scrollBars: 120, plaque: { price: shown.close, up: shown.close >= shown.open, live: false } });
+    expect(screen.countdownY).toBeNull();
+    expect(screen.plaque).toEqual({ y: proj.y(shown.close), up: shown.close >= shown.open, live: false });
+    expect(inBands(proj.y(shown.close)!, screen.axis.hiddenBands)).toBe(true);
   });
 
   it("без цены — нет полосы цены и отсчёта", () => {

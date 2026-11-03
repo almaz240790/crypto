@@ -201,6 +201,8 @@ export interface LevelRow {
   touches?: number;
   amountUsd?: number;
   estimate?: boolean;
+  /** Скопление ликвидаций из нескольких соседних корзин: крайние цены и число корзин (сумма — по всем). */
+  cluster?: { lo: number; hi: number; n: number };
   /** Виды исходных зон (ob/sd/fvg) — для подписи в списке. */
   kinds?: readonly string[];
   /** Вид и направление каждой исходной зоны (у смешанной группы — разные): названия в списке словами. */

@@ -228,12 +228,19 @@ test("1W: открытый интерес не совпадает со свеч�
   await expect(objects.getByRole("list", { name: "уровни поддержки и сопротивления" })).not.toContainText("Ликвидации");
   await objects.getByRole("tab", { name: "Слои" }).click();
   await expect(objects).toContainText("нет данных открытого интереса на этом таймфрейме");
+  // пометка и у пресета «Карта ликвидаций»; слой выключен («Чистый») — на графике пометки нет
+  await expect(objects.getByTestId("markup-liq-unavailable")).toBeVisible();
+  await expect(page.getByTestId("chart-liq-unavailable")).toHaveCount(0);
+  // пресет «Карта ликвидаций» выбран, а карты нет — пометка и на графике, рядом с «?»
+  await objects.getByRole("radio", { name: "Карта ликвидаций", exact: true }).check();
+  await expect(page.getByTestId("chart-liq-unavailable")).toHaveText("Карты ликвидаций на этом таймфрейме нет");
   // на 4h данные совпадают — карта есть, пояснения нет
   await page.goto("/chart/BTCUSDT/4h");
   await ready(page);
   const objects4h = page.getByRole("complementary", { name: "панель объектов" });
   await expect(objects4h.getByRole("list", { name: "уровни поддержки и сопротивления" })).toContainText("Ликвидации");
   await expect(objects4h.getByTestId("liq-unavailable")).toHaveCount(0);
+  await expect(page.getByTestId("chart-liq-unavailable")).toHaveCount(0);
 });
 
 test("светлая тема: индикаторы и разметка перечитывают токены сразу после переключения, без пересборки сцены", async ({ page }) => {
@@ -321,6 +328,11 @@ test("ширина области графика через 640 px: шрифт �
   await page.goto("/chart/BTCUSDT/4h");
   await ready(page);
   // шаг цены BTCUSDT 0.1 приходит вместе со свечами: формат — один знак; шрифт шкал десктопа — 12 px (VIEW)
+  await expect.poll(() => formatWith(page, 0, 0, 80723.7)).toBe("80 723.7");
+  expect(await fontSize(page)).toBe(12);
+  // окно 800 px (планшет вертикально): область графика шире 640 px — шрифт и формат десктопа (порог сдвинут
+  // с ширины окна 900 px на ширину области 640 px — намеренная правка PR B, ADR-0008)
+  await page.setViewportSize({ width: 800, height: 900 });
   await expect.poll(() => formatWith(page, 0, 0, 80723.7)).toBe("80 723.7");
   expect(await fontSize(page)).toBe(12);
   // область графика уже 640 px (телефон, узкое окно): 11 px и крупные цены целым числом — как у подписей уровней

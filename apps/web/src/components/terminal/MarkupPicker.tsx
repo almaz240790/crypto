@@ -35,21 +35,25 @@ function presetNote(id: PresetId, t: (s: string) => string): string {
     case "liquidity":
       return t("Оценка ликвидаций справа от свечей и ближайшие уровни");
     default:
-      return t("Вся автоматическая разметка: структура, зоны, уровни, ликвидации, фигура");
+      return t("Структура, уровни, зоны, ликвидации и фигура вместе");
   }
 }
 
 /**
  * Выбор разметки графика (план 2B.2, ADR-0008): пресет переключает только слои и лимиты — индикаторы и панели
  * не трогает. Флажок слоя поверх пресета — поправка: тогда отмечен «Свой» (виден, только пока активен);
- * выбор любого пресета поправки сбрасывает.
+ * выбор любого пресета поправки сбрасывает. Заголовок «Разметка» виден: на него ссылается разовое уведомление
+ * о смене разметки по умолчанию. liqUnavailable — у «Карты ликвидаций» пометка, что на этом таймфрейме её нет.
  */
-export function MarkupPicker({ markup, custom, onSelect }: { markup: MarkupSettings; custom: boolean; onSelect: (id: PresetId) => void }) {
+export function MarkupPicker({ markup, custom, onSelect, liqUnavailable = false }: { markup: MarkupSettings; custom: boolean; onSelect: (id: PresetId) => void; liqUnavailable?: boolean }) {
   const t = useT();
   const uid = useId();
   const name = `markup${uid}`;
   return (
-    <div role="radiogroup" aria-label={t("Разметка")} className={s.markup}>
+    <div role="radiogroup" aria-labelledby={`${uid}-head`} className={s.markup}>
+      <strong id={`${uid}-head`} className={s.markupHead}>
+        {t("Разметка")}
+      </strong>
       {SELECTABLE_PRESETS.filter((id) => PRESETS[id].userSelectable).map((id) => (
         <div key={id} className={s.markupItem}>
           <label>
@@ -57,6 +61,12 @@ export function MarkupPicker({ markup, custom, onSelect }: { markup: MarkupSetti
           </label>
           <span id={`${uid}-${id}`} className={s.markupNote}>
             {presetNote(id, t)}
+            {id === "liquidity" && liqUnavailable && (
+              <span className={s.markupWarn} data-testid="markup-liq-unavailable">
+                {" "}
+                · {t("нет данных открытого интереса на этом таймфрейме")}
+              </span>
+            )}
           </span>
         </div>
       ))}

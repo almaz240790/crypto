@@ -4,12 +4,12 @@ import Link from "next/link";
 import type React from "react";
 import { useEffect, useRef, useState } from "react";
 import { askChart, explainPattern, type Explanation, type FigureOnChart, type FigureStat, type PatternOnChart, type PatternStat } from "@/lib/chart";
-import { formatPrice, formatUsdCompact } from "@/lib/format";
+import { formatPrice } from "@/lib/format";
 import type { Timeframe } from "@/lib/timeframes";
 import s from "./terminal.module.css";
 import { useT } from "@/i18n/client";
 import type { T } from "@/i18n";
-import type { LevelRow, SceneIndex } from "@platform/charts";
+import { formatUsd, type LevelRow, type SceneIndex } from "@platform/charts";
 import { zoneCode, zoneName } from "@/lib/zones";
 
 /** Панель «Найдено на графике» (план 3.17, 2A.10): свечные паттерны с контекстом и исторической
@@ -198,6 +198,15 @@ export function LevelsList({ index, tick, selected = null, onPick }: { index: Sc
   const longs = of("liq-long");
   if (res.length + sup.length + zones.length + shorts.length + longs.length === 0 && !liqUnavailable) return null;
   const liqTitle = t("Оценка по приросту открытого интереса для плеч 10–100×, не данные биржи.");
+  // сумма — та же, что у подписи на графике (formatUsd пакета): у скопления из соседних цен — по всем, цена — у крупнейшей
+  const liqRow = (b: LevelRow, side: string) =>
+    row(
+      b,
+      <>
+        <span className={s.levelLiq}>{side}</span> <span className="num">{px(b.price)}</span> <strong className={`num ${s.levelLiq}`}>≈ {formatUsd(b.amountUsd ?? 0)}</strong>
+      </>,
+      b.cluster ? `${liqTitle} ${t("сумма по {n} соседним ценам", { n: b.cluster.n })}: ${px(b.cluster.lo)}–${px(b.cluster.hi)}` : liqTitle,
+    );
   // строка — кнопка: выбор объекта на графике (и показ его, если он за кадром); повторное нажатие снимает выбор
   const row = (r: LevelRow, children: React.ReactNode, title?: string) => {
     const sel = r.id === selected;
@@ -213,15 +222,7 @@ export function LevelsList({ index, tick, selected = null, onPick }: { index: Sc
     <>
       <strong className={s.objHead}>{t("Уровни")}</strong>
       <ul className={s.levelList} aria-label={t("уровни поддержки и сопротивления")}>
-        {shorts.map((b) =>
-          row(
-            b,
-            <>
-              <span className={s.levelLiq}>{t("Ликвидации шортов")}</span> <span className="num">{px(b.price)}</span> <strong className={`num ${s.levelLiq}`}>≈ {formatUsdCompact(b.amountUsd ?? 0)}</strong>
-            </>,
-            liqTitle,
-          ),
-        )}
+        {shorts.map((b) => liqRow(b, t("Ликвидации шортов")))}
         {res.map((l) =>
           row(
             l,
@@ -249,17 +250,9 @@ export function LevelsList({ index, tick, selected = null, onPick }: { index: Sc
             </>,
           ),
         )}
-        {longs.map((b) =>
-          row(
-            b,
-            <>
-              <span className={s.levelLiq}>{t("Ликвидации лонгов")}</span> <span className="num">{px(b.price)}</span> <strong className={`num ${s.levelLiq}`}>≈ {formatUsdCompact(b.amountUsd ?? 0)}</strong>
-            </>,
-            liqTitle,
-          ),
-        )}
+        {longs.map((b) => liqRow(b, t("Ликвидации лонгов")))}
       </ul>
-      {shorts.length + longs.length > 0 && <p className={`caption ${s.levelNote}`}>{t("Карта ликвидаций — расчётная оценка: суммы позиций с плечом 10–100×, которые закроются принудительно при подходе цены. Считается по приросту открытого интереса, а не по данным биржи.")}</p>}
+      {shorts.length + longs.length > 0 && <p className={`caption ${s.levelNote}`}>{t("Карта ликвидаций — расчётная оценка: суммы позиций с плечом 10–100×, которые могли бы закрыться принудительно при подходе цены. Считается по приросту открытого интереса, а не по данным биржи.")}</p>}
       {shorts.length + longs.length === 0 && liqUnavailable && <p className={`caption ${s.levelNote}`} data-testid="liq-unavailable">{t("Карта ликвидаций на этом таймфрейме недоступна: мало данных открытого интереса.")}</p>}
     </>
   );

@@ -39,5 +39,7 @@ export type { ChartState, ChartStatus, ChartStore, HoverSnapshot, VisibleSnapsho
 export { Dirty } from "./controller/stages";
 export type { DirtyMask } from "./controller/stages";
 export { AxisCountdown } from "./controller/axisCountdown";
+export { composeSnapshot } from "./controller/snapshot";
+export type { SnapshotStyle } from "./controller/snapshot";
 export { ChartController, createChartController } from "./controller/ChartController";
 export type { ChartControllerOptions, ChartHandle, ChartInputs, FocusTarget } from "./controller/ChartController";

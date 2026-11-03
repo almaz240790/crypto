@@ -102,8 +102,8 @@ export async function census(page: Page): Promise<Census> {
     type Chart = {
       panes(): { getHTMLElement(): HTMLElement; getSeries(): { data(): { close?: number; value?: number }[]; priceFormatter(): { format(p: number): string }; priceToCoordinate(p: number): number | null }[] }[];
       paneSize(i?: number): { width: number; height: number };
-      priceScale(id: string): { width(): number };
-      options(): { layout: { fontSize: number } };
+      priceScale(id: string): { width(): number; options(): { mode: number } };
+      options(): { layout: { fontSize: number; textColor: string } };
     };
     const el = document.querySelector('[data-testid="terminal"]') as HTMLElement & { __chart: Chart; __overlay: () => unknown };
     const chart = el.__chart;
@@ -135,10 +135,16 @@ export async function census(page: Page): Promise<Census> {
     const series = pane.getSeries()[0]!;
     const lastBar = series.data().at(-1);
     const lastValue = lastBar?.close ?? lastBar?.value ?? null;
-    const lastText = lastValue == null ? "" : series.priceFormatter().format(lastValue);
     const lastY = lastValue == null ? null : series.priceToCoordinate(lastValue);
     const fontSize = chart.options().layout.fontSize;
     const lh = Math.round((fontSize * 17) / 12);
+    // процентная шкала (mode 2): метка цены LWC — процент от первой видимой свечи; её текст — тот, что нарисован
+    // на шкале у y цены (формат серии здесь не тот)
+    const percent = chart.priceScale("right").options().mode === 2;
+    // на залитой метке текст не цвета делений (layout.textColor): деление под меткой так не спутать с ней
+    const tickFill = chart.options().layout.textColor.trim().toLowerCase();
+    const atLast = percent && lastY != null ? texts.filter((t) => t.canvas === "priceAxis" && t.fill.trim().toLowerCase() !== tickFill && Math.abs(t.rect.y + t.rect.h / 2 - lastY) < lh / 2)[0] : undefined;
+    const lastText = lastValue == null ? "" : percent ? (atLast?.text ?? "") : series.priceFormatter().format(lastValue);
     const lastRect = lastY == null ? null : { x: size.width, y: lastY - lh / 2, w: axisWidth, h: lh };
     const cd = document.querySelector('[data-testid="countdown"]') as HTMLElement | null;
     const cdr = cd && cd.style.display !== "none" ? cd.getBoundingClientRect() : null;

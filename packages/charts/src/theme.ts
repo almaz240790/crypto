@@ -141,7 +141,7 @@ export interface ChartTheme {
 }
 
 /** Значения по умолчанию (светлая тема), если токена нет в CSS. */
-export const DEFAULT_ALPHAS: ChartAlphas = { zoneFill: 0.08, heatMin: 0.05, heatMax: 0.22, line: 0.85, plaque: 0.88, volume: 0.35, dimmed: 0.4, halo: 0.22, vp: 0.16, vpValue: 0.28 };
+export const DEFAULT_ALPHAS: ChartAlphas = { zoneFill: 0.08, heatMin: 0.1, heatMax: 0.75, line: 0.85, plaque: 0.88, volume: 0.35, dimmed: 0.4, halo: 0.22, vp: 0.16, vpValue: 0.28 };
 const ALPHA_VARS: Readonly<Record<keyof ChartAlphas, string>> = {
   zoneFill: "--chart-zone-alpha",
   heatMin: "--chart-heat-alpha-min",

@@ -7,6 +7,23 @@ import { useChartStore } from "./useChartStore";
 import c from "./chart.module.css";
 
 const selectLegend = (s: ChartState) => s.legend;
+const selectLiqUnavailable = (s: ChartState) => s.sceneIndex?.liqUnavailable ?? false;
+
+/**
+ * Слой карты ликвидаций включён, а на этом таймфрейме её нет (покрытие OI ниже порога): короткая пометка рядом
+ * с «?» — иначе пресет «Карта ликвидаций» выглядит как пустой (план 2B.2, M05). Причину называют «Найдено» и
+ * строка пресета в «Слоях»; пометка короткая, чтобы на телефоне не заходить на шкалу цены.
+ */
+export function LiqUnavailableNote({ store, on }: { store: ChartStore; on: boolean }) {
+  const unavailable = useChartStore(selectLiqUnavailable, store);
+  const t = useT();
+  if (!on || !unavailable) return null;
+  return (
+    <p className={c.liqNote} data-testid="chart-liq-unavailable">
+      {t("Карты ликвидаций на этом таймфрейме нет")}
+    </p>
+  );
+}
 
 /**
  * Легенда «?» (план 2B.2, §9): кнопка в левом верхнем углу панели цены и окно «Что на графике» — по строке

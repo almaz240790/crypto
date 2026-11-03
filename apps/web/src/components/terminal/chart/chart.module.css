@@ -87,6 +87,24 @@
   z-index: 3;
 }
 
+/* пометка «карты ликвидаций нет на этом таймфрейме» — справа от «?», в верхнем отступе панели цены */
+.liqNote {
+  position: absolute;
+  left: 40px;
+  /* не заходит на шкалу цены (до 80 px) */
+  max-width: calc(100% - 128px);
+  top: 6px;
+  z-index: 2;
+  margin: 0;
+  overflow: hidden;
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 18px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
 .legendChip {
   position: relative;
   display: grid;

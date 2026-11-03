@@ -147,7 +147,7 @@ export function ObjectsPanel(p: Props) {
       {tab === "layers" && (
         <ul className={s.objList}>
           <li>
-            <MarkupPicker markup={p.markup} custom={p.custom} onSelect={p.onMarkup} />
+            <MarkupPicker markup={p.markup} custom={p.custom} onSelect={p.onMarkup} liqUnavailable={p.found.index?.liqUnavailable ?? false} />
           </li>
           {layerKeysFor(p.authed).map((k) => (
             <li key={k}>

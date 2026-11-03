@@ -98,20 +98,22 @@ describe("токены графика --chart-*", () => {
     expect(mediaChart).toEqual(darkChart);
   });
 
-  it("контраст считается так же, как в расчёте спецификации (минимумы 4.76 текст и 3.09 линия)", () => {
+  it("контраст считается так же, как в расчёте спецификации (минимумы 4.70 текст — карта ярче, ревью T6 — и 3.09 линия)", () => {
     const mins = Object.values(THEMES).map((theme) => {
       const c = (name: string) => toRgb(resolve(theme, name));
       const a = (name: string) => Number(theme[name]);
       const surface = c("--surface");
       const zones = [mix(c("--chart-up"), surface, a("--chart-zone-alpha")), mix(c("--chart-down"), surface, a("--chart-zone-alpha"))];
-      const heat = mix(c("--chart-liq"), surface, a("--chart-heat-alpha-max"));
+      // под полупрозрачной плашкой карта бывает только приглушённой (полоса занята — подписи уровней левее неё);
+      // сумма ликвидаций на полной карте — на непрозрачной плашке (render/paint.ts)
+      const heat = mix(c("--chart-liq"), surface, a("--chart-heat-alpha-max") * a("--chart-dimmed-alpha"));
       const plaque = (u: Rgb) => mix(c("--chart-plaque"), u, a("--chart-plaque-alpha"));
       const text = Math.min(...TONES.flatMap((t) => [surface, ...zones, heat].map((u) => contrast(c(`--chart-${t}`), plaque(u)))));
       const line = Math.min(...TONES.flatMap((t) => [surface, ...zones].map((u) => contrast(mix(c(`--chart-${t}`), u, a("--chart-line-alpha")), u))));
       return { text, line };
     });
     expect(contrast([255, 255, 255], [0, 0, 0])).toBeCloseTo(21, 5);
-    expect(Math.min(...mins.map((m) => m.text))).toBeCloseTo(4.76, 1);
+    expect(Math.min(...mins.map((m) => m.text))).toBeCloseTo(4.7, 1);
     expect(Math.min(...mins.map((m) => m.line))).toBeCloseTo(3.09, 1);
   });
 
@@ -123,12 +125,21 @@ describe("токены графика --chart-*", () => {
       const zoneA = a("--chart-zone-alpha");
       const zones = [mix(c("--chart-up"), surface, zoneA), mix(c("--chart-down"), surface, zoneA)];
       const heatMax = mix(c("--chart-liq"), surface, a("--chart-heat-alpha-max"));
+      const heatDimmed = mix(c("--chart-liq"), surface, a("--chart-heat-alpha-max") * a("--chart-dimmed-alpha"));
       const plaqueOver = (under: Rgb) => mix(c("--chart-plaque"), under, a("--chart-plaque-alpha"));
+
+      it("сумма ликвидаций на непрозрачной плашке ≥ 4.5", () => {
+        expect(contrast(c("--chart-liq"), c("--chart-plaque"))).toBeGreaterThanOrEqual(4.5);
+      });
+
+      it("самая крупная полоса карты ликвидаций — не меньше 3:1 к фону", () => {
+        expect(contrast(heatMax, surface)).toBeGreaterThanOrEqual(3);
+      });
 
       for (const tone of TONES) {
         it(`${tone}: текст на плашке ≥ 4.5, линия ≥ 3`, () => {
           const fg = c(`--chart-${tone}`);
-          const text = Math.min(...[surface, ...zones, heatMax].map((u) => contrast(fg, plaqueOver(u))));
+          const text = Math.min(...[surface, ...zones, heatDimmed].map((u) => contrast(fg, plaqueOver(u))));
           expect(text).toBeGreaterThanOrEqual(4.5);
           const lineA = a("--chart-line-alpha");
           const line = Math.min(...[surface, ...zones].map((u) => contrast(mix(fg, u, lineA), u)));

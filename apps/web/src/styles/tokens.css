@@ -87,8 +87,9 @@
   --chart-muted: var(--text-3); /* макс./мин. вчера и недели, паттерны, профиль объёма */
   --chart-plaque: var(--surface); /* фон плашки подписи */
   --chart-zone-alpha: 0.08;
-  --chart-heat-alpha-min: 0.05;
-  --chart-heat-alpha-max: 0.22;
+  /* самая крупная полоса карты ликвидаций — не меньше 3:1 к фону (её видно в полосе справа) */
+  --chart-heat-alpha-min: 0.1;
+  --chart-heat-alpha-max: 0.75;
   --chart-line-alpha: 0.85;
   --chart-plaque-alpha: 0.88;
   --chart-dimmed-alpha: 0.4;
@@ -151,8 +152,8 @@
   --glow: rgb(22 199 154 / 30%);
   /* Прозрачности графика в тёмной теме (одинаково в обоих тёмных блоках) */
   --chart-zone-alpha: 0.1;
-  --chart-heat-alpha-min: 0.06;
-  --chart-heat-alpha-max: 0.35;
+  --chart-heat-alpha-min: 0.08;
+  --chart-heat-alpha-max: 0.5;
   --chart-line-alpha: 0.75;
   --chart-halo-alpha: 0.28;
   --chart-vp-alpha: 0.2;
@@ -187,8 +188,8 @@
     --glow: rgb(22 199 154 / 30%);
     /* Прозрачности графика в тёмной теме (одинаково в обоих тёмных блоках) */
     --chart-zone-alpha: 0.1;
-    --chart-heat-alpha-min: 0.06;
-    --chart-heat-alpha-max: 0.35;
+    --chart-heat-alpha-min: 0.08;
+    --chart-heat-alpha-max: 0.5;
     --chart-line-alpha: 0.75;
     --chart-halo-alpha: 0.28;
     --chart-vp-alpha: 0.2;

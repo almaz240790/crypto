@@ -19,6 +19,7 @@ import { createTerminal, type Terminal, type TerminalOptions } from "../terminal
 import { contrastText, readChartTheme, tokensFromElement, toneColor, type ChartTheme } from "../theme";
 import { TF_SECONDS, type Candle, type ChartType, type Device, type Timeframe } from "../types";
 import { AxisCountdown } from "./axisCountdown";
+import { composeSnapshot } from "./snapshot";
 import { Dirty } from "./stages";
 
 /**
@@ -62,6 +63,8 @@ export interface ChartHandle {
   clearCrosshair(): void;
   /** Строка «Найдено» → выбрать объект и показать его время на 70 % ширины, если оно за кадром. */
   focus(target: FocusTarget): void;
+  /** Снимок PNG (data URL): кадр графика, сверху caption, снизу footer (слова — из web через t()). */
+  snapshot(caption: string, footer: string): string;
 }
 
 export interface ChartControllerOptions {
@@ -219,6 +222,7 @@ export class ChartController {
       reset: () => this.reset(),
       clearCrosshair: () => this.terminal.chart.clearCrosshairPosition(),
       focus: (t) => this.focus(t),
+      snapshot: (caption, footer) => composeSnapshot(this.terminal.chart.takeScreenshot(), caption, footer, { surface: this.theme.palette.surface, text: this.theme.palette.structure, fontMono: this.theme.type.mono }, this.el.ownerDocument),
     };
     this.subscribe();
     const el = this.el as HTMLElement & { __chart?: IChartApi; __overlay?: () => unknown };

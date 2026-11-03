@@ -58,7 +58,9 @@ export function migrateSaved(raw: unknown): SavedV5 {
     type: CHART_TYPES.includes(raw.type as ChartType) ? (raw.type as ChartType) : DEFAULT_SAVED.type,
     indicators: indicators(raw.indicators) ?? DEFAULT_SAVED.indicators,
     markup: legacy ? { preset: "clean", overrides: {} } : normalizeMarkup(raw.markup),
-    panels: Array.isArray(raw.panels) ? PANEL_KEYS.filter((k) => (raw.panels as unknown[]).includes(k)) : [],
+    // порядок панелей — порядок добавления (панели создаются по нему): сохраняется, отбрасываются только
+    // неизвестные ключи и повторы
+    panels: Array.isArray(raw.panels) ? (raw.panels as unknown[]).filter((k, i, a): k is PanelKey => PANEL_KEYS.includes(k as PanelKey) && a.indexOf(k) === i) : [],
     scale: SCALES.includes(raw.scale as ScaleMode) ? (raw.scale as ScaleMode) : DEFAULT_SAVED.scale,
     overlay: typeof raw.overlay === "string" && raw.overlay ? raw.overlay : null,
   };

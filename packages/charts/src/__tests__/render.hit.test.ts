@@ -27,7 +27,7 @@ const glyph: GlyphObject = { kind: "glyph", id: "pat:1", layer: "patterns", tone
 const box: BoxObject = { kind: "box", id: "zone:1:102", layer: "zones", tone: "down", priority: 70, hover: { title: "Предложение", price: 102, priceTo: 104 }, emphasis: "normal", top: 104, bottom: 102, from: T0 + 10 * H, to: null };
 
 function sceneOf(objects: SceneObject[], version = 1): Scene {
-  return { version, key: `k${version}`, objects, byId: new Map(objects.map((o) => [o.id, o])), legend: [], index: { version, levels: [], onChart: new Set(), dropped: new Set(), liqUnavailable: false }, selected: null };
+  return { version, key: `k${version}`, objects, byId: new Map(objects.map((o) => [o.id, o])), legend: [], legendOf: new Map(), index: { version, levels: [], onChart: new Set(), dropped: new Set(), liqUnavailable: false }, selected: null };
 }
 
 function setup(o: { coarse?: boolean; gate?: (x: number, y: number) => boolean; objects?: SceneObject[] } = {}) {

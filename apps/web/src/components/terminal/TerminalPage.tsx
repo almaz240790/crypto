@@ -1,7 +1,7 @@
 "use client";
 
 import type React from "react";
-import { CHART_TYPES, INDICATORS, TOOL_TITLES, createChartStore, defaultParams, formatCountdown, positionStats, resolvePreset, secondsToClose, selectPreset, setLayerOverride, tokensFromElement, type AlertLine, type Candle, type ChartType, type DrawingType, type LayerKey, type PanelKey, type PresetId, type ScaleMode, type Timeframe } from "@platform/charts";
+import { CHART_TYPES, INDICATORS, TOOL_TITLES, createChartStore, defaultParams, formatCountdown, positionStats, resolvePreset, secondsToClose, selectPreset, setLayerOverride, type AlertLine, type Candle, type ChartType, type DrawingType, type LayerKey, type PanelKey, type PresetId, type ScaleMode, type Timeframe } from "@platform/charts";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -14,7 +14,7 @@ import s from "./terminal.module.css";
 import { BottomSheet } from "./BottomSheet";
 import { DrawToolbar, ObjectsPanel } from "./DesktopPanels";
 import { AskBox, FiguresList, FoundList, LevelsList } from "./FoundPanel";
-import { download, snapshotPng } from "./snapshot";
+import { download } from "./snapshot";
 import { TEMPLATES } from "./templates";
 import { ChartSurface, IND_COLOR_VAR, PANELS, indicatorColor, type CrosshairInfo, type TerminalControls } from "./chart/ChartSurface";
 import { ChartStoreContext, useChartStore } from "./chart/useChartStore";
@@ -280,12 +280,11 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
       .catch((e: Error) => say(e.message));
   };
   const snapshot = () => {
-    const canvasHost = areaRef.current?.querySelector('[data-testid="terminal"]') as HTMLElement | null;
-    const chart = (canvasHost as (HTMLElement & { __chart?: import("lightweight-charts").IChartApi }) | null)?.__chart;
-    if (!chart) return say(t("график ещё не готов"));
-    const tk = tokensFromElement(canvasHost!);
-    const url = snapshotPng(chart, `${symbol} · ${tf === "4h" ? "H4" : tf.toUpperCase()} · ${new Date().toISOString().slice(0, 16).replace("T", " ")} UTC`, window.location.href, { surface: tk.surface, text2: tk.text2, fontMono: tk.fontMono });
-    download(url, `platform-${symbol}-${tf}-${Date.now()}.png`);
+    const c = controls.current;
+    if (!c) return say(t("график ещё не готов"));
+    // снимок собирает график (handle.snapshot): кадр LWC с разметкой, подпись сверху и водяной знак снизу
+    const url = c.snapshot(`${symbol} · ${tf === "4h" ? "H4" : tf.toUpperCase()} · ${new Date().toISOString().slice(0, 16).replace("T", " ")} UTC`, `PlatformSol · ${window.location.href} · ${t("не является инвестиционной рекомендацией")}`);
+    if (url) download(url, `platform-${symbol}-${tf}-${Date.now()}.png`);
   };
   useEffect(() => {
     if (saved) {
@@ -486,7 +485,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
         <span>{t("цена")}{" "}<strong>{formatPrice(price == null ? null : String(price), data.tick)}</strong>
         </span>
         <span className={change == null ? "" : change >= 0 ? "up" : "down"}>{formatPct(change)}</span>
-        <span>{t("до закрытия")}{" "}<strong>{countdown == null ? "—" : formatCountdown(countdown)}</strong>
+        <span>{t("до закрытия")}{" "}<strong>{countdown == null ? "—" : formatCountdown(countdown, t("{d}д {hm}"))}</strong>
         </span>
         {bias && (
           <span title={t("Направление старших таймфреймов, с которым система ищет входы: день (D1) и неделя (W1).")}>
@@ -717,7 +716,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
                   )),
                 ]
               : [
-                  <MarkupPicker key="markup" markup={st.markup} custom={resolved.custom} onSelect={selectMarkup} />,
+                  <MarkupPicker key="markup" markup={st.markup} custom={resolved.custom} onSelect={selectMarkup} liqUnavailable={sceneIndex?.liqUnavailable ?? false} />,
                   ...layerKeysFor(authed).map((k) => (
                     <label key={k}>
                       <input type="checkbox" checked={resolved.layers[k]} onChange={() => toggleLayer(k)} /> {t(LAYER_LABEL[k])}

@@ -95,6 +95,8 @@ const PROFILE_OVERLAY_SHARE = 0.25;
 const ICON_EM = 1;
 /** Приоритет подписи, которая остаётся во время жеста. */
 export const GESTURE_MIN_PRIORITY = 80;
+/** Приоритет выбранного объекта в раскладке подписей и шкалы. */
+export const SELECTED_PRIORITY = 95;
 
 const r2 = (v: number | null | undefined) => (v == null || !Number.isFinite(v) ? "-" : (Math.round(v * 100) / 100).toFixed(2));
 
@@ -263,9 +265,13 @@ function slotsFor(obj: SceneObject, geom: ScreenGeom, label: LabelSpec, w: numbe
   const { vp, proj } = c;
   const out: Slot[] = [];
   const add = (key: SlotKey, x: number, y: number, clampX = false) => out.push({ key, x, y, clampX });
-  // полоса справа занята картой или профилем — подписи уровней кончаются у её левого края, а не на полосах
+  // полоса справа занята картой или профилем — подписи уровней кончаются у её левого края, а не на полосах;
+  // алерт пользователя, вход/стоп сигнала и выбранный, если левее места нет, — последним вариантом на полосе
+  // (плашка тогда непрозрачная, render/paint.ts); уровни и зоны полосы карты не закрывают
   const busy = c.gutterBusy && vp.gutter !== null ? vp.gutter.x0 - LABEL_GAP : null;
   const rightEdge = busy ?? vp.width - 4;
+  const overGutter = busy !== null && (obj.layer === "alerts" || obj.layer === "signals" || obj.emphasis === "selected");
+  const late: Slot[] = [];
   // колонка свечи с запасом раскладки: место у свечи пробоя или у свинга начинается за ней, а не на ней
   const col = Math.max(1, 0.4 * proj.barSpacing()) + 1 + LABEL_GAP + 1;
   for (const key of label.slots) {
@@ -274,15 +280,18 @@ function slotsFor(obj: SceneObject, geom: ScreenGeom, label: LabelSpec, w: numbe
       case "free-below": {
         if (geom.kind !== "hline" || !vp.free) break;
         const x = (busy ?? vp.free.x1 - 4) - w;
+        const y = key === "free-above" ? geom.y - LINE_PAD - h : geom.y + LINE_PAD;
         // у занятой полосы подпись может выйти левее свободной зоны: свечи там проверяет раскладка
         if (busy === null && x < vp.free.x0) break;
-        add(key, x, key === "free-above" ? geom.y - LINE_PAD - h : geom.y + LINE_PAD);
+        add(key, x, y);
+        if (overGutter) late.push({ key, x: vp.free.x1 - 4 - w, y, clampX: false });
         break;
       }
       case "line-end-above":
       case "line-end-below":
         if (geom.kind !== "hline") break;
         add(key, Math.min(geom.x2 - 4, rightEdge) - w, key === "line-end-above" ? geom.y - LINE_PAD - h : geom.y + LINE_PAD);
+        if (overGutter) late.push({ key, x: Math.min(geom.x2, vp.width) - 4 - w, y: key === "line-end-above" ? geom.y - LINE_PAD - h : geom.y + LINE_PAD, clampX: false });
         break;
       case "line-start-above":
       case "line-start-below":
@@ -329,7 +338,7 @@ function slotsFor(obj: SceneObject, geom: ScreenGeom, label: LabelSpec, w: numbe
         break;
     }
   }
-  return out;
+  return late.length > 0 ? [...out, ...late] : out;
 }
 
 function candidate(id: string, objectId: string, obj: SceneObject, label: LabelSpec, geom: ScreenGeom, c: Ctx, bypass: boolean, anchorY?: number, extra: Pick<LabelCandidate, "rank" | "cap" | "selected"> = obj.emphasis === "selected" ? { selected: true } : {}): LabelCandidate {
@@ -347,7 +356,8 @@ function candidate(id: string, objectId: string, obj: SceneObject, label: LabelS
     px,
     w,
     h,
-    priority: label.priority,
+    // выбранный раскладывается первым: его место не займёт подпись соседнего уровня (как у метки шкалы — 95)
+    priority: extra.selected ? Math.max(label.priority, SELECTED_PRIORITY) : label.priority,
     tone: label.tone,
     slots: slotsFor(obj, geom, label, w, h, c, anchorY),
     bypassBudget: bypass,
@@ -434,7 +444,7 @@ export function projectScene(scene: Scene, proj: SceneProjector, visibleCandles:
     const y = proj.y(obj.price);
     if (y === null) continue;
     const side = opts.lastPrice !== null ? (obj.price >= opts.lastPrice ? "above" : "below") : y < proj.height / 2 ? "above" : "below";
-    axisCands.push({ id: `${obj.id}#axis`, objectId: obj.id, price: obj.price, y, text: obj.axis.text, tone: obj.axis.tone, style: obj.axis.style, priority: obj.emphasis === "selected" ? 95 : obj.axis.priority, group: obj.axis.group, side });
+    axisCands.push({ id: `${obj.id}#axis`, objectId: obj.id, price: obj.price, y, text: obj.axis.text, tone: obj.axis.tone, style: obj.axis.style, priority: obj.emphasis === "selected" ? SELECTED_PRIORITY : obj.axis.priority, group: obj.axis.group, side });
   }
   const fixed: AxisFixed[] = [];
   // отсчёт — только под живой ценой: у метки последней видимой свечи истории отсчёта нет

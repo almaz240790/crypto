@@ -32,7 +32,7 @@ const opts = (o: Partial<ProjectOptions> = {}): ProjectOptions => ({
 });
 const label = (slots: LabelSpec["slots"], p: Partial<LabelSpec> = {}): LabelSpec => ({ text: "Тест", tone: "up", priority: 50, slots, font: "sans", show: "always", ...p });
 const base = { layer: "sr" as const, tone: "up" as const, priority: 50, emphasis: "normal" as const, hover: { title: "x" } };
-const scene = (objects: SceneObject[]): Scene => ({ version: 1, key: "k", objects, byId: new Map(objects.map((o) => [o.id, o])), legend: [], index: { version: 1, levels: [], onChart: new Set(), dropped: new Set(), liqUnavailable: false }, selected: null });
+const scene = (objects: SceneObject[]): Scene => ({ version: 1, key: "k", objects, byId: new Map(objects.map((o) => [o.id, o])), legend: [], legendOf: new Map(), index: { version: 1, levels: [], onChart: new Set(), dropped: new Set(), liqUnavailable: false }, selected: null });
 
 describe("projectScene: пограничные случаи геометрии", () => {
   it("объекты вне области и без координат пропускаются", () => {
