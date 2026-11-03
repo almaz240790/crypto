@@ -91,6 +91,8 @@ vi.mock("lightweight-charts", () => {
       width: () => chart.width,
       options: () => ({ barSpacing: 6 }),
       setCalls: 0,
+      applied: [] as Record<string, unknown>[],
+      applyOptions: (o: Record<string, unknown>) => ts.applied.push(o),
       subscribeVisibleLogicalRangeChange: (cb: (r: Range | null) => void) => subs.push(cb),
       getVisibleLogicalRange: () => (range ? { ...range } : null),
       setVisibleLogicalRange: (r: Range) => {
@@ -142,13 +144,13 @@ vi.mock("lightweight-charts", () => {
 
 import { EDGE, MAX_CANDLES } from "../buffer";
 import { PERCENT_FORMAT, VALUE_FORMAT, instrumentPriceFormat } from "../priceFormat";
-import { barsForWidth, createTerminal, VIEW_BAR_PX, VIEW_MAX_BARS, VIEW_MIN_BARS, type Terminal } from "../terminal";
+import { createTerminal, type Terminal } from "../terminal";
 
 type FakeChart = {
   width: number;
   series: FakeSeries[];
-  applied: { layout?: { fontSize?: number; background?: unknown } }[];
-  ts: { setCalls: number; getVisibleLogicalRange(): Range | null; setVisibleLogicalRange(r: Range): void };
+  applied: { layout?: { fontSize?: number; background?: unknown }; timeScale?: Record<string, unknown> }[];
+  ts: { setCalls: number; applied: Record<string, unknown>[]; getVisibleLogicalRange(): Range | null; setVisibleLogicalRange(r: Range): void };
   timeAt(i: number): number | undefined;
 };
 
@@ -266,7 +268,7 @@ describe("закрытие свечи и живые обновления", () =>
   it("полный буфер, вид у правого края: новая свеча остаётся в кадре с тем же отступом справа", () => {
     make();
     term.setCandles(bars(0, MAX_CANDLES));
-    term.resetView(VIEW_BAR_PX.desktop);
+    term.resetView(100);
     const r0 = chart.ts.getVisibleLogicalRange()!;
     const setRange = chart.ts.setCalls;
     // раньше каждое закрытие съедало бар отступа справа, и с 7-го живая свеча уходила за край
@@ -343,8 +345,9 @@ describe("наложенный инструмент и индексы шкалы
     const ov = chart.series.at(-1)!;
     expect(ov.data[0]!.time).toBe(T0);
     expect(ov.data).toHaveLength(101);
-    term.resetView(VIEW_BAR_PX.desktop);
-    expect(chart.ts.getVisibleLogicalRange()).toEqual({ from: 101 - 95, to: 106 });
+    term.resetView(100);
+    // 100 свечей до последней (индекс 100), справа 104 px при шаге (800 − 104) / 100
+    expect(chart.ts.getVisibleLogicalRange()).toEqual({ from: 1, to: 100 + 104 / 6.96 });
     expect(chart.timeAt(100)).toBe(T0 + 100 * H);
     // подгрузка слева и новая свеча справа — наложение на новом наборе свечей
     term.addOlder(bars(-100, 100), true);
@@ -361,8 +364,8 @@ describe("наложенный инструмент и индексы шкалы
     term.setCandles(bars(0, 400));
     // серия с точками левее первой свечи (раньше — несрезанное наложение): шкала длиннее буфера на 50
     term.addLine(0, "#123456").setData(bars(-50, 50).map((c) => ({ time: c.time as never, value: 1 })));
-    term.resetView(VIEW_BAR_PX.desktop);
-    expect(chart.ts.getVisibleLogicalRange()).toEqual({ from: 450 - 95, to: 455 });
+    term.resetView(100);
+    expect(chart.ts.getVisibleLogicalRange()).toEqual({ from: 350, to: 449 + 104 / 6.96 });
     expect(chart.timeAt(449)).toBe(T0 + 399 * H);
     // левый край вида — в 70 барах от первой свечи (индекс шкалы 120): это подход к краю
     expect(requests).toHaveLength(0);
@@ -382,23 +385,65 @@ describe("шрифт шкал", () => {
   });
 });
 
-describe("сброс вида от ширины", () => {
-  it("число свечей — ширина / целевой шаг бара, в пределах 40…150", () => {
-    expect(barsForWidth(806, VIEW_BAR_PX.desktop)).toBe(96);
-    expect(barsForWidth(334, VIEW_BAR_PX.phone)).toBe(51);
-    expect(barsForWidth(200, VIEW_BAR_PX.phone)).toBe(VIEW_MIN_BARS);
-    expect(barsForWidth(3000, VIEW_BAR_PX.desktop)).toBe(VIEW_MAX_BARS);
-    expect(barsForWidth(0, VIEW_BAR_PX.desktop)).toBe(100);
-  });
-
-  it("resetView ставит диапазон по ширине области, а не фиксированные 150 свечей", () => {
+describe("сброс вида и масштаб у правого края", () => {
+  it("resetView(n): n свечей и свободная зона справа rightOffsetPx пикселей", () => {
     make();
     term.setCandles(bars(0, 500));
     chart.width = 800;
-    term.resetView(VIEW_BAR_PX.desktop);
-    expect(chart.ts.getVisibleLogicalRange()).toEqual({ from: 500 - 95, to: 505 });
+    term.resetView(100);
+    const r = chart.ts.getVisibleLogicalRange()!;
+    expect(r.from).toBe(400);
+    // шаг LWC = W / (to − from + 1): ровно (W − R) / n, отступ справа (to − L) · шаг = R
+    const spacing = 800 / (r.to - r.from + 1);
+    expect(spacing).toBeCloseTo(6.96, 9);
+    expect((r.to - 499) * spacing).toBeCloseTo(104, 9);
     chart.width = 340;
-    term.resetView(VIEW_BAR_PX.phone);
-    expect(chart.ts.getVisibleLogicalRange()).toEqual({ from: 500 - 52, to: 505 });
+    term.setRightOffsetPx(64);
+    term.resetView(46);
+    const p = chart.ts.getVisibleLogicalRange()!;
+    expect(p.from).toBe(454);
+    expect((p.to - 499) * (340 / (p.to - p.from + 1))).toBeCloseTo(64, 9);
+    expect(chart.ts.applied.at(-1)).toEqual({ rightOffsetPixels: 64 });
+  });
+
+  it("свечей меньше n — показываются все, от первой свечи", () => {
+    make();
+    term.setCandles(bars(0, 30));
+    term.resetView(100);
+    expect(chart.ts.getVisibleLogicalRange()!.from).toBe(0);
+  });
+
+  it("масштаб при видимой последней свече держит правый край и свободную зону в пикселях", () => {
+    make();
+    term.setCandles(bars(0, 500));
+    chart.width = 800;
+    term.resetView(100);
+    term.zoom(1.25);
+    const r = chart.ts.getVisibleLogicalRange()!;
+    expect(r.from).toBeCloseTo(420, 9);
+    const spacing = 800 / (r.to - r.from + 1);
+    expect(spacing).toBeCloseTo(696 / 80, 9);
+    expect((r.to - 499) * spacing).toBeCloseTo(104, 9);
+    term.zoom(0.8);
+    const q = chart.ts.getVisibleLogicalRange()!;
+    expect(q.from).toBeCloseTo(400, 9);
+    expect((q.to - 499) * (800 / (q.to - q.from + 1))).toBeCloseTo(104, 9);
+  });
+
+  it("в истории (последняя свеча за кадром) масштаб — вокруг центра, как раньше", () => {
+    make();
+    term.setCandles(bars(0, 500));
+    chart.ts.setVisibleLogicalRange({ from: 100, to: 200 });
+    term.zoom(2);
+    expect(chart.ts.getVisibleLogicalRange()).toEqual({ from: 125, to: 175 });
+  });
+
+  it("смена темы не сбрасывает шаг бара и отступ справа", () => {
+    make();
+    term.setTheme({ ...tokens, surface: "#ffffff" });
+    const last = chart.applied.at(-1)!;
+    expect(last.timeScale?.barSpacing).toBeUndefined();
+    expect(last.timeScale?.rightOffset).toBeUndefined();
+    expect(last.timeScale?.rightOffsetPixels).toBeUndefined();
   });
 });

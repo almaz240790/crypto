@@ -94,7 +94,7 @@ test("телефон: раскрыта одна панель — последн�
   await expect(term.locator("canvas").first()).toBeVisible();
   await page.getByRole("button", { name: /Индикаторы/ }).tap();
   const dlg = page.getByRole("dialog", { name: "Индикаторы" });
-  for (const name of [/RSI/, /MACD/, /Stochastic/, /Funding/]) await dlg.getByLabel(name).check();
+  for (const name of [/RSI/, /MACD/, /Stochastic/, /Фандинг/]) await dlg.getByLabel(name).check();
   await page.getByRole("button", { name: "Готово" }).tap();
   await expect(page.getByRole("button", { name: "Индикаторы (5)" })).toBeVisible();
   const expanded = page.locator('[data-testid^="pane-"] button[aria-expanded="true"]');
@@ -103,7 +103,7 @@ test("телефон: раскрыта одна панель — последн�
   await expect(collapsed).toHaveCount(3);
   // свайп вниз по заголовку раскрытой панели сворачивает её
   const head = page.getByTestId("pane-funding");
-  await expect(head.getByRole("button", { name: "свернуть панель Funding" })).toBeVisible();
+  await expect(head.getByRole("button", { name: "свернуть панель Фандинг" })).toBeVisible();
   const box = (await head.boundingBox())!;
   await page.evaluate(
     ({ x, y }) => {
@@ -114,7 +114,7 @@ test("телефон: раскрыта одна панель — последн�
     },
     { x: box.x + 10, y: box.y + 10 },
   );
-  await expect(head.getByRole("button", { name: "развернуть панель Funding" })).toBeVisible();
+  await expect(head.getByRole("button", { name: "развернуть панель Фандинг" })).toBeVisible();
   await expect(collapsed).toHaveCount(4);
 });
 
@@ -193,21 +193,21 @@ test("телефон: число свечей от ширины — около 6
   expect(await spacing()).toBeLessThan(7.5);
 });
 
-test("телефон: шрифт шкал 10 px остаётся после смены темы", async ({ page }) => {
+test("телефон: шрифт шкал 11 px остаётся после смены темы", async ({ page }) => {
   const calls: string[] = [];
   await mock(page, calls, true);
   await page.goto("/chart/BTCUSDT/4h");
   await expect(page.getByTestId("terminal").locator("canvas").first()).toBeVisible();
   type Opts = { layout: { fontSize: number; background: { color?: string } } };
   const opts = () => page.evaluate(() => (document.querySelector('[data-testid="terminal"]') as HTMLElement & { __chart: { options(): Opts } }).__chart.options().layout);
-  await expect.poll(async () => (await opts()).fontSize).toBe(10);
+  await expect.poll(async () => (await opts()).fontSize).toBe(11);
   for (const theme of ["light", "dark"]) {
     const bg = (await opts()).background.color;
     await page.evaluate((th) => {
       document.documentElement.dataset.theme = th;
     }, theme);
-    // тема применилась (фон графика сменился), а шрифт — по-прежнему телефонный, не 11 px
+    // тема применилась (фон графика сменился), а шрифт — по-прежнему телефонный (VIEW.phone), не 12 px
     await expect.poll(async () => (await opts()).background.color).not.toBe(bg);
-    expect((await opts()).fontSize).toBe(10);
+    expect((await opts()).fontSize).toBe(11);
   }
 });

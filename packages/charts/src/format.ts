@@ -153,3 +153,33 @@ export function formatIndicatorValue(v: number): string {
   const d = Math.min(MAX_DECIMALS, Math.max(2, VALUE_SIGNIFICANT - 1 - Math.floor(Math.log10(a))));
   return fixed(v, d);
 }
+
+/** Сумма в долларах компактно: «$285M», «$1.24B», «$54.3K» — суммы ликвидаций на графике и в подсказке. */
+export function formatUsd(v: number): string {
+  return `${v < 0 ? "−" : ""}$${formatCompactValue(Math.abs(v))}`;
+}
+
+/**
+ * Время до закрытия свечи: «1:23:45», «12:05», «0:07». От суток — дни и часы с минутами по шаблону `days`
+ * («{d}д {hm}» → «6д 23:59»): «167:59:59» на недельной свече не помещался в узкую шкалу телефона.
+ */
+export function formatCountdown(sec: number, days?: string): string {
+  const s = Math.max(0, Math.floor(sec));
+  const two = (n: number) => String(n).padStart(2, "0");
+  if (days && s >= 86_400) {
+    const d = Math.floor(s / 86_400);
+    const rest = s % 86_400;
+    return days.replace("{d}", String(d)).replace("{hm}", `${Math.floor(rest / 3600)}:${two(Math.floor((rest % 3600) / 60))}`);
+  }
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const ss = s % 60;
+  return h > 0 ? `${h}:${two(m)}:${two(ss)}` : `${m}:${two(ss)}`;
+}
+
+/** Процент со знаком: «+1.24 %», «−0.50 %», «0.00 %». */
+export function formatSignedPercent(v: number, digits = 2): string {
+  const s = Math.abs(v).toFixed(digits);
+  const sign = Number(s) === 0 ? "" : v > 0 ? "+" : "−";
+  return `${sign}${s} %`;
+}

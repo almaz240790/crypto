@@ -22,12 +22,13 @@ test("график: загрузка, строка состояния, смен�
   // индикаторы: добавить RSI (отдельная панель), слои: выключить зоны
   await page.getByRole("button", { name: /Индикаторы/ }).click();
   await page.getByRole("dialog", { name: "Индикаторы" }).getByLabel(/RSI/).check();
-  await page.getByRole("dialog", { name: "Индикаторы" }).getByLabel(/Funding/).check();
+  await page.getByRole("dialog", { name: "Индикаторы" }).getByLabel(/Фандинг/).check();
   await page.getByRole("button", { name: "Готово" }).click();
   await expect(page.getByRole("button", { name: "Индикаторы (3)" })).toBeVisible();
   await expect(strip).toContainText("Фандинг 0.0120 %");
   await page.getByRole("button", { name: "Слои" }).click();
-  await page.getByRole("dialog", { name: "Слои" }).getByLabel("Зоны").uncheck();
+  // exact: иначе совпадает и радиокнопка разметки «Уровни и зоны»
+  await page.getByRole("dialog", { name: "Слои" }).getByLabel("Зоны", { exact: true }).uncheck();
   await page.getByRole("dialog", { name: "Слои" }).getByLabel("Профиль объёма").check();
   await page.getByRole("button", { name: "Готово" }).click();
   // тип графика
@@ -177,12 +178,12 @@ test("десктоп: тулбар и горячие клавиши, панел�
   await objects.getByRole("tab", { name: "Раскладки" }).click();
   await objects.getByRole("button", { name: "Осцилляторы" }).click();
   await expect(page.getByRole("button", { name: "Индикаторы (3)" })).toBeVisible();
-  // именованная раскладка: сохранить, применить после «Чистый», удалить
+  // именованная раскладка: сохранить, применить после «Без индикаторов», удалить
   await objects.getByLabel("имя раскладки").fill("моя");
   await objects.getByRole("button", { name: "Сохранить" }).click();
   await expect(page.getByRole("status")).toContainText("Раскладка «моя» сохранена");
   expect(Object.keys(server.layouts)).toEqual(["моя"]);
-  await objects.getByRole("button", { name: "Чистый" }).click();
+  await objects.getByRole("button", { name: "Без индикаторов" }).click();
   await expect(page.getByRole("button", { name: "Индикаторы (0)" })).toBeVisible();
   await objects.getByRole("button", { name: "моя", exact: true }).click();
   await expect(page.getByRole("button", { name: "Индикаторы (3)" })).toBeVisible();
@@ -455,12 +456,15 @@ test("уровни: поддержка, сопротивление и карта
   await expect(levels).toContainText("касаний:");
   await expect(levels).toContainText("Ликвидации");
   await expect(objects).toContainText("расчётная оценка");
-  // слои включены по умолчанию и выключаются
+  // разметка «Чистый» по умолчанию (ADR-0008): уровни на графике, карта ликвидаций выключена — каталог от слоя не зависит
   await objects.getByRole("tab", { name: "Слои" }).click();
+  await expect(objects.getByRole("radio", { name: "Чистый" })).toBeChecked();
   await expect(objects.getByLabel("Поддержка и сопротивление")).toBeChecked();
-  await expect(objects.getByLabel("Карта ликвидаций (оценка)")).toBeChecked();
-  await objects.getByLabel("Карта ликвидаций (оценка)").uncheck();
   await expect(objects.getByLabel("Карта ликвидаций (оценка)")).not.toBeChecked();
+  // слой поверх пресета — «Свой»
+  await objects.getByLabel("Карта ликвидаций (оценка)").check();
+  await expect(objects.getByLabel("Карта ликвидаций (оценка)")).toBeChecked();
+  await expect(objects.getByRole("radio", { name: "Свой" })).toBeChecked();
 });
 
 test("цвета индикаторов постоянные: в настройках нет выбора цвета", async ({ page }) => {

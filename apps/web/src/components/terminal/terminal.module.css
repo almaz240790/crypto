@@ -2,7 +2,7 @@
   display: grid;
   grid-template-rows: auto auto 1fr auto;
   grid-template-columns: minmax(0, 1fr);
-  height: calc(100dvh - 56px);
+  height: calc(100dvh - 56px - var(--safe-top));
   min-height: 480px;
   min-width: 0;
   overflow: hidden;
@@ -314,6 +314,27 @@
   min-height: 0;
 }
 
+/* короткое сообщение терминала поверх графика по центру сверху */
+.toast {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  z-index: 6;
+  max-width: min(520px, calc(100% - 24px));
+  margin: 0;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 18px;
+  text-align: center;
+  transform: translateX(-50%);
+  pointer-events: none;
+  box-shadow: 0 4px 16px color-mix(in srgb, var(--bg) 60%, transparent);
+}
+
 .chart {
   position: relative;
   height: 100%;
@@ -554,7 +575,7 @@
   }
 
   .page[data-bars="hidden"] {
-    height: 100dvh;
+    height: calc(100dvh - var(--safe-top));
   }
 
   .fsBtn {
@@ -573,7 +594,7 @@
 
 @media (max-width: 640px) {
   .page {
-    height: calc(100dvh - 48px);
+    height: calc(100dvh - 48px - var(--safe-top));
   }
 
   .top {
@@ -798,7 +819,7 @@
 .multi {
   display: grid;
   grid-template-rows: auto 1fr;
-  height: calc(100dvh - 56px);
+  height: calc(100dvh - 56px - var(--safe-top));
   min-height: 480px;
 }
 
@@ -895,11 +916,44 @@
 }
 
 .levelList li {
+  border-bottom: 1px solid var(--border);
+}
+
+/* строка уровня — кнопка: выбор объекта на графике (план 2B.2, §10.4) */
+.levelBtn {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
   align-items: baseline;
-  padding: 3px 0;
-  border-bottom: 1px solid var(--border);
+  width: 100%;
+  padding: 3px 4px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.levelBtn:hover:not(:disabled) {
+  background: var(--row-hover);
+}
+
+.levelBtn:disabled {
+  cursor: default;
+}
+
+.levelList li[data-selected] .levelBtn {
+  box-shadow: inset 2px 0 0 var(--accent);
+  background: var(--row-hover);
+}
+
+@media (pointer: coarse) {
+  .levelBtn {
+    min-height: 44px;
+    align-items: center;
+  }
 }
 
 .levelLiq {
@@ -924,4 +978,45 @@
 
 .objScroll .objList {
   overflow: visible;
+}
+
+/* выбор разметки графика (план 2B.2): пресеты сверху вкладки «Слои», пояснение — одной строкой под названием */
+.markup {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+  padding: 0 0 8px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.markupHead {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--text-2);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.markupItem {
+  display: grid;
+  gap: 1px;
+}
+
+.markupItem label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
+
+.markupNote {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--text-2);
+  padding-left: 22px;
+}
+
+.markupWarn {
+  color: var(--warn);
 }

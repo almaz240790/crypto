@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { INDICATORS } from "../../../../packages/charts/src/indicators/registry";
 import { TOOL_TITLES } from "../../../../packages/charts/src/drawings/types";
+import { LAYER_KEYS } from "../../../../packages/charts/src/types";
 import { TIMEFRAMES } from "./timeframes";
 import { COUNTS, INDICATOR_LIST } from "./capabilities";
 
@@ -16,6 +17,10 @@ describe("витрина возможностей графика совпада�
       const item = INDICATOR_LIST.find((i) => spec.title.startsWith(i.name));
       expect(item?.pane).toBe(spec.pane);
     }
+  });
+
+  it("слои автоматической разметки — все слои графика, кроме сигналов", () => {
+    expect(COUNTS.layers).toBe(LAYER_KEYS.filter((k) => k !== "signals").length);
   });
 
   it("инструменты рисования и таймфреймы", () => {

@@ -24,10 +24,79 @@ const subcent = (i: number) => {
 const TICKS: Record<string, string> = { BTCUSDT: "0.1", ETHUSDT: "0.01", [SUBCENT]: "1.000E-7" };
 
 export type MockServer = { drawings: Record<string, unknown>[]; layout: Record<string, unknown> | null; layouts?: Record<string, Record<string, unknown>>; alerts?: Record<string, unknown>[]; plan?: "free" | "pro" | "premium" };
+/** rich — насыщенная разметка для переписи подписей (план 2B.2, §14.3): уровни вокруг текущей цены. */
+export type MockOptions = { fixture?: "default" | "rich" };
 
-export async function mock(page: Page, calls: string[], authed = false, server: MockServer = { drawings: [], layout: null }) {
+/**
+ * Фикстура «rich» (только для BTCUSDT/ETHUSDT): все виды разметки рядом с ценой закрытия текущей свечи c0
+ * при ATR 1.8 — 6 событий структуры (пробой и смена в обе стороны, бары 230–296), 5 снятий, 4 равных уровня
+ * (2 неснятых в пределах ±1.5 ATR), 5 активных зон (2 пересекающиеся спроса, разрыв вниз, далёкие ордер-блок
+ * продаж и зона спроса), макс./мин. дня и недели, 2 сигнала (1 открытый), фигура с целью в 0.2 от цены,
+ * 12 значимых паттернов за 60 баров и 2 алерта: на цене входа открытого сигнала (склейка меток на шкале)
+ * и на 0.1 выше цены (сдвиг метки от цены).
+ */
+export const RICH_C0 = Number(candle(FIRST_PAGE).c);
+const r1 = (d: number) => (RICH_C0 + d).toFixed(1);
+const bar = (i: number) => T0 + i * H4;
+export const RICH_LAYERS = {
+  symbol: "BTCUSDT",
+  tf: "4h",
+  structure: {
+    tf: "4h",
+    strategy_version: "1.2.0",
+    swings: [],
+    events: [
+      { t: bar(230), type: "bos", dir: "up", level: r1(6), from_t: bar(215) },
+      { t: bar(245), type: "choch", dir: "down", level: r1(3), from_t: bar(238) },
+      { t: bar(262), type: "bos", dir: "down", level: r1(1.2), from_t: bar(250) },
+      { t: bar(275), type: "choch", dir: "up", level: r1(2.5), from_t: bar(266) },
+      { t: bar(288), type: "bos", dir: "up", level: r1(3.8), from_t: bar(280) },
+      { t: bar(296), type: "bos", dir: "down", level: r1(0.9), from_t: bar(290) },
+    ],
+    zones: [
+      { kind: "ob", dir: "up", top: r1(-0.4), bottom: r1(-1.4), from_t: bar(282), status: "active" },
+      { kind: "sd", dir: "up", top: r1(-0.8), bottom: r1(-1.8), from_t: bar(276), status: "active" },
+      { kind: "fvg", dir: "down", top: r1(1.6), bottom: r1(0.9), from_t: bar(292), status: "active" },
+      { kind: "ob", dir: "down", top: r1(9.5), bottom: r1(8.6), from_t: bar(225), status: "active" },
+      { kind: "sd", dir: "up", top: r1(-7.5), bottom: r1(-8.6), from_t: bar(210), status: "active" },
+    ],
+    levels: { pdh: r1(3.3), pdl: r1(-2.4), pwh: r1(6.8), pwl: r1(-4.7) },
+    equal_levels: [
+      { kind: "high", p: r1(2), from_t: bar(260), to_t: null, swept: false },
+      { kind: "low", p: r1(-1.9), from_t: bar(270), to_t: null, swept: false },
+      { kind: "high", p: r1(7.5), from_t: bar(220), to_t: bar(240), swept: true },
+      { kind: "low", p: r1(-6), from_t: bar(235), to_t: null, swept: false },
+    ],
+    sweeps: [0, 1, 2, 3, 4].map((i) => ({ t: bar(250 + i * 9), kind: i % 2 ? "high" : "low", level: r1(i % 2 ? 4 + i * 0.3 : -1 - i * 0.3) })),
+    bias: { bias: "long", d1_trend: "up", w1_trend: "up", ema50_d1: r1(1) },
+    atr: "1.8",
+  },
+  signals: [
+    { id: "s1", version: "1.2.0", dir: "long", t: bar(284), status: "active", grade: "A", entry: r1(-0.6), sl: r1(-2.2), tp: [r1(1.8), r1(3.6), r1(5.4)], zone: null, events: [] },
+    { id: "s2", version: "1.2.0", dir: "short", t: bar(240), status: "closed_tp3", grade: "B", entry: r1(4), sl: r1(5.5), tp: [r1(2), r1(0), r1(-2)], zone: null, events: [] },
+  ],
+  server_time: "",
+};
+const PATTERN_TYPES = ["engulfing", "pin_bar", "doji", "star", "harami", "marubozu"];
+export const RICH_PATTERNS = Array.from({ length: 12 }, (_, k) => {
+  const i = 240 + k * 5;
+  const c = candle(i);
+  const dir = k % 3 === 0 ? "up" : k % 3 === 1 ? "down" : null;
+  return { id: 100 + k, type: PATTERN_TYPES[k % PATTERN_TYPES.length]!, title: "Паттерн", direction: dir, status: "confirmed", significant: true, t: bar(i), start_t: bar(i - 1), confirm_t: bar(i + 1), price: dir === "down" ? c.h : c.l, atr: "1.8", context: {}, source: "live", tf: "4h" };
+});
+export const RICH_FIGURE = {
+  id: 7, type: "double_bottom", title: "Двойное дно", direction: "up", status: "confirmed", scale: 2,
+  start_t: bar(262), end_t: bar(286), known_t: bar(288), confirm_t: bar(290), invalidated_t: null,
+  points: [[bar(262), r1(-3)], [bar(274), r1(-0.9)], [bar(286), r1(-3)]], lines: [{ name: "neck", a: [bar(262), r1(-0.9)], b: [bar(300), r1(-0.9)] }],
+  breakout_level: r1(-0.9), target: r1(0.2), invalidation: r1(-3.2), quality: 0.8, metrics: {}, source: "live", tf: "4h",
+};
+const alert = (id: number, op: "cross_up" | "cross_down", price: string) => ({ id, symbol: "BTCUSDT", timeframe: null, type: "price", condition: { op, price }, text: `BTCUSDT: ${price}`, frequency: "once", expires_at: null, status: "active", drawing_client_id: null, note: null, last_triggered_at: null, triggers_count: 0, created_at: null, last_trigger: null });
+export const RICH_ALERTS = [alert(1, "cross_down", r1(-0.6)), alert(2, "cross_up", r1(0.1))];
+
+export async function mock(page: Page, calls: string[], authed = false, server: MockServer = { drawings: [], layout: null }, opts: MockOptions = {}) {
+  const rich = opts.fixture === "rich";
   server.layouts ??= {};
-  server.alerts ??= [];
+  server.alerts ??= rich ? RICH_ALERTS.map((a) => ({ ...a })) : [];
   if (authed) await page.context().addCookies([{ name: "pl_auth", value: "1", url: "http://localhost:3101" }]);
   await page.route("**/v1/**", (route) => {
     const u = new URL(route.request().url());
@@ -106,6 +175,10 @@ export async function mock(page: Page, calls: string[], authed = false, server: 
       return json(200, { text: `Бычье поглощение на BTCUSDT H4: значимый, подтверждён на закрытии свечи. Историческая отработка: 54 % случаев (n=120).`, source: b.pattern_id === 1 ? "template" : "llm", footer: "Текст составлен по данным графика на 12:00 UTC, не является рекомендацией.", generated_at: "", facts_hash: "abc", prompt_version: "explain_pattern.v1" });
     }
     // линия шеи двойной вершины уходит правее последней свечи: линия фигуры не должна сдвигать вид
+    const richSymbol = rich && u.searchParams.get("symbol") !== SUBCENT;
+    if (richSymbol && p === "/v1/chart/figures") return json(200, { symbol: "BTCUSDT", tf: "4h", note: "", items: [RICH_FIGURE], stats: {} });
+    if (richSymbol && p === "/v1/chart/patterns") return json(200, { symbol: "BTCUSDT", tf: "4h", horizon: 5, note: "", items: RICH_PATTERNS, stats: {} });
+    if (richSymbol && p === "/v1/chart/layers") return json(200, RICH_LAYERS);
     if (p === "/v1/chart/figures") {
       // у монеты дешевле цента фигуры в её масштабе (как уровни ниже): иначе линии около 100 растягивали шкалу
       const px = (v: string) => (u.searchParams.get("symbol") === SUBCENT ? (Number(v) * 0.00005).toFixed(7) : v);

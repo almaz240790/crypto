@@ -1,5 +1,5 @@
-import type { PriceFormat, PriceFormatCustom } from "lightweight-charts";
-import { formatCompactValue, formatIndicatorValue, formatPercentValue, formatPriceLabel, formatPriceShort, formatTicks, tickDecimals, tickFormat, PERCENT_DIGITS } from "./format";
+import type { BarPrice, PriceFormat, PriceFormatCustom } from "lightweight-charts";
+import { formatCompactValue, formatIndicatorValue, formatPercentValue, formatPriceLabel, formatPriceShort, formatSignedPercent, formatTicks, tickDecimals, tickFormat, PERCENT_DIGITS } from "./format";
 
 /**
  * Форматы цен для серий LWC (план 2A.3, 5.4). Каждая серия форматирует свою шкалу сама: у основной серии
@@ -55,3 +55,46 @@ export const VALUE_FORMAT: PriceFormat = {
   formatter: (v: number) => formatIndicatorValue(v),
   tickmarksFormatter: (vs: number[]) => formatTicks(vs),
 };
+
+/**
+ * Форматы цены инструмента одним объектом (план 2A.3, 5.4): сцена, раскладка шкалы, подсказки и «Найдено»
+ * берут один аргумент. Новых правил нет — это функции format.ts с точностью по шагу цены.
+ */
+export interface PriceFormatter {
+  /** tickPrecision(tick): 7 для "1.000E-7". */
+  readonly precision: number;
+  readonly minMove: number;
+  /** Цена с точностью инструмента: «83 528.4», «0.0049400». */
+  price(p: number): string;
+  /** Метка на шкале: на узкой шкале телефона крупные цены целым числом. */
+  axis(p: number): string;
+  ticks(prices: readonly number[]): string[];
+  value(v: number): string;
+  compact(v: number): string;
+  /** «+1.24 %». */
+  pct(v: number, digits?: number): string;
+}
+
+export function priceFormatter(tick: string | number | null | undefined, narrow: boolean): PriceFormatter {
+  const { precision, minMove } = tickFormat(tick);
+  return {
+    precision,
+    minMove,
+    price: (p) => formatPriceLabel(p, precision),
+    axis: (p) => (narrow ? formatPriceShort(p, precision) : formatPriceLabel(p, precision)),
+    ticks: (ps) => formatTicks(ps),
+    value: (v) => formatIndicatorValue(v),
+    compact: (v) => formatCompactValue(v),
+    pct: (v, digits = 2) => formatSignedPercent(v, digits),
+  };
+}
+
+/**
+ * Тот же формат, но деления шкалы под нашими метками пустые (M04): tickmarksFormatter отдаёт "" для цены,
+ * чей y попадает в полосу размещённой метки. Число знаков считается по всем делениям, как без скрытия,
+ * поэтому видимые деления не меняются. formatter (последняя цена, перекрестие) не трогается.
+ */
+export function withHiddenTicks(format: InstrumentPriceFormat, isHiddenPrice: (price: number) => boolean): InstrumentPriceFormat {
+  const base = format.tickmarksFormatter ?? ((ps: BarPrice[]) => ps.map((p) => format.formatter(p)));
+  return { ...format, tickmarksFormatter: (ps: BarPrice[]) => base(ps).map((s, i) => (isHiddenPrice(ps[i]!) ? "" : s)) };
+}
