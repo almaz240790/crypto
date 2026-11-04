@@ -619,17 +619,21 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     const lastEnd = times[times.length - 1]! + TF_SECONDS[tf];
     const asLine = (rows: { t: number; v: string }[], k = 1) => alignToCandles(rows, times, lastEnd).map(({ time, row }) => ({ time: time as UTCTimestamp, value: Number(row.v) * k }));
     const liqRows = alignToCandles(derivatives.liquidations, times, lastEnd, (a, b) => ({ t: b.t, long: String(Number(a.long) + Number(b.long)), short: String(Number(a.short) + Number(b.short)) }));
-    // цвета — заново при каждой смене темы; формат шкалы — свой у каждой панели (проценты, компактно)
-    const colors: Record<PanelKey, string[]> = { funding: [tokens.warn], oi: [tokens.accent], ls: [tokens.accent, tokens.warn], liq: [tokens.up, tokens.down] };
+    // цвета — заново при каждой смене темы; формат шкалы — свой у каждой панели (проценты, компактно). Линии — из
+    // нейтральных --ind-* и --text-2, как индикаторы (план 2A.9): охра — только карта ликвидаций, салатовый — только
+    // интерфейс; столбцы ликвидаций — --up/--down (направление)
+    const ind = (n: number) => tokens.ind[n - 1] ?? tokens.text2;
+    const colors: Record<PanelKey, string[]> = { funding: [ind(5)], oi: [ind(1)], ls: [ind(1), tokens.text2], liq: [tokens.up, tokens.down] };
     for (const k of panels) {
       let p = cryptoRef.current.get(k);
       if (!p) {
         const paneIndex = term.addPane(PANE_CRYPTO_PX);
         const series: ISeriesApi<"Line" | "Histogram">[] = [];
-        if (k === "funding") series.push(term.addLine(paneIndex, tokens.warn, 1, PERCENT_FORMAT));
-        else if (k === "oi") series.push(term.addLine(paneIndex, tokens.accent, 1, COMPACT_FORMAT));
-        else if (k === "ls") series.push(term.addLine(paneIndex, tokens.accent, 1, VALUE_FORMAT), term.addLine(paneIndex, tokens.warn, 1, VALUE_FORMAT));
-        else series.push(term.addHistogram(paneIndex, tokens.up, COMPACT_FORMAT), term.addHistogram(paneIndex, tokens.down, COMPACT_FORMAT));
+        const [c0, c1] = colors[k];
+        if (k === "funding") series.push(term.addLine(paneIndex, c0!, 1, PERCENT_FORMAT));
+        else if (k === "oi") series.push(term.addLine(paneIndex, c0!, 1, COMPACT_FORMAT));
+        else if (k === "ls") series.push(term.addLine(paneIndex, c0!, 1, VALUE_FORMAT), term.addLine(paneIndex, c1!, 1, VALUE_FORMAT));
+        else series.push(term.addHistogram(paneIndex, c0!, COMPACT_FORMAT), term.addHistogram(paneIndex, c1!, COMPACT_FORMAT));
         p = { paneIndex, series };
         cryptoRef.current.set(k, p);
         paneAdded(k, series[0]!);

@@ -392,3 +392,36 @@ test("подпись горизонтальной линии — с точнос
   // раньше — четыре значащие цифры: «0.004700» вместо семи знаков шага
   for (const l of await labels()) expect(l).toMatch(/^0\.00\d{5}$/);
 });
+
+test("панели данных фьючерсов и ATR: линии — нейтральные --ind-*/--text-2, не охра и не салатовый; у ATR одна линия", async ({ page }) => {
+  const calls: string[] = [];
+  await mock(page, calls);
+  await page.addInitScript(() => {
+    localStorage.setItem("pl-terminal", JSON.stringify({ layers_v: 5, type: "candles", indicators: [{ id: "atr", params: {} }], markup: { preset: "clean", overrides: {} }, panels: ["funding", "oi", "ls"], scale: "linear", overlay: null }));
+  });
+  await page.goto("/chart/BTCUSDT/4h");
+  await ready(page);
+  const warn = await token(page, "--warn");
+  const accent = await token(page, "--accent");
+  type Pane = { color: string; type: string; len: number }[];
+  const panes = () =>
+    page.evaluate(() => {
+      type S = { seriesType(): string; data(): unknown[]; options(): { color?: string } };
+      const ch = (document.querySelector('[data-testid="terminal"]') as HTMLElement & { __chart: { panes(): { getSeries(): S[] }[] } }).__chart;
+      return ch.panes().slice(1).map((p) => p.getSeries().map((s) => ({ color: (s.options().color ?? "").toLowerCase(), type: s.seriesType(), len: s.data().length })));
+    }) as Promise<Pane[]>;
+  // ATR и три панели фьючерсов
+  await expect.poll(async () => (await panes()).filter((p) => p.some((s) => s.len > 0)).length).toBeGreaterThanOrEqual(4);
+  const lines = (await panes()).flat().filter((s) => s.type === "Line");
+  expect(lines.length).toBe(5);
+  for (const s of lines) {
+    expect(s.color).not.toBe(warn);
+    expect(s.color).not.toBe(accent);
+  }
+  const neutral = await Promise.all(["--ind-1", "--ind-5", "--text-2"].map((n) => token(page, n)));
+  expect(lines.map((s) => s.color)).toEqual(expect.arrayContaining(neutral));
+  // ATR — одна линия и одно значение в заголовке (прежняя «% от цены» на шкале ATR — плоская у нуля, «0.953» без подписи)
+  const atr = page.getByTestId("pane-atr");
+  await expect(atr.locator(".num")).toHaveCount(1);
+  await expect(atr).toContainText(/^ATR 14/);
+});
