@@ -361,9 +361,12 @@ class MarketData:
                 if time.time() < self.poll_pause_until:
                     continue
                 if self.backfill_needed:
-                    await loop.run_in_executor(
-                        pool, self.backfill, sorted(self.backfill_needed), history
-                    )
+                    try:
+                        await loop.run_in_executor(
+                            pool, self.backfill, sorted(self.backfill_needed), history
+                        )
+                    except Exception:
+                        log.exception("догрузка после паузы не удалась")
                 fresh = self.ws_fresh(SILENCE_TIMEOUT)
                 targets = [s for s in self.symbols if s not in fresh]
                 if not targets:

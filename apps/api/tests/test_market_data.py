@@ -637,3 +637,27 @@ def test_run_stops_when_core_task_dies(monkeypatch: Any) -> None:
 
     ok, _ = _run_service(md, monkeypatch, connection)
     assert ok is False and md.stop.is_set()  # main() выйдет с кодом 1 — хостинг перезапустит
+
+
+def test_poller_retries_interrupted_backfill_and_survives_its_errors(monkeypatch: Any) -> None:
+    monkeypatch.setattr(mdmod, "POLL_EVERY", 0.01)
+    md = _md()
+    md.kline_at["BTCUSDT"] = time.time() + 3600  # стрим жив — опрашивать нечего
+    md.backfill_needed = {"BTCUSDT"}
+    calls: list[Any] = []
+
+    def backfill(symbols: Any = None, history: Any = None) -> bool:
+        calls.append(symbols)
+        raise RuntimeError("db down")  # не роняет опрос (и сервис вместе с ним)
+
+    monkeypatch.setattr(md, "backfill", backfill)
+
+    async def run() -> None:
+        task = asyncio.create_task(md.poller())
+        await asyncio.sleep(0.1)
+        assert not task.done()
+        md.stop.set()
+        await asyncio.wait_for(task, 2)
+
+    asyncio.run(run())
+    assert calls and calls[0] == ["BTCUSDT"]
