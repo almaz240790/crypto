@@ -1,6 +1,6 @@
 "use client";
 
-import { applyMinute, liveDueAt, mergeLive, restThrough, type Candle, type LiveBars, type Timeframe } from "@platform/charts";
+import { applyMinute, firstChange, liveDueAt, mergeLive, restThrough, type Candle, type LiveBars, type Timeframe } from "@platform/charts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { FIGURE_TFS, getCandles, getDerivatives, getFigures, getLayers, getPatterns, toCandle, type CandlesResponse, type Derivatives, type FiguresResponse, type LayersResponse, type PatternsResponse } from "@/lib/chart";
 import { useLive, type LiveCandle } from "@/lib/useLive";
@@ -153,8 +153,11 @@ export function useTerminalData(symbol: string, tf: Timeframe, token: string | n
           setHasOlder(r.has_older);
           sinceRef.current = closed[0]?.time;
         }
-        // новая ссылка на закрытые свечи — поверхность сверит хвост и уберёт устаревшую текущую
-        commit({ ...next, closed: next.closed === base.closed ? next.closed.slice() : next.closed });
+        // ничего нового (вкладка вернулась, а свечи те же) — без перерисовки; иначе новая ссылка на закрытые
+        // свечи: поверхность сверит хвост и уберёт устаревшую текущую
+        const unchanged = next.closed.length === base.closed.length && firstChange(base.closed, next.closed) === base.closed.length && (next.current === base.current || (next.current !== null && base.current !== null && firstChange([base.current], [next.current]) === 1));
+        if (!unchanged) commit({ ...next, closed: next.closed === base.closed ? next.closed.slice() : next.closed });
+        else liveRef.current = { ...base, through: next.through };
         setRestAt(at);
         if (next.closed[next.closed.length - 1]?.time !== base.closed[base.closed.length - 1]?.time) refreshDerived(gen, !merged);
         // сервер и сам ещё без новой свечи — следующая попытка позже, вплоть до LIVE_BACKOFF_MAX_MS
