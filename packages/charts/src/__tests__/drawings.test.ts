@@ -4,7 +4,8 @@ import { addDrawing, alive, canRedo, canUndo, clearDrawings, createState, mergeR
 import { HANDLE_TOUCH_PX, UNDO_STEPS, pointsNeeded, type Drawing } from "../drawings/types";
 import { DrawingsPrimitive, formatDrawingPrice } from "../drawings/primitive";
 import type { Candle } from "../types";
-import { TOKENS } from "./fakes/lwc";
+import { H, T0, TOKENS, bars, makeEnv } from "./fakes/lwc";
+import { alpha } from "../theme";
 
 const d = (id: string, type: Drawing["type"] = "trend", points = [{ time: 0, price: 100 }, { time: 60, price: 110 }]): Drawing => ({ id, type, points, style: { color: "accent", width: 1, dashed: false }, locked: false, timeframe: null, updated_at: 0 });
 
@@ -136,5 +137,84 @@ describe("автомасштаб цены", () => {
   it("рисунки пользователя не растягивают шкалу цены: у примитива нет autoscaleInfo (масштаб только по ценам)", () => {
     const prim = new DrawingsPrimitive(TOKENS) as DrawingsPrimitive & { autoscaleInfo?: unknown };
     expect(prim.autoscaleInfo).toBeUndefined();
+  });
+});
+
+/** Холст-подделка: записывает линии (цвет, прозрачность, толщина, пунктир), подписи и плашки. */
+function canvas() {
+  const strokes: { style: string; alpha: number; width: number; dash: number[]; y0: number; y1: number }[] = [];
+  const texts: { text: string; fill: string; font: string }[] = [];
+  const rects: string[] = [];
+  let path: { x: number; y: number }[] = [];
+  let dash: number[] = [];
+  const st = { strokeStyle: "", fillStyle: "", lineWidth: 1, globalAlpha: 1, font: "", textBaseline: "" };
+  const stack: (typeof st & { dash: number[] })[] = [];
+  const ctx = Object.assign(st, {
+    save: () => stack.push({ ...st, dash }),
+    restore: () => {
+      const s0 = stack.pop()!;
+      dash = s0.dash;
+      Object.assign(st, s0);
+    },
+    setLineDash: (d: number[]) => (dash = d),
+    beginPath: () => (path = []),
+    moveTo: (x: number, y: number) => path.push({ x, y }),
+    lineTo: (x: number, y: number) => path.push({ x, y }),
+    stroke: () => strokes.push({ style: st.strokeStyle, alpha: st.globalAlpha, width: st.lineWidth, dash: [...dash], y0: path[0]?.y ?? NaN, y1: path[1]?.y ?? NaN }),
+    fillText: (text: string) => texts.push({ text, fill: st.fillStyle, font: st.font }),
+    fillRect: () => rects.push(st.fillStyle),
+    strokeRect: () => undefined,
+    measureText: (t: string) => ({ width: t.length * 6 }),
+    arc: () => undefined,
+    fill: () => undefined,
+    closePath: () => undefined,
+  });
+  return { ctx, strokes, texts, rects };
+}
+
+function render(drawings: Drawing[]) {
+  const candles = bars(60);
+  const env = makeEnv(() => candles, { top: 130, bottom: 70 });
+  const prim = new DrawingsPrimitive(TOKENS);
+  prim.attached({ chart: env.chart, series: env.series, requestUpdate: () => undefined } as never);
+  prim.projector!.setBars(candles.map((c) => c.time), H);
+  prim.update({ drawings });
+  const c = canvas();
+  prim.paneViews()[0]!.renderer()!.draw({ useMediaCoordinateSpace: (cb: (s: unknown) => void) => cb({ context: c.ctx, mediaSize: { width: 800, height: 400 } }) } as never);
+  return c;
+}
+
+describe("Фибоначчи и цвет рисунков по умолчанию", () => {
+  const fib = (color: Drawing["style"]["color"]): Drawing => ({ ...d("f", "fib", [{ time: T0 + 10 * H, price: 120 }, { time: T0 + 40 * H, price: 80 }]), style: { color, width: 1, dashed: false }, levels: [0, 0.236, 0.382, 0.5, 0.618, 0.705, 0.786, 1, 1.272, 1.618] });
+
+  it("уровни — нейтральный --text-2, без салатового, охры и заливки; 0.5 и 0.618 выделены толщиной и непрозрачностью", () => {
+    const c = render([fib("text2")]);
+    const levels = c.strokes.filter((s) => s.y0 === s.y1);
+    expect(levels).toHaveLength(10);
+    expect(new Set(levels.map((s) => s.style))).toEqual(new Set([TOKENS.text2]));
+    for (const s of c.strokes) expect([TOKENS.accent, TOKENS.warn]).not.toContain(s.style);
+    const byY = new Map(levels.map((s) => [Math.round(s.y0), s]));
+    // та же шкала цены, что у render(): уровень → y
+    const { series } = makeEnv(() => bars(60), { top: 130, bottom: 70 });
+    const yOf = (level: number) => Math.round(series.priceToCoordinate(80 - (80 - 120) * level));
+    const key = [0.5, 0.618].map((l) => byY.get(yOf(l))!);
+    const minor = [0.236, 0.382, 0.705, 0.786, 1.272, 1.618].map((l) => byY.get(yOf(l))!);
+    const edge = [0, 1].map((l) => byY.get(yOf(l))!);
+    for (const s of key) expect(s).toMatchObject({ alpha: 1, width: 1.5, dash: [] });
+    for (const s of edge) expect(s).toMatchObject({ alpha: 1, width: 1, dash: [] });
+    for (const s of minor) expect(s).toMatchObject({ alpha: 0.6, width: 1, dash: [4, 3] });
+    // подписи — тем же нейтральным цветом на плашке цвета фона; ключевые — полужирные
+    const labels = c.texts.filter((t) => / · /.test(t.text));
+    expect(labels).toHaveLength(10);
+    expect(new Set(labels.map((t) => t.fill))).toEqual(new Set([TOKENS.text2]));
+    expect(labels.find((t) => t.text.startsWith("0.618 · "))!.font).toMatch(/^600 /);
+    expect(labels.find((t) => t.text.startsWith("0.236 · "))!.font).not.toMatch(/^600 /);
+    expect(new Set(c.rects)).toEqual(new Set([alpha(TOKENS.surface, 0.85)]));
+  });
+
+  it("прежний цвет по умолчанию (accent) рисуется нейтральным; выбранный цвет — как есть", () => {
+    expect(new Set(render([fib("accent")]).strokes.map((s) => s.style))).toEqual(new Set([TOKENS.text2]));
+    const line = { ...d("t", "trend", [{ time: T0 + 10 * H, price: 120 }, { time: T0 + 40 * H, price: 80 }]), style: { color: "down" as const, width: 1 as const, dashed: false } };
+    expect(render([line]).strokes[0]!.style).toBe(TOKENS.down);
   });
 });

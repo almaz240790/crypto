@@ -3,7 +3,7 @@ import type { ThemeTokens } from "../types";
 import { formatPriceLabel } from "../format";
 import { alpha } from "../theme";
 import { channelOffset, extend, fibLevels, lineAt, type Projector } from "./geometry";
-import { HANDLE_PX, type Drawing, type Point } from "./types";
+import { FIB_KEY_LEVELS, FIB_MINOR_ALPHA, HANDLE_PX, type Drawing, type Point, type StyleColor } from "./types";
 
 /**
  * Примитив LWC, рисующий все рисунки поверх основной серии (план 2A.5): линии, каналы, зоны,
@@ -71,6 +71,10 @@ export class TimeProjector {
 
 type Ctx = CanvasRenderingContext2D;
 
+/** Плашка под подписью уровня: высота строки 11 px моноширинным и непрозрачность фона. */
+const LABEL_PLAQUE_H = 14;
+const LABEL_PLAQUE_ALPHA = 0.85;
+
 class Renderer implements IPrimitivePaneRenderer {
   constructor(
     private readonly drawings: Drawing[],
@@ -92,8 +96,9 @@ class Renderer implements IPrimitivePaneRenderer {
 
   private color(d: Drawing): string {
     const t = this.tokens;
-    const map: Record<string, string> = { accent: t.accent, up: t.up, down: t.down, warn: t.warn, text2: t.text2, text3: t.text3 };
-    return map[d.style.color] ?? t.accent;
+    // "accent" — прежний цвет по умолчанию (выбрать его было нельзя): такие рисунки тоже нейтральные (StyleColor)
+    const map: Record<StyleColor, string> = { accent: t.text2, up: t.up, down: t.down, warn: t.warn, text2: t.text2, text3: t.text3 };
+    return map[d.style.color] ?? t.text2;
   }
 
   private setStroke(ctx: Ctx, d: Drawing, color = this.color(d)): void {
@@ -102,10 +107,15 @@ class Renderer implements IPrimitivePaneRenderer {
     ctx.setLineDash(d.style.dashed ? [6, 4] : []);
   }
 
-  private label(ctx: Ctx, text: string, x: number, y: number, color: string): void {
-    ctx.font = `11px ${this.tokens.fontMono}`;
-    ctx.fillStyle = color;
+  private label(ctx: Ctx, text: string, x: number, y: number, color: string, opts: { plaque?: boolean; strong?: boolean } = {}): void {
+    ctx.font = `${opts.strong ? "600 " : ""}11px ${this.tokens.fontMono}`;
     ctx.textBaseline = "bottom";
+    if (opts.plaque) {
+      // плашка цвета фона под подписью: читается поверх свечей в обеих темах
+      ctx.fillStyle = alpha(this.tokens.surface, LABEL_PLAQUE_ALPHA);
+      ctx.fillRect(x + 2, y - 3 - LABEL_PLAQUE_H, ctx.measureText(text).width + 4, LABEL_PLAQUE_H);
+    }
+    ctx.fillStyle = color;
     ctx.fillText(text, x + 4, y - 3);
   }
 
@@ -186,13 +196,20 @@ class Renderer implements IPrimitivePaneRenderer {
       }
       case "fib": {
         if (!b) break;
+        // нейтральные уровни одного цвета, без заливки: 0 и 1 — сплошные, 0.5 и 0.618 — сплошные и толще,
+        // остальные — пунктир полупрозрачный; подписи — на плашке, ключевые — полужирные
         const left = Math.min(a!.x, b.x), right = Math.max(a!.x, b.x);
         for (const { level, price } of fibLevels(d.points[0]!, d.points[1]!, d.levels)) {
           const y = this.proj.y(price);
           if (y === null) continue;
-          ctx.setLineDash(level === 0 || level === 1 ? [] : [4, 3]);
+          const key = FIB_KEY_LEVELS.includes(level);
+          const solid = key || level === 0 || level === 1;
+          ctx.globalAlpha = solid ? 1 : FIB_MINOR_ALPHA;
+          ctx.lineWidth = key ? d.style.width + 0.5 : d.style.width;
+          ctx.setLineDash(solid ? [] : [4, 3]);
           line(ctx, left, y, right, y);
-          this.label(ctx, `${level} · ${formatDrawingPrice(price, this.precision)}`, right, y, color);
+          ctx.globalAlpha = 1;
+          this.label(ctx, `${level} · ${formatDrawingPrice(price, this.precision)}`, right, y, color, { plaque: true, strong: key });
         }
         break;
       }
