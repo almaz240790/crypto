@@ -1425,5 +1425,7 @@
   "Наведите на панель — в её заголовке кнопки: порядок, развернуть, убрать.": "Hover over a pane to show its header buttons: reorder, maximize, remove.",
   "Кнопка «⋯» в заголовке панели": "The “⋯” button in a pane header",
   "Кнопки в заголовке панели (при наведении)": "Pane header buttons (on hover)",
-  "цена обновляется раз в секунду": "price updates every second"
+  "цена обновляется раз в секунду": "price updates every second",
+  "Место по капитализации": "Market cap rank",
+  "место по капитализации": "market cap rank"
 }
