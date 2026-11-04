@@ -59,12 +59,13 @@ export function SelectedDrawingCard({ drawing: d, symbol, tf, instruments, pos, 
       {isPosition(d.type) && onEdit && <PositionFields d={d} tick={tick} locked={d.locked} onEdit={onEdit} onPatch={onPatch} />}
       {pos && (
         <span className={s.posStats}>
-          {pos.riskUsd != null && pos.size != null && (
-            <>
+          {pos.riskUsd != null && pos.size != null ? (
+            <span className={s.posHint}>
               {t("риск")} <strong>{pos.riskUsd.toFixed(0)} USDT</strong> {t("· размер")} <strong>{pos.size.toPrecision(4)}</strong>
-            </>
+            </span>
+          ) : (
+            <span className={`caption ${s.posHint}`}>{t("задайте депозит и риск в настройках")}</span>
           )}
-          {pos.riskUsd == null && <span className="caption">{t("задайте депозит и риск в настройках")}</span>}
           <Link href={`/journal?${posQuery}`}>{t("в журнал")}</Link>
           <Link href={`/calculator?${posQuery}`}>{t("в калькулятор")}</Link>
         </span>

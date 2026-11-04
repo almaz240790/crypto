@@ -1034,6 +1034,17 @@
   align-items: flex-start;
 }
 
+/* телефон: ссылки «в журнал», «в калькулятор» — одной строкой, риск или подсказка — под ними (карточка ниже) */
+.page:not([data-layout="desktop"]) .posHint {
+  order: 1;
+  flex-basis: 100%;
+}
+
+.posStats a {
+  display: inline-flex;
+  align-items: center;
+}
+
 /* телефон: карточка не выше 60 % колонки графика — рисунок над ней виден; остальное — прокруткой карточки */
 .page:not([data-layout="desktop"]) .cards {
   max-height: 60%;
