@@ -76,7 +76,7 @@ function ChartCell({ cell, instruments, authed, onChange }: { cell: Cell; instru
         <Link href={`/chart/${cell.symbol}/${cell.tf}`} className={s.multiOpen}>{t("открыть в терминале")}</Link>
       </div>
       <div className={s.multiChart}>
-        <ChartSurface store={store} device="cell" markup={MARKUP} authed={authed} candles={data.candles ?? []} current={data.current} tf={cell.tf} type="candles" indicators={NO_INDICATORS} layers={data.layers} figures={data.figures?.items} alerts={NONE} derivatives={null} panels={NO_PANELS} tick={data.tick} dataKey={cell.symbol} onNeedOlder={data.loadOlder} onCrosshair={setCross} />
+        <ChartSurface store={store} device="cell" markup={MARKUP} authed={authed} candles={data.candles ?? []} current={data.current} tf={cell.tf} type="candles" indicators={NO_INDICATORS} layers={data.layers} figures={data.figures?.items} alerts={NONE} derivatives={null} panels={NO_PANELS} tick={data.tick} dataKey={cell.symbol} onNeedOlder={data.loadOlder} onCrosshair={setCross} live={data.live} />
       </div>
     </section>
   );

@@ -499,7 +499,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
             {data.derivatives.next_funding_t && <> · {t("через")} {formatCountdown(Math.max(0, data.derivatives.next_funding_t - now))}</>}
           </span>
         )}
-        <span className={`caption ${s.live}`} data-on={data.connected || undefined}>{data.connected ? t("онлайн") : t("без связи")}</span>
+        <span className={`caption ${s.live}`} data-on={data.online || undefined} title={data.online ? t("цена обновляется раз в секунду") : undefined}>{data.online ? t("онлайн") : t("без связи")}</span>
         {st.type === "heikin" && <span className="caption">{t("Heikin Ashi: паттерны и сигналы считаются по обычным свечам")}</span>}
       </div>
       <div className={s.area} ref={areaRef} data-objects={objects} style={{ "--objects-w": `${objW}px` } as React.CSSProperties}>
@@ -553,7 +553,7 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
           <div className={s.empty}>{t("Таймфреймы 1m–15m доступны после входа с подпиской Pro.")}{" "}<Link href="/pricing">{t("Подписка")}</Link>
           </div>
         ) : (
-          <ChartSurface store={store} markup={st.markup} authed={authed} candles={data.candles ?? []} current={data.current} tf={tf} type={st.type} indicators={st.indicators} layers={data.layers} patterns={data.patterns?.items} figures={data.figures?.items} alerts={alertLines} derivatives={data.derivatives} panels={st.panels} tick={data.tick} dataKey={symbol} onNeedOlder={data.loadOlder} drawings={drawingsProps} onCrosshair={setCross} onReady={onReady} scale={st.scale} overlay={overlayCandles} />
+          <ChartSurface store={store} markup={st.markup} authed={authed} candles={data.candles ?? []} current={data.current} tf={tf} type={st.type} indicators={st.indicators} layers={data.layers} patterns={data.patterns?.items} figures={data.figures?.items} alerts={alertLines} derivatives={data.derivatives} panels={st.panels} tick={data.tick} dataKey={symbol} onNeedOlder={data.loadOlder} drawings={drawingsProps} onCrosshair={setCross} onReady={onReady} scale={st.scale} overlay={overlayCandles} live={data.live} />
         )}
         {sel && (
           <div className={s.card} role="region" aria-label={t("выбранный рисунок")}>

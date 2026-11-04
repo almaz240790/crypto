@@ -1295,5 +1295,6 @@
   "сумма по {n} соседним ценам": "sum over {n} adjacent prices",
   "{d}д {hm}": "{d}d {hm}",
   "не является инвестиционной рекомендацией": "not investment advice",
-  "Карты ликвидаций на этом таймфрейме нет": "No liquidation map on this timeframe"
+  "Карты ликвидаций на этом таймфрейме нет": "No liquidation map on this timeframe",
+  "цена обновляется раз в секунду": "price updates every second"
 }
