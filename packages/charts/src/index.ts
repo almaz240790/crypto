@@ -1,5 +1,5 @@
 /** Пакет графика (план 2B): обёртка LWC v5, буфер свечей, тема, слои, Heikin Ashi. */
-export { createBuffer, EDGE, MAX_CANDLES, needsNewer, needsOlder, PAGE, prependOlder, pushLatest, replaceNewest } from "./buffer";
+export { createBuffer, EDGE, firstChange, MAX_CANDLES, needsNewer, needsOlder, PAGE, prependOlder, pushLatest, replaceNewest, replaceTail } from "./buffer";
 export type { BufferState } from "./buffer";
 export { heikinAshi, heikinNext } from "./heikin";
 export { LayerManager } from "./layers";
@@ -18,7 +18,8 @@ export type { CanvasType, ChartAlphas, ChartPalette, ChartTheme } from "./theme"
 export { CHART_TYPES, LAYER_KEYS, TF_SECONDS, TONES } from "./types";
 export type { Candle, ChartType, Device, LayerKey, PanelKey, SceneLayer, ThemeTokens, Timeframe, Tone } from "./types";
 export * from "./indicators";
-export { bucketStart, foldMinute, isClosed, secondsToClose } from "./live";
+export { applyMinute, bucketStart, countdownSeconds, foldMinute, isClosed, liveDueAt, mergeLive, restThrough, secondsToClose } from "./live";
+export type { LiveBars } from "./live";
 export * from "./drawings";
 // Разметка (PR B, план 2B.2): пресеты, сцена, раскладка подписей и шкалы — чистые модули.
 export { barsForWidth, cleanOverrides, DEFAULT_LIMITS, DEFAULT_PRESET, deviceFor, hitTolerance, INDEX_LIMITS, INTERACTION, LAYERS_VERSION, normalizeMarkup, PHONE_MAX_WIDTH, PRESET_IDS, PRESETS, resolvePreset, SELECTABLE_PRESETS, selectPreset, setLayerOverride, VIEW } from "./presets";

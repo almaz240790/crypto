@@ -16,6 +16,11 @@ type Msg =
   | { t: "subscribed"; n: number }
   | { t: "pong" };
 
+/** Сокет молчит дольше (ping раз в 25 с) — при возврате вкладки проверяем его ping-ом, мс. */
+const STALE_MS = 30_000;
+/** Ответа на проверочный ping нет столько — сокет мёртв, переподключаемся сразу, мс. */
+const PROBE_MS = 5_000;
+
 export function useLive(symbols: string[], token: string | null, onSignal?: (s: LiveSignal) => void, onCandle?: (c: LiveCandle) => void) {
   const [prices, setPrices] = useState<Record<string, { p: string; at: string }>>({});
   const [connected, setConnected] = useState(false);
@@ -33,6 +38,8 @@ export function useLive(symbols: string[], token: string | null, onSignal?: (s: 
     let closed = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let ping: ReturnType<typeof setInterval> | undefined;
+    let probe: ReturnType<typeof setTimeout> | undefined;
+    let lastMsg = Date.now();
 
     let base: string | null = null;
 
@@ -55,11 +62,13 @@ export function useLive(symbols: string[], token: string | null, onSignal?: (s: 
       const ws = new WebSocket(url);
       wsRef.current = ws;
       ws.onopen = () => {
+        lastMsg = Date.now();
         setConnected(true);
         ws.send(JSON.stringify({ sub: symsRef.current }));
         ping = setInterval(() => ws.readyState === 1 && ws.send('{"ping":1}'), 25_000);
       };
       ws.onmessage = (ev) => {
+        lastMsg = Date.now();
         let m: Msg;
         try {
           m = JSON.parse(ev.data as string) as Msg;
@@ -77,11 +86,44 @@ export function useLive(symbols: string[], token: string | null, onSignal?: (s: 
       };
       ws.onerror = () => ws.close();
     }
+    /** Старый сокет — без обработчиков и закрыт, новый — сразу, без задержки переподключения. */
+    function reconnectNow() {
+      const old = wsRef.current;
+      if (old) {
+        old.onopen = old.onmessage = old.onclose = old.onerror = null;
+        old.close();
+      }
+      if (ping) clearInterval(ping);
+      if (timer) clearTimeout(timer);
+      clearTimeout(probe);
+      setConnected(false);
+      void connect();
+    }
+    /**
+     * Вкладка снова видна. iOS после фона держит сокет «открытым», хотя соединения уже нет: ни сообщений,
+     * ни onclose, а в шапке — «онлайн». Закрытый сокет — переподключение сразу; молчащий дольше STALE_MS —
+     * проверочный ping, без ответа за PROBE_MS — переподключение.
+     */
+    function onVisible() {
+      if (closed || document.visibilityState !== "visible") return;
+      const ws = wsRef.current;
+      if (!ws || ws.readyState === WebSocket.CLOSING || ws.readyState === WebSocket.CLOSED) return reconnectNow();
+      if (ws.readyState !== WebSocket.OPEN || Date.now() - lastMsg < STALE_MS) return;
+      const sent = Date.now();
+      ws.send('{"ping":1}');
+      clearTimeout(probe);
+      probe = setTimeout(() => {
+        if (!closed && lastMsg < sent) reconnectNow();
+      }, PROBE_MS);
+    }
+    document.addEventListener("visibilitychange", onVisible);
     void connect();
     return () => {
       closed = true;
+      document.removeEventListener("visibilitychange", onVisible);
       if (timer) clearTimeout(timer);
       if (ping) clearInterval(ping);
+      clearTimeout(probe);
       wsRef.current?.close();
     };
   }, [token]);

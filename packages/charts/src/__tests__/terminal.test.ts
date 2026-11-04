@@ -447,3 +447,105 @@ describe("сброс вида и масштаб у правого края", () 
     expect(last.timeScale?.rightOffsetPixels).toBeUndefined();
   });
 });
+
+/**
+ * Автомасштаб правой шкалы основной панели так, как его считает LWC: каждая серия на шкале «right» основной панели
+ * даёт диапазон своих данных, autoscaleInfoProvider серии может его заменить (null — серия не участвует).
+ */
+type Info = { priceRange: { minValue: number; maxValue: number } } | null;
+function mainScale(): { min: number; max: number } {
+  let min = Infinity;
+  let max = -Infinity;
+  for (const s of chart.series) {
+    if (s.pane !== 0 || ((s.opts.priceScaleId as string | undefined) ?? "right") !== "right") continue;
+    const base = (): Info => {
+      const v = s.data.flatMap((d) => {
+        const p = d as { low?: number; high?: number; value?: number };
+        return p.low !== undefined ? [p.low, p.high!] : p.value !== undefined ? [p.value] : [];
+      });
+      return v.length ? { priceRange: { minValue: Math.min(...v), maxValue: Math.max(...v) } } : null;
+    };
+    const provider = s.opts.autoscaleInfoProvider as ((b: () => Info) => Info) | undefined;
+    const info = provider ? provider(base) : base();
+    if (!info) continue;
+    min = Math.min(min, info.priceRange.minValue);
+    max = Math.max(max, info.priceRange.maxValue);
+  }
+  return { min, max };
+}
+
+describe("масштаб только по ценам (продовый баг: свечи сжимались в полосу с индикаторами)", () => {
+  it("наложенные индикаторы и сравнение не растягивают шкалу цены; панели индикаторов масштабируются сами", () => {
+    make();
+    term.setCandles(bars(0, 300)); // low 0.5, high 2
+    const far = (v: number) => term.candles.map((c) => ({ time: c.time as never, value: v }));
+    // SMA 200 / VWAP далеко от свечей, гистограмма на основной панели, линия на своей панели
+    term.addLine(0, "#123456").setData(far(1000));
+    term.addLine(0, "#123456", 2).setData(far(-50));
+    term.addHistogram(0, "#123456").setData(far(500));
+    const rsi = term.addLine(1, "#123456", 1, VALUE_FORMAT);
+    rsi.setData(far(70));
+    expect(mainScale()).toEqual({ min: 0.5, max: 2 });
+    // у линии отдельной панели — свой автомасштаб, без поставщика
+    expect((rsi as unknown as FakeSeries).opts.autoscaleInfoProvider).toBeUndefined();
+    // сравнение: на своей скрытой шкале — свой масштаб; в процентном режиме делит правую шкалу, но её не растягивает
+    term.setOverlay(bars(0, 300).map((c) => ({ ...c, close: 9000 })), "#f0b429");
+    const ov = chart.series.at(-1)!;
+    const provider = ov.opts.autoscaleInfoProvider as (b: () => Info) => Info;
+    const own: Info = { priceRange: { minValue: 9000, maxValue: 9000 } };
+    expect(provider(() => own)).toBe(own);
+    term.setScaleMode("percent");
+    expect(ov.opts.priceScaleId).toBe("right");
+    expect(provider(() => own)).toBeNull();
+    expect(mainScale()).toEqual({ min: 0.5, max: 2 });
+    // основная серия после смены типа графика (линия по закрытиям) по-прежнему задаёт масштаб
+    term.setType("line");
+    expect(mainScale()).toEqual({ min: 1.5, max: 1.5 });
+  });
+});
+
+describe("догон правого края", () => {
+  it("вид у правого края едет за новыми свечами с тем же отступом справа; времена не повторяются", () => {
+    make();
+    term.setCandles(bars(0, 500));
+    term.resetView(100);
+    const r0 = chart.ts.getVisibleLogicalRange()!;
+    // текущая 499 устарела: сервер отдал её закрытой, ещё 30 закрытых и новую текущую
+    const fresh = bars(499, 32).map((c, i) => ({ ...c, close: 1.6, open_: i === 31 }));
+    term.replaceTail(T0 + 499 * H, fresh);
+    expect(term.candles).toHaveLength(531);
+    expect(new Set(term.candles.map((c) => c.time)).size).toBe(531);
+    expect(term.candles[499]!.close).toBe(1.6);
+    const r = chart.ts.getVisibleLogicalRange()!;
+    expect(r.from).toBeCloseTo(r0.from + 31, 9);
+    expect(r.to).toBeCloseTo(r0.to + 31, 9);
+    expect(chart.series[0]!.data).toHaveLength(531);
+  });
+
+  it("вид в истории остаётся на тех же свечах, подгруженная слева история сохраняется", () => {
+    make();
+    term.setCandles(bars(0, 500));
+    chart.ts.setVisibleLogicalRange({ from: 30, to: 180 });
+    term.addOlder(bars(-500, 500), true);
+    chart.ts.setVisibleLogicalRange({ from: 600, to: 700 });
+    const t0 = chart.timeAt(600);
+    term.replaceTail(T0 + 490 * H, bars(490, 40));
+    expect(term.candles[0]!.time).toBe(T0 - 500 * H);
+    expect(term.candles).toHaveLength(1030);
+    const r = chart.ts.getVisibleLogicalRange()!;
+    expect(r).toEqual({ from: 600, to: 700 });
+    expect(chart.timeAt(600)).toBe(t0);
+  });
+
+  it("полный буфер: выпавшие слева свечи не сдвигают вид в истории", () => {
+    make();
+    term.setCandles(bars(0, MAX_CANDLES));
+    chart.ts.setVisibleLogicalRange({ from: 2000, to: 2100 });
+    const t0 = chart.timeAt(2000);
+    term.replaceTail(T0 + (MAX_CANDLES - 1) * H, bars(MAX_CANDLES - 1, 11));
+    expect(term.candles).toHaveLength(MAX_CANDLES);
+    const r = chart.ts.getVisibleLogicalRange()!;
+    expect(chart.timeAt(r.from)).toBe(t0);
+    expect(r.to - r.from).toBe(100);
+  });
+});

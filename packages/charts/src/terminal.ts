@@ -1,4 +1,4 @@
-import type { IChartApi, ISeriesApi, LogicalRange, PriceFormat, SeriesType, Time, UTCTimestamp } from "lightweight-charts";
+import type { AutoscaleInfo, IChartApi, ISeriesApi, LogicalRange, PriceFormat, SeriesType, Time, UTCTimestamp } from "lightweight-charts";
 import { BarSeries, CandlestickSeries, HistogramSeries, LineSeries, PriceScaleMode, createChart, type IPaneApi } from "lightweight-charts";
 
 /** Режим ценовой шкалы (план 2A.3): линейная, логарифмическая, процентная (для сравнения инструментов). */
@@ -7,7 +7,14 @@ const SCALE_MODES: Record<ScaleMode, PriceScaleMode> = { linear: PriceScaleMode.
 /** Деление процентной шкалы так же, как PercentageFormatter LWC: знак «−» (U+2212), два знака, «%». */
 export const formatPercentTick = (p: number): string => `${p < 0 ? "−" : ""}${Math.abs(p).toFixed(2)}%`;
 const OVERLAY_SCALE = "overlay";
-import { createBuffer, EDGE, needsNewer, needsOlder, prependOlder, pushLatest, replaceNewest, type BufferState } from "./buffer";
+/**
+ * Масштаб только по ценам (как «Scale price chart only» в TradingView): автомасштаб правой шкалы основной панели
+ * считает только основная серия (свечи, бары, линия, HA) и выбранный объект разметки (его autoscaleInfo у
+ * примитива основной серии). Наложенные индикаторы и сравнение с другим инструментом его не растягивают —
+ * иначе дальняя SMA 200 или VWAP на 1m сжимали свечи в полосу. Отдельные панели масштабируются сами.
+ */
+const NO_AUTOSCALE = (): null => null;
+import { createBuffer, EDGE, needsNewer, needsOlder, prependOlder, pushLatest, replaceNewest, replaceTail, type BufferState } from "./buffer";
 import { heikinAshi } from "./heikin";
 import { LayerManager } from "./layers";
 import { INTERACTION, VIEW } from "./presets";
@@ -203,6 +210,35 @@ export class Terminal {
   }
 
   /**
+   * Догон правого края (план 2A.7: вкладка вернулась из фона, переподключение, просроченный отсчёт): свечи с
+   * временем ≥ from заменяются свежими bars (порция с сервера и текущая), подгруженная слева история остаётся,
+   * времена не повторяются. Вид пользователя сохраняется: был у правого края (последняя свеча в кадре) — едет за
+   * новыми свечами с тем же отступом справа; смотрел историю — остаётся на тех же свечах.
+   */
+  replaceTail(from: number, bars: readonly Candle[]): void {
+    const ts = this.chart.timeScale();
+    const range = ts.getVisibleLogicalRange();
+    const lastBefore = this.lastIndex();
+    const atEdge = range !== null && lastBefore !== null && range.to >= lastBefore;
+    this.buffer = replaceTail(this.buffer, from, bars);
+    this.requesting = false;
+    // якорь — первая свеча нового буфера: она была и в старом (слева только выгрузка лишнего)
+    const anchor = this.buffer.candles[0]?.time;
+    const i0 = anchor === undefined ? null : ts.timeToIndex(anchor as Time, true);
+    this.setSeriesData();
+    if (!range) return;
+    let shift = 0;
+    if (atEdge) {
+      const lastAfter = this.lastIndex();
+      if (lastAfter !== null) shift = lastAfter - lastBefore;
+    } else {
+      const i1 = anchor === undefined ? null : ts.timeToIndex(anchor as Time, true);
+      if (i0 !== null && i1 !== null) shift = i1 - i0;
+    }
+    ts.setVisibleLogicalRange({ from: range.from + shift, to: range.to + shift });
+  }
+
+  /**
    * Обновление текущей свечи или новая свеча справа (WebSocket, закрытие свечи) — инкрементально,
    * без setData: масштаб и прокрутка пользователя сохраняются, загруженная история слева остаётся.
    * За новым баром LWC сдвигает вид сам, только если последний бар был виден (shiftVisibleRangeOnNewBar),
@@ -263,6 +299,11 @@ export class Terminal {
     panes.slice(1).forEach((p, i) => p.setStretchFactor(others[i]!));
   }
 
+  /** Высота всех панелей вместе, px (0 — график ещё не размечен). */
+  panesHeight(): number {
+    return this.chart.panes().reduce((acc, p) => acc + p.getHeight(), 0);
+  }
+
   /**
    * Высота панели в пикселях без ограничения LWC (setHeight не опускает ниже 30 px):
    * через stretch-факторы, разницу забирает главная панель.
@@ -285,15 +326,20 @@ export class Terminal {
    * (проценты, компактно, значения индикатора), иначе LWC пишет два знака после запятой.
    */
   addLine(paneIndex: number, color: string, lineWidth: 1 | 2 = 1, priceFormat?: PriceFormat): ISeriesApi<"Line"> {
-    const s = this.chart.addSeries(LineSeries, { color, lineWidth, priceLineVisible: false, lastValueVisible: true, priceFormat: this.paneFormat(paneIndex, priceFormat) }, paneIndex);
+    const s = this.chart.addSeries(LineSeries, { color, lineWidth, priceLineVisible: false, lastValueVisible: true, priceFormat: this.paneFormat(paneIndex, priceFormat), ...this.paneAutoscale(paneIndex) }, paneIndex);
     if (paneIndex === 0 && !priceFormat) this.priceSeries.add(s);
     return s;
   }
 
   addHistogram(paneIndex: number, color: string, priceFormat?: PriceFormat): ISeriesApi<"Histogram"> {
-    const s = this.chart.addSeries(HistogramSeries, { color, priceLineVisible: false, lastValueVisible: false, priceFormat: this.paneFormat(paneIndex, priceFormat) }, paneIndex);
+    const s = this.chart.addSeries(HistogramSeries, { color, priceLineVisible: false, lastValueVisible: false, priceFormat: this.paneFormat(paneIndex, priceFormat), ...this.paneAutoscale(paneIndex) }, paneIndex);
     if (paneIndex === 0 && !priceFormat) this.priceSeries.add(s);
     return s;
+  }
+
+  /** Серия на основной панели (наложенный индикатор) не участвует в автомасштабе цены — см. NO_AUTOSCALE. */
+  private paneAutoscale(paneIndex: number): { autoscaleInfoProvider?: typeof NO_AUTOSCALE } {
+    return paneIndex === 0 ? { autoscaleInfoProvider: NO_AUTOSCALE } : {};
   }
 
   private paneFormat(paneIndex: number, priceFormat?: PriceFormat): PriceFormat {
@@ -347,7 +393,10 @@ export class Terminal {
     }
     this.overlayCandles = candles;
     if (!this.overlay) {
-      this.overlay = this.chart.addSeries(LineSeries, { color, lineWidth: 1, priceLineVisible: false, lastValueVisible: true, crosshairMarkerVisible: false, priceScaleId: this.scaleMode === "percent" ? "right" : OVERLAY_SCALE }, 0);
+      // на своей скрытой шкале наложение масштабируется само; в процентном режиме оно делит правую шкалу
+      // с основной серией и масштаб не растягивает (NO_AUTOSCALE)
+      const autoscaleInfoProvider = (base: () => AutoscaleInfo | null): AutoscaleInfo | null => (this.scaleMode === "percent" ? null : base());
+      this.overlay = this.chart.addSeries(LineSeries, { color, lineWidth: 1, priceLineVisible: false, lastValueVisible: true, crosshairMarkerVisible: false, priceScaleId: this.scaleMode === "percent" ? "right" : OVERLAY_SCALE, autoscaleInfoProvider }, 0);
       this.chart.priceScale(OVERLAY_SCALE).applyOptions({ visible: false, scaleMargins: { top: 0.08, bottom: 0.2 } });
     } else {
       this.overlay.applyOptions({ color });

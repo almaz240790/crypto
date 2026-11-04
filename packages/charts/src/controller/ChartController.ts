@@ -4,7 +4,7 @@ import type { Layer, LayerContext } from "../layers";
 import type { Rect } from "../layout/types";
 import type { TextMeasurer } from "../layout/measure";
 import type { ScreenScene } from "../layout/project";
-import { secondsToClose } from "../live";
+import { countdownSeconds } from "../live";
 import { barsForWidth, DEFAULT_PRESET, deviceFor, INTERACTION, resolvePreset, VIEW, type MarkupSettings, type ResolvedPreset, type ViewPreset } from "../presets";
 import { instrumentPriceFormat, priceFormatter, withHiddenTicks, type PriceFormatter } from "../priceFormat";
 import { timeToIndex } from "../render/projector";
@@ -549,7 +549,7 @@ export class ChartController {
   private updateCountdown(): void {
     const last = this.terminal.candles[this.terminal.candles.length - 1];
     const days = this.inputs.text?.["countdown.days"];
-    const text = last && this.view.axis.countdown ? formatCountdown(secondsToClose(this.inputs.tf, last.time, Math.floor(Date.now() / 1000)), days) : "";
+    const text = last && this.view.axis.countdown ? formatCountdown(countdownSeconds(this.inputs.tf, last.time, Math.floor(Date.now() / 1000)), days) : "";
     this.countdown.setText(text);
     this.placeCountdown();
   }

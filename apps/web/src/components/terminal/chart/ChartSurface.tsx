@@ -1,12 +1,13 @@
 "use client";
 
-import { COMPACT_FORMAT, ChartController, INTERACTION, NONE, PERCENT_FORMAT, alpha, resolvePreset, VALUE_FORMAT, alignToCandles, tickPrecision, tokensFromElement, type AlertLine, type Candle, type ChartHandle, type ChartStore, type ChartType, type Device, type ExternalObject, type MarkupSettings, type PanelKey, type ScaleMode, type Terminal, type Timeframe } from "@platform/charts";
+import { COMPACT_FORMAT, ChartController, INTERACTION, NONE, PERCENT_FORMAT, VIEW, alpha, firstChange, planPanes, resolvePreset, VALUE_FORMAT, alignToCandles, tickPrecision, tokensFromElement, type AlertLine, type Candle, type ChartHandle, type ChartStore, type ChartType, type Device, type ExternalObject, type MarkupSettings, type PanelKey, type ScaleMode, type Terminal, type Timeframe } from "@platform/charts";
 import { DrawingController, DrawingsPrimitive, INDICATORS, defaultParams, indicatorById, visibleOn, type Drawing, type DrawingType, type DrawingsState, type IndicatorSpec, type Layer, type LayerContext, type Point, TF_SECONDS } from "@platform/charts";
 import type { ISeriesApi, PriceFormat, UTCTimestamp } from "lightweight-charts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Derivatives, FigureOnChart, LayersResponse, PatternOnChart } from "@/lib/chart";
 import s from "../terminal.module.css";
 import { useT } from "@/i18n/client";
+import { plural } from "@/lib/format";
 import { chartText } from "./chartText";
 import { useChartStore } from "./useChartStore";
 import { LegendChip, LiqUnavailableNote } from "./LegendChip";
@@ -103,8 +104,11 @@ class PrimitiveLayer implements Layer {
 
 type Pane = { spec: IndicatorSpec; paneIndex: number | null; series: Record<string, ISeriesApi<"Line" | "Histogram">>; colorKey: string; base?: string };
 const OVERLAY_SECONDARY_ALPHA = 0.55;
-/** Заголовок панели под графиком (план 2A.7): панели сворачиваются до 24 px, на телефоне раскрыто не больше одной. */
-type PaneHead = { key: string; title: string; top: number; collapsed: boolean; color?: string };
+/**
+ * Заголовок панели под графиком (план 2A.7): панели сворачиваются до 24 px, на телефоне раскрыто не больше одной.
+ * group — общая строка свёрнутых панелей («ещё N панелей»), когда строк на все не хватает (planPanes).
+ */
+type PaneHead = { key: string; title: string; top: number; collapsed: boolean; color?: string; group?: { key: string; title: string }[]; height?: number };
 const PANE_COLLAPSED_PX = 24;
 const PANE_INDICATOR_PX = 90;
 /** Короткие имена в карточке значений: «BB Верхняя» вместо «Bollinger Bands Верхняя». */
@@ -119,6 +123,9 @@ const COMPACT_INDICATORS = new Set(["volume", "obv"]);
 const indicatorFormat = (id: string): PriceFormat => (COMPACT_INDICATORS.has(id) ? COMPACT_FORMAT : VALUE_FORMAT);
 const NO_PATTERNS: readonly PatternOnChart[] = [];
 const NO_FIGURES: readonly FigureOnChart[] = [];
+
+/** В свёрнутой панели серии и метки последнего значения на шкале скрыты (иначе «0.0» и огромные числа OI). */
+const showSeries = (series: readonly ISeriesApi<"Line" | "Histogram">[], on: boolean) => series.forEach((sr) => sr.applyOptions({ visible: on, lastValueVisible: on && sr.seriesType() === "Line" }));
 
 /** Индекс свечи с временем time в отсортированном массиве (−1 — нет такой). */
 function indexOfTime(candles: readonly Candle[], time: number): number {
@@ -157,6 +164,8 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
   const stickyRef = useRef(false);
   const [heads, setHeads] = useState<PaneHead[]>([]);
   const collapsedRef = useRef<Set<string>>(new Set());
+  /** Свёрнутые панели в общей строке и панель, в которой эта строка лежит (последняя раскладка planPanes). */
+  const groupRef = useRef<{ grouped: Set<string>; host: string | null }>({ grouped: new Set(), host: null });
   const paneObsRef = useRef<ResizeObserver | null>(null);
   const swipeRef = useRef<{ key: string; y: number } | null>(null);
   /** Подгрузка истории слева и смена темы — из хранилища графика (переходные поля до D). */
@@ -189,19 +198,54 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     const el = ref.current;
     if (!el) return;
     const r0 = el.getBoundingClientRect();
-    const next = paneEntries().map((e) => {
-      const r = e.series[0]!.getPane().getHTMLElement()?.getBoundingClientRect();
-      return { key: e.key, title: e.title, top: r ? Math.round(r.top - r0.top) : 0, collapsed: collapsedRef.current.has(e.key), color: e.color };
+    const { grouped, host } = groupRef.current;
+    const entries = paneEntries();
+    const group = entries.filter((e) => grouped.has(e.key)).map((e) => ({ key: e.key, title: e.title }));
+    const rects = entries.map((e) => e.series[0]!.getPane().getHTMLElement()?.getBoundingClientRect());
+    // у свёрнутой панели из общей строки своего заголовка нет: строку рисует панель host; она же закрывает
+    // идущие прямо над ней свёрнутые панели в 1 px — без неё там видна стопка разделителей
+    const next: PaneHead[] = [];
+    entries.forEach((e, k) => {
+      if (grouped.has(e.key) && e.key !== host) return;
+      const r = rects[k];
+      const head: PaneHead = { key: e.key, title: e.title, top: r ? Math.round(r.top - r0.top) : 0, collapsed: collapsedRef.current.has(e.key), color: e.color };
+      if (r) {
+        let top = r.top;
+        if (e.key === host) for (let j = k - 1; j >= 0 && grouped.has(entries[j]!.key); j--) top = rects[j]?.top ?? top;
+        head.top = Math.round(top - r0.top);
+        // заголовок не ниже своей панели: LWC округляет высоты, и 24 px строки иногда становятся 23,5
+        const height = Math.floor(r.bottom - r0.top) - head.top;
+        if (e.key === host) Object.assign(head, { group, height });
+        else if (height < PANE_COLLAPSED_PX) head.height = Math.max(0, height);
+      }
+      next.push(head);
     });
-    setHeads((prev) => (prev.length === next.length && prev.every((h, i) => h.key === next[i]!.key && h.title === next[i]!.title && h.top === next[i]!.top && h.collapsed === next[i]!.collapsed && h.color === next[i]!.color) ? prev : next));
+    const groupKey = (h: PaneHead) => `${h.height ?? ""}|${h.group?.map((g) => `${g.key}:${g.title}`).join("|") ?? ""}`;
+    setHeads((prev) => (prev.length === next.length && prev.every((h, i) => h.key === next[i]!.key && h.title === next[i]!.title && h.top === next[i]!.top && h.collapsed === next[i]!.collapsed && h.color === next[i]!.color && groupKey(h) === groupKey(next[i]!)) ? prev : next));
   }, [paneEntries]);
 
-  // все панели раскладываются разом: свёрнутые — 24 px, раскрытые — своя высота, свечам — остаток (не меньше половины)
+  /**
+   * Все панели раскладываются разом (planPanes, продовый баг: на телефоне свёрнутые панели сжимались до 10 px,
+   * и их заголовки налезали друг на друга и на шкалу времени): свёрнутая — ровно строка заголовка 24 px,
+   * раскрытые — своя высота, а при нехватке места меньше, но не ниже строки; свечам — остаток, не меньше
+   * mainMinShare. Строк на все панели не хватает — свёрнутые собираются в одну строку «ещё N панелей», раскрытые
+   * сверху, которым не осталось строки, сворачиваются.
+   */
   const layoutAll = useCallback(() => {
     const term = termRef.current;
     if (!term) return;
-    const want = new Map(paneEntries().map((e) => [e.series[0]!.getPane(), collapsedRef.current.has(e.key) ? PANE_COLLAPSED_PX : e.height] as const));
-    term.layoutPanes(want);
+    const entries = paneEntries();
+    const plan = planPanes(
+      term.panesHeight(),
+      entries.map((e) => ({ want: e.height, collapsed: collapsedRef.current.has(e.key) })),
+      { mainMinShare: VIEW.desktop.mainMinShare, rowPx: PANE_COLLAPSED_PX },
+    );
+    for (const k of plan.collapse) {
+      collapsedRef.current.add(entries[k]!.key);
+      showSeries(entries[k]!.series, false);
+    }
+    groupRef.current = { grouped: new Set(entries.filter((_, k) => plan.grouped[k]).map((e) => e.key)), host: plan.host === null ? null : entries[plan.host]!.key };
+    term.layoutPanes(new Map(entries.map((e, k) => [e.series[0]!.getPane(), plan.heights[k]!] as const)));
   }, [paneEntries]);
 
   const applyCollapsed = useCallback(
@@ -210,8 +254,7 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
       if (!e) return;
       if (collapsed) collapsedRef.current.add(key);
       else collapsedRef.current.delete(key);
-      // в свёрнутой панели прячем и метки последнего значения на шкале (иначе «0.0» и огромные числа OI)
-      e.series.forEach((sr) => sr.applyOptions({ visible: !collapsed, lastValueVisible: !collapsed && sr.seriesType() === "Line" }));
+      showSeries(e.series, !collapsed);
       layoutAll();
       requestAnimationFrame(relayout);
     },
@@ -234,6 +277,10 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
   );
 
   const togglePane = useCallback((key: string) => applyCollapsed(key, !collapsedRef.current.has(key)), [applyCollapsed]);
+  const layoutAllRef = useRef(layoutAll);
+  useEffect(() => {
+    layoutAllRef.current = layoutAll;
+  }, [layoutAll]);
   useEffect(() => {
     needOlderRef.current = onNeedOlder;
     drawingsRef.current = drawings;
@@ -341,7 +388,19 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     el.addEventListener("pointermove", onPMove);
     el.addEventListener("pointerup", onPUp);
     el.addEventListener("pointercancel", onPUp);
-    const paneObs = new ResizeObserver(() => relayout());
+    // высота графика сменилась (поворот телефона, окно) — панели раскладываются заново: иначе LWC делит высоту
+    // пропорционально и свёрнутые панели снова сжимаются ниже строки заголовка
+    let lastH = el.clientHeight;
+    const paneObs = new ResizeObserver(() => {
+      if (el.clientHeight !== lastH) {
+        lastH = el.clientHeight;
+        requestAnimationFrame(() => {
+          layoutAllRef.current();
+          requestAnimationFrame(relayout);
+        });
+      }
+      relayout();
+    });
     paneObs.observe(el);
     paneObsRef.current = paneObs;
     const panes = panesRef.current;
@@ -379,14 +438,24 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     const same = prev !== null && prev.key === dataKey && prev.tf === tf;
     if (same && prev.candles.length === 0 && candles.length === 0) return;
     const n = prev?.candles.length ?? 0;
-    const append = same && n > 0 && candles.length >= n && candles[0]?.time === prev.candles[0]?.time && candles[n - 1]?.time === prev.candles[n - 1]?.time;
+    // общий начальный участок со старыми свечами: до какой свечи они не изменились
+    const i = same && n > 0 && candles.length > 0 && candles[0]!.time === prev.candles[0]!.time ? firstChange(prev.candles, candles) : -1;
     loadedRef.current = { key: dataKey, tf, candles };
     // таймфрейм — до данных: сброс вида считает число свечей по лимиту таймфрейма
     ctrl.set({ tf });
+    // последняя свеча графика — последняя закрытая или прежняя текущая, которую закрыла первая новая свеча
+    const termLast = term.candles[term.candles.length - 1]?.time;
+    const append = i >= n && (termLast === undefined || termLast === prev?.candles[n - 1]?.time || termLast === candles[n]?.time);
     if (append) {
       // закрывшиеся свечи заменяют текущую с тем же временем; новая текущая придёт через term.update(current)
       for (const c of candles.slice(n)) term.update(c);
       if (candles.length > n) ctrl.notifyCandles("append");
+    } else if (i >= 0) {
+      // догон (вкладка из фона, переподключение, просрочка): хвост с первой изменённой свечи — заново, вместе с
+      // текущей; прежняя текущая, которой нет в новых данных, уходит; вид и история слева сохраняются
+      const from = i < n ? candles[i]!.time : prev!.candles[n - 1]!.time + 1;
+      term.replaceTail(from, current ? [...candles.slice(i), current] : candles.slice(i));
+      ctrl.notifyCandles("append");
     } else {
       term.setCandles(current ? [...candles, current] : candles, true);
       ctrl.notifyCandles("replace");
@@ -582,33 +651,44 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
       <ObjectTooltip store={store} coarse={coarse} />
       {device !== "cell" && <LegendChip store={store} />}
       {device !== "cell" && <LiqUnavailableNote store={store} on={resolvePreset(markup, "desktop", { authed }).layers.liq_map} />}
-      {heads.map((h) => (
-        <div
-          key={h.key}
-          className={s.paneHead}
-          data-collapsed={h.collapsed || undefined}
-          data-testid={`pane-${h.key}`}
-          style={{ top: h.top }}
-          onTouchStart={(e) => {
-            swipeRef.current = { key: h.key, y: e.touches[0]?.clientY ?? 0 };
-          }}
-          onTouchEnd={(e) => {
-            const st = swipeRef.current;
-            swipeRef.current = null;
-            if (!st || st.key !== h.key) return;
-            const dy = (e.changedTouches[0]?.clientY ?? st.y) - st.y;
-            if (dy > INTERACTION.swipePx && !h.collapsed) applyCollapsed(h.key, true);
-            else if (dy < -INTERACTION.swipePx && h.collapsed) applyCollapsed(h.key, false);
-          }}
-        >
-          <span className={s.paneTitle} style={h.color ? { color: h.color } : undefined}>
-            {h.title}
-          </span>
-          <button type="button" className={s.paneToggle} aria-expanded={!h.collapsed} aria-label={t(h.collapsed ? "развернуть панель {name}" : "свернуть панель {name}", { name: h.title })} onClick={() => togglePane(h.key)}>
-            {h.collapsed ? "▴" : "▾"}
-          </button>
-        </div>
-      ))}
+      {heads.map((h) =>
+        h.group ? (
+          <div key={h.key} className={s.paneGroup} data-testid="pane-group" style={{ top: h.top, height: h.height }} role="group" aria-label={t("свёрнутые панели")}>
+            <span className={s.paneGroupLabel}>{t(plural(h.group.length, "ещё {n} панель", "ещё {n} панели", "ещё {n} панелей"), { n: h.group.length })}</span>
+            {h.group.map((g) => (
+              <button key={g.key} type="button" className={s.paneChip} data-pane={g.key} aria-expanded={false} aria-label={t("развернуть панель {name}", { name: g.title })} onClick={() => applyCollapsed(g.key, false)}>
+                {g.title} ▴
+              </button>
+            ))}
+          </div>
+        ) : (
+          <div
+            key={h.key}
+            className={s.paneHead}
+            data-collapsed={h.collapsed || undefined}
+            data-testid={`pane-${h.key}`}
+            style={{ top: h.top, height: h.height }}
+            onTouchStart={(e) => {
+              swipeRef.current = { key: h.key, y: e.touches[0]?.clientY ?? 0 };
+            }}
+            onTouchEnd={(e) => {
+              const st = swipeRef.current;
+              swipeRef.current = null;
+              if (!st || st.key !== h.key) return;
+              const dy = (e.changedTouches[0]?.clientY ?? st.y) - st.y;
+              if (dy > INTERACTION.swipePx && !h.collapsed) applyCollapsed(h.key, true);
+              else if (dy < -INTERACTION.swipePx && h.collapsed) applyCollapsed(h.key, false);
+            }}
+          >
+            <span className={s.paneTitle} style={h.color ? { color: h.color } : undefined}>
+              {h.title}
+            </span>
+            <button type="button" className={s.paneToggle} aria-expanded={!h.collapsed} aria-label={t(h.collapsed ? "развернуть панель {name}" : "свернуть панель {name}", { name: h.title })} onClick={() => togglePane(h.key)}>
+              {h.collapsed ? "▴" : "▾"}
+            </button>
+          </div>
+        ),
+      )}
       {candles.length === 0 && <div className={s.empty}>{t("Нет свечей.")}</div>}
     </div>
   );

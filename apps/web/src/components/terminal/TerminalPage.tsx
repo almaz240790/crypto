@@ -1,7 +1,7 @@
 "use client";
 
 import type React from "react";
-import { CHART_TYPES, INDICATORS, TOOL_TITLES, createChartStore, defaultParams, formatCountdown, positionStats, resolvePreset, secondsToClose, selectPreset, setLayerOverride, type AlertLine, type Candle, type ChartType, type DrawingType, type LayerKey, type PanelKey, type PresetId, type ScaleMode, type Timeframe } from "@platform/charts";
+import { CHART_TYPES, INDICATORS, TOOL_TITLES, countdownSeconds, createChartStore, defaultParams, formatCountdown, positionStats, resolvePreset, selectPreset, setLayerOverride, type AlertLine, type Candle, type ChartType, type DrawingType, type LayerKey, type PanelKey, type PresetId, type ScaleMode, type Timeframe } from "@platform/charts";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -355,7 +355,8 @@ export function TerminalPage({ symbol, tf }: { symbol: string; tf: Timeframe }) 
     const copy = dr.actions.copyTo(id, target, ratio);
     if (copy) say(`${t("Рисунок скопирован на {symbol}", { symbol: target })}${ratio !== 1 ? t(" (цены пропорционально)") : ""}`);
   };
-  const countdown = last ? secondsToClose(tf, last.time, now) : null;
+  // до закрытия идущего интервала: на 1m последняя свеча уже закрыта, и отсчёт от неё всегда был «0:00»
+  const countdown = last ? countdownSeconds(tf, last.time, now) : null;
   const intradayLocked = !user || (data.error ?? "").includes(t("тарифе"));
   const bias = data.layers?.structure?.bias;
 
