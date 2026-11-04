@@ -15,6 +15,7 @@ import s from "./terminal.module.css";
 import { ChartSurface } from "./chart/ChartSurface";
 import { useChartStore } from "./chart/useChartStore";
 import { presetNote, presetTitle } from "./MarkupPicker";
+import { MARKUP_MENU_MAX } from "./chrome/MarkupMenu";
 import { useTerminalData } from "./useTerminalData";
 import { useT } from "@/i18n/client";
 import { MQ } from "@/lib/breakpoints";
@@ -110,6 +111,7 @@ function CellsMarkupMenu({ value, onSelect }: { value: PresetId; onSelect: (id: 
     <Menu
       items={items}
       minWidth={300}
+      maxWidth={MARKUP_MENU_MAX}
       trigger={(p) => (
         <Button {...p} variant="ghost" size="sm" aria-label={t("Разметка: {name}", { name })} title={t("Разметка всех графиков")}>
           <IconLayers />

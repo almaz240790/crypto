@@ -1367,5 +1367,9 @@
   "Мин. дня": "Day low",
   "Макс. недели": "Week high",
   "Мин. недели": "Week low",
-  "Разбор": "Review"
+  "Разбор": "Review",
+  "Горячие клавиши": "Keyboard shortcuts",
+  "удалить выбранный рисунок": "delete the selected drawing",
+  "приблизить / отдалить": "zoom in / out",
+  "снять выбор, закончить рисование": "clear selection, stop drawing"
 }

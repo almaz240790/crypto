@@ -492,3 +492,48 @@
     min-width: var(--touch-min);
   }
 }
+
+/* ---------- «Горячие клавиши» (⋯ Ещё) ---------- */
+
+.hotkeys {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-2);
+}
+
+.hotkeys dl {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+}
+
+.hotkeyRow {
+  display: grid;
+  grid-template-columns: 72px 1fr;
+  gap: var(--gap-2);
+  align-items: baseline;
+}
+
+.hotkeyRow dd {
+  margin: 0;
+  color: var(--text-2);
+}
+
+.hotkeys kbd {
+  display: inline-block;
+  min-width: 18px;
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 11px;
+  line-height: 16px;
+  text-align: center;
+}
+
+.hotkeyTfs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px var(--gap-2);
+}

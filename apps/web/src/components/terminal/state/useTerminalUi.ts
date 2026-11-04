@@ -19,10 +19,18 @@ const OBJECTS_W_MIN = 280;
 const OBJECTS_W_MAX = 600;
 /** Не шире 40 % окна: на 1280 панель оставляет графику не меньше 60 %. */
 const OBJECTS_W_SHARE = 0.4;
+/** Сохранённое предпочтение: 280–600 px без оглядки на окно (окно сузится и снова расширится). */
+const clampPref = (w: number) => Math.round(Math.min(OBJECTS_W_MAX, Math.max(OBJECTS_W_MIN, w)));
+/** Ширина по окну сейчас: 280 – min(600, 40 % окна) — для перетаскивания и стрелок от видимой ширины. */
 const clampW = (w: number) => {
   const max = typeof window === "undefined" ? OBJECTS_W_MAX : Math.max(OBJECTS_W_MIN, Math.min(OBJECTS_W_MAX, window.innerWidth * OBJECTS_W_SHARE));
   return Math.round(Math.min(max, Math.max(OBJECTS_W_MIN, w)));
 };
+/**
+ * Действующая ширина панели — CSS (--objects-w): предпочтение, но не шире 40 % окна (и не уже 280 px) при любом
+ * ресайзе, без подписки React на размер окна. Предпочтение при этом не меняется.
+ */
+export const objectsWidthCss = (pref: number) => `min(${pref}px, max(${OBJECTS_W_MIN}px, ${OBJECTS_W_SHARE * 100}vw))`;
 type Shown = "shown" | "hidden";
 
 export const TOAST_MS = 2500;
@@ -90,7 +98,7 @@ export function useTerminalUi(wide: boolean) {
   useEffect(() => {
     try {
       const v = Number(localStorage.getItem(OBJECTS_W_KEY));
-      if (v) queueMicrotask(() => setObjW(clampW(v)));
+      if (v) queueMicrotask(() => setObjW(clampPref(v)));
     } catch {
       /* приватный режим */
     }
@@ -108,11 +116,12 @@ export function useTerminalUi(wide: boolean) {
   const objResize: ObjectsResize = useMemo(
     () => ({
       active: objDrag,
-      step: (delta: number) => setObjWidth(objW + delta),
+      // от видимой ширины: предпочтение 600 на узком окне показывается как 40 % окна
+      step: (delta: number) => setObjWidth(clampW(objW) + delta),
       start: (e: React.PointerEvent<HTMLElement>) => {
         e.preventDefault();
         const startX = e.clientX;
-        const startW = objW;
+        const startW = clampW(objW);
         setObjDrag(true);
         const move = (ev: PointerEvent) => setObjWidth(startW + (startX - ev.clientX));
         const up = () => {
@@ -150,7 +159,7 @@ export function useTerminalUi(wide: boolean) {
   );
   useEffect(() => () => clearTimeout(toastTimer.current), []);
 
-  return { sheet, setSheet, closeSheet, ohlcMore, setOhlcMore, bars, setBars, objects, setObjects, panelOverlay: !wide, panelTab, setPanelTab, showPanel, objW, objResize, toast, say, notifyOnce };
+  return { sheet, setSheet, closeSheet, ohlcMore, setOhlcMore, bars, setBars, objects, setObjects, panelOverlay: !wide, panelTab, setPanelTab, showPanel, objW, objWidth: objectsWidthCss(objW), objResize, toast, say, notifyOnce };
 }
 
 export type TerminalUi = ReturnType<typeof useTerminalUi>;

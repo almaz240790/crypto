@@ -6,6 +6,9 @@ import { IconChevronDown, IconLayers } from "@/components/ui/icons";
 import { useT } from "@/i18n/client";
 import { presetNote, presetTitle } from "../MarkupPicker";
 
+/** Меню разметки не шире 360 px: пояснения пресетов — в две-три строки (ADR-0009). */
+export const MARKUP_MENU_MAX = 360;
+
 type Props = {
   markup: MarkupSettings;
   /** Есть поправки слоёв поверх пресета: отмечен «Свой». */
@@ -36,6 +39,7 @@ export function MarkupMenu({ markup, custom, onSelect, onLayers }: Props) {
     <Menu
       items={items}
       minWidth={300}
+      maxWidth={MARKUP_MENU_MAX}
       trigger={(p) => (
         <Button {...p} variant="ghost" aria-label={t("Разметка: {name}", { name })} title={t("Разметка графика")}>
           <IconLayers />

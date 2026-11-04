@@ -1,9 +1,9 @@
 "use client";
 
-import { INDICATORS, TOOL_TITLES, createChartStore, positionStats, type Candle, type DrawingType, type Timeframe } from "@platform/charts";
+import { INDICATORS, TOOL_TITLES, createChartStore, positionStats, type Candle, type ChartType, type DrawingType, type ScaleMode, type Timeframe } from "@platform/charts";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { usePopover } from "@/components/ui";
 import { getAccessToken } from "@/lib/auth-client";
@@ -71,7 +71,7 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
   /** Состояние графика (сцена, выбор, видимая часть) — для листовых компонентов и «Найдено». */
   const [store] = useState(createChartStore);
   const instruments = useInstruments();
-  const { sheet, setSheet, closeSheet, ohlcMore, setOhlcMore, bars, setBars, objects, setObjects, panelOverlay, panelTab, setPanelTab, showPanel, objW, objResize, toast, say, notifyOnce } = useTerminalUi(wide);
+  const { sheet, setSheet, closeSheet, ohlcMore, setOhlcMore, bars, setBars, objects, setObjects, panelOverlay, panelTab, setPanelTab, showPanel, objWidth, objResize, toast, say, notifyOnce } = useTerminalUi(wide);
   // вопросы о графике — Premium (админы и владелец — всегда); минутные ТФ закрыты гостю и на Free
   const { askAccess, intradayLocked } = usePlan();
   const { st, resolved, legacyFound, patch, toggleIndicator, addIndicator, removeInstance, setInstanceParams, toggleInstanceHidden, togglePanel, toggleLayer, selectMarkup, applyTemplate, applyLayout } = useTerminalSettings(authed);
@@ -179,7 +179,12 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
   const prevClose = data.candles && data.candles.length > 1 ? data.candles[data.candles.length - (data.current ? 1 : 2)]!.close : null;
   const price = data.price ? Number(data.price) : last?.close ?? null;
   const change = price != null && prevClose ? ((price - prevClose) / prevClose) * 100 : null;
-  const openAlert = () => resetDraft(price);
+  // черновик алерта — с ценой на момент открытия; обработчик стабилен (тулбар в memo не перерисовывается на тиках)
+  const priceRef = useRef(price);
+  useLayoutEffect(() => {
+    priceRef.current = price;
+  });
+  const openAlert = useCallback(() => resetDraft(priceRef.current), [resetDraft]);
   const openAlertSheet = () => {
     openAlert();
     setSheet("alert");
@@ -284,6 +289,14 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
   const panelLayers = useMemo(() => ({ markup: st.markup, custom: resolved.custom, onMarkup: selectMarkup, layers: resolved.layers, onLayer: toggleLayer, authed, liqUnavailable }), [st.markup, resolved, selectMarkup, toggleLayer, authed, liqUnavailable]);
   const panelLayouts = useMemo(() => ({ layouts, onTemplate: applyTemplate, onSave: saveLayout, onLoad: loadLayout, onDelete: removeLayout, authed, limit: user ? null : 0 }), [layouts, applyTemplate, saveLayout, loadLayout, removeLayout, authed, user]);
   const closePanel = useCallback(() => setObjects("hidden"), [setObjects]);
+  // обработчики тулбара (memo): стабильны между тиками цены
+  const onType = useCallback((type: ChartType) => patch({ type }), [patch]);
+  const onScale = useCallback((scale: ScaleMode) => patch({ scale }), [patch]);
+  const curScale = st.scale;
+  const onOverlay = useCallback((overlay: string | null) => patch({ overlay, scale: overlay && curScale === "linear" ? "percent" : curScale }), [patch, curScale]);
+  const onLayers = useCallback(() => showPanel("layers"), [showPanel]);
+  const onAlertSubmit = useCallback(() => addPriceAlert(alertDraft.price, alertDraft.op, alertDraft.op === "enter_range" ? alertDraft.price2 : undefined, undefined, alertDraft.frequency), [addPriceAlert, alertDraft]);
+  const onObjects = useCallback(() => setObjects(objects === "shown" ? "hidden" : "shown"), [objects, setObjects]);
   return (
     <ChartStoreContext.Provider value={store}>
       <div className={s.page} data-layout={desktop ? "desktop" : "phone"} data-bars={bars} data-fullscreen-root>
@@ -304,9 +317,9 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
             type={st.type}
             scale={st.scale}
             overlay={st.overlay}
-            onType={(type) => patch({ type })}
-            onScale={(scale) => patch({ scale })}
-            onOverlay={(overlay) => patch({ overlay, scale: overlay && st.scale === "linear" ? "percent" : st.scale })}
+            onType={onType}
+            onScale={onScale}
+            onOverlay={onOverlay}
             instances={st.indicators}
             panels={st.panels}
             onIndicator={toggleIndicator}
@@ -317,17 +330,17 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
             markup={st.markup}
             custom={resolved.custom}
             onMarkup={selectMarkup}
-            onLayers={() => showPanel("layers")}
+            onLayers={onLayers}
             authed={authed}
             alertsCount={alerts.length}
             alert={alertPop}
             alertDraft={alertDraft}
             onAlertDraft={setAlertDraft}
             onAlertOpen={openAlert}
-            onAlertSubmit={() => addPriceAlert(alertDraft.price, alertDraft.op, alertDraft.op === "enter_range" ? alertDraft.price2 : undefined, undefined, alertDraft.frequency)}
+            onAlertSubmit={onAlertSubmit}
             onSnapshot={snapshot}
             objectsShown={objects === "shown"}
-            onObjects={() => setObjects(objects === "shown" ? "hidden" : "shown")}
+            onObjects={onObjects}
             store={store}
             figures={figures}
             patterns={patterns}
@@ -335,7 +348,7 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
         )}
         {!desktop && <PhoneTop symbol={symbol} tf={tf} instruments={instruments} onSymbol={goSymbol} guest={!authed} type={st.type} scale={st.scale} onType={(type) => patch({ type })} onScale={(scale) => patch({ scale })} onZoom={zoom} onReset={reset} onSnapshot={snapshot} />}
         {!desktop && <PhoneStrip {...facts} tf={tf} />}
-        <div className={s.area} data-objects={panelShown ? "shown" : "hidden"} data-panel={panelOverlay ? "overlay" : "inline"} style={{ "--objects-w": `${objW}px` } as React.CSSProperties}>
+        <div className={s.area} data-objects={panelShown ? "shown" : "hidden"} data-panel={panelOverlay ? "overlay" : "inline"} style={{ "--objects-w": objWidth } as React.CSSProperties}>
           <DrawToolbar tool={dr.tool} onTool={dr.setTool} magnet={dr.magnet} onMagnet={dr.setMagnet} hidden={dr.state.hidden} onHidden={dr.actions.hide} canUndo={dr.canUndo} canRedo={dr.canRedo} onUndo={dr.actions.undo} onRedo={dr.actions.redo} />
           <div className={s.chartCol}>
             {/* карточка перекрестия телефона (вид прежний до C2); на десктопе — легенда в углу графика */}

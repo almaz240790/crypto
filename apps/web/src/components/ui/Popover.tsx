@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useId, useLayoutEffect, useRef, useState, type CSSProperties, type FocusEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import { useCallback, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type FocusEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import { placePopup, type Align } from "./placement";
 import s from "./Popover.module.css";
 
@@ -132,11 +132,14 @@ export function usePopover() {
     setAnchor(el);
     setOpen((o) => !o);
   }, []);
-  const triggerProps = {
-    "aria-haspopup": "dialog" as const,
-    "aria-expanded": open,
-    "aria-controls": open ? id : undefined,
-    onClick: (e: MouseEvent<HTMLElement>) => toggle(e.currentTarget),
-  };
-  return { open, anchor, id, close, toggle, triggerProps };
+  // одна ссылка, пока окно не открылось или не закрылось: владельцы в memo не перерисовываются зря
+  return useMemo(() => {
+    const triggerProps = {
+      "aria-haspopup": "dialog" as const,
+      "aria-expanded": open,
+      "aria-controls": open ? id : undefined,
+      onClick: (e: MouseEvent<HTMLElement>) => toggle(e.currentTarget),
+    };
+    return { open, anchor, id, close, toggle, triggerProps };
+  }, [open, anchor, id, close, toggle]);
 }

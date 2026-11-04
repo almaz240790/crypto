@@ -37,18 +37,21 @@ export function useChartAlerts({ symbol, authed, say, onCreated }: { symbol: str
   useEffect(() => {
     loadAlerts();
   }, [loadAlerts]);
-  const addPriceAlert = (price: string, op: AlertOp, price2?: string, drawingId?: string, frequency: AlertFrequency = "once") => {
-    if (!authed) return say(t("Алерты доступны после входа"));
-    createAlert({ symbol, type: "price", condition: { op, price, ...(price2 ? { price2 } : {}) }, frequency, drawing_client_id: drawingId ?? null })
-      .then((a) => {
-        say(t("Алерт создан: {text}", { text: a.text }));
-        loadAlerts();
-        onCreated();
-      })
-      .catch((e: Error) => say(e.message));
-  };
+  const addPriceAlert = useCallback(
+    (price: string, op: AlertOp, price2?: string, drawingId?: string, frequency: AlertFrequency = "once") => {
+      if (!authed) return say(t("Алерты доступны после входа"));
+      createAlert({ symbol, type: "price", condition: { op, price, ...(price2 ? { price2 } : {}) }, frequency, drawing_client_id: drawingId ?? null })
+        .then((a) => {
+          say(t("Алерт создан: {text}", { text: a.text }));
+          loadAlerts();
+          onCreated();
+        })
+        .catch((e: Error) => say(e.message));
+    },
+    [authed, say, t, symbol, loadAlerts, onCreated],
+  );
   /** Новый черновик формы: цена — текущая (или пусто), условие «пересечение вверх», один раз. */
-  const resetDraft = (price: number | null) => setDraft({ ...EMPTY_ALERT_DRAFT, price: price == null ? "" : String(price) });
+  const resetDraft = useCallback((price: number | null) => setDraft({ ...EMPTY_ALERT_DRAFT, price: price == null ? "" : String(price) }), []);
   const alertLines = useMemo<AlertLine[]>(() => alertLinesOf(alerts), [alerts]);
   return { alerts, alertLines, draft, setDraft, resetDraft, addPriceAlert };
 }

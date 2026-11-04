@@ -127,3 +127,16 @@ export const IconExpand = () => (
     <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" />
   </Svg>
 );
+/** «Горячие клавиши»: клавиатура. */
+export const IconKeyboard = () => (
+  <Svg>
+    <path d="M3 7h18v10H3z" />
+    <path d="M7 10h.01M11 10h.01M15 10h.01M17 13.5H7" />
+  </Svg>
+);
+/** «Раскладки» (сохранённые наборы): закладка — не путать с «Мультичартом» (сетка). */
+export const IconBookmark = () => (
+  <Svg>
+    <path d="M7 4h10v16l-5-4-5 4z" />
+  </Svg>
+);

@@ -3,9 +3,9 @@
 import type { ChartStore, Drawing, LayerKey, MarkupSettings, PresetId } from "@platform/charts";
 import { memo, useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { IconButton, SegmentedControl } from "@/components/ui";
-import { IconClose, IconGrid, IconLayers } from "@/components/ui/icons";
+import { IconBookmark, IconClose, IconLayers } from "@/components/ui/icons";
 import { useLocale } from "@/i18n/client";
-import { FoundCounter } from "../chart/FoundCounter";
+import { FoundCounter, countShape } from "../chart/FoundCounter";
 import { fitByPriority, type ShedStep } from "../chrome/fitByPriority";
 import { ToolIcon } from "../ToolIcon";
 import { DrawingsList } from "./DrawingsList";
@@ -69,7 +69,9 @@ export const SidePanel = memo(function SidePanel({ store, tab, onTab, onClose, o
   const idBase = useId();
   const tabs = visibleTabs({ topdown });
   const active = tabs.some((x) => x.id === tab) ? tab : "found";
-  const { ref: rowRef, compact } = useTabFit([tabs.map((x) => x.id).join(","), drawings.items.length, locale, overlay].join("|"));
+  // «Найдено (n)» меняет ширину с числом цифр (сцена и данные приходят позже) — тогда ряд перемеряется
+  const [foundShape, setFoundShape] = useState(0);
+  const { ref: rowRef, compact } = useTabFit([tabs.map((x) => x.id).join(","), drawings.items.length, locale, overlay, foundShape].join("|"));
   const items = tabs.map((x) => {
     const small = compact.has(x.id);
     const text = x.id === "drawings" ? t("Рисунки ({n})", { n: drawings.items.length }) : t(x.title);
@@ -87,7 +89,7 @@ export const SidePanel = memo(function SidePanel({ store, tab, onTab, onClose, o
         value: x.id,
         attrs,
         label: label(
-          <FoundCounter store={store} figures={found.figures} patterns={found.patterns}>
+          <FoundCounter store={store} figures={found.figures} patterns={found.patterns} onTotal={(n) => setFoundShape(countShape(n))}>
             {(n) => t("Найдено ({n})", { n })}
           </FoundCounter>,
         ),
@@ -138,7 +140,7 @@ const TAB_ICON: Record<SideTabId, ReactNode> = {
   topdown: null,
   drawings: <ToolIcon name="trend" />,
   layers: <IconLayers />,
-  layouts: <IconGrid />,
+  layouts: <IconBookmark />,
 };
 /** Вкладки не прячутся в меню: при нехватке ширины сворачиваются в иконку — Раскладки → Слои → Рисунки (§8). */
 const TAB_SHED: readonly ShedStep[] = [

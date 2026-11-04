@@ -187,5 +187,7 @@ export function useDrawings(symbol: string, authed: boolean) {
 
   const selected = state.items.find((d) => d.id === state.selectedId && !d.deleted_at) ?? null;
   const dismissLimit = useCallback(() => setLimitHit(false), []);
-  return { state, items: alive(state), selected, tool, setTool, magnet, setMagnet, draft, setDraft, actions, canUndo: canUndo(state), canRedo: canRedo(state), limit, limitHit, dismissLimit, sync };
+  // одна ссылка на список, пока состояние то же: правая панель (memo) не перерисовывается на каждом тике
+  const items = useMemo(() => alive(state), [state]);
+  return { state, items, selected, tool, setTool, magnet, setMagnet, draft, setDraft, actions, canUndo: canUndo(state), canRedo: canRedo(state), limit, limitHit, dismissLimit, sync };
 }

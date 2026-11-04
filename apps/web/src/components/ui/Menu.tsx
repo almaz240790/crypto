@@ -32,6 +32,8 @@ export type MenuProps = {
   label?: string;
   align?: Align;
   minWidth?: number;
+  /** Предел ширины: длинные пояснения пунктов переносятся, а не растягивают меню на пол-экрана. */
+  maxWidth?: number;
   className?: string;
 };
 
@@ -44,7 +46,7 @@ const focusable = (it: MenuItemSpec) => it.type !== "separator" && it.type !== "
  * буквам, Enter/Пробел — выбор, Esc — закрыть и вернуть фокус на кнопку, Tab — закрыть.
  * Недоступный пункт фокусируется, но не выбирается (aria-disabled), как рекомендует WAI-ARIA.
  */
-export function Menu({ trigger, items, label, align = "start", minWidth, className }: MenuProps) {
+export function Menu({ trigger, items, label, align = "start", minWidth, maxWidth, className }: MenuProps) {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(-1);
   // кнопка меню — состоянием (callback ref): она же якорь окна и цель возврата фокуса
@@ -132,7 +134,7 @@ export function Menu({ trigger, items, label, align = "start", minWidth, classNa
     <>
       {trigger(triggerProps)}
       {open && (
-        <div ref={listRef} id={menuId} role="menu" aria-label={label} aria-labelledby={label ? undefined : triggerId} aria-orientation="vertical" className={[s.menu, className ?? ""].join(" ").trim()} style={{ minWidth }} onKeyDown={onListKey} onBlur={onBlur}>
+        <div ref={listRef} id={menuId} role="menu" aria-label={label} aria-labelledby={label ? undefined : triggerId} aria-orientation="vertical" className={[s.menu, className ?? ""].join(" ").trim()} style={{ minWidth, maxWidth: maxWidth === undefined ? undefined : `min(${maxWidth}px, calc(100vw - 16px))` }} onKeyDown={onListKey} onBlur={onBlur}>
           {items.map((it, i) => {
             if (it.type === "separator") return <div key={it.id} role="separator" className={s.sep} />;
             if (it.type === "group") {

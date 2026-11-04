@@ -370,3 +370,83 @@ test("период, введённый в поле, применяется и п
   await expect(params).toHaveCount(0);
   await expect(legend).toContainText("EMA 77");
 });
+
+test("ресайз 1320 → 900 шагом 4 px после загрузки данных: тулбар и вкладки панели не шире своей строки, бейдж «Объекты» виден", async ({ page }) => {
+  await page.setViewportSize({ width: 1320, height: 800 });
+  await open(page);
+  const badge = page.getByTestId("terminal-toolbar").locator("[data-overflow-item=objects] [class*=badge]");
+  await expect(badge).toBeVisible();
+  const frame = () => page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+  for (let w = 1320; w >= 900; w -= 4) {
+    await page.setViewportSize({ width: w, height: 800 });
+    await frame();
+    const over = await page.evaluate(() => {
+      const tb = document.querySelector<HTMLElement>("[data-testid=terminal-toolbar]")!;
+      const tabs = document.querySelector<HTMLElement>('[role=tablist][aria-label="вкладки панели объектов"]');
+      return { tb: tb.scrollWidth - tb.clientWidth, tabs: tabs && tabs.offsetWidth > 0 ? tabs.scrollWidth - tabs.clientWidth : 0 };
+    });
+    expect(over.tb, `тулбар на ${w} px`).toBeLessThanOrEqual(0);
+    expect(over.tabs, `вкладки на ${w} px`).toBeLessThanOrEqual(1);
+  }
+  // в компактном виде «Объекты» — иконка и число найденного (панель на 900–1279 закрыта)
+  await expect(page.getByTestId("terminal-toolbar").locator("[data-overflow-item=objects]")).toHaveAttribute("data-compact", "true");
+  await expect(badge).toBeVisible();
+});
+
+test("«⋯ Ещё» → «Горячие клавиши»: цифры подписаны таймфреймами, Esc закрывает", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await open(page);
+  await page.getByRole("button", { name: "Ещё" }).click();
+  await page.getByRole("menuitem", { name: "Горячие клавиши" }).click();
+  const dlg = page.getByRole("dialog", { name: "Горячие клавиши" });
+  await expect(dlg).toBeVisible();
+  await expect(dlg).toContainText("1 1м");
+  await expect(dlg).toContainText("5 4ч");
+  await expect(dlg).toContainText("Alt+H");
+  await page.keyboard.press("Escape");
+  await expect(dlg).toHaveCount(0);
+});
+
+test("«Разметка»: меню не шире 360 px, пояснения переносятся", async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 700 });
+  await open(page);
+  await page.getByRole("button", { name: /^Разметка/ }).click();
+  const menu = page.getByRole("menu");
+  await expect(menu).toBeVisible();
+  expect((await menu.boundingBox())!.width).toBeLessThanOrEqual(361);
+});
+
+test("ширина панели из прошлой сессии (600 px) после сужения окна — не больше 40 % окна; предпочтение не теряется", async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem("pl-objects-w", "600"));
+  await page.setViewportSize({ width: 1920, height: 900 });
+  await open(page);
+  const aside = page.getByRole("complementary", { name: "панель объектов" });
+  const w = async () => Math.round((await aside.boundingBox())!.width);
+  await expect.poll(w).toBe(600);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await expect.poll(w).toBe(512);
+  await page.setViewportSize({ width: 1000, height: 800 });
+  await page.getByRole("button", { name: "Объекты" }).click();
+  await expect.poll(w).toBe(400);
+  await page.setViewportSize({ width: 1920, height: 900 });
+  await expect.poll(w).toBe(600);
+});
+
+test("вход, /v1/billing/me не отвечает: минутные ТФ не заперты, клавиша «1» ведёт на 1м (решает сервер свечей)", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const calls: string[] = [];
+  await mock(page, calls, true);
+  await page.route("**/v1/billing/me", (r) => {
+    calls.push("billing-fail");
+    return r.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ detail: "недоступно" }) });
+  });
+  await page.goto("/chart/BTCUSDT/4h");
+  await expect(page.getByTestId("terminal").locator("canvas").first()).toBeVisible();
+  // первый сбой и повтор через 3 с — оба неудачны
+  await expect.poll(() => calls.filter((c) => c === "billing-fail").length, { timeout: 8000 }).toBe(2);
+  const nav = page.getByRole("navigation", { name: "таймфрейм" });
+  await expect(nav.locator("[data-locked]")).toHaveCount(0);
+  expect((await nav.locator("a, button").allTextContents()).map((x) => x.trim())).toEqual(["1м", "5м", "15м", "1ч", "4ч", "1Д", "1Н"]);
+  await page.locator("body").press("1");
+  await expect(page).toHaveURL(/\/chart\/BTCUSDT\/1m$/);
+});

@@ -2,18 +2,19 @@
 
 import type { ChartStore, ChartType, IndicatorInstance, MarkupSettings, PanelKey, PresetId, ScaleMode, Timeframe } from "@platform/charts";
 import { useRouter } from "next/navigation";
-import { memo, type Ref } from "react";
+import { memo, useRef, useState, type Ref } from "react";
 import { Button, IconButton, Menu, Popover, usePopover, type MenuItemSpec } from "@/components/ui";
-import { IconBell, IconCamera, IconExpand, IconGrid, IconIndicators, IconMore, IconPanel } from "@/components/ui/icons";
+import { IconBell, IconCamera, IconExpand, IconGrid, IconIndicators, IconKeyboard, IconMore, IconPanel } from "@/components/ui/icons";
 import { useT } from "@/i18n/client";
 import type { FigureOnChart, PatternOnChart } from "@/lib/chart";
 import type { Instrument } from "@/lib/user";
-import { FoundCounter } from "../chart/FoundCounter";
+import { FoundCounter, countShape } from "../chart/FoundCounter";
 import { presetTitle } from "../MarkupPicker";
 import { AlertForm } from "../sheets/AlertForm";
 import { IndicatorsPicker } from "../sheets/IndicatorsPicker";
 import type { AlertDraft } from "../state/useChartAlerts";
 import type { ShedStep } from "./fitByPriority";
+import { Hotkeys } from "./Hotkeys";
 import { MarkupMenu } from "./MarkupMenu";
 import { TimeframeBar, type TimeframeBarHandle } from "./TimeframeBar";
 import { overflowItem, useOverflow } from "./useOverflow";
@@ -21,7 +22,7 @@ import { ViewMenu } from "./ViewMenu";
 import c from "./chrome.module.css";
 
 /**
- * Порядок сброса при нехватке ширины (план 2B.9, §3.3): 1 «Объекты» — иконка; 2 «Мультичарт» и 3 «Снимок» —
+ * Порядок сброса при нехватке ширины (план 2B.9, §3.3): 1 «Объекты» — иконка с бейджем; 2 «Мультичарт» и 3 «Снимок» —
  * в «⋯»; 4 «Вид» — иконка; 5 «Индикаторы» и «Алерт» — без иконки; 6 «Разметка» — иконка.
  * Таймфреймы и «⋯» не сбрасываются никогда.
  */
@@ -95,15 +96,28 @@ export const TerminalToolbar = memo(function TerminalToolbar(p: Props) {
   const t = useT();
   const router = useRouter();
   const ind = usePopover();
+  const keys = usePopover();
+  const moreRef = useRef<HTMLSpanElement>(null);
   const n = p.instances.length + p.panels.length;
   const markupName = p.custom ? t("Свой") : presetTitle(p.markup.preset, t);
-  const key = [p.tf, p.intradayLocked, p.guest, n, p.alertsCount, markupName].join("|");
+  // бейдж «Объекты» приходит позже (сцена, паттерны) и меняет ширину с числом цифр — тогда строка перемеряется
+  const [foundShape, setFoundShape] = useState(0);
+  const key = [p.tf, p.intradayLocked, p.guest, n, p.alertsCount, markupName, foundShape].join("|");
   const { ref: rowRef, fit } = useOverflow<HTMLDivElement>(TOOLBAR_SHED, key);
   const more: MenuItemSpec[] = [
     ...(fit.hidden.has("snap") ? [{ id: "snap", label: t("Снимок"), icon: <IconCamera />, onSelect: p.onSnapshot }] : []),
     ...(fit.hidden.has("multi") ? [{ id: "multi", label: t("Мультичарт"), icon: <IconGrid />, onSelect: () => router.push("/multichart") }] : []),
     ...(fit.hidden.size ? [{ type: "separator" as const, id: "sep" }] : []),
     { id: "fullscreen", label: t("Полный экран"), icon: <IconExpand />, onSelect: toggleFullscreen },
+    {
+      id: "hotkeys",
+      label: t("Горячие клавиши"),
+      icon: <IconKeyboard />,
+      onSelect: () => {
+        const btn = moreRef.current?.querySelector("button");
+        if (btn) keys.toggle(btn);
+      },
+    },
   ];
   return (
     <div ref={rowRef} className={c.toolbar} data-testid="terminal-toolbar">
@@ -157,7 +171,7 @@ export const TerminalToolbar = memo(function TerminalToolbar(p: Props) {
           <IconGrid />
         </IconButton>
       </span>
-      <span {...overflowItem("more", fit)}>
+      <span ref={moreRef} {...overflowItem("more", fit)}>
         <Menu
           items={more}
           align="end"
@@ -168,15 +182,19 @@ export const TerminalToolbar = memo(function TerminalToolbar(p: Props) {
             </IconButton>
           )}
         />
+        <Popover open={keys.open} onClose={keys.close} anchor={keys.anchor} label={t("Горячие клавиши")} id={keys.id} align="end" width={320} initialFocus="dialog">
+          <Hotkeys />
+        </Popover>
       </span>
       <span {...overflowItem("objects", fit)}>
         <Button variant="ghost" aria-label={t("Объекты")} aria-pressed={p.objectsShown} title={t("Панель объектов: найденное, рисунки, слои, раскладки")} onClick={p.onObjects}>
           <IconPanel />
           <span data-ov-extra>{t("Объекты")}</span>
-          <FoundCounter store={p.store} figures={p.figures} patterns={p.patterns}>
+          {/* в компактном виде остаётся иконка и бейдж: число «Найдено» видно и при закрытой панели (900–1279) */}
+          <FoundCounter store={p.store} figures={p.figures} patterns={p.patterns} onTotal={(x) => setFoundShape(countShape(x))}>
             {(found) =>
               found > 0 && (
-                <span className={c.badge} data-ov-extra aria-hidden="true">
+                <span className={c.badge} aria-hidden="true">
                   {found}
                 </span>
               )

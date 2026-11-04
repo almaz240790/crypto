@@ -7,6 +7,11 @@ import { BP, CSS_MEDIA_LANDSCAPE, CSS_MEDIA_WIDTHS, MQ, layoutFor } from "./brea
 /** Единый источник брейкпоинтов (план 2B.9): стили терминала, AppShell и ui — только разрешённые запросы. */
 const SRC = fileURLToPath(new URL("..", import.meta.url));
 const SCOPE = ["components/terminal", "components/app/AppShell.module.css", "components/ui"];
+/**
+ * Прежние пороги вне терминала, которые C1 (десктоп) не трогает: ui/Table складывает строки по две на ≤ 720 px
+ * на сигналах, статистике и инструментах (план 5.5). Перевод на BP — вместе с раскладкой телефона (C2).
+ */
+const LEGACY: Readonly<Record<string, readonly string[]>> = { "components/ui/Table.module.css": ["(max-width: 720px)"] };
 
 function files(path: string, ext: RegExp, out: string[] = []): string[] {
   const p = join(SRC, path);
@@ -54,6 +59,7 @@ describe("breakpoints", () => {
         const n = norm(q);
         if (/prefers-color-scheme|prefers-reduced-motion/.test(n)) continue;
         if (CSS_MEDIA_LANDSCAPE.map(norm).includes(n)) continue;
+        if (LEGACY[relative(SRC, f)]?.includes(n)) continue;
         // остальное — по отдельным условиям: ширины только из списка, высоты нет, pointer: coarse можно
         const parts = n.split(/\s+and\s+/);
         for (const part of parts) {
