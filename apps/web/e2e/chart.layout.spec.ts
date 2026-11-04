@@ -599,6 +599,37 @@ test.describe("палец на десктопной раскладке (iPad 102
   });
 });
 
+test.describe("ландшафт телефона шире 900 px (932×430, палец): одна раскладка — десктоп, не смесь с телефонной", () => {
+  test.use({ hasTouch: true, isMobile: true });
+
+  test("рейка, шапка, тулбар и панель рисования; строк телефона и ⤢ нет; страница ровно в окно", async ({ page }) => {
+    await page.setViewportSize({ width: 932, height: 430 });
+    await open(page);
+    // запрос ландшафта телефона совпадает, но раскладка выбирается по ширине — как CSS рейки и колонки рисования
+    expect(await page.evaluate(() => matchMedia("(orientation: landscape) and (max-height: 520px) and (pointer: coarse)").matches)).toBe(true);
+    await expect(page.locator("[data-layout]").first()).toHaveAttribute("data-layout", "desktop");
+    await expect(page.getByTestId("app-rail")).toBeVisible();
+    await expect(page.getByTestId("terminal-header")).toBeVisible();
+    await expect(page.getByTestId("terminal-toolbar")).toBeVisible();
+    await expect(page.getByRole("toolbar", { name: "панель рисования" })).toBeVisible();
+    await expect(page.getByRole("button", { name: /^(скрыть|показать) панели$/ })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Рисовать" })).toHaveCount(0);
+    expect(await page.evaluate(() => document.scrollingElement!.scrollHeight)).toBe(430);
+    // имя инструмента целиком и ничем не закрыто: в его центре — сам выбор инструмента
+    const symbol = page.getByTestId("terminal-header").locator("[data-overflow-item=symbol]");
+    await expect(symbol.locator("span").first()).toHaveText("BTCUSDT");
+    const hit = await symbol.evaluate((el) => {
+      const r = el.getBoundingClientRect();
+      return el.contains(document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2));
+    });
+    expect(hit).toBe(true);
+    // график не меньше трети окна по высоте и не уходит под край
+    const term = await box(page, "[data-testid=terminal]");
+    expect(term.height).toBeGreaterThanOrEqual(200);
+    expect(term.y + term.height).toBeLessThanOrEqual(430 + 0.5);
+  });
+});
+
 test.describe("iPhone с сайтом на главном экране: отступ под статус-бар (--safe-top = 59 px)", () => {
   test.use({ hasTouch: true, isMobile: true });
 

@@ -7,7 +7,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useAuth } from "@/components/auth/AuthProvider";
 import { usePopover } from "@/components/ui";
 import { getAccessToken } from "@/lib/auth-client";
-import { MQ, useLayout, useMediaQuery } from "@/lib/breakpoints";
+import { MQ, useMediaQuery } from "@/lib/breakpoints";
 import { TF_LABEL, TIMEFRAMES, INTRADAY } from "@/lib/timeframes";
 import s from "./terminal.module.css";
 import { BottomSheet } from "./BottomSheet";
@@ -55,8 +55,10 @@ const NOTICE_MS = 8000;
  * Терминал одного инструмента (план 2B.9): сетка страницы. Создаёт хранилище графика (ChartStore) и держит
  * handle графика; состояние — в хуках state/* (настройки, алерты, раскладки, интерфейс, инструменты, тариф).
  *
- * Раскладка — по окну (useLayout): десктоп (≥ 900) — шапка 44 px, тулбар 40 px, левая панель рисования,
- * график и правая панель (встроена от 1280, уже — поверх графика); телефон — прежние строки (PR C2).
+ * Раскладка — только по ширине окна, как CSS рейки AppShell и колонки рисования: десктоп (≥ 900) — шапка 44 px,
+ * тулбар 40 px, левая панель рисования, график и правая панель (встроена от 1280, уже — поверх графика); телефон
+ * (< 900) — прежние строки. Ландшафт телефона по высоте (useLayout, MQ.phoneLandscape) не учитывается: 932×430 —
+ * десктоп целиком, а не смесь; свою раскладку ландшафта вводит C2 вместе с CSS AppShell и терминала.
  * Дети .page всегда в одном порядке, отсутствующие в раскладке — null: колонка графика и ChartSurface
  * не перемонтируются при переходе через 900 px.
  */
@@ -65,8 +67,7 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
   const router = useRouter();
   const { user } = useAuth();
   const authed = !!user;
-  const layout = useLayout();
-  const desktop = layout === "desktop";
+  const desktop = useMediaQuery(MQ.desktop, true);
   const wide = useMediaQuery(MQ.wide, true);
   /** Состояние графика (сцена, выбор, видимая часть) — для листовых компонентов и «Найдено». */
   const [store] = useState(createChartStore);
