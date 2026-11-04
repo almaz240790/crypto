@@ -20,7 +20,7 @@ import { createBuffer, EDGE, needsNewer, needsOlder, prependOlder, pushLatest, r
 import { heikinAshi } from "./heikin";
 import { LayerManager } from "./layers";
 import { INTERACTION, VIEW } from "./presets";
-import { planPanes, type PanePlan } from "./controller/paneManager";
+import type { PanePlan } from "./controller/paneManager";
 import { chartOptions, PRICE_MARGIN_TOP_MAX, PRICE_MARGINS, seriesColors } from "./theme";
 import type { Candle, ChartType, ThemeTokens } from "./types";
 
@@ -377,26 +377,11 @@ export class Terminal {
   }
 
   /**
-   * Раскладка всех панелей сразу (план 2A.7): желаемые высоты дополнительных панелей в пикселях,
-   * главная получает остаток, но не меньше mainMinShare высоты (VIEW устройства: десктоп 0.55, телефон 0.6;
-   * planPanes). Высоты задаются stretch-факторами в пикселях — так панели не «плывут» после сворачивания и добавления.
+   * Раскладка всех панелей сразу (план 2A.7, ADR-0009): высоты сверху вниз (px) — по плану PaneManager (planPanes,
+   * planMaximized, перетаскивание границы) — stretch-факторами в пикселях: так панели не «плывут» после сворачивания
+   * и добавления. План не той длины (панель только что добавлена или убрана) не применяется.
    */
-  layoutPanes(heights: Map<IPaneApi<Time>, number>, mainMinShare: number = VIEW.desktop.mainMinShare): void {
-    const panes = this.chart.panes();
-    if (panes.length < 2) return;
-    const total = this.panesTotal();
-    if (total <= 0) return;
-    this.applyPanePlan(
-      planPanes(
-        total,
-        panes.slice(1).map((p) => heights.get(p) ?? p.getHeight()),
-        mainMinShare,
-      ),
-    );
-  }
-
-  /** Высоты панелей сверху вниз (px): основная и дополнительные — stretch-факторами в пикселях. */
-  applyPanePlan(plan: PanePlan): void {
+  applyPanePlan(plan: Pick<PanePlan, "main" | "others">): void {
     const panes = this.chart.panes();
     if (panes.length < 2 || plan.others.length !== panes.length - 1) return;
     panes[0]!.setStretchFactor(Math.max(MIN_STRETCH, plan.main));

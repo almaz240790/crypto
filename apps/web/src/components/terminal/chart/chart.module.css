@@ -430,6 +430,72 @@
   display: inline-flex;
 }
 
+/* общая строка свёрнутых панелей «ещё N панелей» (строк на все панели не хватает, planPanes): строка заголовка
+   host во всю ширину, как свёрнутый заголовок; кнопки прокручиваются вбок, справа — место под ручку границы и «A»
+   (padding-right — inline) */
+.paneGroup {
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  box-sizing: border-box;
+  padding-left: 6px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-3);
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.paneGroupLabel {
+  flex: none;
+}
+
+.paneGroupList {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  touch-action: pan-x;
+}
+
+.paneGroupList::-webkit-scrollbar {
+  display: none;
+}
+
+.paneChip {
+  flex: none;
+  height: 20px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  cursor: pointer;
+}
+
+.paneChip:hover {
+  color: var(--text);
+}
+
+/* заслонка над полосками свёрнутых в общую строку панелей (2 px каждая): цвет фона графика, во всю ширину — без
+   неё видны стопка линий между панелями и обрезки подписей шкалы цены */
+.paneCover {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 5;
+  background: var(--surface);
+}
+
 /* граница панелей (PaneChrome, paneGeo.PANE_UI): зона над линией LWC — в нижней полосе верхней панели (высота
    и положение — inline), поверх заголовков (5): заголовок панели ниже начинается от линии и зону не закрывает */
 .sep {
@@ -599,6 +665,12 @@
 
 @media (pointer: coarse) {
   .paneHead {
+    min-height: var(--touch-min);
+  }
+
+  /* кнопки общей строки — цели касания во всю строку 44 px */
+  .paneChip {
+    height: auto;
     min-height: var(--touch-min);
   }
 

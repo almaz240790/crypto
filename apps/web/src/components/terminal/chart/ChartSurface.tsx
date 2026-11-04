@@ -1,6 +1,6 @@
 "use client";
 
-import { COMPACT_FORMAT, ChartController, EMPTY_PANE_LAYOUT, FALLBACK_COLOR, INDICATOR_COLOR, INTERACTION, NONE, PERCENT_FORMAT, VIEW, alpha, commitPaneHeights, dragSeparator, instanceColors, instanceTitle, mainMinShareFor, movePaneKey, orderPaneKeys, paneLevels, paneSqueeze, planMaximized, resolvePreset, VALUE_FORMAT, alignToCandles, tickPrecision, tokensFromElement, type AlertLine, type Candle, type ChartHandle, type ChartStore, type ChartType, type CrosshairSnapshot, type Device, type ExternalObject, type IndColor, type IndicatorInstance, type IndicatorValue, type MarkupSettings, type PaneLayout, type PanelKey, type ScaleMode, type SepLimits, type Terminal, type Timeframe } from "@platform/charts";
+import { COMPACT_FORMAT, ChartController, EMPTY_PANE_LAYOUT, FALLBACK_COLOR, INDICATOR_COLOR, INTERACTION, NONE, PERCENT_FORMAT, VIEW, alpha, commitPaneHeights, dragSeparator, instanceColors, instanceTitle, mainMinShareFor, movePaneKey, orderPaneKeys, paneLevels, planMaximized, planPanes, resolvePreset, VALUE_FORMAT, alignToCandles, tickPrecision, tokensFromElement, type AlertLine, type Candle, type ChartHandle, type ChartStore, type ChartType, type CrosshairSnapshot, type Device, type ExternalObject, type IndColor, type IndicatorInstance, type IndicatorValue, type MarkupSettings, type PaneLayout, type PanePlan, type PanelKey, type ScaleMode, type SepLimits, type Terminal, type Timeframe } from "@platform/charts";
 import { DrawingController, DrawingsPrimitive, INDICATORS, defaultParams, indicatorById, visibleOn, type Drawing, type DrawingType, type DrawingsState, type IndicatorSpec, type Layer, type LayerContext, type Point, TF_SECONDS } from "@platform/charts";
 import { LineStyle, type IPriceLine, type ISeriesApi, type PriceFormat, type UTCTimestamp } from "lightweight-charts";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
@@ -135,7 +135,8 @@ type Pane = { spec: IndicatorSpec; paneIndex: number | null; series: Record<stri
 const OVERLAY_SECONDARY_ALPHA = 0.55;
 /**
  * Панели под графиком (план 2A.7): сворачиваются до заголовка — 24 px, под пальцем 44 (цели касания); на телефоне
- * раскрыто не больше одной. Высоты по умолчанию — VIEW (индикатор 90, данные фьючерсов 80).
+ * раскрыто не больше одной. Высоты по умолчанию — VIEW (индикатор 90, данные фьючерсов 80). Строк на все панели
+ * не хватает — свёрнутые собираются в одну строку «ещё N панелей» (planPanes, ADR-0009).
  */
 const PANE_COLLAPSED_PX = VIEW.desktop.paneCollapsedPx;
 const PANE_COLLAPSED_COARSE_PX = VIEW.desktop.paneCollapsedTouchPx;
@@ -220,7 +221,20 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
   const [legendBox, setLegendBox] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   /** Низ легенды без строки OHLC под перекрестием: под него — верхнее поле шкалы цены (свечи не уходят под легенду). */
   const [legendBottom, setLegendBottom] = useState<number | null>(null);
+  /** Панели, свёрнутые пользователем (▾, свайп, телефон: раскрыта последняя добавленная). */
   const collapsedRef = useRef<Set<string>>(new Set());
+  /**
+   * Свёрнутые раскладкой: строк на все раскрытые не хватило (телефон боком). Пересчитываются при каждой раскладке и
+   * в выбор пользователя и настройки не пишутся — место вернулось (поворот обратно, окно выше), панели снова раскрыты.
+   */
+  const forcedRef = useRef<Set<string>>(new Set());
+  /** Когда панель раскрыли или добавили: при нехватке строк остаются последние раскрытые, а не нижние. */
+  const rankRef = useRef<Map<string, number>>(new Map());
+  const rankSeq = useRef(0);
+  /** Свёрнутые панели в общей строке и панель, в которой эта строка лежит (последний план). */
+  const groupRef = useRef<{ grouped: Set<string>; host: string | null }>({ grouped: new Set(), host: null });
+  const layoutAllRef = useRef<() => void>(() => {});
+  const relayoutRef = useRef<() => void>(() => {});
   const paneObsRef = useRef<ResizeObserver | null>(null);
   /** Подгрузка истории слева и смена темы — из хранилища графика (переходные поля до D). */
   const historyRev = useChartStore((st) => st.status.historyRev, store);
@@ -228,8 +242,8 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
   /** Палец: подсказка объекта — закреплённая карточка внизу графика (план 2A.7); заголовки панелей — 44 px. */
   const [coarse] = useState(() => typeof window !== "undefined" && window.matchMedia(MQ.coarse).matches);
   const collapsedPx = coarse ? PANE_COLLAPSED_COARSE_PX : PANE_COLLAPSED_PX;
-  /** Свёрнута ли панель: своим ▾ или на время «развернуть» другой. */
-  const isCollapsed = useCallback((key: string) => (maxRef.current ? key !== maxRef.current : collapsedRef.current.has(key)), []);
+  /** Свёрнута ли панель: своим ▾, раскладкой (строк не хватило) или на время «развернуть» другой. */
+  const isCollapsed = useCallback((key: string) => (maxRef.current ? key !== maxRef.current : collapsedRef.current.has(key) || forcedRef.current.has(key)), []);
   /** Что загружено в график: смена инструмента или таймфрейма — замена и сброс вида, иначе — дописывание. */
   const loadedRef = useRef<{ key: string; tf: Timeframe; candles: Candle[] } | null>(null);
 
@@ -252,22 +266,41 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     return out.filter((e) => e.series.length > 0).sort((a, b) => a.series[0]!.getPane().paneIndex() - b.series[0]!.getPane().paneIndex());
   }, [t]);
 
-  // желаемые высоты панелей под графиком (как в layoutAll): свёрнутая — заголовок, раскрытая — своя или по умолчанию
-  const paneWants = useCallback((entries: ReturnType<typeof paneEntries>) => entries.map((e) => (isCollapsed(e.key) ? collapsedPx : (layoutRef.current.heights[e.key] ?? e.height))), [isCollapsed, collapsedPx]);
+  /**
+   * План панелей сейчас (PaneManager): «развернуть» — planMaximized; иначе planPanes — желаемые высоты (пользователя
+   * или по умолчанию), свёрнутые пользователем, rank раскрытия, строка заголовка 24 / 44 px и доля основной устройства.
+   * null — график не размечен.
+   */
+  const planNow = useCallback(
+    (entries: ReturnType<typeof paneEntries>): PanePlan | null => {
+      const term = termRef.current;
+      if (!term) return null;
+      const total = term.panesTotal();
+      if (total <= 0) return null;
+      const max = maxRef.current ? entries.findIndex((e) => e.key === maxRef.current) : -1;
+      if (max >= 0) return planMaximized(total, entries.length, max, collapsedPx);
+      return planPanes(
+        total,
+        entries.map((e) => ({ want: layoutRef.current.heights[e.key] ?? e.height, collapsed: collapsedRef.current.has(e.key), rank: rankRef.current.get(e.key) ?? 0 })),
+        { mainMinShare: mainMinShareFor(store.getState().status.device), rowPx: collapsedPx },
+      );
+    },
+    [store, collapsedPx],
+  );
 
   /**
    * Пределы границ (ADR-0009): основная — доля устройства, панель — не ниже paneMinPx (под пальцем paneMinTouchPx);
-   * k — сжатие окном (planPanes): по нему высоты пары после перетаскивания пишутся в желаемых px.
+   * k — сжатие окном (PanePlan.k): по нему высоты пары после перетаскивания пишутся в желаемых px.
    */
   const sepState = useCallback((): { lim: SepLimits; k: number } | null => {
     const term = termRef.current;
     if (!term) return null;
     const dev = store.getState().status.device;
     const share = mainMinShareFor(dev);
-    const k = paneSqueeze(term.panesTotal(), paneWants(paneEntries()), share);
+    const k = planNow(paneEntries())?.k ?? 1;
     const sum = term.paneHeights().reduce((a, b) => a + b, 0);
     return { k, lim: { minMain: sum * share, minPane: coarse ? VIEW[dev].paneMinTouchPx : VIEW[dev].paneMinPx, squeezedMin: collapsedPx, squeezed: k < 1 - SQUEEZE_EPS } };
-  }, [store, paneWants, paneEntries, coarse, collapsedPx]);
+  }, [store, planNow, paneEntries, coarse, collapsedPx]);
 
   const relayout = useCallback(() => {
     const el = ref.current;
@@ -280,14 +313,25 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     };
     const chartPanes = term.chart.panes();
     const insts = new Map(indicatorsRef.current.map((i) => [i.uid, i] as const));
+    const entries = paneEntries();
+    const { grouped, host } = groupRef.current;
+    // панель с общей строкой убрали — раскладка заново: иначе остальные свёрнутые остались бы полосками в 2 px без
+    // строки и без кнопки раскрытия
+    if (grouped.size > 0 && !entries.some((e) => e.key === host)) {
+      layoutAllRef.current();
+      requestAnimationFrame(() => relayoutRef.current());
+      return;
+    }
+    const group = entries.filter((e) => grouped.has(e.key)).map((e) => ({ key: e.key, testId: e.testId, title: e.title }));
     const main = box(chartPanes[0]?.getHTMLElement());
     const panesGeo: PaneGeo[] = [
       { key: "main", index: 0, title: "", top: main.top, height: main.height, collapsed: maxRef.current !== null, testId: "main", values: false, compactValues: false, inst: null, manual: !term.paneAutoScale(0), scalable: scaleRef.current !== "percent" },
-      ...paneEntries().map((e) => {
+      ...entries.map((e) => {
         const pane = e.series[0]!.getPane();
         const inst = insts.get(e.key);
         const withParams = inst && (panesRef.current.get(e.key)?.spec.params.length ?? 0) > 0 ? inst : null;
-        return { key: e.key, index: pane.paneIndex(), title: e.title, ...box(pane.getHTMLElement()), collapsed: isCollapsed(e.key), color: e.color, testId: e.testId, values: e.values, compactValues: COMPACT_INDICATORS.has(e.testId), inst: withParams, manual: !term.paneAutoScale(pane.paneIndex()), scalable: true };
+        const g: Partial<PaneGeo> = grouped.has(e.key) ? { grouped: true, ...(e.key === host ? { group } : {}) } : {};
+        return { key: e.key, index: pane.paneIndex(), title: e.title, ...box(pane.getHTMLElement()), collapsed: isCollapsed(e.key), color: e.color, testId: e.testId, values: e.values, compactValues: COMPACT_INDICATORS.has(e.testId), inst: withParams, manual: !term.paneAutoScale(pane.paneIndex()), scalable: true, ...g };
       }),
     ];
     const next: ChartGeo = { panes: panesGeo, plotW: Math.round(term.chart.timeScale().width()), scaleW: Math.round(term.chart.priceScale("right").width()), width: Math.round(r0.width), limits: sepState()?.lim ?? NO_LIMITS };
@@ -304,33 +348,38 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
       }
     }
   }, [paneEntries, isCollapsed, sepState]);
-  const relayoutRef = useRef(relayout);
   useLayoutEffect(() => {
     relayoutRef.current = relayout;
   }, [relayout]);
 
-  // все панели раскладываются разом: свёрнутые — заголовок, раскрытые — высота пользователя или по умолчанию, свечам —
-  // остаток, но не меньше доли устройства (PaneManager: десктоп 55 %, телефон 60 %); «развернуть» — панель на всё
+  /**
+   * Все панели раскладываются разом (PaneManager, ADR-0009; продовый баг из PR 139: на телефоне свёрнутые панели сжимались
+   * до 10 px, и их заголовки налезали друг на друга и на шкалу времени): свёрнутая — ровно строка заголовка 24 px
+   * (под пальцем 44), раскрытые — высота пользователя или по умолчанию, а при нехватке места меньше, но не ниже строки;
+   * свечам — остаток, не меньше доли устройства (десктоп 55 %, телефон 60 %). Строк на все панели не хватает —
+   * свёрнутые собираются в одну строку «ещё N панелей», раньше раскрытые сворачиваются только на эту раскладку
+   * (forcedRef). «Развернуть» — панель на всё (planMaximized).
+   */
   const layoutAll = useCallback(() => {
     const term = termRef.current;
     if (!term) return;
     const entries = paneEntries();
+    const plan = planNow(entries);
+    if (plan && plan.others.length === entries.length) {
+      forcedRef.current = new Set(plan.collapse.map((k) => entries[k]!.key));
+      groupRef.current = { grouped: new Set(entries.filter((_, k) => plan.grouped[k]).map((e) => e.key)), host: plan.host === null ? null : entries[plan.host]!.key };
+    }
     // серии свёрнутых панелей и метки их последних значений скрыты (иначе «0.0» и огромные числа OI на шкале)
     for (const e of entries) {
       const collapsed = isCollapsed(e.key);
       const hidden = panesRef.current.get(e.key)?.hidden ?? false;
       e.series.forEach((sr) => sr.applyOptions({ visible: !collapsed && !hidden, lastValueVisible: !collapsed && sr.seriesType() === "Line" }));
     }
-    const max = maxRef.current ? entries.findIndex((e) => e.key === maxRef.current) : -1;
-    if (max >= 0) {
-      const total = term.panesTotal();
-      if (total > 0) term.applyPanePlan(planMaximized(total, entries.length, max, collapsedPx));
-      return;
-    }
-    const wants = paneWants(entries);
-    const want = new Map(entries.map((e, i) => [e.series[0]!.getPane(), wants[i]!] as const));
-    term.layoutPanes(want, mainMinShareFor(store.getState().status.device));
-  }, [paneEntries, store, isCollapsed, collapsedPx, paneWants]);
+    if (plan) term.applyPanePlan(plan);
+  }, [paneEntries, planNow, isCollapsed]);
+  useLayoutEffect(() => {
+    layoutAllRef.current = layoutAll;
+  }, [layoutAll]);
 
   // порядок панелей: сохранённые — на своих местах, новые — внизу (основная — всегда первая)
   const applyOrder = useCallback(() => {
@@ -347,11 +396,16 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     });
   }, [paneEntries]);
 
+  // раскрытая панель — последняя по времени: при нехватке строк сворачиваются раньше раскрытые, а не она (иначе кнопка
+  // в общей строке ничего не делала бы)
   const applyCollapsed = useCallback(
     (key: string, collapsed: boolean) => {
       if (!paneEntries().some((x) => x.key === key)) return;
       if (collapsed) collapsedRef.current.add(key);
-      else collapsedRef.current.delete(key);
+      else {
+        collapsedRef.current.delete(key);
+        rankRef.current.set(key, ++rankSeq.current);
+      }
       layoutAll();
       requestAnimationFrame(relayout);
     },
@@ -363,6 +417,7 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     (key: string, series: ISeriesApi<"Line" | "Histogram">) => {
       const pel = series.getPane().getHTMLElement();
       if (pel) paneObsRef.current?.observe(pel);
+      rankRef.current.set(key, ++rankSeq.current);
       if (window.matchMedia(MOBILE_QUERY).matches) {
         const open = paneEntries().filter((e) => e.key !== key && !collapsedRef.current.has(e.key));
         for (const e of open.slice(0, Math.max(0, open.length + 1 - MAX_EXPANDED_MOBILE))) collapsedRef.current.add(e.key);
@@ -373,6 +428,14 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     },
     [paneEntries, relayout, layoutAll, applyOrder],
   );
+
+  // панель убрали (индикатор или панель данных фьючерсов выключены): её состояние забывается; раскладку заново
+  // делают ветки удаления (layoutAll), а relayout проверяет, что общая строка не пропала вместе с панелью
+  const paneRemoved = useCallback((key: string) => {
+    collapsedRef.current.delete(key);
+    forcedRef.current.delete(key);
+    rankRef.current.delete(key);
+  }, []);
 
   const setMaximized = useCallback(
     (key: string | null) => {
@@ -601,7 +664,20 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     el.addEventListener("pointermove", onPMove);
     el.addEventListener("pointerup", onPUp);
     el.addEventListener("pointercancel", onPUp);
-    const paneObs = new ResizeObserver(() => relayoutRef.current());
+    // высота графика сменилась (поворот телефона, окно) — панели раскладываются заново: иначе LWC делит высоту
+    // пропорционально и свёрнутые панели сжимаются ниже строки заголовка; свёрнутые раскладкой панели при этом снова
+    // раскрываются, если место вернулось
+    let lastH = el.clientHeight;
+    const paneObs = new ResizeObserver(() => {
+      if (el.clientHeight !== lastH) {
+        lastH = el.clientHeight;
+        requestAnimationFrame(() => {
+          layoutAllRef.current();
+          requestAnimationFrame(() => relayoutRef.current());
+        });
+      }
+      relayoutRef.current();
+    });
     paneObs.observe(el);
     paneObsRef.current = paneObs;
     // шкалу цены растянули или вернули (перетаскивание, двойной клик, сброс вида): «A» — по новому состоянию
@@ -614,6 +690,7 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     el.addEventListener("dblclick", recheck);
     const panes = panesRef.current;
     const crypto = cryptoRef.current;
+    const forced = forcedRef.current;
     return () => {
       paneObs.disconnect();
       paneObsRef.current = null;
@@ -630,6 +707,9 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
       store.patch({ crosshair: null, values: NO_VALUES });
       panes.clear();
       crypto.clear();
+      // панели уничтожены вместе с графиком: раскладка нового графика посчитает свёрнутые раскладкой заново
+      forced.clear();
+      groupRef.current = { grouped: new Set(), host: null };
       dctrl.destroy();
       drawCtrlRef.current = null;
       drawPrimRef.current = null;
@@ -781,7 +861,7 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
       if (!next || next.id !== pane.spec.id) {
         Object.values(pane.series).forEach((sr) => term.removeSeries(sr));
         panesRef.current.delete(uid);
-        collapsedRef.current.delete(uid);
+        if (pane.paneIndex !== null) paneRemoved(uid);
         if (maxRef.current === uid) {
           maxRef.current = null;
           queueMicrotask(() => setMaximizedState(null));
@@ -848,7 +928,7 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     // убранная панель отдала место: остальные — по раскладке (высоты пользователя, доля основной)
     if (removed) layoutAll();
     requestAnimationFrame(relayout);
-  }, [indicators, candles, current, historyRev, themeVersion, paneAdded, relayout, store, t, isCollapsed, layoutAll]);
+  }, [indicators, candles, current, historyRev, themeVersion, paneAdded, paneRemoved, relayout, store, t, isCollapsed, layoutAll]);
 
   // крипто-панели (план 2A.4): funding, OI, ликвидации — данные с сервера. Ставятся только после свечей и
   // только на время свечей (alignToCandles): точка левее первой свечи или между свечами меняла шкалу времени,
@@ -863,7 +943,7 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
       if (!want.has(k)) {
         p.series.forEach((sr) => term.removeSeries(sr));
         cryptoRef.current.delete(k);
-        collapsedRef.current.delete(k);
+        paneRemoved(k);
         if (maxRef.current === k) {
           maxRef.current = null;
           queueMicrotask(() => setMaximizedState(null));
@@ -912,7 +992,7 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
       }
     }
     requestAnimationFrame(relayout);
-  }, [derivatives, panels, candles, historyRev, themeVersion, tf, paneAdded, relayout, layoutAll]);
+  }, [derivatives, panels, candles, historyRev, themeVersion, tf, paneAdded, paneRemoved, relayout, layoutAll]);
 
   // легенда: её прямоугольник (меняется с перекрестием и списком индикаторов) — через ResizeObserver
   const hasLegend = !!legend;
@@ -1023,9 +1103,12 @@ function sameGeo(a: ChartGeo, b: ChartGeo): boolean {
   if (Math.round(la.minMain) !== Math.round(lb.minMain) || la.minPane !== lb.minPane || la.squeezedMin !== lb.squeezedMin || la.squeezed !== lb.squeezed) return false;
   return a.panes.every((p, i) => {
     const q = b.panes[i]!;
-    return p.key === q.key && p.index === q.index && p.title === q.title && p.top === q.top && p.height === q.height && p.collapsed === q.collapsed && p.color === q.color && p.manual === q.manual && p.scalable === q.scalable && p.inst === q.inst && p.values === q.values;
+    return p.key === q.key && p.index === q.index && p.title === q.title && p.top === q.top && p.height === q.height && p.collapsed === q.collapsed && p.color === q.color && p.manual === q.manual && p.scalable === q.scalable && p.inst === q.inst && p.values === q.values && !!p.grouped === !!q.grouped && groupKey(p) === groupKey(q);
   });
 }
+
+/** Состав общей строки свёрнутых панелей (у host): ключи и имена. */
+const groupKey = (p: PaneGeo): string => p.group?.map((g) => `${g.key}:${g.title}`).join("|") ?? "";
 
 /** Ряд значений линии индикатора (ключ — «uid.ключ линии»). */
 type SeriesValues = { uid: string; label: string; values: (number | null)[]; color: string; price: boolean };

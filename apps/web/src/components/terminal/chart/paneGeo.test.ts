@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { autoBox, gripBox, paneSeparators, PANE_UI, sepAbove, type PaneGeo } from "./paneGeo";
+import { autoBox, gripBox, groupCovers, paneSeparators, PANE_UI, sepAbove, type PaneGeo } from "./paneGeo";
 
 /** Границы панелей (ADR-0009, «Управление панелями»): какая пара панелей меняется при перетаскивании. */
 const pane = (index: number, top: number, collapsed = false): PaneGeo => ({ key: index === 0 ? "main" : `p${index}`, index, title: "", top, height: 90, collapsed, testId: "", values: false, compactValues: false, inst: null, manual: false, scalable: true });
@@ -47,5 +47,26 @@ describe("места ручки и «A» у шкалы цены", () => {
     expect(gripBox(10, true).left).toBe(0);
     expect(sepAbove(false)).toBe(8);
     expect(sepAbove(true)).toBe(12);
+  });
+});
+
+describe("общая строка свёрнутых панелей", () => {
+  const sliver = (index: number, top: number): PaneGeo => ({ ...pane(index, top, true), height: 2, grouped: true });
+  const host = (index: number, top: number): PaneGeo => ({ ...pane(index, top, true), height: 24, grouped: true, group: [] });
+
+  it("заслонка — над каждой серией подряд идущих полосок (во всю высоту серии и на пиксель выше), host и раскрытые — без", () => {
+    // основная | полоска | полоска | RSI раскрыт | полоска | host
+    const panes = [pane(0, 0), sliver(1, 300), sliver(2, 303), pane(3, 306), sliver(4, 397), host(5, 400)];
+    expect(groupCovers(panes)).toEqual([
+      { key: "cover:p1", top: 299, height: 6 },
+      { key: "cover:p4", top: 396, height: 3 },
+    ]);
+    expect(groupCovers([pane(0, 0), pane(1, 500, true)])).toEqual([]);
+    expect(groupCovers([])).toEqual([]);
+  });
+
+  it("свёрнутые общей строки — не границы: граница только между раскрытыми", () => {
+    const panes = [pane(0, 0), sliver(1, 300), sliver(2, 303), pane(3, 306), host(4, 397)];
+    expect(paneSeparators(panes, false)).toEqual([{ y: 300, above: 0, below: 3, key: "p1" }]);
   });
 });

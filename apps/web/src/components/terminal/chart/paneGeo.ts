@@ -25,6 +25,13 @@ export type PaneGeo = {
   manual: boolean;
   /** Шкалу можно тянуть (процентная шкала основной панели — нельзя): подсветка под курсором. */
   scalable: boolean;
+  /**
+   * Свёрнутая панель в общей строке «ещё N панелей» (строк на все панели не хватило, planPanes): своего заголовка
+   * у неё нет — у остальных полоска GROUPED_PX под заслонкой, у host — строка с кнопками раскрытия.
+   */
+  grouped?: boolean;
+  /** Только у host: панели общей строки по порядку (и сама host) — кнопки раскрытия. */
+  group?: { key: string; testId: string; title: string }[];
 };
 
 /** limits — пределы перетаскивания границ (доля основной, минимум панели, сжатие окном): по ним граница стоит или нет. */
@@ -89,5 +96,30 @@ export function paneSeparators(panes: readonly PaneGeo[], maximized: boolean): P
     out.push({ y: line.top, above: panes[above]!.index, below: panes[i]!.index, key: line.key });
     above = i;
   }
+  return out;
+}
+
+/**
+ * Заслонки над полосками свёрнутых в общую строку панелей (2 px каждая, своего заголовка нет): во всю ширину графика
+ * (и шкалу цены), подряд идущие — одной заслонкой. Без них видны стопка линий между панелями и обрезки подписей шкалы.
+ * Сверху на пиксель выше — вместе с линией над первой полоской.
+ */
+export function groupCovers(panes: readonly PaneGeo[]): { key: string; top: number; height: number }[] {
+  const out: { key: string; top: number; height: number }[] = [];
+  let run: PaneGeo[] = [];
+  const close = () => {
+    const a = run[0];
+    const b = run[run.length - 1];
+    if (a && b) {
+      const top = a.top - 1;
+      out.push({ key: `cover:${a.key}`, top, height: Math.max(1, b.top + b.height - top) });
+    }
+    run = [];
+  };
+  for (const p of panes) {
+    if (p.grouped && !p.group) run.push(p);
+    else close();
+  }
+  close();
   return out;
 }

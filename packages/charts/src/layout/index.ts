@@ -6,5 +6,3 @@ export { candleBand, freeAndGutter, GESTURE_MIN_PRIORITY, GLYPH_R, hitTestScreen
 export type { ProjectOptions, SceneHit, SceneProjector, ScreenGeom, ScreenObject, ScreenScene } from "./project";
 export { AREA_PAD, LABEL_GAP } from "./types";
 export type { AxisCandidate, AxisFixed, AxisLayout, AxisPlaced, AxisScale, CandleBand, DropReason, LabelCandidate, LayoutResult, Obstacles, ObstacleKind, PlacedLabel, Rect, Slot, Viewport } from "./types";
-export { fitHeights, GROUPED_PX, planPanes } from "./panes";
-export type { PanePlan, PaneWant } from "./panes";

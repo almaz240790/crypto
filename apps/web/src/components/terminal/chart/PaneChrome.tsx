@@ -7,18 +7,21 @@ import { IconButton, Menu, Popover, usePopover } from "@/components/ui";
 import { IconArrowDown, IconArrowUp, IconClose, IconGear, IconMaximize, IconMore, IconRestore } from "@/components/ui/icons";
 import { useT } from "@/i18n/client";
 import { MQ, useMediaQuery } from "@/lib/breakpoints";
+import { plural } from "@/lib/format";
 import { IndicatorParams } from "../sheets/IndicatorParams";
 import { PaneValue } from "./PaneValue";
-import { autoBox, gripBox, paneSeparators, PANE_UI, sepAbove, type ChartGeo, type PaneGeo, type PaneSep } from "./paneGeo";
+import { autoBox, gripBox, groupCovers, paneSeparators, PANE_UI, sepAbove, type ChartGeo, type PaneGeo, type PaneSep } from "./paneGeo";
 import c from "./chart.module.css";
 
 /**
  * Управление панелями графика (ADR-0009, «Управление панелями»; как в TradingView): поверх холста LWC —
  * заголовки панелей с кнопками «выше», «ниже», «развернуть / вернуть», «настройки», «убрать», границы панелей
  * с ручкой (перетаскивание — высота, двойной клик — высоты по умолчанию), кнопка «A» (автомасштаб) в углу панели
- * у шкалы цены, растянутой вручную, полоса у шкалы под курсором и однократная подсказка. Геометрию считает
- * ChartSurface (координаты колонки графика, CSS px), действия выполняет он же: здесь только DOM и указатель.
- * Слои: заголовки — 5, граница с ручкой — 6 (линию и ручку заголовок не закрывает), открытое меню заголовка — 8.
+ * у шкалы цены, растянутой вручную, полоса у шкалы под курсором и однократная подсказка. Строк на все панели не
+ * хватает (planPanes) — свёрнутые в одной строке «ещё N панелей» с кнопками раскрытия, их полоски закрыты заслонками.
+ * Геометрию считает ChartSurface (координаты колонки графика, CSS px), действия выполняет он же: здесь только DOM и
+ * указатель. Слои: заголовки, общая строка и заслонки — 5, граница с ручкой — 6 (линию и ручку заголовок не
+ * закрывает), открытое меню заголовка — 8.
  */
 
 export type { ChartGeo, PaneGeo, PaneSep } from "./paneGeo";
@@ -109,9 +112,16 @@ export function PaneChrome({ host, store, geo, maximized, compact, hint, mainTit
           </IconButton>
         </div>
       )}
-      {others.map((p, i) => (
-        <PaneHeader key={p.key} pane={p} store={store} first={i === 0} last={i === others.length - 1} maximized={maximized} compact={compact} hover={hover?.index === p.index || (i === 0 && hintOn && !compact)} {...act} />
+      {groupCovers(geo.panes).map((cv) => (
+        <div key={cv.key} className={c.paneCover} data-pane-cover="" aria-hidden="true" style={{ top: cv.top, height: cv.height }} />
       ))}
+      {others.map((p, i) =>
+        p.group ? (
+          <PaneGroupRow key={p.key} pane={p} reserve={Math.max(PANE_UI.edge, geo.width - grip.left)} onCollapse={act.onCollapse} />
+        ) : p.grouped ? null : (
+          <PaneHeader key={p.key} pane={p} store={store} first={i === 0} last={i === others.length - 1} maximized={maximized} compact={compact} hover={hover?.index === p.index || (i === 0 && hintOn && !compact)} {...act} />
+        ),
+      )}
       {seps.map((sep) => (
         <Separator key={sep.key} sep={sep} range={separatorRange(heights, sep.above, sep.below, geo.limits)} coarse={coarse} width={geo.width} plotW={geo.plotW} onResize={act.onResize} onReset={act.onResetHeights} />
       ))}
@@ -131,6 +141,30 @@ export function PaneChrome({ host, store, geo, maximized, compact, hint, mainTit
         })}
       {hint && others.length > 0 && seps[0] && <PanesHint y={seps[0].y - sepAbove(coarse)} right={geo.width - grip.left - grip.w} coarse={coarse} compact={compact} onShown={setHintOn} />}
     </>
+  );
+}
+
+/**
+ * Общая строка свёрнутых панелей (строк на все панели не хватает, planPanes): «ещё N панелей» и кнопка раскрытия
+ * на каждую (её data-pane — testid панели). Высота — строка заголовка host (24 px, под пальцем 44). Справа место
+ * под ручку границы и «A» (reserve): ручка 44 × 44 не ложится на кнопки. Кнопка раскрывает панель, выходя из
+ * «развернуть»; панель раскрыта последней — при нехватке строк сворачиваются раньше раскрытые.
+ */
+function PaneGroupRow({ pane, reserve, onCollapse }: { pane: PaneGeo; reserve: number; onCollapse: Actions["onCollapse"] }) {
+  const t = useT();
+  const group = pane.group ?? [];
+  const n = group.length;
+  return (
+    <div className={c.paneGroup} data-testid="pane-group" role="group" aria-label={t("свёрнутые панели")} style={{ top: pane.top, height: pane.height, paddingRight: reserve }}>
+      <span className={c.paneGroupLabel}>{t(plural(n, "ещё {n} панель", "ещё {n} панели", "ещё {n} панелей"), { n })}</span>
+      <span className={c.paneGroupList}>
+        {group.map((g) => (
+          <button key={g.key} type="button" className={c.paneChip} data-pane={g.testId} aria-expanded={false} aria-label={t("развернуть панель {name}", { name: g.title })} title={t("развернуть панель {name}", { name: g.title })} onClick={() => onCollapse(g.key, false)}>
+            {g.title} <span aria-hidden="true">▴</span>
+          </button>
+        ))}
+      </span>
+    </div>
   );
 }
 

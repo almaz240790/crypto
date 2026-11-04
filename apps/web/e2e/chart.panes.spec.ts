@@ -5,7 +5,8 @@ import { mock } from "./helpers/chart";
  * Управление панелями (ADR-0009, «Управление панелями»; как в TradingView): граница панели с ручкой и курсором
  * row-resize (перетаскивание — высоты, двойной клик — по умолчанию, высоты в настройках), кнопки заголовка
  * «выше / ниже / развернуть / настройки / убрать» (порядок в настройках), «A» у шкалы цены, растянутой вручную,
- * однократная подсказка и цели 44 px под пальцем.
+ * однократная подсказка и цели 44 px под пальцем. Строк на все панели не хватает (телефон, низкое окно) — свёрнутые
+ * в одной строке «ещё N панелей» (планировщик строк PaneManager, перенесён из PR 139).
  */
 
 type Host = HTMLElement & { __chart: { panes(): { getHeight(): number; getHTMLElement(): HTMLElement; priceScale(id: string): { options(): { autoScale: boolean } } }[]; timeScale(): { width(): number }; options(): { handleScroll: { vertTouchDrag: boolean } } } };
@@ -44,7 +45,7 @@ async function open(page: Page, o: { hint?: boolean; saved?: Record<string, unkn
 const heights = (page: Page) => page.evaluate(() => (document.querySelector("[data-testid=terminal]") as Host).__chart.panes().map((p) => Math.round(p.getHeight())));
 const saved = (page: Page) => page.evaluate(() => JSON.parse(localStorage.getItem("pl-terminal") ?? "{}") as { paneLayout?: { order: string[]; heights: Record<string, number> }; indicators: { uid: string }[]; panels: string[] });
 /** Заголовки панелей сверху вниз. */
-const order = (page: Page) => page.evaluate(() => [...document.querySelectorAll<HTMLElement>("[data-testid^=pane-]:not([data-testid=pane-separator]):not([data-testid=pane-grip])")].sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top).map((e) => e.dataset.testid));
+const order = (page: Page) => page.evaluate(() => [...document.querySelectorAll<HTMLElement>("[data-testid^=pane-]:not([data-testid=pane-separator]):not([data-testid=pane-grip]):not([data-testid=pane-group])")].sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top).map((e) => e.dataset.testid));
 /** Центры ручек границ сверху вниз и что под ними (elementFromPoint): граница или нет. */
 const grips = (page: Page) =>
   page.evaluate(() =>
@@ -401,5 +402,189 @@ test.describe("телефон", () => {
     await more.click();
     await page.getByRole("menuitem", { name: "Ниже" }).click();
     await expect.poll(() => order(page)).toEqual(["pane-macd", "pane-rsi", "pane-oi"]);
+  });
+});
+
+/**
+ * Нехватка строк (продовый баг из PR 139, телефон с 11 панелями: свёрнутые панели сжимались до 10 px, и их заголовки
+ * налезали друг на друга и на шкалу времени). Под пальцем строка заголовка — 44 px (C1, ADR-0009), а не 24, поэтому
+ * панелей меньше, чем в PR 139: на 390×844 график ≈ 560 px, на панели под ним — 40 % (≈ 220 px) — 5 строк; на 844×390
+ * и 932×430 — 2 строки.
+ */
+test.describe("телефон: нехватка строк — общая строка", () => {
+  test.use({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+
+  const ROW = 44;
+  const settings = (indicators: string[], panels: string[]) =>
+    JSON.stringify({ layers_v: 5, type: "candles", indicators: indicators.map((id) => ({ id, params: {} })), markup: { preset: "clean", overrides: {} }, panels, scale: "linear", overlay: null });
+  async function load(page: Page, indicators: string[], panels: string[], size?: { width: number; height: number }) {
+    if (size) await page.setViewportSize(size);
+    await page.addInitScript(
+      (s) => {
+        if (sessionStorage.getItem("seeded")) return;
+        sessionStorage.setItem("seeded", "1");
+        localStorage.setItem("pl-terminal", s);
+        localStorage.setItem("pl-panes-hint", "1");
+      },
+      settings(indicators, panels),
+    );
+    await mock(page, [], true);
+    await page.goto("/chart/BTCUSDT/4h");
+    await expect(page.getByTestId("terminal").locator("canvas").first()).toBeVisible();
+    await expect(page.getByLabel("состояние").first()).toContainText("цена");
+  }
+
+  /** Заголовки панелей и общая строка: прямоугольники относительно графика, верх шкалы времени, доля основной. */
+  const heads = (page: Page) =>
+    page.evaluate(() => {
+      const el = document.querySelector("[data-testid=terminal]") as Host;
+      const r0 = el.getBoundingClientRect();
+      const rows = [...document.querySelectorAll<HTMLElement>("[data-testid^=pane-]:not([data-testid=pane-separator]):not([data-testid=pane-grip])")].map((x) => {
+        const b = x.getBoundingClientRect();
+        return { id: x.dataset.testid!, top: b.top - r0.top, bottom: b.bottom - r0.top, height: b.height };
+      });
+      const panes = el.__chart.panes();
+      const total = panes.reduce((a, p) => a + p.getHeight(), 0);
+      return { rows, axisTop: panes.at(-1)!.getHTMLElement().getBoundingClientRect().bottom - r0.top, mainShare: panes[0]!.getHeight() / total, total };
+    });
+  const noOverlaps = (m: Awaited<ReturnType<typeof heads>>, share: number) => {
+    const rows = m.rows.slice().sort((a, b) => a.top - b.top);
+    for (let i = 1; i < rows.length; i++) expect(rows[i]!.top, `${rows[i - 1]!.id} и ${rows[i]!.id}`).toBeGreaterThanOrEqual(rows[i - 1]!.bottom - 1);
+    for (const r of rows) expect(r.bottom, `${r.id} и шкала времени`).toBeLessThanOrEqual(m.axisTop + 1);
+    expect(m.mainShare).toBeGreaterThanOrEqual(share - 0.01);
+  };
+  const expanded = (page: Page, key: string) => page.getByTestId(`pane-${key}`).getByRole("button", { name: /свернуть панель/ });
+  const chip = (page: Page, key: string) => page.getByTestId("pane-group").locator(`button[data-pane="${key}"]`);
+  /** Что под пальцем в центре элемента: кнопка общей строки (её data-pane) или чужой элемент. */
+  const hitAt = async (page: Page, x: number, y: number) =>
+    page.evaluate(({ x, y }) => {
+      const el = document.elementFromPoint(x, y);
+      return (el?.closest("button") as HTMLElement | null)?.dataset.pane ?? el?.outerHTML.slice(0, 120) ?? null;
+    }, { x, y });
+
+  test("свёрнутые панели не налезают друг на друга и на шкалу времени; без места — одна строка «ещё N панелей», поворот обратно — раскрыты снова", async ({ page }) => {
+    await load(page, ["rsi", "macd"], ["oi", "funding"]);
+    await expect(page.getByTestId("pane-funding")).toBeVisible();
+    // на телефоне раскрыта последняя добавленная; пользователь раскрывает ещё RSI и MACD
+    for (const k of ["rsi", "macd"]) {
+      const b = page.getByTestId(`pane-${k}`).getByRole("button", { name: /развернуть панель/ });
+      if (await b.count()) await b.tap();
+      await expect(expanded(page, k)).toBeVisible();
+    }
+    await page.waitForTimeout(300);
+    const before = await heads(page);
+    expect(Math.floor(Math.floor(before.total * 0.4) / ROW), "строк хватает на все 4 панели").toBeGreaterThanOrEqual(4);
+    await expect(page.getByTestId("pane-group")).toHaveCount(0);
+    noOverlaps(before, 0.6);
+    const open = [];
+    for (const k of ["rsi", "macd", "oi", "funding"]) if (await expanded(page, k).count()) open.push(k);
+    expect(open).toEqual(expect.arrayContaining(["rsi", "macd"]));
+    // телефон боком: строк на все панели нет — свёрнутые в одной строке, раньше раскрытые свёрнуты раскладкой
+    await page.setViewportSize({ width: 844, height: 390 });
+    const group = page.getByTestId("pane-group");
+    await expect(group).toBeVisible();
+    await expect(group).toContainText(/ещё \d+ панел/);
+    await page.waitForTimeout(300);
+    // доля основной — по классу устройства графика: боком (ширина графика > телефона) — 0.55
+    noOverlaps(await heads(page), 0.55);
+    // последней раскрыта MACD — она и осталась раскрытой; кнопка в общей строке раскрывает свою панель
+    await expect(expanded(page, "macd")).toBeVisible();
+    await chip(page, "oi").tap();
+    await expect(expanded(page, "oi")).toBeVisible();
+    await expect(chip(page, "oi")).toHaveCount(0);
+    await page.waitForTimeout(300);
+    noOverlaps(await heads(page), 0.55);
+    // обратно вертикально: у каждой панели своя строка, свёрнутые раскладкой снова раскрыты — боком их свернула нехватка
+    // строк, а не пользователь; OI раскрыл пользователь — раскрыта и она
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(group).toHaveCount(0);
+    for (const k of [...open, "oi"]) await expect(expanded(page, k), k).toBeVisible();
+    await page.waitForTimeout(300);
+    noOverlaps(await heads(page), 0.6);
+  });
+
+  test("общая строка: ровно строка заголовка (44 px под пальцем), кнопки нажимаются пальцем (ручка границы их не перекрывает), над полосками — заслонка", async ({ page }) => {
+    const ind7 = ["cci", "obv", "volume", "macd", "rsi", "stoch", "atr"];
+    const panels4 = ["funding", "oi", "liq", "ls"];
+    for (const [width, height, key] of [[844, 390, "cci"], [375, 667, "volume"]] as const) {
+      await load(page, ind7, panels4, { width, height });
+      const group = page.getByTestId("pane-group");
+      await expect(group).toBeVisible();
+      await page.waitForTimeout(300);
+      const box = (await group.boundingBox())!;
+      expect(Math.abs(box.height - ROW), `${width}x${height}: высота строки`).toBeLessThanOrEqual(1);
+      // в центре каждой видимой кнопки — она сама, а не ручка границы или «A»
+      const list = (await group.locator("[class*=paneGroupList]").boundingBox())!;
+      const keys = await group.locator("button[data-pane]").evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.pane!));
+      expect(keys.length).toBeGreaterThan(1);
+      let checked = 0;
+      for (const k of keys) {
+        const b = (await chip(page, k).boundingBox())!;
+        if (b.x + b.width > list.x + list.width) continue; // за краем строки (прокрутка вбок)
+        expect(await hitAt(page, b.x + b.width / 2, b.y + b.height / 2), `${width}x${height}: кнопка ${k}`).toBe(k);
+        expect(b.height, `${width}x${height}: кнопка ${k} — цель касания`).toBeGreaterThanOrEqual(ROW - 1);
+        checked++;
+      }
+      expect(checked).toBeGreaterThan(0);
+      // полоски свёрнутых в общую строку панелей закрыты заслонкой во всю ширину (и шкалу цены)
+      const covers = await page.locator("[data-pane-cover]").evaluateAll((els) => els.map((e) => e.getBoundingClientRect().width));
+      expect(covers.length, `${width}x${height}: заслонки`).toBeGreaterThan(0);
+      const tw = (await page.getByTestId("terminal").boundingBox())!.width;
+      for (const w of covers) expect(w).toBeGreaterThanOrEqual(tw - 1);
+      // касание пальцем (без force): панель раскрывается, строки не налезают
+      await chip(page, key).tap();
+      await expect(expanded(page, key), `${width}x${height}: ${key}`).toBeVisible();
+      await page.waitForTimeout(300);
+      noOverlaps(await heads(page), width < height ? 0.6 : 0.55);
+      await page.evaluate(() => sessionStorage.clear());
+    }
+  });
+
+  test("кнопка общей строки раскрывает и верхнюю панель, когда раскрытые уже заняли все строки; вертикально — все раскрыты", async ({ page }) => {
+    // телефон боком шире 900 px: раскладка десктопа, все панели раскрыты — верхние свёрнуты раскладкой в общую строку
+    await load(page, ["rsi", "macd"], ["oi", "funding"], { width: 932, height: 430 });
+    const group = page.getByTestId("pane-group");
+    await expect(group).toBeVisible();
+    await expect(chip(page, "rsi")).toBeVisible();
+    await page.waitForTimeout(300);
+    const before = await group.locator("button[data-pane]").count();
+    const b = (await chip(page, "rsi").boundingBox())!;
+    expect(await hitAt(page, b.x + b.width / 2, b.y + b.height / 2)).toBe("rsi");
+    await page.touchscreen.tap(b.x + b.width / 2, b.y + b.height / 2);
+    await expect(expanded(page, "rsi")).toBeVisible();
+    // строк не прибавилось: свернулась раньше раскрытая панель, а не та, что нажата
+    await expect(group.locator("button[data-pane]")).toHaveCount(before);
+    await expect(chip(page, "rsi")).toHaveCount(0);
+    await page.waitForTimeout(300);
+    noOverlaps(await heads(page), 0.55);
+    // вертикально место есть — раскрыты все панели, раскладка ничего не свернула; в настройки свёрнутое раскладкой
+    // не попало
+    await page.setViewportSize({ width: 430, height: 932 });
+    await expect(group).toHaveCount(0);
+    for (const k of ["rsi", "macd", "oi", "funding"]) await expect(expanded(page, k), k).toBeVisible();
+    await page.waitForTimeout(300);
+    noOverlaps(await heads(page), 0.6);
+    expect(await page.evaluate(() => localStorage.getItem("pl-terminal") ?? "")).not.toMatch(/collapsed|forced|grouped/);
+  });
+
+  test("убрали панель, в которой лежала общая строка, — строка «ещё N панелей» на месте, свёрнутые не пропадают", async ({ page }) => {
+    await load(page, ["cci", "obv", "volume", "macd", "rsi", "stoch", "atr"], ["funding", "oi", "liq", "ls"], { width: 844, height: 390 });
+    const group = page.getByTestId("pane-group");
+    await expect(chip(page, "liq")).toBeVisible();
+    const before = await group.locator("button[data-pane]").count();
+    // общая строка — у последней свёрнутой («Ликвидации», раскрыта последняя добавленная «Лонг/шорт»): убираем её
+    await page.getByRole("button", { name: /^Индикаторы \(/ }).tap();
+    const sheet = page.getByRole("dialog", { name: "Индикаторы" });
+    const box = sheet.locator("label", { hasText: "Ликвидации" }).locator("input");
+    await box.scrollIntoViewIfNeeded();
+    await box.tap();
+    await expect(box).not.toBeChecked();
+    await expect(chip(page, "liq")).toHaveCount(0);
+    await expect(group).toBeVisible();
+    await expect(group.locator("button[data-pane]")).toHaveCount(before - 1);
+    await expect(chip(page, "oi")).toBeVisible();
+    // ни одной панели-полоски без строки: все полоски ниже 20 px — в общей строке
+    const slivers = await page.evaluate(() => (document.querySelector("[data-testid=terminal]") as Host).__chart.panes().slice(1).filter((p) => p.getHeight() < 20).length);
+    expect(slivers).toBeLessThanOrEqual(before - 1);
   });
 });
