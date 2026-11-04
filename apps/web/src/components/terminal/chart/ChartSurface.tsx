@@ -164,7 +164,7 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
   const needOlderRef = useRef(onNeedOlder);
   const onReadyRef = useRef(onReady);
   /** Линии индикаторов по ключу `${uid}.${серия}`: значения на всех свечах буфера — для перекрестия и легенды. */
-  const valuesRef = useRef<Map<string, { uid: string; label: string; values: (number | null)[]; color: string; price: boolean }>>(new Map());
+  const valuesRef = useRef<Map<string, SeriesValues>>(new Map());
   const stickyRef = useRef(false);
   const [heads, setHeads] = useState<PaneHead[]>([]);
   /** Основная панель: ширина области свечей (без шкалы цены) и высота — для кнопок в углу. */
@@ -350,7 +350,7 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
       const all = term.candles;
       const i = indexOfTime(all, time);
       if (i < 0) return;
-      const values: IndicatorValue[] = [...valuesRef.current].map(([key, v]) => ({ key, uid: v.uid, label: v.label, value: v.values[i] ?? null, color: v.color, price: v.price }));
+      const values: IndicatorValue[] = [...valuesRef.current].map(([key, v]) => valueAt(key, v, i));
       publish({ time, index: i, candle: all[i]!, values, sticky: stickyRef.current });
     };
     const onMove = (p: { time?: unknown }) => emit(typeof p.time === "number" ? p.time : null);
@@ -593,7 +593,7 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     }
     // последние значения — легенде без перекрестия (лист читает их из хранилища)
     const n = all.length - 1;
-    const last: IndicatorValue[] = n < 0 ? [] : [...valuesRef.current].map(([key, v]) => ({ key, uid: v.uid, label: v.label, value: v.values[n] ?? null, color: v.color, price: v.price }));
+    const last: IndicatorValue[] = n < 0 ? [] : [...valuesRef.current].map(([key, v]) => valueAt(key, v, n));
     if (!sameValues(store.getState().values, last)) store.patch({ values: last });
     requestAnimationFrame(relayout);
   }, [indicators, candles, current, historyRev, themeVersion, paneAdded, relayout, store, t]);
@@ -752,6 +752,14 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
       {candles.length === 0 && <div className={s.empty}>{t("Нет свечей.")}</div>}
     </div>
   );
+}
+
+/** Ряд значений линии индикатора (ключ — «uid.ключ линии»). */
+type SeriesValues = { uid: string; label: string; values: (number | null)[]; color: string; price: boolean };
+
+/** Значение ряда индикатора на свече i — для легенды, заголовка панели и карточки перекрестия. */
+function valueAt(key: string, v: SeriesValues, i: number): IndicatorValue {
+  return { key, uid: v.uid, label: v.label, value: v.values[i] ?? null, color: v.color, price: v.price };
 }
 
 /** Значения те же (ключ, подпись, число, цвет): хранилище не трогаем — легенда не перерисовывается. */

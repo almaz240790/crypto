@@ -1,6 +1,7 @@
 "use client";
 
-import { formatCompactValue, formatIndicatorValue, type ChartState, type ChartStore, type IndicatorValue } from "@platform/charts";
+import { formatCompactValue, type ChartState, type ChartStore, type IndicatorValue } from "@platform/charts";
+import { indicatorText } from "./indicatorText";
 import { useT } from "@/i18n/client";
 import { formatPrice } from "@/lib/format";
 import { useChartStore } from "./useChartStore";
@@ -19,7 +20,7 @@ export function CrosshairCard({ store, tick, more, onMore, onClose }: { store: C
   if (!cross) return null;
   const k = cross.candle;
   const fmtP = (v: number | null) => (v == null ? "—" : formatPrice(v, tick));
-  const fmtV = (v: IndicatorValue) => (v.value == null ? "—" : v.price ? formatPrice(v.value, tick) : formatIndicatorValue(v.value));
+  const fmtV = (v: IndicatorValue) => indicatorText(v, tick);
   return (
     <div className={s.ohlc} data-testid="ohlc" data-more={more || undefined}>
       <button type="button" className={s.ohlcClose} aria-label={t("закрыть карточку")} onClick={onClose}>

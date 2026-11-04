@@ -1,6 +1,6 @@
 "use client";
 
-import { formatCompactValue, formatIndicatorValue, formatSignedPercent, indicatorById, instanceColors, instanceTitle, type Candle, type ChartState, type ChartStore, type IndicatorInstance, type IndicatorValue } from "@platform/charts";
+import { formatCompactValue, formatSignedPercent, indicatorById, instanceColors, instanceTitle, type Candle, type ChartState, type ChartStore, type IndicatorInstance, type IndicatorValue } from "@platform/charts";
 import { memo, useMemo, useState } from "react";
 import { IconButton, Popover, usePopover } from "@/components/ui";
 import { IconClose } from "@/components/ui/icons";
@@ -9,6 +9,7 @@ import { formatPrice } from "@/lib/format";
 import { IndicatorParams } from "../sheets/IndicatorParams";
 import { IND_COLOR_VAR } from "./ChartSurface";
 import { LegendChip, LiqUnavailableNote } from "./LegendChip";
+import { indicatorText } from "./indicatorText";
 import { useChartStore } from "./useChartStore";
 import c from "./chart.module.css";
 
@@ -112,7 +113,7 @@ function IndicatorRow({ inst, color, values, tick, onHide, onRemove, onParams }:
   if (!spec) return null;
   const name = instanceTitle(spec, inst.params, t);
   const mine = values.filter((v) => v.uid === inst.uid);
-  const fmt = (v: IndicatorValue) => (v.value == null ? "—" : v.price ? formatPrice(v.value, tick) : formatIndicatorValue(v.value));
+  const fmt = (v: IndicatorValue) => indicatorText(v, tick);
   return (
     <div className={c.legendRow} data-hidden={inst.hidden || undefined}>
       <span className={c.legendDot} style={{ background: color }} aria-hidden="true" />

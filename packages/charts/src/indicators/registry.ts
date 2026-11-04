@@ -78,11 +78,10 @@ export const INDICATORS: IndicatorSpec[] = [
   {
     id: "atr", title: "ATR", pane: "separate",
     params: [{ key: "period", label: "Период", default: 14, min: 1, max: 100 }],
-    series: [{ key: "value", label: "ATR", kind: "line", color: "accent" }, { key: "pct", label: "ATR, % от цены", kind: "line", color: "text3" }],
-    compute: (c, p) => {
-      const v = atr(c, p.period ?? 14);
-      return { value: v, pct: v.map((x, i) => (x === null ? null : (100 * x) / c[i]!.close)) };
-    },
+    // одна линия — ATR в цене: прежняя вторая линия «% от цены» на той же шкале лежала плоской у нуля, а на своей
+    // шкале повторяла форму ATR двойной линией (D18); размах в цене — и в шапке («Ход за свечу»)
+    series: [{ key: "value", label: "ATR", kind: "line", color: "accent" }],
+    compute: (c, p) => ({ value: atr(c, p.period ?? 14) }),
   },
   {
     id: "volume", title: "Volume", pane: "separate",
