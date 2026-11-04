@@ -1,6 +1,6 @@
 import type { LiveStep } from "@platform/charts";
 import { describe, expect, it } from "vitest";
-import { EARLY_MAX, LiveBar, mergeHistory, replaceByTime, type LiveEvent } from "./liveBar";
+import { CatchUpGate, EARLY_MAX, LIVE_BACKOFF_MAX_MS, LIVE_RETRY_MS, LiveBar, replaceByTime, RESYNC_MIN_MS, type LiveEvent } from "./liveBar";
 
 /** Живая свеча терминала (ADR-0010): тики раз в секунду сворачиваются в текущую свечу tf без нового бара. */
 
@@ -108,30 +108,175 @@ describe("LiveBar: история, снимок минуты, переподкл
     expect(live.bar).toMatchObject({ time: T + 4 * 3600, close: 100.4 });
   });
 
-  it("пропуск после сна: шаг с gap; свежая история вливается в график (merge) без отката текущей", () => {
+  it("пропуск после сна: шаг с gap; догон вливает свежую историю хвостом (replaceTail) без отката текущей", () => {
     const { live, steps } = bar();
-    live.start(current, [{ ...current, time: T - 4 * 3600, open_: false }]);
+    const prev = { ...current, time: T - 4 * 3600, open_: false };
+    live.start(current, [prev]);
     const step = live.tick({ s: "BTCUSDT", p: "120", at: iso(T + 12 * 3600 + 5) }); // 2 интервала пропущены
     expect(step!.gap).toBe(true);
-    const server = [4, 8].map((h) => ({ ...current, time: T + h * 3600, open_: false }));
-    const ev = live.resync({ ...current, time: T + 12 * 3600, close: 119, high: 121 }, [{ ...current, open_: false }, ...server]) as LiveEvent;
-    expect(ev.merge!.map((c) => c.time)).toEqual([T, T + 4 * 3600, T + 8 * 3600]);
+    expect(live.closed.map((c) => c.time)).toEqual([T - 4 * 3600, T]); // 08:00 закрыта тиком
+    const server = [0, 4, 8].map((h) => ({ ...current, time: T + h * 3600, close: 99 + h, open_: false }));
+    const ev = live.catchUp(server, { ...current, time: T + 12 * 3600, close: 119, high: 121 }, null, undefined, true) as LiveEvent;
+    // история React: окончательные свечи ответа вместо закрытой тиком, пропущенные — дописаны, старее — те же объекты
+    expect(live.closed.map((c) => c.time)).toEqual([T - 4 * 3600, T, T + 4 * 3600, T + 8 * 3600]);
+    expect(live.closed[0]).toBe(prev);
+    expect(live.closed[1]!.close).toBe(99);
+    // график: хвост с первой изменённой свечи и текущая; тик новее ответа (времени сервера нет) — close тика
+    expect(ev.tail!.from).toBe(T);
+    expect(ev.tail!.bars.map((c) => c.time)).toEqual([T, T + 4 * 3600, T + 8 * 3600, T + 12 * 3600]);
     expect(ev.bar).toMatchObject({ time: T + 12 * 3600, close: 120, high: 121 });
     expect(steps.at(-1)).toBe(ev);
-    // React: дописываются только новее последней, без вставок в середину; текущая — не в истории
-    const prev = [{ ...current, time: T - 4 * 3600, open_: false }, { ...current, close: 99, open_: false }];
-    const merged = mergeHistory(prev, ev.merge!, ev.bar!.time);
-    expect(merged.map((c) => c.time)).toEqual([T - 4 * 3600, T, T + 4 * 3600, T + 8 * 3600]);
-    expect(merged[1]!.close).toBe(current.close);
-    expect(mergeHistory(prev, [], 0)).toBe(prev);
-    expect(replaceByTime(prev, { ...prev[0]!, time: T + 1 })).toBe(prev);
+    expect(replaceByTime(live.closed, { ...prev, time: T + 1 })).toBe(live.closed);
   });
 
-  it("до старта копится не больше EARLY_MAX событий; resync до старта ничего не делает", () => {
+  it("догон без изменений — ничего; ответ не стыкуется (разрыв длиннее порции) — замена целиком", () => {
+    const { live, steps } = bar();
+    const hist = [{ ...current, time: T - 4 * 3600, open_: false }];
+    live.start(current, hist);
+    expect(live.catchUp(hist, current, null, undefined, true)).toBeNull();
+    expect(steps).toEqual([]);
+    const far = [{ ...current, time: T + 400 * 3600, open_: false }];
+    const ev = live.catchUp(far, { ...current, time: T + 404 * 3600 }, null, undefined, false)!;
+    expect(ev.reset!.candles.map((c) => c.time)).toEqual([T + 400 * 3600, T + 404 * 3600]);
+    expect(ev.reset!.hasOlder).toBe(false);
+    expect(live.closed.map((c) => c.time)).toEqual([T + 400 * 3600]);
+    expect(live.bar!.time).toBe(T + 404 * 3600);
+  });
+
+  it("догон в той же свече: тики во время запроса не теряются (low тика), объём — из ответа, close тика новее ответа", () => {
+    const { live } = bar();
+    live.start(current, [], T + 600); // through 08:10
+    live.tick({ s: "BTCUSDT", p: "95", at: iso(T + 700) }); // провал в минуте 08:11 — пока шёл запрос
+    live.tick({ s: "BTCUSDT", p: "100.9", at: iso(T + 701) });
+    const ev = live.catchUp([], { ...current, high: 101.5, close: 100.2, volume: 30 }, T + 660, T + 690, true)!;
+    expect(ev.bar).toMatchObject({ time: T, low: 95, high: 101.5, close: 100.9, volume: 30 });
+    expect(ev.tail!.bars).toHaveLength(1);
+    // через through ответа 08:11 — минута учтена ответом; тик старше ответа — close ответа
+    const late = new LiveBar("BTCUSDT", "4h");
+    late.start(current, [], T + 600);
+    late.tick({ s: "BTCUSDT", p: "101", at: iso(T + 700) });
+    expect(late.catchUp([], { ...current, close: 100.4, volume: 31 }, T + 720, T + 730, true)!.bar).toMatchObject({ close: 100.4, high: 101, volume: 31 });
+  });
+
+  it("server_time нет (заглушки e2e): через through не оценивается, close тика побеждает, тики не отбрасываются", () => {
+    const { live } = bar();
+    live.start(current, [], null);
+    expect(live.tick({ s: "BTCUSDT", p: "100.7", at: iso(T + 60) })!.bar!.close).toBe(100.7);
+    // тот же объём — свеча та же: шага нет, close тика на месте
+    expect(live.catchUp([], { ...current, close: 100.1 }, null, undefined, true)).toBeNull();
+    expect(live.bar).toMatchObject({ close: 100.7 });
+    const ev = live.catchUp([], { ...current, close: 100.1, volume: 12 }, null, undefined, true)!;
+    expect(ev.bar).toMatchObject({ close: 100.7, volume: 12 });
+  });
+
+  it("through при старте: ранние события не новее него не складываются, после — один раз; dueAt — по текущей", () => {
+    const { live } = bar();
+    live.forming({ s: "BTCUSDT", tf: "1m", c: { t: T + 540, o: "100", h: "101", l: "99", c: "100.5", v: "9" } }); // уже в current
+    live.forming({ s: "BTCUSDT", tf: "1m", c: { t: T + 600, o: "100.5", h: "100.8", l: "100.2", c: "100.6", v: "2" } });
+    live.start(current, [], T + 540);
+    expect(live.bar).toMatchObject({ volume: 12, close: 100.6 });
+    expect(live.dueAt(8)).toBe(T + 4 * 3600 + 8);
+    expect(new LiveBar("BTCUSDT", "4h").dueAt(8)).toBeNull();
+  });
+
+  it("до старта копится не больше EARLY_MAX событий; догон до старта ничего не делает", () => {
     const { live } = bar();
     for (let i = 0; i < EARLY_MAX + 50; i++) live.tick({ s: "BTCUSDT", p: String(90 + i / 1000), at: iso(T + 60 + i * 0.01) });
-    expect(live.resync(current, [])).toBeNull();
+    expect(live.catchUp([], current, null, undefined, true)).toBeNull();
     live.start(current, []);
     expect(live.bar!.low).toBeCloseTo(90.05, 5); // первые 50 вытеснены
+  });
+});
+
+/** Очередь догона: никогда не два запроса сразу; поводы во время запроса — по правилам (ADR-0003, ADR-0010). */
+describe("CatchUpGate", () => {
+  function gate(late = false) {
+    let now = 1_000_000;
+    const pending: ((v: boolean) => void)[] = [];
+    let runs = 0;
+    const run = () =>
+      new Promise<boolean>((resolve) => {
+        runs++;
+        pending.push(resolve);
+      });
+    const inner = new CatchUpGate(() => now);
+    const g = { request: (r: Parameters<CatchUpGate["request"]>[0]) => inner.request(r, run), get inFlight() { return inner.inFlight; }, get overdueEvery() { return inner.overdueEvery; } };
+    const finish = async () => {
+      pending.shift()!(late);
+      await new Promise((r) => setTimeout(r, 0));
+    };
+    return { g, finish, runs: () => runs, advance: (ms: number) => (now += ms), setLate: (v: boolean) => (late = v) };
+  }
+
+  it("никогда не два запроса сразу; reconnect во время запроса — ровно один повтор после него", async () => {
+    const t = gate();
+    expect(t.g.request("wake")).toBe(true);
+    expect(t.g.inFlight).toBe(true);
+    expect(t.g.request("reconnect")).toBe(false);
+    expect(t.g.request("reconnect")).toBe(false);
+    expect(t.runs()).toBe(1);
+    await t.finish();
+    expect(t.runs()).toBe(2); // повтор после ответа
+    await t.finish();
+    expect(t.runs()).toBe(2);
+    expect(t.g.inFlight).toBe(false);
+  });
+
+  it("wake, gap и overdue во время запроса отбрасываются — их покрывает ответ в пути", async () => {
+    const t = gate();
+    t.g.request("reconnect");
+    t.advance(60_000);
+    for (const r of ["wake", "gap", "overdue"] as const) expect(t.g.request(r)).toBe(false);
+    await t.finish();
+    expect(t.runs()).toBe(1);
+  });
+
+  it("gap — не чаще RESYNC_MIN_MS после любого догона; wake и reconnect — всегда", async () => {
+    const t = gate();
+    t.g.request("gap");
+    await t.finish();
+    t.advance(RESYNC_MIN_MS - 1);
+    expect(t.g.request("gap")).toBe(false);
+    expect(t.g.request("wake")).toBe(true);
+    await t.finish();
+    t.advance(RESYNC_MIN_MS);
+    expect(t.g.request("gap")).toBe(true);
+    await t.finish();
+    expect(t.runs()).toBe(3);
+  });
+
+  it("overdue: пауза LIVE_RETRY_MS, пока сервер сам отстаёт — удваивается до LIVE_BACKOFF_MAX_MS; догнал — снова LIVE_RETRY_MS", async () => {
+    const t = gate(true);
+    expect(t.g.request("overdue")).toBe(true);
+    await t.finish();
+    expect(t.g.overdueEvery).toBe(2 * LIVE_RETRY_MS);
+    t.advance(LIVE_RETRY_MS);
+    expect(t.g.request("overdue")).toBe(false);
+    t.advance(LIVE_RETRY_MS);
+    expect(t.g.request("overdue")).toBe(true);
+    await t.finish();
+    expect(t.g.overdueEvery).toBe(4 * LIVE_RETRY_MS);
+    for (let i = 0; i < 10; i++) {
+      t.advance(LIVE_BACKOFF_MAX_MS);
+      t.g.request("overdue");
+      await t.finish();
+    }
+    expect(t.g.overdueEvery).toBe(LIVE_BACKOFF_MAX_MS);
+    t.setLate(false);
+    t.advance(LIVE_BACKOFF_MAX_MS);
+    t.g.request("overdue");
+    await t.finish();
+    expect(t.g.overdueEvery).toBe(LIVE_RETRY_MS);
+  });
+
+  it("ошибка запроса не блокирует очередь", async () => {
+    let fail = true;
+    const g = new CatchUpGate();
+    const run = () => (fail ? Promise.reject(new Error("net")) : Promise.resolve(false));
+    expect(g.request("wake", run)).toBe(true);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(g.inFlight).toBe(false);
+    fail = false;
+    expect(g.request("wake", run)).toBe(true);
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyMinute, bucketStart, catchUpLive, countdownSeconds, foldMinute, isClosed, LIVE_PENDING_MINUTES, liveCandle, liveDueAt, liveForming, liveRestart, liveStart, liveTick, mergeLive, minuteNeedsHistory, nextBucket, restThrough, secondsToClose, type LiveBars, type LiveStep } from "../live";
+import { bucketStart, catchUpLive, countdownSeconds, foldMinute, isClosed, LIVE_PENDING_MINUTES, liveCandle, liveDueAt, liveForming, liveRestart, liveStart, liveTick, mergeLive, nextBucket, restThrough, secondsToClose, type LiveBars, type LiveStep } from "../live";
 import type { Candle } from "../types";
 
 const m1 = (time: number, o: number, h: number, l: number, c: number, v = 1): Candle => ({ time, open: o, high: h, low: l, close: c, volume: v, open_: false });
@@ -248,77 +248,85 @@ describe("живая свеча: последняя закрытая свеча 
 });
 
 /**
- * Живой поток и догон (продовый баг «график встал после фона»): закрытая минута на 1m/5m/15m заменяет текущую
- * свечу с тем же временем и открывает следующую, дубли минут не удваивают объём, свежая порция истории
- * сливается с концом без повторов времени, просроченная свеча видна по часам.
+ * Живой поток и догон (продовый баг из PR 139 «график встал после фона»): закрытая минута на 1m/5m/15m заменяет текущую
+ * свечу с тем же временем и открывает следующую, дубли минут не удваивают объём, свежая порция истории сливается с
+ * концом без повторов времени, просроченная свеча видна по часам. Минуты сворачивает автомат live-price (liveCandle),
+ * through ответа — lastClosed автомата; случаи applyMinute и minuteNeedsHistory из PR 139 — здесь же, на автомате.
  */
 const M = 60;
 const T = Date.UTC(2026, 10, 4, 7, 0) / 1000; // 07:00 UTC, начало часа
 const bar = (time: number, close: number, open_ = false, volume = 1): Candle => ({ time, open: close, high: close + 1, low: close - 1, close, volume, open_ });
 const times = (s: LiveBars) => s.closed.map((c) => c.time);
 
-describe("минута из WebSocket в свечах tf", () => {
-  it("1m: закрытая минута заменяет недописанную текущую с тем же временем, следующая — новая свеча справа", () => {
+describe("закрытая минута из WebSocket в свечах tf (автомат, случаи applyMinute из PR 139)", () => {
+  it("1m: закрытая минута заменяет недописанную текущую с тем же временем (объём не складывается), следующая — новая свеча справа", () => {
     // история: закрытые до 07:02, текущая 07:03 (недописанная, из БД с флагом open)
-    let s: LiveBars = { closed: [bar(T, 1), bar(T + M, 2), bar(T + 2 * M, 3)], current: bar(T + 3 * M, 4, true, 0.4), through: T + 2 * M };
-    s = applyMinute(s, m1(T + 3 * M, 4, 6, 3, 5, 2), "1m")!;
-    // объём не сложился с недописанным (0.4 + 2), свеча закрыта, текущей нет
-    expect(s.current).toBeNull();
-    expect(s.closed.at(-1)).toEqual({ time: T + 3 * M, open: 4, high: 6, low: 3, close: 5, volume: 2, open_: false });
-    expect(times(s)).toEqual([T, T + M, T + 2 * M, T + 3 * M]);
-    s = applyMinute(s, m1(T + 4 * M, 5, 7, 5, 6), "1m")!;
-    expect(times(s)).toEqual([T, T + M, T + 2 * M, T + 3 * M, T + 4 * M]);
-    expect(s.through).toBe(T + 4 * M);
-    // повтор той же минуты — замена, не дубль
-    s = applyMinute(s, m1(T + 4 * M, 5, 8, 5, 6.5), "1m")!;
-    expect(times(s)).toHaveLength(5);
-    expect(s.closed.at(-1)!.high).toBe(8);
-    // минута из прошлого не переписывает историю
-    expect(applyMinute(s, m1(T + M, 1, 1, 1, 1), "1m")).toBeNull();
+    const s = liveStart("1m", bar(T + 3 * M, 4, true, 0.4), bar(T + 2 * M, 3));
+    const a = liveCandle(s, m1(T + 3 * M, 4, 6, 3, 5, 2));
+    // объём не сложился с недописанным (0.4 + 2), свеча закрыта — следующая минута придёт новой свечой
+    expect(a.bar).toEqual({ time: T + 3 * M, open: 4, high: 6, low: 3, close: 5, volume: 2, open_: false });
+    expect(a.closed).toEqual([]);
+    expect(a.gap).toBe(false);
+    const b = liveCandle(a.state, m1(T + 4 * M, 5, 7, 5, 6));
+    expect(b.closed).toEqual([{ time: T + 3 * M, open: 4, high: 6, low: 3, close: 5, volume: 2, open_: false }]);
+    expect(b.bar).toMatchObject({ time: T + 4 * M, close: 6, open_: false });
+    expect(b.state.lastClosed).toBe(T + 4 * M);
+    // повтор той же минуты и минута из прошлого — не дубль и не правка истории
+    expect(liveCandle(b.state, m1(T + 4 * M, 5, 8, 5, 6.5)).bar).toBe(b.bar);
+    expect(liveCandle(b.state, m1(T + M, 1, 1, 1, 1)).state).toBe(b.state);
   });
 
-  it("1m: минута позже текущей закрывает текущую как есть; минута раньше текущей правит последнюю закрытую", () => {
-    const s: LiveBars = { closed: [bar(T, 1), bar(T + M, 2)], current: bar(T + 2 * M, 3, true), through: T };
-    const late = applyMinute(s, m1(T + M, 2, 9, 1, 2.5), "1m")!;
-    expect(late.current).toBe(s.current);
-    expect(late.closed.at(-1)!.high).toBe(9);
-    const jump = applyMinute(s, m1(T + 4 * M, 3, 3, 3, 3), "1m")!;
-    expect(times(jump)).toEqual([T, T + M, T + 2 * M, T + 4 * M]);
-    expect(jump.closed[2]!.open_).toBe(false);
-    expect(jump.current).toBeNull();
+  it("1m: минута позже текущей закрывает текущую как есть и просит историю; запоздавшая минута правит последнюю закрытую", () => {
+    const s = liveStart("1m", bar(T + 2 * M, 3, true), bar(T + M, 2));
+    const jump = liveCandle(s, m1(T + 4 * M, 3, 3, 3, 3));
+    expect(jump.closed.map((c) => c.time)).toEqual([T + 2 * M]);
+    expect(jump.closed[0]!.open_).toBe(false);
+    expect(jump.bar).toMatchObject({ time: T + 4 * M, open_: false });
+    expect(jump.gap).toBe(true); // 07:03 пропущена
+    const late = liveCandle(s, m1(T + M, 2, 9, 1, 2.5));
+    expect(late.amended).toMatchObject({ time: T + M, high: 9, close: 2.5, open_: false });
+    expect(late.bar).toBe(s.head);
     // пустая история — первая минута становится первой свечой
-    expect(times(applyMinute({ closed: [], current: null, through: 0 }, m1(T, 1, 1, 1, 1), "1m")!)).toEqual([T]);
+    expect(liveCandle(liveStart("1m", null), m1(T, 1, 1, 1, 1)).bar).toMatchObject({ time: T });
   });
 
-  it("5m: минута с временем текущей свечи заменяет её, остальные минуты сворачиваются, новая корзина закрывает текущую", () => {
+  it("5m: первая минута корзины заменяет текущую с сервера (в ней — недописанная она же), остальные сворачиваются, новая корзина закрывает текущую", () => {
     const B = T + 5 * M;
-    // текущая 5m из истории: только недописанная первая минута (запрос в 07:05:20)
-    let s: LiveBars = { closed: [bar(T, 1)], current: bar(B, 2, true, 0.3), through: restThrough(B + 20) };
-    expect(s.through).toBe(B - M);
-    s = applyMinute(s, m1(B, 2, 3, 1.5, 2.5, 2), "5m")!;
-    expect(s.current).toMatchObject({ time: B, open: 2, high: 3, low: 1.5, close: 2.5, volume: 2, open_: true });
-    s = applyMinute(s, m1(B + M, 2.5, 4, 2, 3, 1), "5m")!;
-    expect(s.current).toMatchObject({ time: B, open: 2, high: 4, low: 1.5, close: 3, volume: 3 });
+    // текущая 5m с сервера: только недописанная первая минута (запрос в 07:05:20), through — 07:04
+    const s = liveStart("5m", bar(B, 2, true, 0.3), bar(T, 1), restThrough(B + 20));
+    expect(s.lastClosed).toBe(B - M);
+    const a = liveCandle(s, m1(B, 2, 3, 1.5, 2.5, 2));
+    expect(a.bar).toMatchObject({ time: B, open: 2, high: 3, low: 1.5, close: 2.5, volume: 2, open_: true });
+    const b = liveCandle(a.state, m1(B + M, 2.5, 4, 2, 3, 1));
+    expect(b.bar).toMatchObject({ time: B, open: 2, high: 4, low: 1.5, close: 3, volume: 3 });
     // повтор уже учтённой минуты не удваивает объём
-    expect(applyMinute(s, m1(B + M, 2.5, 4, 2, 3, 1), "5m")).toBeNull();
+    expect(liveCandle(b.state, m1(B + M, 2.5, 4, 2, 3, 1)).bar).toBe(b.bar);
     // минута следующей корзины: текущая закрыта, новая открыта
-    s = applyMinute(s, m1(B + 5 * M, 3, 3.5, 2.9, 3.2, 4), "5m")!;
-    expect(times(s)).toEqual([T, B]);
-    expect(s.closed.at(-1)).toMatchObject({ time: B, close: 3, volume: 3, open_: false });
-    expect(s.current).toMatchObject({ time: B + 5 * M, open: 3, volume: 4, open_: true });
-    // запоздавшая минута старой корзины пропускается
-    expect(applyMinute(s, m1(B + 4 * M, 1, 1, 1, 1), "5m")).toBeNull();
+    const c = liveCandle(b.state, m1(B + 5 * M, 3, 3.5, 2.9, 3.2, 4));
+    expect(c.closed).toEqual([{ time: B, open: 2, high: 4, low: 1.5, close: 3, volume: 3, open_: false }]);
+    expect(c.bar).toMatchObject({ time: B + 5 * M, open: 3, volume: 4, open_: true });
+    expect(c.gap).toBe(true); // минуты 07:07…07:09 пропущены — догон
+    // запоздавшая минута старой корзины уже учтена
+    expect(liveCandle(c.state, m1(B + 4 * M, 1, 1, 1, 1)).state).toBe(c.state);
   });
 
-  it("15m: минута, уже учтённая историей, пропускается; без текущей свечи минута открывает новую", () => {
+  it("15m: минута, уже учтённая ответом (through), пропускается; следующая сворачивается один раз", () => {
     const B = T + 15 * M;
-    const s: LiveBars = { closed: [bar(T, 1)], current: bar(B, 2, true, 5), through: B + 3 * M };
-    expect(applyMinute(s, m1(B + 2 * M, 9, 9, 9, 9), "15m")).toBeNull();
-    expect(applyMinute(s, m1(B + 3 * M, 9, 9, 9, 9), "15m")).toBeNull();
-    expect(applyMinute(s, m1(B + 4 * M, 2, 9, 1, 8, 1), "15m")!.current).toMatchObject({ high: 9, close: 8, volume: 6 });
-    const none: LiveBars = { closed: [bar(T, 1)], current: null, through: 0 };
-    expect(applyMinute(none, m1(T + 14 * M, 1, 1, 1, 1), "15m")).toBeNull();
-    expect(applyMinute(none, m1(B + 2 * M, 1, 2, 1, 2), "15m")!.current).toMatchObject({ time: B, open_: true });
+    const s = liveStart("15m", bar(B, 2, true, 5), bar(T, 1), B + 3 * M);
+    expect(liveCandle(s, m1(B + 2 * M, 9, 9, 9, 9)).state).toBe(s);
+    expect(liveCandle(s, m1(B + 3 * M, 9, 9, 9, 9)).state).toBe(s);
+    const n = liveCandle(s, m1(B + 4 * M, 2, 9, 1, 8, 1));
+    expect(n.bar).toMatchObject({ high: 9, close: 8, volume: 6 });
+    expect(n.gap).toBe(false);
+    // без текущей свечи: минута свечи истории её уточняет, минута новой корзины открывает текущую (и просит историю,
+    // если между ними пропуск)
+    const none = liveStart("15m", null, bar(T, 1));
+    const late = liveCandle(none, m1(T + 14 * M, 1, 5, 1, 1));
+    expect(late.amended).toMatchObject({ time: T, high: 5 });
+    expect(late.bar).toBeNull();
+    const next = liveCandle(late.state, m1(B + 2 * M, 1, 2, 1, 2));
+    expect(next.bar).toMatchObject({ time: B, open_: true });
+    expect(next.gap).toBe(true);
   });
 });
 
@@ -381,9 +389,8 @@ describe("догон: свежая порция истории поверх жи
   it("1m: минута потока пришла раньше ответа после отсутствия длиннее порции — не дыра в истории, а замена с этой минутой сверху", () => {
     // поток стоял на минутах 501…1000, приложение спало 700 минут; на возврате минута 1700 пришла раньше ответа
     const old = Array.from({ length: 500 }, (_, i) => bar(T + (501 + i) * M, 1));
-    let s: LiveBars = { closed: old, current: null, through: T + 1000 * M };
-    s = applyMinute(s, m1(T + 1700 * M, 7, 8, 6, 7.5, 3), "1m")!;
-    expect(s.closed.at(-1)!.time).toBe(T + 1700 * M);
+    // минута 1700 уже в истории потока (LiveBar: закрытые автоматом свечи)
+    const s: LiveBars = { closed: [...old, m1(T + 1700 * M, 7, 8, 6, 7.5, 3)], current: null, through: T + 1700 * M };
     const page = Array.from({ length: 500 }, (_, i) => bar(T + (1200 + i) * M, 5));
     const rest = bar(T + 1700 * M, 7.2, true, 1);
     // стык по истории: перед порцией (1200) последняя — 1000, разрыв 200 минут
@@ -396,7 +403,7 @@ describe("догон: свежая порция истории поверх жи
     expect(r.bars.current).toBeNull();
     for (let i = 1; i < r.bars.closed.length; i++) expect(r.bars.closed[i]!.time - r.bars.closed[i - 1]!.time).toBe(M);
     // то же с минутой 1699 (последней в порции): в истории — окончательная из порции, дыры нет
-    const s2 = applyMinute({ closed: old, current: null, through: T + 1000 * M }, m1(T + 1699 * M, 7, 8, 6, 7.5), "1m")!;
+    const s2: LiveBars = { closed: [...old, m1(T + 1699 * M, 7, 8, 6, 7.5)], current: null, through: T + 1699 * M };
     expect(mergeLive(s2, page, rest, T + 1699 * M, "1m")).toBeNull();
     const r2 = catchUpLive(s2, page, rest, T + 1699 * M, "1m");
     expect(times(r2.bars)).toEqual(page.map((c) => c.time));
@@ -406,9 +413,8 @@ describe("догон: свежая порция истории поверх жи
   it("15m: минута потока открыла далёкую корзину раньше ответа — замена целиком, недописанная прежняя текущая не остаётся закрытой", () => {
     const Q = 15 * M;
     const old = Array.from({ length: 500 }, (_, i) => bar(T + (1 + i) * Q, 1));
-    let s: LiveBars = { closed: old, current: bar(T + 501 * Q, 2, true), through: T + 501 * Q + 3 * M };
-    s = applyMinute(s, m1(T + 1501 * Q + 2 * M, 9, 9, 9, 9), "15m")!;
-    expect(s.current!.time).toBe(T + 1501 * Q);
+    // минута 1501·Q + 2 закрыла прежнюю текущую (недописанной) и открыла далёкую корзину
+    const s: LiveBars = { closed: [...old, bar(T + 501 * Q, 2)], current: { ...m1(T + 1501 * Q, 9, 9, 9, 9), open_: true }, through: T + 1501 * Q + 2 * M };
     const page = Array.from({ length: 500 }, (_, i) => bar(T + (1001 + i) * Q, 4));
     const rest = bar(T + 1501 * Q, 9, true);
     expect(mergeLive(s, page, rest, T + 1501 * Q + 2 * M, "15m")).toBeNull();
@@ -433,51 +439,144 @@ describe("догон: свежая порция истории поверх жи
   });
 });
 
-describe("минута, которой нужна история", () => {
-  it("пропуск после учтённой минуты — догон; следующая по порядку — нет", () => {
-    const s: LiveBars = { closed: [bar(T, 1)], current: bar(T + 3600, 2, true), through: T + 3600 + 4 * M };
-    expect(minuteNeedsHistory(s, m1(T + 3600 + 5 * M, 1, 1, 1, 1), "1h")).toBe(false);
-    expect(minuteNeedsHistory(s, m1(T + 3600 + 6 * M, 1, 1, 1, 1), "1h")).toBe(true);
+describe("пропуск — gap: догон историей (случаи minuteNeedsHistory из PR 139)", () => {
+  it("пропущенная закрытая минута после учтённой — gap, сама минута сворачивается; следующая по порядку — нет", () => {
+    const h = T + 3600;
+    const s = liveStart("1h", bar(h, 2, true), bar(T, 1), h + 4 * M);
+    const ok = liveCandle(s, m1(h + 5 * M, 1, 1, 1, 1));
+    expect(ok.gap).toBe(false);
+    const miss = liveCandle(s, m1(h + 6 * M, 1, 3, 1, 1, 7));
+    expect(miss.gap).toBe(true);
+    expect(miss.bar).toMatchObject({ time: h, high: 3 });
+    expect(miss.state.lastClosed).toBe(h + 6 * M);
     // уже учтённая — нет
-    expect(minuteNeedsHistory(s, m1(T + 3600 + 2 * M, 1, 1, 1, 1), "1h")).toBe(false);
-    const one: LiveBars = { closed: [bar(T, 1)], current: bar(T + M, 1, true), through: T };
-    expect(minuteNeedsHistory(one, m1(T + M, 1, 1, 1, 1), "1m")).toBe(false);
-    expect(minuteNeedsHistory(one, m1(T + 3 * M, 1, 1, 1, 1), "1m")).toBe(true);
+    expect(liveCandle(s, m1(h + 2 * M, 1, 1, 1, 1)).gap).toBe(false);
+    // 1m: учтённая — и последняя свеча истории
+    const one = liveStart("1m", bar(T + M, 1, true), bar(T, 1));
+    expect(liveCandle(one, m1(T + M, 1, 1, 1, 1)).gap).toBe(false);
+    expect(liveCandle(one, m1(T + 3 * M, 1, 1, 1, 1)).gap).toBe(true);
+    // без through (старый API) пропуск минут до первой закрытой не виден — его ловят интервалы (route)
+    expect(liveCandle(liveStart("1h", bar(h, 2, true), bar(T, 1)), m1(h + 30 * M, 1, 1, 1, 1)).gap).toBe(false);
   });
 
-  it("минута уже закрытой свечи, которой нет в ответе (закрылась после него) — догон", () => {
+  it("минута уже закрытой свечи, которой нет в ответе (закрылась после него), уточняет свечу истории — догон не нужен", () => {
     // 1h: ответ пришёл в 08:00:00.5, последняя минута 07:59 ещё не была закрыта в БД — through 07:58
     const h = T + 3600;
-    const s: LiveBars = { closed: [bar(T, 1)], current: bar(h, 2, true), through: h - 2 * M };
-    expect(applyMinute(s, m1(h - M, 1, 1, 1, 1), "1h")).toBeNull();
-    expect(minuteNeedsHistory(s, m1(h - M, 1, 1, 1, 1), "1h")).toBe(true);
-    // учтённая ответом — нет
-    expect(minuteNeedsHistory({ ...s, through: h - M }, m1(h - M, 1, 1, 1, 1), "1h")).toBe(false);
-    // без текущей: минута последней закрытой свечи
-    expect(minuteNeedsHistory({ closed: [bar(T, 1)], current: null, through: T + 58 * M }, m1(T + 59 * M, 1, 1, 1, 1), "1h")).toBe(true);
-    expect(minuteNeedsHistory({ closed: [bar(T, 1)], current: null, through: T + 59 * M }, m1(T + 60 * M, 1, 1, 1, 1), "1h")).toBe(false);
+    const s = liveStart("1h", bar(h, 2, true), bar(T, 1), h - 2 * M);
+    const step = liveCandle(s, m1(h - M, 1, 4, 0.5, 1.5, 1));
+    expect(step.amended).toMatchObject({ time: T, high: 4, low: 0, close: 1.5 });
+    expect(step.gap).toBe(false);
+    expect(step.bar).toBe(s.head);
+    // без текущей: минута последней закрытой свечи — тоже уточнение
+    const none = liveStart("1h", null, bar(T, 1), T + 58 * M);
+    expect(liveCandle(none, m1(T + 59 * M, 1, 1, 1, 1)).gap).toBe(false);
+    expect(liveCandle(none, m1(T + 60 * M, 1, 1, 1, 1)).bar).toMatchObject({ time: h });
+  });
+
+  it("событие интервала между последней закрытой и текущей и переход через интервал — gap", () => {
+    const s = liveStart("1h", bar(T + 3 * 3600, 2, true), bar(T, 1));
+    expect(liveCandle(s, m1(T + 3600 + 5 * M, 1, 1, 1, 1)).gap).toBe(true);
+    expect(liveTick(s, 3, T + 5 * 3600 + 1).gap).toBe(true);
   });
 });
 
-describe("через through из ответа: минута, недописанная в ответе, не складывается дважды и не теряется", () => {
+describe("through из ответа: минута, недописанная в ответе, не складывается дважды и не теряется", () => {
   it("1h: текущая из ответа — только закрытые минуты, идущая придёт потоком и свернётся один раз", () => {
     // ответ в 10:05:30: закрыты 10:00…10:04 по 100, идущая 10:05 в текущую не входит; through — 10:04
     const h = T + 3 * 3600;
-    let s: LiveBars = { closed: [bar(T, 1)], current: { time: h, open: 1, high: 2, low: 1, close: 2, volume: 500, open_: true }, through: h + 4 * M };
-    s = applyMinute(s, m1(h + 5 * M, 2, 3, 2, 2.5, 100), "1h")!;
-    expect(s.current!.volume).toBe(600);
+    const s = liveStart("1h", { time: h, open: 1, high: 2, low: 1, close: 2, volume: 500, open_: true }, bar(T, 1), h + 4 * M);
+    expect(liveCandle(s, m1(h + 5 * M, 2, 3, 2, 2.5, 100)).bar!.volume).toBe(600);
     // ответ пришёл до записи закрытой 10:04 в БД: through 10:03 — минута 10:04 из потока не теряется
-    let t: LiveBars = { closed: [bar(T, 1)], current: { time: h, open: 1, high: 2, low: 1, close: 2, volume: 400, open_: true }, through: h + 3 * M };
-    t = applyMinute(t, m1(h + 4 * M, 2, 9, 1, 3, 100), "1h")!;
-    expect(t.current).toMatchObject({ high: 9, low: 1, volume: 500 });
+    const t = liveStart("1h", { time: h, open: 1, high: 2, low: 1, close: 2, volume: 400, open_: true }, bar(T, 1), h + 3 * M);
+    expect(liveCandle(t, m1(h + 4 * M, 2, 9, 1, 3, 100)).bar).toMatchObject({ high: 9, low: 1, volume: 500 });
+  });
+
+  it("при старте через through: закрытая и формирующаяся минуты и тики не новее него пропускаются, формирующаяся после — один раз", () => {
+    const B = T + 15 * M;
+    const s = liveStart("15m", { time: B, open: 10, high: 11, low: 9, close: 10.5, volume: 50, open_: true }, bar(T, 1), B + 3 * M);
+    expect(liveForming(s, { time: B + 3 * M, open: 1, high: 99, low: 1, close: 1, volume: 10, open_: true }).state).toBe(s);
+    expect(liveTick(s, 99, B + 3 * M + 30).state).toBe(s);
+    const f = liveForming(s, { time: B + 4 * M, open: 10.5, high: 10.8, low: 10.4, close: 10.7, volume: 7, open_: true });
+    expect(f.bar).toMatchObject({ high: 11, low: 9, close: 10.7, volume: 57 });
+    // закрытая версия той же минуты заменяет снимок, а не добавляется к нему
+    expect(liveCandle(f.state, m1(B + 4 * M, 10.5, 10.9, 10.4, 10.8, 9)).bar).toMatchObject({ close: 10.8, volume: 59 });
+    // through, противоречащий ответу (позже текущей свечи), не используется; у 1m through нет
+    expect(liveStart("15m", bar(B, 1, true), null, B + 15 * M).lastClosed).toBe(-Infinity);
+    expect(liveStart("15m", bar(B, 1, true), null, Number.NaN).lastClosed).toBe(-Infinity);
+    expect(liveStart("1m", bar(B, 1, true), null, B).lastClosed).toBe(-Infinity);
+    expect(liveStart("15m", null, bar(T, 1), B - M).lastClosed).toBe(B - M);
+  });
+
+  it("первая минута корзины заменяет текущую с сервера, в которую попала её формирующаяся версия (ответ без закрытых минут интервала)", () => {
+    const B = T + 15 * M;
+    // в ответе: текущая = агрегат с недописанной первой минутой (объём 4), through — минута перед интервалом
+    const s = liveStart("15m", { time: B, open: 5, high: 6, low: 4, close: 5.5, volume: 4, open_: true }, bar(T, 1), B - M);
+    const a = liveCandle(s, m1(B, 5, 6.5, 4, 6, 6));
+    expect(a.bar).toEqual({ time: B, open: 5, high: 6.5, low: 4, close: 6, volume: 6, open_: true });
+    expect(liveCandle(a.state, m1(B + M, 6, 7, 6, 6.8, 2)).bar).toMatchObject({ high: 7, close: 6.8, volume: 8 });
+  });
+});
+
+describe("догон в автомате: liveRestart по ответу истории", () => {
+  const H = 4 * 3600;
+  const T0 = Date.UTC(2026, 10, 4, 8) / 1000;
+  const cur = (o: Partial<Candle> = {}): Candle => ({ time: T0, open: 100, high: 105, low: 95, close: 101, volume: 1000, open_: true, ...o });
+
+  it("та же свеча: high/low — объединение; close — тика, если он новее ответа (или времени сервера нет), иначе ответа", () => {
+    const t = T0 + 600;
+    const ticked = liveTick(liveStart("4h", cur(), null, t - 60), 120, t + 30).state; // тик в минуте 08:10, through — 08:09
+    const page = cur({ high: 106, close: 104, volume: 1200 });
+    const older = liveRestart(ticked, "4h", page, null, t, t + 20);
+    expect(older.head).toMatchObject({ time: T0, high: 120, low: 95, close: 120, volume: 1200 });
+    const newer = liveRestart(ticked, "4h", page, null, t, t + 40);
+    expect(newer.head).toMatchObject({ high: 120, close: 104, volume: 1200 });
+    const noTime = liveRestart(ticked, "4h", page, null, t);
+    expect(noTime.head).toMatchObject({ close: 120 });
+    expect(newer.lastClosed).toBe(t);
+  });
+
+  it("неподтверждённые минуты потока новее through остаются сверху — объём формирующейся минуты не теряется", () => {
+    const s = liveForming(liveStart("4h", cur(), null, T0 + 600), { time: T0 + 660, open: 101, high: 108, low: 100, close: 107, volume: 7, open_: true }).state;
+    expect(s.head).toMatchObject({ volume: 1007, close: 107 });
+    const r = liveRestart(s, "4h", cur({ volume: 1100, close: 102 }), null, T0 + 600, T0 + 700);
+    expect(r.head).toMatchObject({ volume: 1107, close: 107, high: 108 });
+    expect(r.minutes.map((m) => m.time)).toEqual([T0 + 660]);
+    // ответ уже учёл эту минуту — она не остаётся
+    const r2 = liveRestart(s, "4h", cur({ volume: 1110, close: 106 }), null, T0 + 660, T0 + 700);
+    expect(r2.head).toMatchObject({ volume: 1110, close: 106 });
+    expect(r2.minutes).toEqual([]);
+  });
+
+  it("поток впереди ответа (его head выбран): автомат тот же, lastClosed не уменьшается, история — из ответа", () => {
+    const s = liveCandle(liveStart("4h", cur(), null, T0 + 600), m1(T0 + 660, 101, 103, 100, 102, 5)).state;
+    const tail = bar(T0 - H, 99);
+    const r = liveRestart(s, "4h", s.head, tail, T0 + 300, T0 + 700);
+    expect(r.head).toBe(s.head);
+    expect(r.base).toBe(s.base);
+    expect(r.lastClosed).toBe(T0 + 660);
+    expect(r.tail).toEqual({ ...tail, open_: false });
+    expect(r.tailHist).toBe(true);
+  });
+
+  it("1m: ответ с той же формирующейся минутой — тики и минуты потока новее неё остаются, закрытая минута заменяет её", () => {
+    const m = T0 + 300;
+    const s = liveTick(liveStart("1m", { time: m, open: 10, high: 11, low: 9, close: 10.5, volume: 3, open_: true }), 12, m + 61).state;
+    expect(s.head).toMatchObject({ time: m + 60, close: 12 });
+    const r = liveRestart(s, "1m", { time: m + 60, open: 11, high: 11.5, low: 10.8, close: 11.2, volume: 2, open_: true }, { ...bar(m, 10.5), open_: false });
+    expect(r.head).toMatchObject({ time: m + 60, high: 12, low: 10.8, close: 12, volume: 2, open_: true });
+    expect(liveCandle(r, m1(m + 60, 11, 12.2, 10.8, 12.1, 4)).bar).toMatchObject({ volume: 4, close: 12.1, open_: false });
   });
 });
 
 describe("просрочка и отсчёт", () => {
-  it("текущая просрочена к своему закрытию + запас; без текущей (1m) — ещё через минуту", () => {
-    expect(liveDueAt({ closed: [bar(T - 3600, 1)], current: bar(T, 1, true), through: 0 }, "1h", 8)).toBe(T + 3600 + 8);
-    expect(liveDueAt({ closed: [bar(T, 1)], current: null, through: T }, "1m", 8)).toBe(T + 2 * M + 8);
-    expect(liveDueAt({ closed: [], current: null, through: 0 }, "1m", 8)).toBeNull();
+  it("текущая просрочена к своему закрытию + запас; без текущей и на 1m после закрытой минуты — ещё через минуту", () => {
+    expect(liveDueAt(liveStart("1h", bar(T, 1, true), bar(T - 3600, 1)), 8)).toBe(T + 3600 + 8);
+    const closed1m = liveCandle(liveStart("1m", bar(T, 1, true), bar(T - M, 1)), m1(T, 1, 1, 1, 1)).state;
+    expect(closed1m.head!.open_).toBe(false);
+    expect(liveDueAt(closed1m, 8)).toBe(T + 2 * M + 8);
+    expect(liveDueAt(liveStart("1m", bar(T, 1, true), bar(T - M, 1)), 8)).toBe(T + M + 8);
+    expect(liveDueAt(liveStart("1m", null, bar(T, 1)), 8)).toBe(T + 2 * M + 8);
+    expect(liveDueAt(liveStart("1m", null), 8)).toBeNull();
   });
 
   it("отсчёт: до закрытия последней свечи, а если её интервал прошёл — до закрытия идущего по часам, не «0:00»", () => {

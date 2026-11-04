@@ -245,7 +245,7 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
   /** Свёрнута ли панель: своим ▾, раскладкой (строк не хватило) или на время «развернуть» другой. */
   const isCollapsed = useCallback((key: string) => (maxRef.current ? key !== maxRef.current : collapsedRef.current.has(key) || forcedRef.current.has(key)), []);
   /** Что загружено в график: смена инструмента или таймфрейма — замена и сброс вида, иначе — дописывание. */
-  const loadedRef = useRef<{ key: string; tf: Timeframe; candles: Candle[] } | null>(null);
+  const loadedRef = useRef<{ key: string; tf: Timeframe; candles: Candle[]; live?: LiveSource | null; filled?: boolean } | null>(null);
 
   // проектор рисунков читает ту же модель свечей, что и график
   const syncModel = useCallback(() => {
@@ -723,7 +723,10 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
   }, []);
 
   // данные: смена инструмента или таймфрейма — замена свечей и сброс вида; закрытие свечи — дописывание,
-  // масштаб, прокрутка и подгруженная слева история пользователя сохраняются (план 2A.7)
+  // масштаб, прокрутка и подгруженная слева история пользователя сохраняются (план 2A.7). С живой свечой (live) график
+  // меняет только её подписчик (ниже): здесь — лишь замена при смене инструмента или таймфрейма и на первых данных, по
+  // снимку live (история и текущая — без отставания состояния React); остальные изменения свечей React для графика —
+  // ничто (иначе текущая откатывалась бы к состоянию React, которое обновляется раз в 5 с)
   useEffect(() => {
     const term = termRef.current;
     const ctrl = ctrlRef.current;
@@ -731,6 +734,22 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     const prev = loadedRef.current;
     const same = prev !== null && prev.key === dataKey && prev.tf === tf;
     if (same && prev.candles.length === 0 && candles.length === 0) return;
+    if (live) {
+      if (same && prev.live === live && prev.filled) {
+        loadedRef.current = { ...prev, candles };
+        return;
+      }
+      // свечи — только из снимка этой live: React-свечи в этот момент могут быть ещё прежнего инструмента
+      const snap = live.snapshot();
+      const all = snap.bar ? [...snap.closed, snap.bar] : snap.closed.slice();
+      if (same && prev.live === live && all.length === 0) return;
+      loadedRef.current = { key: dataKey, tf, candles, live, filled: all.length > 0 };
+      ctrl.set({ tf });
+      term.setCandles(all, true);
+      ctrl.notifyCandles("replace");
+      syncModel();
+      return;
+    }
     const n = prev?.candles.length ?? 0;
     const append = same && n > 0 && candles.length >= n && candles[0]?.time === prev.candles[0]?.time && candles[n - 1]?.time === prev.candles[n - 1]?.time;
     loadedRef.current = { key: dataKey, tf, candles };
@@ -747,7 +766,7 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     syncModel();
     // текущая свеча обновляется своим эффектом ниже; здесь она нужна только при замене
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [candles, tf, dataKey, syncModel]);
+  }, [candles, tf, dataKey, syncModel, live]);
 
   useEffect(() => {
     const term = termRef.current;
@@ -758,16 +777,25 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     syncModel();
   }, [current, syncModel, live]);
 
-  // живая свеча: закрытые — дописать, уточнённую — заменить, текущую — обновить, свежую историю после
-  // переподключения или пропуска — влить (недостающие свечи вставить); вид не трогается
+  // живая свеча — единственный путь живых изменений графика (ADR-0010): закрытые — дописать, уточнённую — заменить
+  // (Terminal.amend), текущую — обновить; догон — хвост с первой изменённой свечи (Terminal.replaceTail: устаревшая
+  // текущая уходит, подгруженная слева история и вид остаются) или замена целиком. События, пока график держит не
+  // свечи этой live (другой инструмент или таймфрейм, данных ещё нет), не применяются: замена по снимку их уже учтёт
   useEffect(() => {
     if (!live) return;
     return live.subscribe((step) => {
       const term = termRef.current;
       const ctrl = ctrlRef.current;
-      if (!term || !ctrl) return;
-      if (step.merge) {
-        term.merge(step.bar ? [...step.merge, step.bar] : step.merge);
+      const loaded = loadedRef.current;
+      if (!term || !ctrl || loaded?.live !== live || !loaded.filled) return;
+      if (step.reset) {
+        term.setCandles(step.reset.candles, step.reset.hasOlder);
+        ctrl.notifyCandles("replace");
+        syncModel();
+        return;
+      }
+      if (step.tail) {
+        term.replaceTail(step.tail.from, step.tail.bars);
         ctrl.notifyCandles("append");
         syncModel();
         return;

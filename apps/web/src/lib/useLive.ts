@@ -9,9 +9,14 @@
  *
  * Соединение (LiveSocket) само следит за собой: тишина дольше SILENCE_MS — пинг; нет ответа за
  * PONG_TIMEOUT_MS — сокет полуоткрыт (телефон спал, сеть сменилась): закрываем и подключаемся сразу.
- * Вкладка снова видна, а данных давно не было — тоже сразу. Сокет, сменённый новым (переподключение,
- * смена токена), состояние больше не трогает. Каждое переподключение после первого считается
- * (`reconnects`): терминал по нему перечитывает свежую историю. Без анимаций — просто новые числа.
+ * Сокет, сменённый новым (переподключение, смена токена), состояние больше не трогает. Догон истории —
+ * по колбэку onResync, один механизм на повод (ADR-0003, ADR-0010):
+ * - сокет открыт заново (после первого открытия) — onResync("reconnect"), когда новый сокет уже открыт;
+ * - вкладка снова видна, страница из кэша (pageshow persisted), сеть вернулась (online) — wake():
+ *   сокет открыт и свеж (сообщение за ONLINE_MS) — ничего; открыт, но молчит — переподключение (дальше
+ *   reconnect); не открыт — onResync("wake") сразу (история по REST) и переподключение, если сокет не
+ *   подключается уже.
+ * Без анимаций — просто новые числа.
  */
 import { useEffect, useRef, useState } from "react";
 
@@ -23,11 +28,15 @@ export type LiveCandle = { s: string; tf: "1m"; c: LiveBarMsg };
 export type LiveTick = { s: string; p: string; at: string };
 export type LivePrice = { p: string; at: string };
 
+/** Повод перечитать историю: сокет открыт заново или вкладка снова видна при неоткрытом сокете. */
+export type ResyncReason = "reconnect" | "wake";
+
 export type LiveHandlers = {
   onSignal?: (s: LiveSignal) => void;
   onCandle?: (c: LiveCandle) => void;
   onForming?: (c: LiveCandle) => void;
   onTick?: (t: LiveTick) => void;
+  onResync?: (reason: ResyncReason) => void;
 };
 
 export type LiveMsg =
@@ -130,6 +139,7 @@ export function dispatchLive(m: LiveMsg, h: LiveHandlers, prices: PriceBatch): v
 export type LiveSubscription = { sub: string[]; batch: boolean; forming: boolean };
 
 type Visibility = Pick<Document, "visibilityState" | "addEventListener" | "removeEventListener">;
+type Events = Pick<Window, "addEventListener" | "removeEventListener">;
 
 export type LiveSocketOptions = {
   /** Адрес сокета (с токеном). */
@@ -139,10 +149,14 @@ export type LiveSocketOptions = {
   onMessage: (m: LiveMsg) => void;
   onConnected: (v: boolean) => void;
   onOnline: (v: boolean) => void;
-  /** Открыто заново после первого открытия (данные между могли пропасть). */
+  /** Открыто заново после первого открытия (данные между могли пропасть): новый сокет уже открыт. */
   onReconnect: () => void;
+  /** Вкладка снова видна (pageshow, online), а сокет не открыт: историю — сразу, по REST. */
+  onWake?: () => void;
   WebSocketImpl?: typeof WebSocket;
   doc?: Visibility | null;
+  /** pageshow и online (по умолчанию window). */
+  win?: Events | null;
 };
 
 /** Соединение /v1/ws с переподключением и сторожем полуоткрытого сокета (без React). */
@@ -159,16 +173,20 @@ export class LiveSocket {
   private online: boolean | null = null;
   private readonly WS: typeof WebSocket;
   private readonly doc: Visibility | null;
+  private readonly win: Events | null;
 
   constructor(private readonly opts: LiveSocketOptions) {
     this.WS = opts.WebSocketImpl ?? WebSocket;
     this.doc = opts.doc === undefined ? (typeof document === "undefined" ? null : document) : opts.doc;
+    this.win = opts.win === undefined ? (typeof window === "undefined" ? null : window) : opts.win;
   }
 
   start(): void {
     // «онлайн» гаснет сам, если тики перестали приходить (сокет при этом может быть открыт)
     this.watch = setInterval(() => this.check(), 1000);
     this.doc?.addEventListener("visibilitychange", this.onVisibility);
+    this.win?.addEventListener("pageshow", this.onPageShow as EventListener);
+    this.win?.addEventListener("online", this.onOnline);
     void this.connect();
   }
 
@@ -177,7 +195,25 @@ export class LiveSocket {
     if (this.retry) clearTimeout(this.retry);
     if (this.watch) clearInterval(this.watch);
     this.doc?.removeEventListener("visibilitychange", this.onVisibility);
+    this.win?.removeEventListener("pageshow", this.onPageShow as EventListener);
+    this.win?.removeEventListener("online", this.onOnline);
     this.detach();
+  }
+
+  /**
+   * Вкладка снова видна, страница из кэша, сеть вернулась: сокет открыт и свеж — ничего; открыт, но молчит дольше
+   * ONLINE_MS (телефон спал, iOS держит «открытым» мёртвый сокет) — новый сокет сразу (его открытие — onReconnect);
+   * не открыт — история сразу (onWake) и новый сокет, если он не подключается уже.
+   */
+  wake(): void {
+    if (this.stopped) return;
+    const ws = this.ws;
+    if (ws && ws.readyState === 1) {
+      if (Date.now() - this.lastMsg > ONLINE_MS) this.reconnectNow();
+      return;
+    }
+    this.opts.onWake?.();
+    if (!ws || ws.readyState !== 0) this.reconnectNow();
   }
 
   /** Подписка сменилась — отправить, если сокет открыт. */
@@ -278,11 +314,14 @@ export class LiveSocket {
   }
 
   private readonly onVisibility = (): void => {
-    if (this.stopped || this.doc?.visibilityState !== "visible") return;
-    if (Date.now() - this.lastMsg <= ONLINE_MS) return;
-    // вернулись к вкладке (телефон разблокирован), а данных давно не было: сокет, скорее всего, мёртв
-    if (!this.ws || this.ws.readyState === 1) this.reconnectNow();
+    if (this.doc?.visibilityState === "visible") this.wake();
   };
+
+  private readonly onPageShow = (e: PageTransitionEvent): void => {
+    if (e.persisted) this.wake();
+  };
+
+  private readonly onOnline = (): void => this.wake();
 }
 
 /** Адрес сокета: из /config (тот же домен), иначе — /v1/ws текущего хоста. */
@@ -300,7 +339,6 @@ export function useLive(symbols: string[], token: string | null, handlers: LiveH
   const [prices, setPrices] = useState<Record<string, LivePrice>>({});
   const [connected, setConnected] = useState(false);
   const [online, setOnline] = useState(false);
-  const [reconnects, setReconnects] = useState(0);
   const sockRef = useRef<LiveSocket | null>(null);
   const symsRef = useRef<string[]>(symbols);
   const handlersRef = useRef(handlers);
@@ -322,7 +360,8 @@ export function useLive(symbols: string[], token: string | null, handlers: LiveH
       onMessage: (m) => dispatchLive(m, handlersRef.current, batch),
       onConnected: setConnected,
       onOnline: setOnline,
-      onReconnect: () => setReconnects((n) => n + 1),
+      onReconnect: () => handlersRef.current.onResync?.("reconnect"),
+      onWake: () => handlersRef.current.onResync?.("wake"),
     });
     sockRef.current = sock;
     sock.start();
@@ -338,5 +377,5 @@ export function useLive(symbols: string[], token: string | null, handlers: LiveH
     sockRef.current?.resubscribe();
   }, [key]);
 
-  return { prices, connected, online, reconnects };
+  return { prices, connected, online };
 }

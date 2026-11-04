@@ -33,8 +33,9 @@ export function foldMinute(current: Candle | null, m1: Candle, tf: Timeframe): C
 }
 
 /**
- * Свечи терминала из живого потока: закрытые, текущая (незакрытая, null — её нет) и последняя минута, которая
- * уже учтена целиком (минуты WebSocket не позже неё — дубли).
+ * Свечи для догона (catchUpLive): закрытые, текущая (незакрытая, null — её нет) и последняя минута, которая уже
+ * учтена целиком (минуты WebSocket не позже неё — дубли). У живого потока это история LiveBar, head и lastClosed
+ * автомата; у порции с сервера — свечи ответа, его current и through.
  */
 export type LiveBars = { closed: readonly Candle[]; current: Candle | null; through: number };
 
@@ -45,48 +46,6 @@ export type LiveBars = { closed: readonly Candle[]; current: Candle | null; thro
  */
 export function restThrough(serverTime: number): number {
   return Math.floor(serverTime / 60) * 60 - 60;
-}
-
-const openFrom = (start: number, m1: Candle): Candle => ({ time: start, open: m1.open, high: m1.high, low: m1.low, close: m1.close, volume: m1.volume, open_: true });
-
-/**
- * Закрытая минута (сообщение WebSocket `candle`) в свечах tf (план 2A.3). null — минута ничего не меняет.
- *
- * 1m: минута — это закрытая свеча. Она заменяет свечу с тем же временем (текущую недописанную из истории или
- * последнюю закрытую), следующая минута добавляется справа новой свечой; текущей свечи после неё нет — на 1m
- * поток приносит только закрытые минуты.
- *
- * Старше 1m: минута с временем начала текущей свечи заменяет её (до неё в текущей могла быть только эта же
- * минута, недописанная); остальные минуты той же корзины сворачиваются, а уже учтённые (through) пропускаются —
- * иначе объём минуты считался бы дважды; минута следующей корзины закрывает текущую и открывает новую; минута
- * старой корзины пропускается — закрытые свечи приходят из истории.
- */
-export function applyMinute(s: LiveBars, m1: Candle, tf: Timeframe): LiveBars | null {
-  if (tf === "1m") {
-    const bar: Candle = { ...m1, open_: false };
-    const through = Math.max(s.through, m1.time);
-    const cur = s.current;
-    if (cur && m1.time >= cur.time) {
-      // текущая закрылась этой минутой; минута позже текущей — текущая закрывается как есть
-      return { closed: m1.time === cur.time ? [...s.closed, bar] : [...s.closed, { ...cur, open_: false }, bar], current: null, through };
-    }
-    const last = s.closed[s.closed.length - 1];
-    if (!last || m1.time > last.time) return { closed: [...s.closed, bar], current: cur, through };
-    if (m1.time === last.time) return { closed: [...s.closed.slice(0, -1), bar], current: cur, through };
-    return null;
-  }
-  const start = bucketStart(tf, m1.time);
-  const cur = s.current;
-  if (!cur) {
-    const last = s.closed[s.closed.length - 1];
-    if (last && start <= last.time) return null;
-    return { closed: s.closed, current: openFrom(start, m1), through: m1.time };
-  }
-  if (start < cur.time) return null;
-  if (start > cur.time) return { closed: [...s.closed, { ...cur, open_: false }], current: openFrom(start, m1), through: m1.time };
-  if (m1.time <= s.through) return null;
-  if (m1.time === start) return { closed: s.closed, current: openFrom(start, m1), through: m1.time };
-  return { closed: s.closed, current: foldMinute(cur, m1, tf), through: m1.time };
 }
 
 /**
@@ -153,29 +112,15 @@ export function catchUpLive(s: LiveBars, page: readonly Candle[], current: Candl
 }
 
 /**
- * Минута WebSocket, которую свёртка сама учесть не может, — нужен догон историей:
- * - пропуск: минута позже следующей за последней учтённой (поток молчал, пока приложение спало, или догон
- *   не удался) — без догона в истории осталась бы дыра, а отсчёт просрочки уже ушёл вперёд;
- * - минута уже закрытой свечи, которой нет в истории (ответ пришёл раньше, чем она закрылась): applyMinute её
- *   пропускает — закрытые свечи приходят из истории.
+ * Когда новая свеча просрочена, unix с (план 2A.7): текущая (head) должна смениться к своему закрытию; если текущей
+ * нет или на 1m она уже подтверждена закрытой минутой, новая свеча придёт с закрытием следующей минуты — ещё через
+ * 60 с. grace — запас на задержку записи и доставки. null — свечей нет.
  */
-export function minuteNeedsHistory(s: LiveBars, m1: Candle, tf: Timeframe): boolean {
-  if (m1.time > s.through + 60) return true;
-  if (tf === "1m" || m1.time <= s.through) return false;
-  const start = bucketStart(tf, m1.time);
-  const last = s.closed[s.closed.length - 1];
-  return s.current ? start < s.current.time : last !== undefined && start <= last.time;
-}
-
-/**
- * Когда новая свеча просрочена, unix с: текущая должна смениться к своему закрытию; если текущей нет (1m после
- * минуты из WebSocket), новая свеча придёт с закрытием следующей минуты — ещё через 60 с. grace — запас на
- * задержку записи и доставки. null — свечей нет.
- */
-export function liveDueAt(s: LiveBars, tf: Timeframe, grace: number): number | null {
-  const last = s.current ?? s.closed[s.closed.length - 1];
+export function liveDueAt(s: LiveBarState, grace: number): number | null {
+  const last = s.head ?? s.tail;
   if (!last) return null;
-  return last.time + TF_SECONDS[tf] + (s.current ? 0 : 60) + grace;
+  const closedHead = !s.head || (s.tf === "1m" && s.head.time <= s.lastClosed);
+  return last.time + TF_SECONDS[s.tf] + (closedHead ? 60 : 0) + grace;
 }
 
 /**
@@ -209,8 +154,12 @@ export function secondsToClose(tf: Timeframe, time: number, now: number): number
  * Автомат знает последнюю закрытую свечу истории (`tail` при старте): событие её интервала никогда не
  * становится текущей свечой, а уточняет её (`amended`): у 1m закрытая минута заменяет свечу целиком,
  * у старших tf — high, low и close. Событие интервала между последней закрытой и текущей свечой
- * (пропущенные свечи — сон телефона, обрыв связи) и переход через интервал — `gap`: историю справа
- * нужно перечитать с сервера.
+ * (пропущенные свечи — сон телефона, обрыв связи), переход через интервал и пропущенная закрытая минута — `gap`:
+ * историю справа нужно перечитать с сервера (догон — catchUpLive + liveRestart, ADR-0003 и ADR-0010).
+ *
+ * Поле `through` ответа истории (последняя закрытая минута в БД, текущая свеча tf ≥ 5m свёрнута только из закрытых
+ * минут) задаёт `lastClosed` при старте и при догоне: минуты, формирующиеся минуты и тики не новее него уже учтены
+ * и пропускаются — объём минуты не считается дважды. У 1m through нет: там закрытая минута заменяет свечу по времени.
  */
 export type LiveBarState = {
   tf: Timeframe;
@@ -253,34 +202,76 @@ export function nextBucket(tf: Timeframe, time: number): number {
 }
 
 /**
- * Начало: текущая свеча с сервера (`current`) и последняя закрытая свеча истории (`last`). Без `last`
+ * through ответа годится как последняя учтённая минута: не 1m, конечное и не позже текущей свечи с сервера
+ * (иначе ответ противоречит сам себе — не доверяем); иначе −∞ (минуты сворачиваются все).
+ */
+function seedThrough(tf: Timeframe, current: Candle | null, through: number | null | undefined): number {
+  if (tf === "1m" || through == null || !Number.isFinite(through)) return -Infinity;
+  if (current && through >= current.time + TF_SECONDS[tf]) return -Infinity;
+  return through;
+}
+
+/**
+ * Начало: текущая свеча с сервера (`current`), последняя закрытая свеча истории (`last`) и through ответа — последняя
+ * закрытая минута, уже учтённая текущей (tf ≥ 5m): события не новее неё пропускаются (объём не дважды). Без `last`
  * событие старого интервала могло стать текущей свечой и затереть свечу истории.
  */
-export function liveStart(tf: Timeframe, current: Candle | null, last: Candle | null = null): LiveBarState {
+export function liveStart(tf: Timeframe, current: Candle | null, last: Candle | null = null, through?: number | null): LiveBarState {
   const cur = current ? { ...current, open_: true } : null;
   const tail = last && (!cur || last.time < cur.time) ? { ...last, open_: false } : null;
-  const common = { lastClosed: -Infinity, head: cur, tail, tailHist: tail !== null, tailMinute: -Infinity, lastTick: null };
+  const common = { lastClosed: seedThrough(tf, cur, through), head: cur, tail, tailHist: tail !== null, tailMinute: -Infinity, lastTick: null };
   // у 1m текущая свеча с сервера — сама формирующаяся минута: её уточнят forming и тики
   if (tf === "1m") return { tf, base: null, minutes: cur ? [cur] : [], ...common };
   return { tf, base: cur, minutes: [], ...common };
 }
 
+/** Текущая свеча из свёртки base и неподтверждённых минут — самой новой корзины (как settle). */
+function headOf(tf: Timeframe, base: Candle | null, minutes: readonly Candle[], lastClosed: number): Candle | null {
+  let ht: number | null = base ? base.time : null;
+  for (const m of minutes) ht = Math.max(ht ?? -Infinity, bucketStart(tf, m.time));
+  if (ht === null) return null;
+  let acc = base && base.time === ht ? base : null;
+  for (const m of minutes) if (bucketStart(tf, m.time) === ht) acc = merge(acc, m, ht);
+  return acc && tf === "1m" && acc.time <= lastClosed ? { ...acc, open_: false } : acc;
+}
+
 /**
- * Перезапуск по свежей истории с сервера (переподключение, пропуск): то, что автомат уже знает новее
- * сервера, сохраняется — текущая свеча новее серверной остаётся текущей (серверная закрыта), у той же
- * свечи — high/low шире и close последнего тика.
+ * Перезапуск по свежей истории с сервера (догон: переподключение, пропуск, возврат вкладки, просрочка). current —
+ * текущая, которую выбрал catchUpLive: сам head автомата (поток впереди ответа — у той же свечи у него больше целых
+ * минут) или свеча ответа; last — последняя закрытая итоговой истории; through и serverTime — из ответа.
+ *
+ * - lastClosed = max(прежний, through): минуты, учтённые ответом, дальше пропускаются.
+ * - Поток впереди (current — сам head): автомат тот же, из ответа — только последняя свеча истории.
+ * - Свеча ответа: она — свёртка закрытых минут, неподтверждённые минуты потока новее lastClosed (формирующаяся
+ *   минута, тики) остаются сверху — объём и цена идущей минуты не теряются. У той же свечи, что head, high/low —
+ *   объединение (тики могли выйти за ответ); close — из минут потока, а без них — тика, если он не старше ответа
+ *   (serverTime; без времени сервера — тика), иначе ответа.
  */
-export function liveRestart(prev: LiveBarState | null, tf: Timeframe, current: Candle | null, last: Candle | null): LiveBarState {
+export function liveRestart(prev: LiveBarState | null, tf: Timeframe, current: Candle | null, last: Candle | null, through?: number | null, serverTime?: number): LiveBarState {
+  const lc = Math.max(prev?.lastClosed ?? -Infinity, seedThrough(tf, current, through));
+  const tail = last && (!current || last.time < current.time) ? { ...last, open_: false } : null;
+  const lastTick = prev?.lastTick ?? null;
+  const ph = prev?.head ?? null;
+  if (prev && ph && (current === ph || !current || ph.time > current.time) && (!last || ph.time > last.time)) {
+    // поток впереди ответа: его текущая остаётся; текущая ответа, которую он уже обогнал, — закрытая свеча истории
+    const passed = current !== null && current !== ph && (!last || current.time > last.time);
+    const t = passed ? { ...current, open_: false } : last ? { ...last, open_: false } : null;
+    // последняя свеча истории — та, что закрыл сам автомат (её минуты он знает): его версия
+    const own = !passed && prev.tail !== null && t !== null && !prev.tailHist && prev.tail.time === t.time;
+    return { ...prev, lastClosed: lc, minutes: prev.minutes.filter((m) => m.time > lc), tail: own ? prev.tail : t, tailHist: own ? false : t !== null, tailMinute: own ? prev.tailMinute : -Infinity };
+  }
   const head = prev?.head ?? null;
-  let cur = current;
-  let tail = last;
-  if (head && cur && head.time > cur.time) {
-    tail = { ...cur, open_: false };
-    cur = head;
-  } else if (head && cur && head.time === cur.time) {
-    cur = { ...cur, high: Math.max(cur.high, head.high), low: Math.min(cur.low, head.low), close: prev?.lastTick ? head.close : cur.close };
-  } else if (head && !cur && (!last || head.time > last.time)) cur = head;
-  return { ...liveStart(tf, cur, tail), lastTick: prev?.lastTick ?? null };
+  let cur = current ? { ...current, open_: true } : null;
+  if (cur && head && head.time === cur.time) cur = { ...cur, high: Math.max(cur.high, head.high), low: Math.min(cur.low, head.low) };
+  const from = cur?.time ?? Infinity;
+  const kept = (prev?.minutes ?? []).filter((m) => m.time > lc && bucketStart(tf, m.time) >= from && !(tf === "1m" && m.time === from));
+  if (cur && lastTick && !kept.some((m) => bucketStart(tf, m.time) === from) && bucketStart(tf, lastTick.minute) === from && (serverTime === undefined || !Number.isFinite(serverTime) || lastTick.at >= serverTime)) {
+    const p = lastTick.price;
+    cur = { ...cur, high: Math.max(cur.high, p), low: Math.min(cur.low, p), close: p };
+  }
+  const base = tf === "1m" ? null : cur;
+  const minutes = tf === "1m" && cur ? [cur, ...kept] : kept;
+  return { tf, base, minutes, lastClosed: lc, head: headOf(tf, base, minutes, lc), tail, tailHist: tail !== null, tailMinute: -Infinity, lastTick };
 }
 
 function merge(acc: Candle | null, m: Candle, time: number): Candle {
@@ -294,14 +285,22 @@ function sameBar(a: Candle, b: Candle): boolean {
 
 type Parts = { base: Candle | null; minutes: Candle[]; lastClosed: number; finished: Candle[] };
 
-/** Подтверждение минуты m: она и пропущенные до неё неподтверждённые — в base по корзинам. */
-function confirm(tf: Timeframe, p: Parts, m: Candle): Parts {
+/**
+ * Подтверждение минуты m: она и пропущенные до неё неподтверждённые — в base по корзинам. closed — m пришла
+ * закрытой минутой с сервера (а не неподтверждённая сверх LIVE_PENDING_MINUTES): только она может заменить base.
+ */
+function confirm(tf: Timeframe, p: Parts, m: Candle, closed = false): Parts {
   let base = p.base;
   const finished = p.finished.slice();
   for (const x of [...p.minutes.filter((y) => y.time < m.time), m]) {
     const b = bucketStart(tf, x.time);
     if (!base || base.time < b) {
       if (base) finished.push(base);
+      base = merge(null, x, b);
+    } else if (closed && x === m && base.time === b && x.time === b) {
+      // закрытая первая минута корзины заменяет base: в нём могла быть только она же, недописанная (текущая с сервера,
+      // в которую попала формирующаяся первая минута, — ответ без закрытых минут интервала); иначе её объём считался бы
+      // дважды
       base = merge(null, x, b);
     } else if (base.time === b) base = merge(base, x, b);
     // base.time > b: минута старше свечи с сервера — уже в ней
@@ -345,6 +344,8 @@ function settle(s: LiveBarState, p: Parts, touched: number, extra: Partial<LiveB
       amended = tail;
     }
   }
+  // 1m: свеча, подтверждённая закрытой минутой, показывается закрытой (следующая придёт новой свечой)
+  if (tf === "1m" && head && head.open_ && head.time <= p.lastClosed) head = { ...head, open_: false };
   const tailHist = tail === s.tail && s.tailHist;
   const state: LiveBarState = { ...s, ...extra, base: p.base, minutes: p.minutes, lastClosed: p.lastClosed, head, tail, tailHist };
   return { state, bar: head, closed, amended, gap };
@@ -388,14 +389,27 @@ function foldTail(s: LiveBarState, minute: number, m: Candle, whole: boolean, ex
   return { state, bar: s.head, closed: [], amended: changed ? next : null, gap: false };
 }
 
-/** Закрытая минутная свеча (`candle`). */
+/**
+ * Пропущена закрытая минута: минута позже следующей за последней учтённой (поток молчал, пока телефон спал, или
+ * минута закрылась между ответом истории и подпиской). У 1m учтённая — и последняя свеча истории (минута).
+ */
+function missedMinute(s: LiveBarState, t: number): boolean {
+  const known = s.tf === "1m" ? Math.max(s.lastClosed, s.tail?.time ?? -Infinity) : s.lastClosed;
+  return Number.isFinite(known) && t > known + 60;
+}
+
+/**
+ * Закрытая минутная свеча (`candle`). Пропущенная перед ней закрытая минута — `gap` (догон историей), сама минута
+ * всё равно сворачивается.
+ */
 export function liveCandle(s: LiveBarState, m: Candle): LiveStep {
   if (m.time <= s.lastClosed) return unchanged(s);
+  const missed = missedMinute(s, m.time);
   const where = route(s, bucketStart(s.tf, m.time));
   if (where === "stale") return unchanged(s);
   if (where === "gap") return unchanged(s, true);
-  if (where === "tail") return foldTail(s, m.time, m, s.tf === "1m", { lastClosed: m.time });
-  return settle(s, confirm(s.tf, parts(s), { ...m, open_: false }), bucketStart(s.tf, m.time));
+  const step = where === "tail" ? foldTail(s, m.time, m, s.tf === "1m", { lastClosed: m.time }) : settle(s, confirm(s.tf, parts(s), { ...m, open_: false }, true), bucketStart(s.tf, m.time));
+  return missed && !step.gap ? { ...step, gap: true } : step;
 }
 
 /**

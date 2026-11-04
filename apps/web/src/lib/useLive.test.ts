@@ -111,7 +111,20 @@ function fakeDoc(): FakeDoc {
   };
 }
 
-function socket(log: string[], doc: FakeDoc | null = null) {
+type FakeWin = { fire(type: string, e?: object): void; addEventListener(t: string, f: (e: object) => void): void; removeEventListener(t: string, f: (e: object) => void): void };
+function fakeWin(): FakeWin {
+  const fns = new Map<string, Set<(e: object) => void>>();
+  return {
+    fire: (type, e = {}) => fns.get(type)?.forEach((f) => f(e)),
+    addEventListener: (t, f) => {
+      if (!fns.has(t)) fns.set(t, new Set());
+      fns.get(t)!.add(f);
+    },
+    removeEventListener: (t, f) => fns.get(t)?.delete(f),
+  };
+}
+
+function socket(log: string[], doc: FakeDoc | null = null, win: FakeWin | null = null) {
   const sock = new LiveSocket({
     url: async () => "ws://x/v1/ws",
     subscription: () => ({ sub: ["BTCUSDT"], batch: true, forming: true }),
@@ -119,8 +132,10 @@ function socket(log: string[], doc: FakeDoc | null = null) {
     onConnected: (v) => log.push(`connected:${v}`),
     onOnline: (v) => log.push(`online:${v}`),
     onReconnect: () => log.push("reconnect"),
+    onWake: () => log.push("wake"),
     WebSocketImpl: FakeWS as unknown as typeof WebSocket,
     doc: doc as unknown as Document,
+    win: win as unknown as Window,
   });
   return sock;
 }
@@ -257,6 +272,71 @@ describe("соединение /v1/ws (LiveSocket)", () => {
     expect(log.filter((e) => e === "reconnect")).toHaveLength(1);
     sock.stop();
     await vi.advanceTimersByTimeAsync(60_000);
+    expect(FakeWS.all).toHaveLength(2);
+  });
+
+  it("пробуждение (вкладка видна, pageshow из кэша, online): сокет свеж — ничего; открыт, но молчит — новый сокет, затем один reconnect", async () => {
+    vi.useFakeTimers();
+    const doc = fakeDoc();
+    const win = fakeWin();
+    const log: string[] = [];
+    const sock = socket(log, doc, win);
+    sock.start();
+    await flush();
+    const a = FakeWS.all[0]!;
+    a.open();
+    tick(a);
+    // свежий сокет: ни запроса истории, ни нового сокета
+    doc.fire();
+    win.fire("online");
+    win.fire("pageshow", { persisted: true });
+    await flush();
+    expect(FakeWS.all).toHaveLength(1);
+    expect(log).not.toContain("wake");
+    // открыт, но молчит дольше ONLINE_MS (таймеры телефона спали): новый сокет; история — по его открытию
+    vi.setSystemTime(Date.now() + ONLINE_MS + 1000);
+    win.fire("pageshow", { persisted: false }); // не из кэша — не пробуждение
+    await flush();
+    expect(FakeWS.all).toHaveLength(1);
+    win.fire("pageshow", { persisted: true });
+    await flush();
+    expect(FakeWS.all).toHaveLength(2);
+    expect(log).not.toContain("wake");
+    FakeWS.all[1]!.open();
+    expect(log.filter((e) => e === "reconnect")).toHaveLength(1);
+    sock.stop();
+  });
+
+  it("пробуждение при неоткрытом сокете: история сразу (onWake) и новый сокет; сокет уже подключается — только история", async () => {
+    vi.useFakeTimers();
+    const doc = fakeDoc();
+    const win = fakeWin();
+    const log: string[] = [];
+    const sock = socket(log, doc, win);
+    sock.start();
+    await flush();
+    const a = FakeWS.all[0]!;
+    a.open();
+    a.finishClose(); // сервер закрыл; переподключение — по таймеру через RETRY_MS…
+    expect(log.at(-1)).toBe("connected:false");
+    win.fire("online"); // сеть вернулась — не ждём таймер
+    await flush();
+    expect(log.filter((e) => e === "wake")).toHaveLength(1);
+    expect(FakeWS.all).toHaveLength(2);
+    // новый сокет ещё подключается: вкладка видна — история, но не третий сокет
+    doc.fire();
+    await flush();
+    expect(log.filter((e) => e === "wake")).toHaveLength(2);
+    expect(FakeWS.all).toHaveLength(2);
+    FakeWS.all[1]!.open();
+    expect(log.filter((e) => e === "reconnect")).toHaveLength(1);
+    // таймер прежнего переподключения отменён: лишнего сокета нет
+    await vi.advanceTimersByTimeAsync(RETRY_MS + RETRY_JITTER_MS + 10);
+    expect(FakeWS.all).toHaveLength(2);
+    sock.stop();
+    // после остановки события ничего не делают
+    win.fire("online");
+    await flush();
     expect(FakeWS.all).toHaveLength(2);
   });
 });
