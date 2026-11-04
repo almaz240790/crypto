@@ -29,19 +29,27 @@ export function ChartCorner({ onZoom, onReset }: { onZoom: (factor: number) => v
 }
 
 /**
- * Режим рисования (десктоп): чип в правом верхнем углу основной панели, левее шкалы цены и не поверх легенды —
- * «Рисую: {инструмент}» (фокус на кнопке инструмента в левой панели) и «Готово» (закончить рисование; то же — Esc).
+ * Режим рисования (ADR-0009, «Рисование»): чип в правом верхнем углу основной панели, левее шкалы цены и не поверх
+ * легенды, — на десктопе и на телефоне. «{инструмент} · {подсказка шага}» («Нажмите вторую точку») и одна кнопка:
+ * «Отменить» — бросить начатый рисунок и вернуть курсор (то же — Esc); в «серии», пока рисунок не начат, — «Готово»
+ * (закончить серию). Подсказка читается с экрана при смене шага (aria-live, без role=status: он один — тост).
  */
-export function DrawModeChip({ tool, onFinish }: { tool: string; onFinish: () => void }) {
+export function DrawModeChip({ tool, hint, finish, onExit }: { tool: string; hint: string; finish: boolean; onExit: () => void }) {
   const t = useT();
   return (
-    <div className={c.drawChip}>
-      <Button size="sm" variant="ghost" onClick={() => document.querySelector<HTMLElement>('[role="toolbar"] [aria-pressed="true"]')?.focus()}>
-        {t("Рисую: {tool}", { tool })}
-      </Button>
-      <Button size="sm" variant="primary" aria-label={t("закончить рисование")} onClick={onFinish}>
-        {t("Готово")}
-      </Button>
+    <div className={c.drawChip} role="group" aria-label={t("режим рисования")} data-testid="draw-chip">
+      <span className={c.drawHint} aria-live="polite">
+        <span className={c.drawTool}>{tool}</span> <span>{hint}</span>
+      </span>
+      {finish ? (
+        <Button size="sm" variant="primary" aria-label={t("Готово — закончить рисование")} title={t("Закончить серию рисунков (Esc)")} onClick={onExit}>
+          {t("Готово")}
+        </Button>
+      ) : (
+        <Button size="sm" variant="ghost" aria-label={t("Отменить рисунок")} title={t("Отменить рисунок и вернуть курсор (Esc)")} onClick={onExit}>
+          {t("Отменить")}
+        </Button>
+      )}
     </div>
   );
 }

@@ -1,7 +1,7 @@
 import type { DrawingType } from "@platform/charts";
 
 /** Значки инструментов рисования (план 2A.8): 18 px, линия currentColor — цвет берётся из темы. */
-const PATHS: Record<DrawingType | "magnet" | "undo" | "redo" | "eye" | "eyeOff", string> = {
+const PATHS: Record<DrawingType | "magnet" | "series" | "undo" | "redo" | "eye" | "eyeOff", string> = {
   hline: "M2 9h14",
   hray: "M3 9h11M12 6.5 14.5 9 12 11.5M3 7.5v3",
   vline: "M9 2v14",
@@ -17,6 +17,8 @@ const PATHS: Record<DrawingType | "magnet" | "undo" | "redo" | "eye" | "eyeOff",
   note: "M4 4h10M9 4v11",
   ruler: "M2 9h14M4.5 6.5 2 9l2.5 2.5M13.5 6.5 16 9l-2.5 2.5",
   magnet: "M5 3v6a4 4 0 0 0 8 0V3M5 6h3M10 6h3",
+  // «рисовать серию»: линия и стрелки по кругу — инструмент остаётся для следующего рисунка
+  series: "M3 13 9 7M13.5 4.5A6 6 0 0 1 15 9M15 9l-1.8-1.2M15 9l1.2-1.8M4.5 13.5A6 6 0 0 1 3 9",
   undo: "M6 4 3 7l3 3M3 7h7a5 5 0 0 1 0 10H8",
   redo: "M12 4l3 3-3 3M15 7H8a5 5 0 0 0 0 10h2",
   eye: "M1.5 9S4.5 4 9 4s7.5 5 7.5 5-3 5-7.5 5S1.5 9 1.5 9ZM9 11.2a2.2 2.2 0 1 0 0-4.4 2.2 2.2 0 0 0 0 4.4Z",

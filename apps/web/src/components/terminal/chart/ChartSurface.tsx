@@ -106,12 +106,17 @@ type Props = {
     state: DrawingsState;
     tool: DrawingType | null;
     magnet: boolean;
+    /** «Рисовать серию»: инструмент не снимается после рисунка. */
+    series: boolean;
     draft: Drawing | null;
     onCreate: (d: Drawing) => void;
     onMove: (id: string, points: Point[], final: boolean) => void;
     onSelect: (id: string | null) => void;
     onDraft: (d: Drawing | null) => void;
-    onToolDone: () => void;
+    /** Сколько точек начатого рисунка поставлено (0 — не начат). */
+    onStep: (placed: number) => void;
+    /** Рисунок завершён; ended — контроллер снял инструмент (без «серии»). */
+    onToolDone: (ended: boolean) => void;
   };
 };
 
@@ -608,7 +613,8 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
         onMove: (id, pts, final) => drawingsRef.current?.onMove(id, pts, final),
         onSelect: (id) => drawingsRef.current?.onSelect(id),
         onDraft: (d) => drawingsRef.current?.onDraft(d),
-        onDone: () => drawingsRef.current?.onToolDone(),
+        onStep: (n) => drawingsRef.current?.onStep(n),
+        onDone: (ended) => drawingsRef.current?.onToolDone(ended),
       },
     );
     drawCtrlRef.current = dctrl;
@@ -843,6 +849,7 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     prim.update({ drawings: drawings ? visibleOn(drawings.state, tf) : [], draft: drawings?.draft ?? null, selectedId: drawings?.state.selectedId ?? null });
     if (dctrl.tool !== (drawings?.tool ?? null)) dctrl.setTool(drawings?.tool ?? null);
     dctrl.setMagnet(drawings?.magnet ?? true);
+    dctrl.setSeries(drawings?.series ?? false);
   }, [drawings, tf]);
 
   useEffect(() => {

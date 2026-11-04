@@ -125,8 +125,8 @@ type BottomProps = {
   /** «Найдено (n)»: лист-счётчик (FoundCounter) — оболочка не перерисовывается при сдвиге графика. */
   found: ReactNode;
   alertsCount: number;
+  /** Выбранный инструмент рисования: «Рисую: …» открывает лист; «Отменить» и шаг — в чипе над графиком. */
   tool: string | null;
-  onFinishTool: () => void;
   canUndo: boolean;
   canRedo: boolean;
   onUndo: () => void;
@@ -160,11 +160,6 @@ export function PhoneBottom(p: BottomProps) {
       <button type="button" className={s.chip} aria-pressed={p.sheet === "draw" || p.tool !== null} onClick={() => toggle("draw")}>
         {p.tool ? t("Рисую: {tool}", { tool: p.tool }) : t("Рисовать")}
       </button>
-      {p.tool && (
-        <button type="button" className={s.chip} onClick={p.onFinishTool} aria-label={t("закончить рисование")}>
-          {t("Готово")}
-        </button>
-      )}
       <button type="button" className={s.chip} onClick={p.onUndo} disabled={!p.canUndo} aria-label={t("отменить")}>
         ↶
       </button>

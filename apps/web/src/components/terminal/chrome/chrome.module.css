@@ -342,12 +342,42 @@
 /* в правом верхнем углу основной панели (ChartSurface topRight), не поверх легенды */
 .drawChip {
   display: inline-flex;
+  align-items: center;
   gap: var(--gap-1);
   padding: 3px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface);
   box-shadow: var(--shadow);
+}
+
+/* «Фибоначчи · Нажмите вторую точку»: шаг — основным цветом, инструмент — вторичным */
+.drawHint {
+  padding: 0 var(--gap-2);
+  font-size: var(--fs-caption);
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.drawTool {
+  color: var(--text-2);
+}
+
+.drawTool::after {
+  content: " ·";
+}
+
+/* уже 1280 px чип короче (только шаг), чтобы не лечь на строку OHLC легенды; инструмент назван нажатой кнопкой
+   панели рисования (на телефоне — «Рисую: …» в нижней строке) и остаётся для чтения с экрана */
+@media (max-width: 1279.98px) {
+  .drawTool {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
 }
 
 /* ---------- выбор индикаторов: поиск, две колонки ---------- */
