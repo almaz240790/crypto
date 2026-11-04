@@ -1397,7 +1397,7 @@
   "Как управлять панелями": "How to control panes",
   "Щипок": "Pinch",
   "Колесо мыши или щипок": "Mouse wheel or pinch",
-  "масштаб по времени": "zoom in time",
+  "масштаб по времени": "zoom the time axis",
   "Перетаскивание графика": "Dragging the chart",
   "сдвиг; если шкалу цен растянули — и по вертикали": "pan; vertically too once the price scale is stretched",
   "Шкала цен справа": "Price scale on the right",
@@ -1418,5 +1418,7 @@
   "Двойной клик по шкале — вернуть.": "Double-click the scale to restore.",
   "Кнопка «⋯» в заголовке панели — порядок, развернуть, убрать.": "The “⋯” button in a pane header reorders, maximizes and removes it.",
   "Кнопки в заголовке панели — порядок, развернуть, убрать.": "Pane header buttons reorder, maximize and remove.",
-  "Наведите на панель — в её заголовке кнопки: порядок, развернуть, убрать.": "Hover over a pane to show its header buttons: reorder, maximize, remove."
+  "Наведите на панель — в её заголовке кнопки: порядок, развернуть, убрать.": "Hover over a pane to show its header buttons: reorder, maximize, remove.",
+  "Кнопка «⋯» в заголовке панели": "The “⋯” button in a pane header",
+  "Кнопки в заголовке панели (при наведении)": "Pane header buttons (on hover)"
 }
