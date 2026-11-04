@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { baseOf, COIN_ORDER, coinRank, compareByRank, normalizeBase, sortByRank } from "./coinRank";
+import { baseOf, capPlaces, COIN_ORDER, coinRank, compareByRank, normalizeBase, sortByRank } from "./coinRank";
 
 /** Инструменты расширенного списка (scripts/instruments_extended.txt) — в алфавитном порядке, как отдавал старый API. */
 const EXTENDED = [
@@ -60,6 +60,30 @@ describe("coinRank", () => {
     ];
     expect(sortByRank(api).map((x) => x.symbol)).toEqual(["BTCUSDT", "ETHUSDT", "SOLUSDT", "ABCUSDT", "MKRUSDT"]);
     expect(compareByRank({ symbol: "XUSDT", rank: 7 }, { symbol: "AUSDT", rank: 7 })).toBeGreaterThan(0);
+  });
+
+  it("место для показа — 1…N без пропусков, а не rank из API; без капитализации — без места", () => {
+    // rank из API — позиция в списке CoinGecko с чужими монетами: у DOGE 9, у LINK 12 (HYPE, XMR, WBT, LEO между ними)
+    const api = [
+      { symbol: "LINKUSDT", rank: 12 },
+      { symbol: "MKRUSDT", rank: null },
+      { symbol: "BTCUSDT", rank: 1 },
+      { symbol: "DOGEUSDT", rank: 9 },
+      { symbol: "ZECUSDT", rank: 7 },
+      { symbol: "ABCUSDT", rank: null },
+    ];
+    const places = capPlaces(api);
+    expect([...places.entries()]).toEqual([["BTCUSDT", 1], ["ZECUSDT", 2], ["DOGEUSDT", 3], ["LINKUSDT", 4]]);
+    expect(places.get("MKRUSDT")).toBeUndefined();
+    // старый API без rank — по снимку, тоже подряд: снимок с пропусками (HYPE, XMR…), места — нет
+    const old = capPlaces(EXTENDED);
+    expect(old.size).toBe(EXTENDED.length - 1);
+    expect([...old.values()]).toEqual(Array.from({ length: old.size }, (_, i) => i + 1));
+    expect(old.get("BTCUSDT")).toBe(1);
+    expect(old.get("DOGEUSDT")).toBe(sortByRank(EXTENDED).findIndex((x) => x.symbol === "DOGEUSDT") + 1);
+    expect(coinRank({ symbol: "DOGEUSDT" })).toBeGreaterThan(old.get("DOGEUSDT")!);
+    expect(old.has("MKRUSDT")).toBe(false);
+    expect(capPlaces([]).size).toBe(0);
   });
 
   it("поиск по буквам сохраняет порядок капитализации", () => {

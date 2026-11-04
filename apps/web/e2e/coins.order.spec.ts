@@ -100,16 +100,20 @@ async function mockCabinet(page: Page, list: unknown) {
 }
 
 const firstCells = (page: Page) => page.locator("tbody tr").evaluateAll((rows) => rows.map((r) => r.querySelector("td:nth-child(2)")?.textContent?.trim() ?? ""));
+const rankCells = (page: Page) => page.locator("tbody tr").evaluateAll((rows) => rows.map((r) => r.querySelector("td:nth-child(1)")?.textContent?.trim() ?? ""));
 
 test("скринер: по умолчанию по капитализации, сортировка по колонке работает, «#» возвращает порядок", async ({ page }, testInfo) => {
   await mockCabinet(page, OLD_API);
   await page.goto("/screener");
   await expect(page.locator("tbody tr")).toHaveCount(ALPHA.length);
   await expect.poll(() => firstCells(page)).toEqual(BY_CAP);
-  await expect(page.locator("tbody tr").first().locator("td").first()).toHaveText("1");
+  // «#» — место среди монет скринера 1…N без пропусков (в снимке между SOL и ADA — TRX, ZEC, HYPE…), у MKR места нет
+  await expect.poll(() => rankCells(page)).toEqual(["1", "2", "3", "4", "5", "6", "7", "8", "—"]);
   await page.screenshot({ path: testInfo.outputPath("screener-by-cap.png") });
   await page.getByRole("button", { name: "сортировать по: 24 ч" }).click();
   await expect.poll(() => firstCells(page).then((x) => [x[0], x.at(-1)])).toEqual(["SOLUSDT", "BNBUSDT"]);
+  // место — у монеты, а не номер строки: SOL первая строка, но «#» 5
+  await expect.poll(() => rankCells(page).then((x) => [x[0], x.at(-1)])).toEqual(["5", "3"]);
   await page.getByRole("button", { name: "сортировать по: место по капитализации" }).click();
   await expect.poll(() => firstCells(page)).toEqual(BY_CAP);
 });

@@ -8,7 +8,7 @@ import { useAuth } from "@/components/auth/AuthProvider";
 import s from "@/components/tools/tools.module.css";
 import { Badge, Button, EmptyState, Panel, Table, Td, Th } from "@/components/ui";
 import { createAlert } from "@/lib/alerts";
-import { coinRank } from "@/lib/coinRank";
+import { capPlaces } from "@/lib/coinRank";
 import { getAccessToken } from "@/lib/auth-client";
 import { formatPct, formatPrice, formatTimeUTC } from "@/lib/format";
 import { EMPTY_FILTERS, deleteScreen, getScreener, getScreens, putScreen, type SavedScreen, type ScreenerFilters, type ScreenerRow } from "@/lib/user";
@@ -127,6 +127,8 @@ export default function ScreenerPage() {
   }
 
   const list = useMemo(() => (rows ? sortScreenerRows(applyFilters(rows, f), sort) : []), [rows, sort, f]);
+  // «#» — место по капитализации среди всех монет скринера (1…N), а не rank из API: тот с пропусками. Фильтры место не меняют.
+  const places = useMemo(() => capPlaces(rows ?? []), [rows]);
 
   const sortBtn = (k: ScreenerSortKey, label: string, name = label) => (
     <button type="button" className={s.sortBtn} data-active={sort.k === k} onClick={() => setSort({ k, d: sort.k === k ? ((sort.d * -1) as 1 | -1) : firstDirection(k) })} aria-label={t("сортировать по: {label}", { label: name })}>
@@ -240,7 +242,7 @@ export default function ScreenerPage() {
             <Table compact clickable>
               <thead>
                 <tr>
-                  <Th num title={t("Место по капитализации")}>{sortBtn("rank", "#", t("место по капитализации"))}</Th>
+                  <Th num title={t("Место по капитализации среди монет скринера: 1 — самая крупная")}>{sortBtn("rank", "#", t("место по капитализации"))}</Th>
                   <Th>{sortBtn("symbol", t("Инструмент"))}</Th>
                   <Th num>{t("Цена")}</Th>
                   <Th>{t("24 свечи H4")}</Th>
@@ -262,7 +264,7 @@ export default function ScreenerPage() {
                 {list.map((r) => (
                   <tr key={r.symbol}>
                     <Td num mobile="hidden" className="text-3">
-                      {coinRank(r) ?? "—"}
+                      {places.get(r.symbol) ?? "—"}
                     </Td>
                     <Td>
                       <Link href={`/signals?symbol=${r.symbol}&tab=all`}>

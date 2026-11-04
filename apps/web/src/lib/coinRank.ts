@@ -84,3 +84,14 @@ export function compareByRank(a: Rankable, b: Rankable): number {
 export function sortByRank<T extends Rankable>(items: readonly T[]): T[] {
   return [...items].sort(compareByRank);
 }
+
+/**
+ * Место по капитализации среди переданных монет: 1…N без пропусков (символ → место). rank из API — ключ сортировки
+ * по списку CoinGecko без стейблкоинов и с чужими монетами (HYPE, XMR…), в нём пропуски, и с местом на CoinGecko он
+ * не совпадает, — показывать его как номер нельзя. У монет без капитализации (MKR) места нет.
+ */
+export function capPlaces(items: readonly Rankable[]): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const x of sortByRank(items)) if (coinRank(x) !== null && !out.has(x.symbol)) out.set(x.symbol, out.size + 1);
+  return out;
+}
