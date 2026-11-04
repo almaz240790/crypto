@@ -60,12 +60,15 @@ export function FundingChip({ rate, next, label = true }: { rate: string; next: 
   );
 }
 
-/** Связь с потоком цен: точка (--up — онлайн), текст — для чтения с экрана и в подсказке. */
+/**
+ * Живая цена (ADR-0010): точка (--up — онлайн: тик за последние 5 с), текст — для чтения с экрана; в подсказке —
+ * что значит «онлайн».
+ */
 export function LiveDot({ on }: { on: boolean }) {
   const t = useT();
   const text = on ? t("онлайн") : t("без связи");
   return (
-    <span className={c.live} data-on={on || undefined} title={text}>
+    <span className={c.live} data-on={on || undefined} title={on ? t("цена обновляется раз в секунду") : text}>
       {/* e2e ищут «онлайн» в группе «состояние»: текст для чтения с экрана, не удалять */}
       <span className="sr-only">{text}</span>
     </span>

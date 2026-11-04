@@ -90,7 +90,7 @@ function ChartCell({ cell, instruments, authed, markup, onChange }: { cell: Cell
         </Link>
       </div>
       <div className={s.multiChart}>
-        <ChartSurface store={store} device="cell" markup={markup} authed={authed} candles={data.candles ?? []} current={data.current} tf={cell.tf} type="candles" indicators={NO_INDICATORS} layers={data.layers} figures={data.figures?.items} alerts={NONE} derivatives={null} panels={NO_PANELS} tick={data.tick} dataKey={cell.symbol} onNeedOlder={data.loadOlder} />
+        <ChartSurface store={store} device="cell" markup={markup} authed={authed} candles={data.candles ?? []} current={data.current} tf={cell.tf} type="candles" indicators={NO_INDICATORS} layers={data.layers} figures={data.figures?.items} alerts={NONE} derivatives={null} panels={NO_PANELS} tick={data.tick} dataKey={cell.symbol} onNeedOlder={data.loadOlder} live={data.live} />
       </div>
     </section>
   );

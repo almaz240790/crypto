@@ -281,7 +281,7 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
   const fundingRate = data.derivatives?.funding_current ?? null;
   const fundingNext = data.derivatives?.next_funding_t ?? null;
   const funding = useMemo(() => (fundingRate ? { rate: fundingRate, next: fundingNext } : null), [fundingRate, fundingNext]);
-  const facts: HeaderFacts = { price, tick: data.tick, change, lastClose, trend, atr: data.layers?.structure?.atr ?? null, funding, heikin: st.type === "heikin", connected: data.connected, lastTime: last?.time ?? null };
+  const facts: HeaderFacts = { price, tick: data.tick, change, lastClose, trend, atr: data.layers?.structure?.atr ?? null, funding, heikin: st.type === "heikin", online: data.online, lastTime: last?.time ?? null };
   const zoom = useCallback((f: number) => controls.current?.zoom(f), []);
   const reset = useCallback(() => controls.current?.reset(), []);
   const syncText = user && dr.sync !== "off" ? (dr.sync === "ok" ? t("синхронизировано") : dr.sync === "queued" ? t("в очереди") : t("ошибка синхронизации")) : null;
@@ -400,6 +400,7 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
                 tick={data.tick}
                 dataKey={symbol}
                 onNeedOlder={data.loadOlder}
+                live={data.live}
                 drawings={drawingsProps}
                 onReady={onReady}
                 legend={legend}

@@ -183,6 +183,9 @@ test("закрытие свечи по WebSocket: масштаб, прокрут
   await mock(page, calls);
   await page.goto("/chart/BTCUSDT/4h");
   await ready(page);
+  // «онлайн» — по тику (ADR-0010); тик внутри текущей свечи нового бара не добавляет
+  await expect.poll(() => sockets.length).toBe(1);
+  sockets[0]!.send(JSON.stringify({ t: "tick", s: "BTCUSDT", p: "101.2", at: new Date((T0 + FIRST_PAGE * H4 + 60) * 1000).toISOString() }));
   await expect(page.getByLabel("состояние")).toContainText("онлайн");
   // подгрузили историю и встали в середину
   await setLogical(page, { from: 30, to: 130 });

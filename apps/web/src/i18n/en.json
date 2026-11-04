@@ -1420,5 +1420,6 @@
   "Кнопки в заголовке панели — порядок, развернуть, убрать.": "Pane header buttons reorder, maximize and remove.",
   "Наведите на панель — в её заголовке кнопки: порядок, развернуть, убрать.": "Hover over a pane to show its header buttons: reorder, maximize, remove.",
   "Кнопка «⋯» в заголовке панели": "The “⋯” button in a pane header",
-  "Кнопки в заголовке панели (при наведении)": "Pane header buttons (on hover)"
+  "Кнопки в заголовке панели (при наведении)": "Pane header buttons (on hover)",
+  "цена обновляется раз в секунду": "price updates every second"
 }

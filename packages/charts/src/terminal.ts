@@ -9,7 +9,7 @@ export const formatPercentTick = (p: number): string => `${p < 0 ? "−" : ""}${
 const OVERLAY_SCALE = "overlay";
 /** Изменение верхнего поля меньше полпроцента панели не применяется: легенда меняет высоту на пиксели. */
 const TOP_MARGIN_EPS = 0.005;
-import { createBuffer, EDGE, needsNewer, needsOlder, prependOlder, pushLatest, replaceNewest, type BufferState } from "./buffer";
+import { createBuffer, EDGE, needsNewer, needsOlder, prependOlder, pushLatest, replaceAt, replaceNewest, type BufferState } from "./buffer";
 import { heikinAshi } from "./heikin";
 import { LayerManager } from "./layers";
 import { INTERACTION, VIEW } from "./presets";
@@ -264,6 +264,43 @@ export class Terminal {
     }
     // наложенный инструмент — на новом наборе времён свечей (новая справа, выпавшие слева)
     if (appended || dropped) this.applyOverlay();
+  }
+
+  /**
+   * Уточнение уже закрытой свечи (то же время, не последняя) — запоздавшая закрытая минута после первого
+   * тика следующего интервала (ADR-0010). Точечно, без setData: LWC обновляет исторический бар
+   * (historicalUpdate); у Heikin Ashi пересчитываются и бары правее — они зависят от предыдущих.
+   */
+  amend(c: Candle): void {
+    const before = this.buffer;
+    this.buffer = replaceAt(before, c);
+    if (this.buffer === before) return;
+    const data = this.seriesData();
+    const vol = this.volumeData();
+    const i = data.findIndex((d) => d.time === c.time);
+    const last = data.length - 1;
+    for (let j = i; j <= (this.type === "heikin" ? last : i); j++) this.main.update(data[j] as never, j < last);
+    this.volume.update(vol[i]!, i < last);
+  }
+
+  /**
+   * Свежая история справа с сервера (после переподключения или пропуска в живых событиях, ADR-0010):
+   * свечи с тем же временем заменяются, недостающие вставляются, свечи старше буфера не берутся (их
+   * подгрузит addOlder). Вид остаётся на тех же свечах; у правого края — у края: вставленные перед
+   * текущей свечой бары не уводят её за экран.
+   */
+  merge(bars: readonly Candle[]): void {
+    const before = this.buffer;
+    if (before.trimmedRight > 0) return;
+    const first = before.candles[0]?.time;
+    const fresh = first === undefined ? bars.slice() : bars.filter((c) => c.time >= first);
+    if (!fresh.length) return;
+    const last = this.lastIndex();
+    const r = this.chart.timeScale().getVisibleLogicalRange();
+    const atEdge = last !== null && r !== null && r.to >= last - 0.5;
+    this.buffer = replaceNewest(before, fresh);
+    this.requesting = false;
+    this.renderAnchored(atEdge ? before.candles[before.candles.length - 1]?.time : first);
   }
 
   /**

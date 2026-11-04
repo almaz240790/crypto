@@ -108,8 +108,8 @@ export function PhoneStrip(p: HeaderFacts & { tf: Timeframe }) {
           {t("Тренд")}: {t("день")} <strong className={TREND_TONE[trend.day] ?? ""}>{t(TREND_WORD[trend.day] ?? trend.day)}</strong> · {t("неделя")} <strong className={TREND_TONE[trend.week] ?? ""}>{t(TREND_WORD[trend.week] ?? trend.week)}</strong>
         </span>
       )}
-      <span className={`caption ${s.live}`} data-on={p.connected || undefined}>
-        {p.connected ? t("онлайн") : t("без связи")}
+      <span className={`caption ${s.live}`} data-on={p.online || undefined} title={p.online ? t("цена обновляется раз в секунду") : undefined}>
+        {p.online ? t("онлайн") : t("без связи")}
       </span>
       {p.heikin && <span className="caption">{t("Heikin Ashi: паттерны и сигналы считаются по обычным свечам")}</span>}
     </div>

@@ -38,7 +38,8 @@ export type HeaderFacts = {
   atr: string | null;
   funding: { rate: string; next: number | null } | null;
   heikin: boolean;
-  connected: boolean;
+  /** «Онлайн»: тик цены за последние 5 с (ADR-0010), а не просто открытый сокет. */
+  online: boolean;
   /** Время открытия последней свечи (отсчёт до закрытия в «Сводке»). */
   lastTime: number | null;
 };
@@ -133,7 +134,7 @@ function Summary(p: HeaderFacts & { tf: Timeframe }) {
         </>
       )}
       <dt>{t("Связь")}</dt>
-      <dd>{p.connected ? t("онлайн") : t("без связи")}</dd>
+      <dd title={p.online ? t("цена обновляется раз в секунду") : undefined}>{p.online ? t("онлайн") : t("без связи")}</dd>
       {p.heikin && <p className={c.summaryNote}>{t("Heikin Ashi: паттерны и сигналы считаются по обычным свечам")}</p>}
     </dl>
   );
@@ -157,8 +158,8 @@ export const TerminalHeader = memo(function TerminalHeader(p: Props) {
   const key = [p.symbol, p.tf, priceText.length, changeText.length, p.trend ? `${p.trend.day}${p.trend.week}` : "-", p.atr ?? "-", fundingText, p.funding?.next != null, p.heikin].join("|");
   const { ref: rowRef, fit } = useOverflow<HTMLDivElement>(HEADER_SHED, key);
   const facts = useMemo<HeaderFacts>(
-    () => ({ price: p.price, tick: p.tick, change: p.change, lastClose: p.lastClose, trend: p.trend, atr: p.atr, funding: p.funding, heikin: p.heikin, connected: p.connected, lastTime: p.lastTime }),
-    [p.price, p.tick, p.change, p.lastClose, p.trend, p.atr, p.funding, p.heikin, p.connected, p.lastTime],
+    () => ({ price: p.price, tick: p.tick, change: p.change, lastClose: p.lastClose, trend: p.trend, atr: p.atr, funding: p.funding, heikin: p.heikin, online: p.online, lastTime: p.lastTime }),
+    [p.price, p.tick, p.change, p.lastClose, p.trend, p.atr, p.funding, p.heikin, p.online, p.lastTime],
   );
   return (
     <header className={c.header} data-testid="terminal-header">
@@ -198,7 +199,7 @@ export const TerminalHeader = memo(function TerminalHeader(p: Props) {
           </span>
         )}
         <span {...overflowItem("live", fit)}>
-          <LiveDot on={p.connected} />
+          <LiveDot on={p.online} />
         </span>
       </div>
       {p.guest && (

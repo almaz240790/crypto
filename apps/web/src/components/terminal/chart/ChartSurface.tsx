@@ -5,6 +5,7 @@ import { DrawingController, DrawingsPrimitive, INDICATORS, defaultParams, indica
 import { LineStyle, type IPriceLine, type ISeriesApi, type PriceFormat, type UTCTimestamp } from "lightweight-charts";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { Derivatives, FigureOnChart, LayersResponse, PatternOnChart } from "@/lib/chart";
+import type { LiveSource } from "@/lib/liveBar";
 import s from "../terminal.module.css";
 import { useT } from "@/i18n/client";
 import { chartText } from "./chartText";
@@ -96,6 +97,11 @@ type Props = {
   /** Режим ценовой шкалы и наложенный инструмент (план 2A.3). */
   scale?: ScaleMode;
   overlay?: Candle[] | null;
+  /**
+   * Живая текущая свеча (тики раз в секунду, ADR-0010): события идут в серию напрямую — без React и
+   * без setCandles; `current` тогда нужен только при замене свечей (смена инструмента/таймфрейма).
+   */
+  live?: LiveSource | null;
   drawings?: {
     state: DrawingsState;
     tool: DrawingType | null;
@@ -170,7 +176,7 @@ function indexOfTime(candles: readonly Candle[], time: number): number {
  * терминалом, темой, классом устройства, сценой разметки (один OverlayPrimitive), шкалой и наведением.
  * Здесь до PR D остаются эффекты данных, индикаторов, панелей производных и рисунков (через controller.terminal).
  */
-export function ChartSurface({ candles, current, tf, type, indicators, markup, authed, store, device = "auto", layers, patterns, figures, alerts, external = NONE, derivatives, panels, tick, dataKey = "", onNeedOlder, drawings, onReady, corner, topRight, onAxisHeight, legend, scale = "linear", overlay = null, paneLayout, onPaneLayout, onRemovePane, onInstanceParams, paneHint = false }: Props) {
+export function ChartSurface({ candles, current, tf, type, indicators, markup, authed, store, device = "auto", layers, patterns, figures, alerts, external = NONE, derivatives, panels, tick, dataKey = "", onNeedOlder, drawings, onReady, corner, topRight, onAxisHeight, legend, scale = "linear", overlay = null, paneLayout, onPaneLayout, onRemovePane, onInstanceParams, paneHint = false, live = null }: Props) {
   const t = useT();
   const ref = useRef<HTMLDivElement>(null);
   const ctrlRef = useRef<ChartController | null>(null);
@@ -665,11 +671,34 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
 
   useEffect(() => {
     const term = termRef.current;
-    if (!term || !current) return;
+    // с живой свечой серия уже обновлена подписчиком ниже; состояние React может отставать на секунды
+    if (!term || !current || live) return;
     term.update(current);
     ctrlRef.current?.notifyCandles("tick");
     syncModel();
-  }, [current, syncModel]);
+  }, [current, syncModel, live]);
+
+  // живая свеча: закрытые — дописать, уточнённую — заменить, текущую — обновить, свежую историю после
+  // переподключения или пропуска — влить (недостающие свечи вставить); вид не трогается
+  useEffect(() => {
+    if (!live) return;
+    return live.subscribe((step) => {
+      const term = termRef.current;
+      const ctrl = ctrlRef.current;
+      if (!term || !ctrl) return;
+      if (step.merge) {
+        term.merge(step.bar ? [...step.merge, step.bar] : step.merge);
+        ctrl.notifyCandles("append");
+        syncModel();
+        return;
+      }
+      for (const c of step.closed) term.update(c);
+      if (step.amended) term.amend(step.amended);
+      if (step.bar) term.update(step.bar);
+      ctrl.notifyCandles(step.closed.length || step.amended ? "append" : "tick");
+      if (step.closed.length) syncModel();
+    });
+  }, [live, syncModel]);
 
   // формат цены инструмента (шкала и деления под метками — в контроллере) и подписи рисунков
   useEffect(() => {

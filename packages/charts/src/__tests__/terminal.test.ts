@@ -19,7 +19,7 @@ type FakeSeries = {
   setDataCalls: number;
   updateCalls: number;
   setData(d: { time: number }[]): void;
-  update(p: { time: number }): void;
+  update(p: { time: number }, historical?: boolean): void;
   applyOptions(o: Record<string, unknown>): void;
   options(): Record<string, unknown>;
   priceScale(): { applyOptions(): void };
@@ -44,11 +44,14 @@ vi.mock("lightweight-charts", () => {
         s.setDataCalls++;
         state.onTimes?.(before);
       },
-      update(p) {
+      update(p, historical) {
         const before = state.times?.() ?? [];
         s.updateCalls++;
         const last = s.data[s.data.length - 1];
-        if (last && last.time === p.time) s.data[s.data.length - 1] = p;
+        const i = historical ? s.data.findIndex((d) => d.time === p.time) : -1;
+        if (i >= 0) s.data[i] = p;
+        else if (last && last.time === p.time) s.data[s.data.length - 1] = p;
+        else if (last && p.time < last.time) throw new Error("Cannot update oldest data"); // как LWC без historicalUpdate
         else s.data.push(p);
         state.onTimes?.(before);
       },
@@ -352,6 +355,70 @@ describe("закрытие свечи и живые обновления", () =>
     term.update({ ...bars(500, 1)[0]!, open_: true });
     expect(term.candles.length).toBe(1001);
     expect(term.candles[0]!.time).toBe(T0 - 500 * H);
+  });
+});
+
+describe("уточнение закрытой свечи (ADR-0010)", () => {
+  it("запоздавшая минута меняет предпоследний бар точечно: без setData, вид и текущая свеча те же", () => {
+    make();
+    term.setCandles([...bars(0, 300), { ...bars(300, 1)[0]!, open_: true }]);
+    chart.ts.setVisibleLogicalRange({ from: 150, to: 290 });
+    const main = chart.series[0]!;
+    const vol = chart.series[1]!;
+    const setData = main.setDataCalls + vol.setDataCalls;
+    const prev = term.candles.at(-2)!;
+    term.amend({ ...prev, high: 3, close: 1.9, volume: 7 });
+    expect(term.candles.at(-2)).toMatchObject({ time: prev.time, high: 3, close: 1.9, volume: 7 });
+    expect(term.candles.length).toBe(301);
+    expect(main.data.at(-2)).toMatchObject({ time: prev.time, high: 3, close: 1.9 });
+    expect(vol.data.at(-2)).toMatchObject({ time: prev.time, value: 7 });
+    expect(main.data.at(-1)).toMatchObject({ time: bars(300, 1)[0]!.time });
+    expect(main.setDataCalls + vol.setDataCalls).toBe(setData);
+    expect(chart.ts.getVisibleLogicalRange()).toEqual({ from: 150, to: 290 });
+    // свечи с таким временем нет — ничего не меняется
+    const calls = main.updateCalls;
+    term.amend({ ...prev, time: prev.time + 7 });
+    expect(main.updateCalls).toBe(calls);
+  });
+
+  it("Heikin Ashi: уточнение пересчитывает и текущую свечу справа", () => {
+    make();
+    term.setCandles([...bars(0, 50), { ...bars(50, 1)[0]!, open_: true }]);
+    term.setType("heikin");
+    const main = chart.series.find((x) => x.data.length === 51 && x.kind !== "Histogram")!;
+    const before = main.data.at(-1);
+    term.amend({ ...term.candles.at(-2)!, open: 10, high: 12, low: 9, close: 11 });
+    expect(main.data.at(-1)).not.toEqual(before);
+    expect(term.candles.length).toBe(51);
+  });
+});
+
+describe("свежая история справа после пропуска (ADR-0010, W2)", () => {
+  const withGap = () => [...bars(0, 300), { ...bars(303, 1)[0]!, open_: true }]; // 300–302 пропущены
+
+  it("у правого края: пропущенные свечи вставляются, текущая остаётся у края", () => {
+    make();
+    term.setCandles(withGap());
+    chart.ts.setVisibleLogicalRange({ from: 200, to: 305 });
+    term.merge([...bars(298, 5), { ...bars(303, 1)[0]!, close: 1.7, open_: true }]);
+    expect(term.candles.length).toBe(304);
+    expect(term.candles.slice(-4).map((c) => c.time)).toEqual(bars(300, 4).map((c) => c.time));
+    expect(term.candles.at(-1)).toMatchObject({ close: 1.7, open_: true });
+    expect(chart.series[0]!.data.length).toBe(304);
+    expect(chart.ts.getVisibleLogicalRange()).toEqual({ from: 203, to: 308 });
+  });
+
+  it("в прокрученной истории вид на тех же свечах; свечи старше буфера не берутся", () => {
+    make();
+    term.setCandles(withGap());
+    chart.ts.setVisibleLogicalRange({ from: 50, to: 150 });
+    term.merge([...bars(-5, 3), ...bars(300, 3)]);
+    expect(term.candles.length).toBe(304);
+    expect(term.candles[0]!.time).toBe(bars(0, 1)[0]!.time);
+    expect(chart.ts.getVisibleLogicalRange()).toEqual({ from: 50, to: 150 });
+    const calls = chart.series[0]!.setDataCalls;
+    term.merge([]);
+    expect(chart.series[0]!.setDataCalls).toBe(calls);
   });
 });
 
