@@ -30,7 +30,7 @@ test("1440×900, гость: рейка 56, шапка 44, тулбар 40, гр
   expect(term.height).toBeGreaterThanOrEqual(812);
   expect(await page.evaluate(() => document.scrollingElement!.scrollHeight)).toBe(900);
   // действия нижней строки переехали в тулбар и панели: дублей нет
-  await expect(page.getByRole("button", { name: "Рисовать" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Рисовать", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Слои", exact: true })).toHaveCount(0);
   // разделы — иконками рейки, подпись — имя ссылки
   const rail = page.getByTestId("app-rail");
@@ -666,7 +666,8 @@ test("режим рисования: чип справа сверху не за�
     await page.getByRole("toolbar", { name: "панель рисования" }).getByRole("button", { name: "Трендовая линия" }).click();
     await page.mouse.move(t.x + t.width * 0.5, t.y + t.height * 0.5);
     await expect(page.getByTestId("ohlc")).toContainText("Объём");
-    const chip = (await page.getByRole("button", { name: /Рисую: Трендовая линия/ }).locator("..").boundingBox())!;
+    await expect(page.getByTestId("draw-chip")).toContainText("Трендовая линия");
+    const chip = (await page.getByTestId("draw-chip").boundingBox())!;
     const ohlc = (await page.getByTestId("ohlc").boundingBox())!;
     const overlap = chip.x < ohlc.x + ohlc.width && ohlc.x < chip.x + chip.width && chip.y < ohlc.y + ohlc.height && ohlc.y < chip.y + chip.height;
     expect(overlap, `${w}: чип ${JSON.stringify(chip)} легенда ${JSON.stringify(ohlc)}`).toBe(false);
@@ -702,7 +703,10 @@ test("карточка выбранного рисунка — из компон
   expect(await card.locator("[class*=chip]").count()).toBe(0);
   for (const name of ["алерт на уровне", "заблокировать", "удалить", "снять выделение"]) await expect(card.getByRole("button", { name })).toBeVisible();
   await expect(card.getByLabel("скопировать на инструмент")).toBeVisible();
-  // гостю — 10 рисунков: одиннадцатый показывает карточку лимита по центру снизу, угол «− + →|» на это время скрыт
+  // гостю — 10 рисунков: одиннадцатый показывает карточку лимита по центру снизу, угол «− + →|» на это время скрыт.
+  // Инструмент — на один рисунок, поэтому остальные — «рисовать серию» (раньше инструмент оставался сам)
+  await page.getByRole("toolbar", { name: "панель рисования" }).getByRole("button", { name: "рисовать серию" }).click();
+  await page.keyboard.press("Alt+h");
   for (let i = 1; i < 11; i++) await page.mouse.click(t.x + t.width * 0.4, t.y + t.height * (0.15 + i * 0.05));
   const limit = page.getByRole("alert").filter({ hasText: "Лимит рисунков" });
   await expect(limit).toBeVisible();
@@ -778,7 +782,8 @@ test.describe("ландшафт телефона шире 900 px (932×430, па
     await expect(page.getByTestId("terminal-toolbar")).toBeVisible();
     await expect(page.getByRole("toolbar", { name: "панель рисования" })).toBeVisible();
     await expect(page.getByRole("button", { name: /^(скрыть|показать) панели$/ })).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "Рисовать" })).toHaveCount(0);
+    // exact: в панели рисования есть «рисовать серию»
+    await expect(page.getByRole("button", { name: "Рисовать", exact: true })).toHaveCount(0);
     expect(await page.evaluate(() => document.scrollingElement!.scrollHeight)).toBe(430);
     // имя инструмента целиком и ничем не закрыто: в его центре — сам выбор инструмента
     const symbol = page.getByTestId("terminal-header").locator("[data-overflow-item=symbol]");
