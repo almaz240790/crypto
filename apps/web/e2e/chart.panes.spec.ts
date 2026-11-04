@@ -1,5 +1,5 @@
 import { devices, expect, test, type Page } from "@playwright/test";
-import { mock } from "./helpers/chart";
+import { FIRST_PAGE, H4, T0, mock } from "./helpers/chart";
 
 /**
  * Управление панелями (ADR-0009, «Управление панелями»; как в TradingView): граница панели с ручкой и курсором
@@ -586,5 +586,127 @@ test.describe("телефон: нехватка строк — общая стр
     // ни одной панели-полоски без строки: все полоски ниже 20 px — в общей строке
     const slivers = await page.evaluate(() => (document.querySelector("[data-testid=terminal]") as Host).__chart.panes().slice(1).filter((p) => p.getHeight() < 20).length);
     expect(slivers).toBeLessThanOrEqual(before - 1);
+  });
+});
+
+/**
+ * Шкала цены основной панели (масштаб только по ценам из PR 139 вместе с «A» C1): дальние наложенные индикаторы
+ * (SMA 200, Ichimoku, VWAP…) и сравнение с другим инструментом автомасштаб не растягивают — свечи не сжимаются в полосу;
+ * «A», двойной клик по шкале и «показать последние свечи» возвращают масштаб по свечам. Поля шкалы — из её настроек
+ * (верхнее поле C1 — под легенду), а не постоянные 8 % / 20 %.
+ */
+test.describe("шкала цены", () => {
+  test.use({ viewport: { width: 1440, height: 900 } });
+
+  type Bar = { time: number; high?: number; low?: number; value?: number };
+  type El = HTMLElement & {
+    __chart: {
+      panes(): { getHeight(): number; getSeries(): { seriesType(): string; data(): Bar[]; coordinateToPrice(y: number): number | null }[] }[];
+      timeScale(): { getVisibleLogicalRange(): { from: number; to: number } | null; setVisibleLogicalRange(r: { from: number; to: number }): void; width(): number };
+      priceScale(id: string): { options(): { scaleMargins: { top: number; bottom: number } } };
+    };
+  };
+  const far = ["sma:200", "ichimoku", "ema:150", "vwap", "bb", "keltner", "supertrend"].map((x) => {
+    const [id, period] = x.split(":");
+    return { id: id!, params: period ? { period: Number(period) } : {} };
+  });
+  const settings = (extra: Record<string, unknown>) => JSON.stringify({ layers_v: 5, type: "candles", indicators: far, markup: { preset: "clean", overrides: {} }, panels: [], scale: "linear", overlay: null, ...extra });
+
+  /** История: до бара 150 цена около 200, дальше около 100 — SMA 200 и Ichimoku у правого края далеко над свечами; ETHUSDT — около 5000. */
+  async function route(page: Page) {
+    await mock(page, []);
+    await page.route("**/v1/chart/candles?**", (r) => {
+      const u = new URL(r.request().url());
+      const symbol = u.searchParams.get("symbol") ?? "BTCUSDT";
+      const bar = (i: number) => {
+        const base = symbol === "ETHUSDT" ? 5000 : i < 150 ? 200 : 100;
+        const o = base + Math.sin(i / 7) * 2;
+        const c = o + Math.cos(i / 5) * 0.8;
+        return { t: T0 + i * H4, o: o.toFixed(1), h: (Math.max(o, c) + 0.5).toFixed(1), l: (Math.min(o, c) - 0.5).toFixed(1), c: c.toFixed(1), v: "1000", open: false };
+      };
+      const body = u.searchParams.get("before")
+        ? { symbol, tf: "4h", candles: [], current: null, has_older: false, tick_size: "0.1", server_time: "" }
+        : { symbol, tf: "4h", candles: Array.from({ length: FIRST_PAGE }, (_, i) => bar(i)), current: { ...bar(FIRST_PAGE), open: true }, has_older: false, tick_size: "0.1", server_time: "" };
+      return r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+    });
+  }
+
+  /** Шкала цены основной панели (верх и низ по координатам), свечи в кадре, последние значения линий наложения, поля шкалы. */
+  const scaleInfo = (page: Page) =>
+    page.evaluate(() => {
+      const ch = (document.querySelector("[data-testid=terminal]") as El).__chart;
+      const pane = ch.panes()[0]!;
+      const [main, ...rest] = pane.getSeries();
+      const r = ch.timeScale().getVisibleLogicalRange()!;
+      const d = main!.data();
+      let lo = Infinity;
+      let hi = -Infinity;
+      for (let i = Math.max(0, Math.ceil(r.from)); i <= Math.min(d.length - 1, Math.floor(r.to)); i++) {
+        lo = Math.min(lo, d[i]!.low!);
+        hi = Math.max(hi, d[i]!.high!);
+      }
+      // линии индикаторов (наложенный инструмент около 5000 — не в счёт)
+      const lines = rest.filter((x) => x.seriesType() === "Line").map((x) => x.data().at(-1)?.value ?? NaN).filter((v) => v < 1000);
+      return { top: main!.coordinateToPrice(0)!, bottom: main!.coordinateToPrice(pane.getHeight())!, lo, hi, lines, margins: ch.priceScale("right").options().scaleMargins };
+    });
+  /** Свечи в кадре между полями шкалы (с запасом 3 % высоты на округление), дальний индикатор — за верхом шкалы. */
+  const candlesOnly = async (page: Page, what: string) => {
+    const m = await scaleInfo(page);
+    const range = m.top - m.bottom;
+    expect(m.top - m.hi, `${what}: над свечами`).toBeLessThanOrEqual((m.margins.top + 0.03) * range);
+    expect(m.lo - m.bottom, `${what}: под свечами`).toBeLessThanOrEqual((m.margins.bottom + 0.03) * range);
+    expect(m.top, `${what}: свечи в кадре`).toBeGreaterThan(m.hi);
+    expect(m.bottom, `${what}: свечи в кадре`).toBeLessThan(m.lo);
+    expect(Math.max(...m.lines.filter(Number.isFinite)), `${what}: SMA 200 за верхом шкалы`).toBeGreaterThan(m.top);
+  };
+  async function viewAt(page: Page, r: { from: number; to: number }) {
+    await expect.poll(() => page.evaluate(() => (document.querySelector("[data-testid=terminal]") as El).__chart.panes()[0]!.getSeries()[0]!.data().length)).toBe(FIRST_PAGE + 1);
+    await page.waitForTimeout(300);
+    await page.evaluate((r) => (document.querySelector("[data-testid=terminal]") as El).__chart.timeScale().setVisibleLogicalRange(r), r);
+    await expect.poll(async () => (await scaleInfo(page)).lines.length).toBeGreaterThanOrEqual(7);
+    await page.waitForTimeout(300);
+  }
+
+  test("масштаб только по ценам: дальние наложенные индикаторы и сравнение не растягивают шкалу, свечи не сжимаются (линейная и процентная)", async ({ page }) => {
+    await route(page);
+    for (const scale of ["linear", "percent"] as const) {
+      await page.addInitScript((s) => localStorage.setItem("pl-terminal", s), settings({ overlay: "ETHUSDT", scale }));
+      await page.goto("/chart/BTCUSDT/4h");
+      await expect(page.getByTestId("terminal").locator("canvas").first()).toBeVisible();
+      await viewAt(page, { from: 200, to: 300 });
+      await candlesOnly(page, scale);
+    }
+  });
+
+  test("«A», двойной клик по шкале и «показать последние свечи» на основной панели — масштаб снова по свечам, SMA 200 за краем", async ({ page }) => {
+    await route(page);
+    await page.addInitScript((s) => localStorage.setItem("pl-terminal", s), settings({}));
+    await page.goto("/chart/BTCUSDT/4h");
+    await expect(page.getByTestId("terminal").locator("canvas").first()).toBeVisible();
+    await viewAt(page, { from: 200, to: 300 });
+    await candlesOnly(page, "сначала");
+    const t = (await page.getByTestId("terminal").boundingBox())!;
+    const x = t.x + (await page.evaluate(() => (document.querySelector("[data-testid=terminal]") as El).__chart.timeScale().width())) + 20;
+    const y = t.y + 250;
+    const mainAuto = page.getByRole("button", { name: "автомасштаб: цена" });
+    const stretch = async () => {
+      await drag(page, x, y, 120);
+      await expect(mainAuto).toBeVisible();
+    };
+    await stretch();
+    await mainAuto.click();
+    await expect(mainAuto).toHaveCount(0);
+    await page.waitForTimeout(200);
+    await candlesOnly(page, "«A»");
+    await stretch();
+    await page.mouse.dblclick(x, y);
+    await expect(mainAuto).toHaveCount(0);
+    await page.waitForTimeout(200);
+    await candlesOnly(page, "двойной клик");
+    await stretch();
+    await page.getByRole("button", { name: "показать последние свечи" }).click();
+    await expect(mainAuto).toHaveCount(0);
+    await page.waitForTimeout(300);
+    await candlesOnly(page, "показать последние свечи");
   });
 });

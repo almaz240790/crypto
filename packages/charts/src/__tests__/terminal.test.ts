@@ -717,6 +717,35 @@ describe("масштаб только по ценам (продовый баг: 
     term.setType("line");
     expect(mainScale()).toEqual({ min: 1.5, max: 1.5 });
   });
+
+  it("«A», двойной клик по шкале и «Сбросить вид» на основной панели возвращают масштаб по свечам: дальняя SMA 200 — за краем; поле сверху — под легенду (C1)", () => {
+    make();
+    term.setCandles(bars(0, 300)); // low 0.5, high 2
+    const far = (v: number) => term.candles.map((c) => ({ time: c.time as never, value: v }));
+    term.addLine(0, "#123456").setData(far(1000)); // SMA 200 далеко над свечами
+    term.addLine(0, "#123456").setData(far(-50)); // VWAP далеко под ними
+    term.setTopMargin(0.2); // легенда графика: свечи ниже её строк
+    // пользователь растянул шкалу цены (автомасштаб выключен) — «A» на основной панели
+    chart.paneList[0]!.autoScale = false;
+    expect(term.paneAutoScale(0)).toBe(false);
+    term.setPaneAutoScale(0, true);
+    expect(term.paneAutoScale(0)).toBe(true);
+    expect(mainScale()).toEqual({ min: 0.5, max: 2 });
+    // «Сбросить вид» (и двойной клик по шкале — тот же сброс LWC): автомасштаб правой шкалы и шкал панелей; масштаб —
+    // по свечам, поле сверху — то же (под легендой), а не 8 % по умолчанию
+    const pane = term.addPane(90);
+    term.addLine(pane, "#123456", 1, VALUE_FORMAT).setData(far(70));
+    chart.paneList[pane]!.autoScale = false;
+    term.resetView(100);
+    const auto = chart.scales.map((x) => ({ id: x.id, opts: x.opts as { autoScale?: boolean } })).filter((x) => x.id === "right" && x.opts.autoScale !== undefined);
+    expect(auto.at(-1)!.opts.autoScale).toBe(true);
+    expect(term.paneAutoScale(pane)).toBe(true);
+    expect(mainScale()).toEqual({ min: 0.5, max: 2 });
+    expect(term.topMarginShare).toBe(0.2);
+    // наложенный инструмент на своей шкале получает то же верхнее поле
+    term.setOverlay(bars(0, 300).map((c) => ({ ...c, close: 9000 })), "#f0b429");
+    expect(chart.scales.filter((x) => x.id === "overlay" && x.opts.scaleMargins).at(-1)!.opts.scaleMargins).toEqual({ top: 0.2, bottom: expect.any(Number) });
+  });
 });
 
 describe("догон правого края", () => {
