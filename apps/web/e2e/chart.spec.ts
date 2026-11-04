@@ -233,10 +233,14 @@ test("паттерны: вкладка «Найдено», подробност�
   await figs.getByRole("button", { name: /Восходящий канал/ }).click();
   await expect(figs).toContainText("геометрия без подтверждения");
   expect(calls.some((c) => c.startsWith("/v1/chart/figures?symbol=BTCUSDT&tf=4h"))).toBe(true);
+  // «отдалить»: значимое бычье поглощение (свеча 200) — на видимом участке (списки, как и счётчики, — по видимому
+  // участку, ADR-0009)
+  await page.getByRole("button", { name: "отдалить" }).click();
   await objects.getByRole("tab", { name: /^Паттерны/ }).click();
   const list = objects.getByRole("list", { name: "найденные паттерны" });
-  // по умолчанию только значимые на видимом участке; незначимый доджи — по кнопке «Показать все»
-  await expect(objects.getByText("Доджи")).toHaveCount(0);
+  // по умолчанию только значимые; незначимый доджи — по кнопке «Показать все»
+  await expect(list).toContainText("Бычье поглощение");
+  await expect(list).not.toContainText("Доджи");
   await objects.getByRole("button", { name: "Показать все (2)" }).click();
   await expect(list).toContainText("Доджи");
   await expect(list).toContainText("Бычье поглощение");
