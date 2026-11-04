@@ -106,9 +106,11 @@ type Pane = { spec: IndicatorSpec; paneIndex: number | null; series: Record<stri
 const OVERLAY_SECONDARY_ALPHA = 0.55;
 /**
  * Заголовок панели под графиком (план 2A.7): панели сворачиваются до 24 px, на телефоне раскрыто не больше одной.
- * group — общая строка свёрнутых панелей («ещё N панелей»), когда строк на все не хватает (planPanes).
+ * group — общая строка свёрнутых панелей («ещё N панелей»), когда строк на все не хватает (planPanes); cover —
+ * заслонка над свёрнутыми в общую строку панелями высотой в 1–2 px: без неё видны стопка разделителей и обрезки
+ * подписей шкалы, а ручки изменения высоты LWC перехватывают касания.
  */
-type PaneHead = { key: string; title: string; top: number; collapsed: boolean; color?: string; group?: { key: string; title: string }[]; height?: number };
+type PaneHead = { key: string; title: string; top: number; collapsed: boolean; color?: string; group?: { key: string; title: string }[]; height?: number; cover?: boolean };
 const PANE_COLLAPSED_PX = 24;
 const PANE_INDICATOR_PX = 90;
 /** Короткие имена в карточке значений: «BB Верхняя» вместо «Bollinger Bands Верхняя». */
@@ -163,9 +165,22 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
   const valuesRef = useRef<Map<string, { label: string; values: (number | null)[]; color: string; price: boolean }>>(new Map());
   const stickyRef = useRef(false);
   const [heads, setHeads] = useState<PaneHead[]>([]);
+  /** Панели, свёрнутые пользователем (заголовок, свайп, телефон: раскрыта последняя добавленная). */
   const collapsedRef = useRef<Set<string>>(new Set());
+  /**
+   * Свёрнутые раскладкой: строк на все раскрытые не хватило (телефон боком). Пересчитываются при каждой раскладке и
+   * в выбор пользователя не пишутся — место вернулось (поворот обратно, окно выше), панели снова раскрыты.
+   */
+  const forcedRef = useRef<Set<string>>(new Set());
+  /** Когда панель раскрыли (добавили): при нехватке строк остаются последние раскрытые, а не нижние. */
+  const rankRef = useRef<Map<string, number>>(new Map());
+  const rankSeq = useRef(0);
+  /** Видимость серий панели, как её последний раз выставили (нет записи — видна). */
+  const shownRef = useRef<Map<string, boolean>>(new Map());
   /** Свёрнутые панели в общей строке и панель, в которой эта строка лежит (последняя раскладка planPanes). */
   const groupRef = useRef<{ grouped: Set<string>; host: string | null }>({ grouped: new Set(), host: null });
+  const layoutAllRef = useRef<() => void>(() => {});
+  const relayoutRef = useRef<() => void>(() => {});
   const paneObsRef = useRef<ResizeObserver | null>(null);
   const swipeRef = useRef<{ key: string; y: number } | null>(null);
   /** Подгрузка истории слева и смена темы — из хранилища графика (переходные поля до D). */
@@ -194,42 +209,64 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     return out.filter((e) => e.series.length > 0).sort((a, b) => a.series[0]!.getPane().paneIndex() - b.series[0]!.getPane().paneIndex());
   }, [t]);
 
+  const isCollapsed = useCallback((key: string) => collapsedRef.current.has(key) || forcedRef.current.has(key), []);
+
   const relayout = useCallback(() => {
     const el = ref.current;
     if (!el) return;
     const r0 = el.getBoundingClientRect();
     const { grouped, host } = groupRef.current;
     const entries = paneEntries();
+    // панель с общей строкой убрали (индикатор выключен) — раскладка заново: иначе остальные свёрнутые остались
+    // бы полосками в 1–2 px без заголовка и без кнопки раскрытия
+    if (grouped.size > 0 && !entries.some((e) => e.key === host)) {
+      layoutAllRef.current();
+      requestAnimationFrame(() => relayoutRef.current());
+      return;
+    }
     const group = entries.filter((e) => grouped.has(e.key)).map((e) => ({ key: e.key, title: e.title }));
     const rects = entries.map((e) => e.series[0]!.getPane().getHTMLElement()?.getBoundingClientRect());
-    // у свёрнутой панели из общей строки своего заголовка нет: строку рисует панель host; она же закрывает
-    // идущие прямо над ней свёрнутые панели в 1 px — без неё там видна стопка разделителей
+    // у свёрнутой панели из общей строки своего заголовка нет: строку рисует панель host — ровно в её 24 px;
+    // подряд идущие полоски остальных свёрнутых закрывает заслонка (вместе с разделителем над ними)
     const next: PaneHead[] = [];
+    let run: number | null = null;
+    const closeRun = (end: number) => {
+      if (run === null) return;
+      const a = rects[run];
+      const b = rects[end];
+      if (a && b) {
+        const top = Math.floor(a.top - r0.top) - 1;
+        next.push({ key: `cover:${entries[run]!.key}`, title: "", top, collapsed: true, cover: true, height: Math.max(1, Math.ceil(b.bottom - r0.top) - top) });
+      }
+      run = null;
+    };
     entries.forEach((e, k) => {
-      if (grouped.has(e.key) && e.key !== host) return;
+      if (grouped.has(e.key) && e.key !== host) {
+        if (run === null) run = k;
+        return;
+      }
+      closeRun(k - 1);
       const r = rects[k];
-      const head: PaneHead = { key: e.key, title: e.title, top: r ? Math.round(r.top - r0.top) : 0, collapsed: collapsedRef.current.has(e.key), color: e.color };
+      const head: PaneHead = { key: e.key, title: e.title, top: r ? Math.round(r.top - r0.top) : 0, collapsed: isCollapsed(e.key), color: e.color };
       if (r) {
-        let top = r.top;
-        if (e.key === host) for (let j = k - 1; j >= 0 && grouped.has(entries[j]!.key); j--) top = rects[j]?.top ?? top;
-        head.top = Math.round(top - r0.top);
         // заголовок не ниже своей панели: LWC округляет высоты, и 24 px строки иногда становятся 23,5
         const height = Math.floor(r.bottom - r0.top) - head.top;
-        if (e.key === host) Object.assign(head, { group, height });
+        if (e.key === host) Object.assign(head, { group, height: Math.max(0, height) });
         else if (height < PANE_COLLAPSED_PX) head.height = Math.max(0, height);
       }
       next.push(head);
     });
+    closeRun(entries.length - 1);
     const groupKey = (h: PaneHead) => `${h.height ?? ""}|${h.group?.map((g) => `${g.key}:${g.title}`).join("|") ?? ""}`;
     setHeads((prev) => (prev.length === next.length && prev.every((h, i) => h.key === next[i]!.key && h.title === next[i]!.title && h.top === next[i]!.top && h.collapsed === next[i]!.collapsed && h.color === next[i]!.color && groupKey(h) === groupKey(next[i]!)) ? prev : next));
-  }, [paneEntries]);
+  }, [paneEntries, isCollapsed]);
 
   /**
    * Все панели раскладываются разом (planPanes, продовый баг: на телефоне свёрнутые панели сжимались до 10 px,
    * и их заголовки налезали друг на друга и на шкалу времени): свёрнутая — ровно строка заголовка 24 px,
    * раскрытые — своя высота, а при нехватке места меньше, но не ниже строки; свечам — остаток, не меньше
    * mainMinShare. Строк на все панели не хватает — свёрнутые собираются в одну строку «ещё N панелей», раскрытые
-   * сверху, которым не осталось строки, сворачиваются.
+   * раньше других, которым не осталось строки, сворачиваются — только на эту раскладку (forcedRef).
    */
   const layoutAll = useCallback(() => {
     const term = termRef.current;
@@ -237,24 +274,32 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     const entries = paneEntries();
     const plan = planPanes(
       term.panesHeight(),
-      entries.map((e) => ({ want: e.height, collapsed: collapsedRef.current.has(e.key) })),
+      entries.map((e) => ({ want: e.height, collapsed: collapsedRef.current.has(e.key), rank: rankRef.current.get(e.key) ?? 0 })),
       { mainMinShare: VIEW.desktop.mainMinShare, rowPx: PANE_COLLAPSED_PX },
     );
-    for (const k of plan.collapse) {
-      collapsedRef.current.add(entries[k]!.key);
-      showSeries(entries[k]!.series, false);
+    forcedRef.current.clear();
+    for (const k of plan.collapse) forcedRef.current.add(entries[k]!.key);
+    for (const e of entries) {
+      const on = !collapsedRef.current.has(e.key) && !forcedRef.current.has(e.key);
+      if ((shownRef.current.get(e.key) ?? true) !== on) {
+        showSeries(e.series, on);
+        shownRef.current.set(e.key, on);
+      }
     }
     groupRef.current = { grouped: new Set(entries.filter((_, k) => plan.grouped[k]).map((e) => e.key)), host: plan.host === null ? null : entries[plan.host]!.key };
     term.layoutPanes(new Map(entries.map((e, k) => [e.series[0]!.getPane(), plan.heights[k]!] as const)));
   }, [paneEntries]);
 
+  // свёрнутая пользователем или раскладкой панель раскрывается последней по времени: при нехватке строк
+  // сворачиваются раньше раскрытые, а не она (иначе кнопка в общей строке ничего не делала)
   const applyCollapsed = useCallback(
     (key: string, collapsed: boolean) => {
-      const e = paneEntries().find((x) => x.key === key);
-      if (!e) return;
+      if (!paneEntries().some((x) => x.key === key)) return;
       if (collapsed) collapsedRef.current.add(key);
-      else collapsedRef.current.delete(key);
-      showSeries(e.series, !collapsed);
+      else {
+        collapsedRef.current.delete(key);
+        rankRef.current.set(key, ++rankSeq.current);
+      }
       layoutAll();
       requestAnimationFrame(relayout);
     },
@@ -266,6 +311,7 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     (key: string, series: ISeriesApi<"Line" | "Histogram">) => {
       const pel = series.getPane().getHTMLElement();
       if (pel) paneObsRef.current?.observe(pel);
+      rankRef.current.set(key, ++rankSeq.current);
       if (window.matchMedia(MOBILE_QUERY).matches) {
         const open = paneEntries().filter((e) => e.key !== key && !collapsedRef.current.has(e.key));
         for (const e of open.slice(0, Math.max(0, open.length + 1 - MAX_EXPANDED_MOBILE))) applyCollapsed(e.key, true);
@@ -276,11 +322,19 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     [paneEntries, applyCollapsed, relayout, layoutAll],
   );
 
-  const togglePane = useCallback((key: string) => applyCollapsed(key, !collapsedRef.current.has(key)), [applyCollapsed]);
-  const layoutAllRef = useRef(layoutAll);
+  // панель убрали (индикатор или панель производных выключены): её состояние забывается, раскладка — заново
+  const paneRemoved = useCallback((key: string) => {
+    collapsedRef.current.delete(key);
+    forcedRef.current.delete(key);
+    rankRef.current.delete(key);
+    shownRef.current.delete(key);
+  }, []);
+
+  const togglePane = useCallback((key: string) => applyCollapsed(key, !isCollapsed(key)), [applyCollapsed, isCollapsed]);
   useEffect(() => {
     layoutAllRef.current = layoutAll;
-  }, [layoutAll]);
+    relayoutRef.current = relayout;
+  }, [layoutAll, relayout]);
   useEffect(() => {
     needOlderRef.current = onNeedOlder;
     drawingsRef.current = drawings;
@@ -389,22 +443,25 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     el.addEventListener("pointerup", onPUp);
     el.addEventListener("pointercancel", onPUp);
     // высота графика сменилась (поворот телефона, окно) — панели раскладываются заново: иначе LWC делит высоту
-    // пропорционально и свёрнутые панели снова сжимаются ниже строки заголовка
+    // пропорционально и свёрнутые панели снова сжимаются ниже строки заголовка; свёрнутые раскладкой панели при
+    // этом раскрываются снова, если место вернулось
     let lastH = el.clientHeight;
     const paneObs = new ResizeObserver(() => {
       if (el.clientHeight !== lastH) {
         lastH = el.clientHeight;
         requestAnimationFrame(() => {
           layoutAllRef.current();
-          requestAnimationFrame(relayout);
+          requestAnimationFrame(() => relayoutRef.current());
         });
       }
-      relayout();
+      relayoutRef.current();
     });
     paneObs.observe(el);
     paneObsRef.current = paneObs;
     const panes = panesRef.current;
     const crypto = cryptoRef.current;
+    const shown = shownRef.current;
+    const forced = forcedRef.current;
     return () => {
       paneObs.disconnect();
       paneObsRef.current = null;
@@ -416,6 +473,9 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
       clearTimeout(pressTimer);
       panes.clear();
       crypto.clear();
+      // серии панелей уничтожены вместе с графиком: новые видны, раскладка выставит видимость заново
+      shown.clear();
+      forced.clear();
       dctrl.destroy();
       drawCtrlRef.current = null;
       drawPrimRef.current = null;
@@ -546,14 +606,21 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
       return spec.series[i]!.kind === "histogram" ? color(spec.series[i]!.color) : tokens.text2;
     };
     const want = new Map(indicators.map((i) => [i.id, i]));
+    let removed = false;
     for (const [id, pane] of panesRef.current) {
       if (!want.has(id)) {
         Object.values(pane.series).forEach((sr) => term.removeSeries(sr));
         panesRef.current.delete(id);
-        collapsedRef.current.delete(id);
+        if (pane.paneIndex !== null) {
+          paneRemoved(id);
+          removed = true;
+        }
         for (const k of [...valuesRef.current.keys()]) if (k.startsWith(`${id}.`)) valuesRef.current.delete(k);
       }
     }
+    // без раскладки заново прежняя общая строка «ещё N панелей» пропадала вместе с убранной панелью, а остальные
+    // свёрнутые оставались полосками без заголовка
+    if (removed) layoutAll();
     const all = term.candles;
     for (const ind of indicators) {
       const spec = indicatorById(ind.id);
@@ -593,7 +660,7 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
       }
     }
     requestAnimationFrame(relayout);
-  }, [indicators, candles, current, historyRev, themeVersion, paneAdded, relayout]);
+  }, [indicators, candles, current, historyRev, themeVersion, paneAdded, paneRemoved, layoutAll, relayout]);
 
   // крипто-панели (план 2A.4): funding, OI, ликвидации — данные с сервера. Ставятся только после свечей и
   // только на время свечей (alignToCandles): точка левее первой свечи или между свечами меняла шкалу времени,
@@ -603,12 +670,18 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     if (!term) return;
     const tokens = tokensFromElement(ref.current!);
     const want = new Set(panels);
+    let removed = false;
     for (const [k, p] of cryptoRef.current) {
       if (!want.has(k)) {
         p.series.forEach((sr) => term.removeSeries(sr));
         cryptoRef.current.delete(k);
-        collapsedRef.current.delete(k);
+        paneRemoved(k);
+        removed = true;
       }
+    }
+    if (removed) {
+      layoutAll();
+      requestAnimationFrame(relayout);
     }
     const model = term.candles;
     if (!derivatives || model.length === 0) return;
@@ -643,7 +716,7 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
       }
     }
     requestAnimationFrame(relayout);
-  }, [derivatives, panels, candles, historyRev, themeVersion, tf, paneAdded, relayout]);
+  }, [derivatives, panels, candles, historyRev, themeVersion, tf, paneAdded, paneRemoved, layoutAll, relayout]);
 
   return (
     <div className={s.chart}>
@@ -652,7 +725,9 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
       {device !== "cell" && <LegendChip store={store} />}
       {device !== "cell" && <LiqUnavailableNote store={store} on={resolvePreset(markup, "desktop", { authed }).layers.liq_map} />}
       {heads.map((h) =>
-        h.group ? (
+        h.cover ? (
+          <div key={h.key} className={s.paneCover} data-pane-cover="" aria-hidden="true" style={{ top: h.top, height: h.height }} />
+        ) : h.group ? (
           <div key={h.key} className={s.paneGroup} data-testid="pane-group" style={{ top: h.top, height: h.height }} role="group" aria-label={t("свёрнутые панели")}>
             <span className={s.paneGroupLabel}>{t(plural(h.group.length, "ещё {n} панель", "ещё {n} панели", "ещё {n} панелей"), { n: h.group.length })}</span>
             {h.group.map((g) => (

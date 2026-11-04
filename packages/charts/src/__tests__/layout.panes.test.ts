@@ -58,14 +58,20 @@ describe("план панелей", () => {
   });
 
   it("раскрытым тоже не хватает строк — верхние сворачиваются в общую строку", () => {
-    // 150 px: 75 px — 3 строки; раскрытых 4 и свёрнутая 1: остаются 2 нижние раскрытые и общая строка
-    const p = planPanes(150, [open(), open(), open(), open(), shut()], O);
+    // 160 px: 80 px — 3 строки; раскрытых 4 и свёрнутая 1: остаются 2 нижние раскрытые и общая строка
+    const p = planPanes(160, [open(), open(), open(), open(), shut()], O);
     expect(p.collapse).toEqual([0, 1]);
     expect(p.grouped).toEqual([true, true, false, false, true]);
     expect(p.host).toBe(4);
-    expect(150 - sum(p.heights)).toBeGreaterThanOrEqual(75);
+    expect(160 - sum(p.heights)).toBeGreaterThanOrEqual(80);
+    // целые пиксели: LWC округляет высоты и остаток отдаёт последней панели
+    for (const h of p.heights) expect(Number.isInteger(h)).toBe(true);
+    // полоски свёрнутых тоже занимают место: на 150 px две раскрытые уже не влезают
+    const tight = planPanes(150, [open(), open(), open(), open(), shut()], O);
+    expect(tight.collapse).toEqual([0, 1, 2]);
+    expect(150 - sum(tight.heights)).toBeGreaterThanOrEqual(75);
     // все раскрыты и строк не хватает — одна строка уходит под общую
-    const q = planPanes(150, [open(), open(), open(), open()], O);
+    const q = planPanes(160, [open(), open(), open(), open()], O);
     expect(q.collapse).toEqual([0, 1]);
     expect(q.host).toBe(1);
     // совсем низкий график: всё в общей строке высотой с остаток
@@ -73,5 +79,30 @@ describe("план панелей", () => {
     expect(r.collapse).toEqual([0]);
     expect(r.host).toBe(1);
     expect(r.heights[1]).toBe(15);
+  });
+
+  it("панель, которую только что раскрыли из общей строки, остаётся раскрытой, даже если она выше прочих раскрытых", () => {
+    // как в отзыве: 230 px — 4 строки, 11 панелей; раскрыты 3, 4, 7, 10 и пользователь раскрывает верхнюю 0
+    const at = (expanded: number[], rank: Record<number, number> = {}) => Array.from({ length: 11 }, (_, i) => ({ want: 90, collapsed: !expanded.includes(i), rank: rank[i] ?? 0 }));
+    expect(planPanes(230, at([3, 4, 7, 10]), O).collapse).toEqual([3]);
+    const p = planPanes(230, at([0, 3, 4, 7, 10], { 0: 1 }), O);
+    expect(p.collapse).not.toContain(0);
+    expect(p.collapse).toEqual([3, 4]);
+    expect(p.grouped[0]).toBe(false);
+    expect(p.heights[0]).toBeGreaterThanOrEqual(24);
+    // сворачиваются раньше раскрытые, а не верхние
+    const q = planPanes(230, at([0, 3, 4, 7, 10], { 0: 5, 3: 4, 4: 1, 7: 3, 10: 2 }), O);
+    expect(q.collapse).toEqual([4, 10]);
+    // ранги равны — как прежде, верхние
+    expect(planPanes(160, [open(), open(), open(), open(), shut()], O).collapse).toEqual([0, 1]);
+  });
+
+  it("свёртывание из-за нехватки строк — только раскладка: место вернулось — те же панели раскрыты", () => {
+    const panes = [open(), open(), open(), open(), open(), shut()];
+    expect(planPanes(150, panes, O).collapse.length).toBeGreaterThan(0);
+    const back = planPanes(1200, panes, O);
+    expect(back.collapse).toEqual([]);
+    expect(back.host).toBeNull();
+    expect(back.heights.slice(0, 5)).toEqual([90, 90, 90, 90, 90]);
   });
 });

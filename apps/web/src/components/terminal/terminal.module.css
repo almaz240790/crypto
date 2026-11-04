@@ -351,12 +351,14 @@
   inset: 0;
 }
 
-/* заголовок панели индикатора (план 2A.7): 24 px, свайп вниз сворачивает, вверх — раскрывает */
+/* заголовок панели индикатора (план 2A.7): 24 px, свайп вниз сворачивает, вверх — раскрывает.
+   Выше ручек изменения высоты панелей LWC (z-index 50, 9 px поперёк разделителя): иначе они перехватывают
+   касания кнопок заголовка и общей строки (внутри .chart — свой контекст наложения) */
 .paneHead {
   position: absolute;
   left: 4px;
   height: 24px;
-  z-index: 5;
+  z-index: 60;
   display: inline-flex;
   align-items: center;
   gap: 2px;
@@ -403,7 +405,7 @@
   left: 4px;
   right: 4px;
   height: 24px;
-  z-index: 5;
+  z-index: 60;
   display: flex;
   align-items: center;
   gap: 4px;
@@ -441,6 +443,16 @@
 
 .paneChip:hover {
   color: var(--text);
+}
+
+/* заслонка над свёрнутыми в общую строку панелями (1–2 px каждая): без неё видны стопка разделителей и обрезки
+   подписей шкалы цены, а ручки высоты LWC ловят касания */
+.paneCover {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 60;
+  background: var(--bg);
 }
 
 .bottom {
