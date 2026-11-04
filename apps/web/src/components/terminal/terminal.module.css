@@ -706,10 +706,50 @@
   z-index: 10;
 }
 
-.card input[type="text"],
-.card input:not([type]) {
-  flex: 1 1 160px;
-  height: 32px;
+/* карточка выбранного рисунка (SelectedDrawingCard): поля и кнопки ui в одну строку с переносом */
+.cardTitle {
+  flex: none;
+}
+
+.cardText {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+
+.cardSelect {
+  flex: 0 1 180px;
+  min-width: 0;
+}
+
+.cardCheck {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+.cardCheck input {
+  accent-color: var(--accent);
+}
+
+.cardClose {
+  margin-left: auto;
+}
+
+.limitCard p {
+  margin: 0;
+  flex: 1 1 240px;
+}
+
+@media (pointer: coarse) {
+  .card button,
+  .card select,
+  .card input:not([type="checkbox"]),
+  .card a,
+  .cardCheck {
+    min-height: var(--touch-min);
+  }
 }
 
 .posStats {
@@ -719,12 +759,6 @@
   align-items: center;
   font-family: var(--font-mono);
   font-size: 12px;
-}
-
-.inline {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
 }
 
 .ask {
@@ -966,4 +1000,12 @@
   right: auto;
   bottom: calc(var(--time-scale-h, 28px) + 8px);
   max-width: min(720px, calc(100% - 16px));
+}
+
+/* карточка лимита рисунков — по центру снизу, на месте угла «− + →|» (он на это время скрыт) */
+.page[data-layout="desktop"] .limitCard {
+  left: 50%;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: min(560px, calc(100% - 16px));
 }

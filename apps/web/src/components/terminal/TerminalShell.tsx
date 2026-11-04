@@ -1,6 +1,6 @@
 "use client";
 
-import { INDICATORS, TOOL_TITLES, createChartStore, positionStats, type Candle, type ChartType, type DrawingType, type ScaleMode, type Timeframe } from "@platform/charts";
+import { INDICATORS, TOOL_TITLES, createChartStore, positionStats, type Candle, type ChartType, type Drawing, type DrawingType, type ScaleMode, type Timeframe } from "@platform/charts";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -12,6 +12,7 @@ import { TF_LABEL, TIMEFRAMES, INTRADAY } from "@/lib/timeframes";
 import s from "./terminal.module.css";
 import { BottomSheet } from "./BottomSheet";
 import { DrawToolbar } from "./DrawToolbar";
+import { DrawingLimitCard, SelectedDrawingCard } from "./SelectedDrawingCard";
 import { download } from "./snapshot";
 import { ChartSurface, IND_COLOR_VAR, PANELS, indicatorColor, type TerminalControls } from "./chart/ChartSurface";
 import { ChartStoreContext, useChartStore } from "./chart/useChartStore";
@@ -200,6 +201,12 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
     if (url) download(url, `platform-${symbol}-${tf}-${Date.now()}.png`);
   }, [say, symbol, t, tf]);
   // копия рисунка на другой инструмент (план 2A.5): цены пропорционально последней цене цели
+  const deselectDrawing = () => dr.actions.select(null);
+  // алерт на цене уровня: направление — от текущей цены к уровню
+  const alertOnLevel = (d: Drawing) => {
+    const p = d.points[0]!.price;
+    addPriceAlert(alertPriceText(p, data.tick), price != null && price < p ? "cross_up" : "cross_down", undefined, d.id);
+  };
   const copyDrawing = async (id: string, target: string) => {
     let ratio = 1;
     try {
@@ -394,84 +401,13 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
                 legend={legend}
                 scale={st.scale}
                 overlay={overlayCandles}
-                corner={desktop && !sel ? <ChartCorner onZoom={zoom} onReset={reset} /> : null}
+                corner={desktop && !sel && !dr.limitHit ? <ChartCorner onZoom={zoom} onReset={reset} /> : null}
                 topRight={desktop && dr.tool ? <DrawModeChip tool={t(TOOL_TITLES[dr.tool])} onFinish={finishTool} /> : null}
                 onAxisHeight={setAxisH}
               />
             )}
-            {sel && (
-              <div className={s.card} role="region" aria-label={t("выбранный рисунок")}>
-                <strong>{t(TOOL_TITLES[sel.type])}</strong>
-                {(sel.type === "note" || sel.type === "rect" || sel.type === "trend") && <input aria-label={t("текст рисунка")} placeholder={t("подпись (до 140 символов)")} maxLength={140} value={sel.text ?? ""} onChange={(e) => dr.actions.patch(sel.id, { text: e.target.value })} />}
-                {pos && (
-                  <span className={s.posStats}>
-                    R:R <strong>{pos.rr.toFixed(2)}</strong> {t("· риск")} {pos.riskPct.toFixed(2)} %
-                    {pos.riskUsd != null && pos.size != null && (
-                      <>
-                        {" "}
-                        {t("· риск")} <strong>{pos.riskUsd.toFixed(0)} USDT</strong> {t("· размер")} <strong>{pos.size.toPrecision(4)}</strong>
-                      </>
-                    )}
-                    {pos.riskUsd == null && <span className="caption"> {t("· задайте депозит и риск в настройках")}</span>}
-                    <Link href={`/journal?symbol=${symbol}&direction=${pos.direction}&entry=${pos.entry}&stop=${pos.stop}&tp=${pos.target}`}>{t("в журнал")}</Link>
-                    <Link href={`/calculator?symbol=${symbol}&direction=${pos.direction}&entry=${pos.entry}&stop=${pos.stop}&tp=${pos.target}`}>{t("в калькулятор")}</Link>
-                  </span>
-                )}
-                <label className={s.inline}>
-                  <input type="checkbox" checked={sel.timeframe === null} onChange={(e) => dr.actions.patch(sel.id, { timeframe: e.target.checked ? null : tf })} /> {t("на всех таймфреймах")}
-                </label>
-                {(sel.type === "hline" || sel.type === "hray") && sel.points[0] && (
-                  <button
-                    type="button"
-                    className={s.chip}
-                    onClick={() => {
-                      const p = sel.points[0]!.price;
-                      addPriceAlert(alertPriceText(p, data.tick), price != null && price < p ? "cross_up" : "cross_down", undefined, sel.id);
-                    }}
-                  >
-                    {t("алерт на уровне")}
-                  </button>
-                )}
-                {instruments.length > 1 && (
-                  <select
-                    className={s.chip}
-                    aria-label={t("скопировать на инструмент")}
-                    value=""
-                    onChange={(e) => {
-                      const target = e.target.value;
-                      if (target) void copyDrawing(sel.id, target);
-                    }}
-                  >
-                    <option value="">{t("скопировать на…")}</option>
-                    {instruments
-                      .filter((i) => i.symbol !== symbol)
-                      .map((i) => (
-                        <option key={i.symbol} value={i.symbol}>
-                          {i.symbol}
-                        </option>
-                      ))}
-                  </select>
-                )}
-                <button type="button" className={s.chip} onClick={() => dr.actions.lock(sel.id)} aria-pressed={sel.locked}>
-                  {sel.locked ? t("разблокировать") : t("заблокировать")}
-                </button>
-                <button type="button" className={s.chip} onClick={() => dr.actions.remove(sel.id)} disabled={sel.locked}>
-                  {t("удалить")}
-                </button>
-                <button type="button" className={s.chip} onClick={() => dr.actions.select(null)} aria-label={t("снять выделение")}>
-                  ✕
-                </button>
-              </div>
-            )}
-            {dr.limitHit && (
-              <p className={s.card} role="alert">
-                {t("Лимит рисунков на инструмент: {n}. Удалите лишние", { n: dr.limit ?? "—" })}
-                {!user ? t(" или войдите") : t(" или оформите подписку уровнем выше")}.{" "}
-                <button type="button" className={s.chip} onClick={dr.dismissLimit}>
-                  {t("понятно")}
-                </button>
-              </p>
-            )}
+            {sel && <SelectedDrawingCard drawing={sel} symbol={symbol} tf={tf} instruments={instruments} pos={pos} onPatch={dr.actions.patch} onLock={dr.actions.lock} onRemove={dr.actions.remove} onDeselect={deselectDrawing} onAlert={alertOnLevel} onCopy={copyDrawing} />}
+            {dr.limitHit && <DrawingLimitCard limit={dr.limit} guest={!user} onDismiss={dr.dismissLimit} />}
             {/* тост: единственный role=status на странице; поверх колонки графика, раскладку не сдвигает */}
             {toast && (
               <p role="status" className={s.toast}>

@@ -629,6 +629,35 @@ test("режим рисования: чип справа сверху не за�
   }
 });
 
+test("карточка выбранного рисунка — из компонентов ui, слева снизу, не шире 720 px; лимит рисунков — по центру, угол скрыт", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await open(page);
+  const term = page.getByTestId("terminal");
+  const t = (await term.boundingBox())!;
+  await page.keyboard.press("Alt+h");
+  await page.mouse.click(t.x + t.width * 0.4, t.y + t.height * 0.5);
+  const card = page.getByRole("region", { name: "выбранный рисунок" });
+  await expect(card).toBeVisible();
+  const c = (await card.boundingBox())!;
+  expect(c.width).toBeLessThanOrEqual(720);
+  expect(c.x - t.x).toBeLessThanOrEqual(12);
+  // прежних .chip нет: кнопки, поле и список — ui (Button, IconButton, Select)
+  expect(await card.locator("[class*=chip]").count()).toBe(0);
+  for (const name of ["алерт на уровне", "заблокировать", "удалить", "снять выделение"]) await expect(card.getByRole("button", { name })).toBeVisible();
+  await expect(card.getByLabel("скопировать на инструмент")).toBeVisible();
+  // гостю — 10 рисунков: одиннадцатый показывает карточку лимита по центру снизу, угол «− + →|» на это время скрыт
+  for (let i = 1; i < 11; i++) await page.mouse.click(t.x + t.width * 0.4, t.y + t.height * (0.15 + i * 0.05));
+  const limit = page.getByRole("alert").filter({ hasText: "Лимит рисунков" });
+  await expect(limit).toBeVisible();
+  await expect(page.locator("[data-corner]")).toHaveCount(0);
+  const l = (await limit.boundingBox())!;
+  expect(Math.abs(l.x + l.width / 2 - (t.x + t.width / 2))).toBeLessThanOrEqual(t.width * 0.15);
+  await limit.getByRole("button", { name: "понятно" }).click();
+  await expect(limit).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await expect(page.locator("[data-corner]")).toHaveCount(1);
+});
+
 test("панель рисования на низком окне (1366×640): отменить и повторить видны, остальное — прокруткой и «ещё инструменты»", async ({ page }) => {
   await page.setViewportSize({ width: 1366, height: 640 });
   await open(page);
