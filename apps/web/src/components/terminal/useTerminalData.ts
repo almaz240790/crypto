@@ -216,17 +216,18 @@ export function useTerminalData(symbol: string, tf: Timeframe, token: string | n
     [live, gate, catchUp],
   );
 
-  const { prices, connected, online } = useLive([symbol], token, { onTick, onForming, onCandle, onResync });
+  const { prices, connected, online, resyncPending } = useLive([symbol], token, { onTick, onForming, onCandle, onResync });
 
-  // просрочка: новой свечи нет дольше закрытия текущей (или следующей минуты на 1m) — догон, пока вкладка видна
+  // просрочка: новой свечи нет дольше закрытия текущей (или следующей минуты на 1m) — догон, пока вкладка видна; пока
+  // открывается сокет, сменивший прежний (возврат с полуоткрытым сокетом), — ждём: его открытие и есть догон
   useEffect(() => {
     const timer = setInterval(() => {
-      if (document.visibilityState !== "visible") return;
+      if (document.visibilityState !== "visible" || resyncPending()) return;
       const due = live.dueAt(LIVE_GRACE_S);
       if (due !== null && Date.now() / 1000 > due) gate.request("overdue", catchUp);
     }, 1000);
     return () => clearInterval(timer);
-  }, [live, gate, catchUp]);
+  }, [live, gate, catchUp, resyncPending]);
 
   // цена из WebSocket — если она новее последней порции истории; иначе шапка берёт закрытие последней свечи
   const lp = prices[symbol];

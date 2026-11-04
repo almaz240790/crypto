@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { dispatchLive, isNewer, LiveSocket, mergePrices, ONLINE_MS, PONG_TIMEOUT_MS, PriceBatch, PRICE_STATE_MS, RETRY_JITTER_MS, RETRY_MS, SILENCE_MS, type LiveMsg, type LivePrice, type LiveTick } from "./useLive";
+import { dispatchLive, isNewer, LiveSocket, mergePrices, ONLINE_MS, PONG_TIMEOUT_MS, PriceBatch, PRICE_STATE_MS, RECONNECT_WAIT_MS, RETRY_JITTER_MS, RETRY_MS, SILENCE_MS, type LiveMsg, type LivePrice, type LiveTick } from "./useLive";
 
 /** Цена в шапке (ADR-0010): тики копятся и попадают в состояние React не чаще раза в секунду. */
 
@@ -230,6 +230,38 @@ describe("соединение /v1/ws (LiveSocket)", () => {
     doc.fire();
     await flush();
     expect(FakeWS.all).toHaveLength(2);
+    sock.stop();
+  });
+
+  it("пока открывается сокет, сменивший прежний, — resyncPending (просрочка ждёт); не дольше RECONNECT_WAIT_MS, первое открытие — не в счёт", async () => {
+    vi.useFakeTimers();
+    const doc = fakeDoc();
+    const sock = socket([], doc);
+    sock.start();
+    await flush();
+    expect(sock.resyncPending).toBe(false); // первое открытие — onReconnect не будет
+    const a = FakeWS.all[0]!;
+    a.open();
+    tick(a);
+    vi.setSystemTime(Date.now() + 3 * 60_000);
+    doc.fire();
+    expect(sock.resyncPending).toBe(true);
+    await flush();
+    expect(sock.resyncPending).toBe(true);
+    FakeWS.all[1]!.open();
+    expect(sock.resyncPending).toBe(false);
+    // рукопожатие висит (сети нет) — ждём не дольше RECONNECT_WAIT_MS
+    vi.setSystemTime(Date.now() + 3 * 60_000);
+    doc.fire();
+    await flush();
+    expect(sock.resyncPending).toBe(true);
+    vi.setSystemTime(Date.now() + RECONNECT_WAIT_MS);
+    expect(sock.resyncPending).toBe(false);
+    // отказ в соединении — не ждём
+    vi.setSystemTime(Date.now() - RECONNECT_WAIT_MS);
+    expect(sock.resyncPending).toBe(true);
+    FakeWS.all[2]!.finishClose();
+    expect(sock.resyncPending).toBe(false);
     sock.stop();
   });
 

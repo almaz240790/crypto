@@ -4,12 +4,13 @@ import type { Page, WebSocketRoute } from "@playwright/test";
  * Заглушка /v1/ws для e2e живой цены (ADR-0010) — одна на все спеки. Отвечает на ping: без pong сторож LiveSocket
  * считает сокет полуоткрытым и переподключается каждые ~10 с, а каждое переподключение — лишний запрос истории.
  * Умеет: тики каждые `every` мс по подписанным символам (вкл./выкл.: state.ticks), полуоткрытый сокет (state.halfOpen:
- * ни тиков, ни pong, подписка без ответа), отказ в соединении (state.refuse: сокета нет), сообщение сервера (send) и
+ * ни тиков, ни pong, подписка без ответа), отказ в соединении (state.refuse: сокета нет), медленное рукопожатие
+ * (state.openDelay, мс: страница видит открытие позже — мобильная сеть), сообщение сервера (send) и
  * закрытие текущего соединения сервером (close). Номер тика общий для всех соединений (время тика не идёт назад после
  * переподключения, как у сервера). Пишет подписки (subs) и соединения (sockets).
  */
 export type LiveMock = {
-  state: { ticks: boolean; halfOpen: boolean; refuse: boolean; k: number; sent: number; last: Map<string, number> };
+  state: { ticks: boolean; halfOpen: boolean; refuse: boolean; openDelay: number; k: number; sent: number; last: Map<string, number> };
   sockets: WebSocketRoute[];
   subs: string[][];
   /** Сообщение сервера во все открытые соединения. */
@@ -35,9 +36,9 @@ export async function liveSocket(page: Page, o: LiveMockOptions): Promise<LiveMo
   const sockets: WebSocketRoute[] = [];
   const subs: string[][] = [];
   const open = new Map<WebSocketRoute, string[]>();
-  const state = { ticks: o.ticks ?? true, halfOpen: false, refuse: false, k: 0, sent: 0, last: new Map<string, number>() };
+  const state = { ticks: o.ticks ?? true, halfOpen: false, refuse: false, openDelay: 0, k: 0, sent: 0, last: new Map<string, number>() };
   const price = o.price ?? ((k: number) => 100 + k * 0.1);
-  await page.routeWebSocket(/\/v1\/ws/, (ws) => {
+  await page.routeWebSocket(/\/v1\/ws/, async (ws) => {
     if (state.refuse) {
       void ws.close();
       return;
@@ -54,6 +55,8 @@ export async function liveSocket(page: Page, o: LiveMockOptions): Promise<LiveMo
         ws.send(JSON.stringify({ t: "subscribed", n: m.sub.length }));
       } else if (m.ping) ws.send('{"t":"pong"}');
     });
+    // страница видит открытие, когда обработчик завершился
+    if (state.openDelay) await new Promise((r) => setTimeout(r, state.openDelay));
   });
   const timer = setInterval(() => {
     if (!state.ticks || state.halfOpen) return;

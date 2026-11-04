@@ -306,6 +306,41 @@ test("фон и возврат: полуоткрытый сокет заменя
   }
 });
 
+test("фон дольше свечи: новый сокет открывается медленно — просрочка не догоняет отдельно, догон один (по его открытию)", async ({ page }) => {
+  const calls: string[] = [];
+  await clockAt(page, serverAt(FIRST_PAGE));
+  const live = await liveSocket(page, { ticks: false, at: () => serverAt(FIRST_PAGE) });
+  await mock(page, calls);
+  const srv = { n: FIRST_PAGE, newest: 0 };
+  const s = liveServer(page, srv);
+  await s.route;
+  try {
+    await page.goto("/chart/BTCUSDT/4h");
+    await ready(page);
+    await expect.poll(() => live.subs.length).toBe(1);
+    live.send({ t: "tick", s: "BTCUSDT", p: s.partial(FIRST_PAGE).c, at: iso(serverAt(FIRST_PAGE)) });
+    await expect(state(page)).toContainText("онлайн");
+    // фон на две свечи: сокет полуоткрыт, текущая свеча давно просрочена
+    live.state.halfOpen = true;
+    await setVisibility(page, "hidden");
+    srv.n = FIRST_PAGE + 2;
+    await page.clock.fastForward(2 * H4 * 1000);
+    await page.waitForTimeout(300);
+    expect(srv.newest).toBe(1);
+    // возврат: рукопожатие нового сокета — 1,5 с (таймер просрочки за это время срабатывает раз), догон — по открытию
+    live.state.halfOpen = false;
+    live.state.openDelay = 1500;
+    await setVisibility(page, "visible");
+    await expect.poll(() => live.sockets.length).toBe(2);
+    await expect.poll(() => srv.newest, { timeout: 5000 }).toBe(2);
+    await expect.poll(async () => (await mainBars(page)).at(-1)?.time).toBe(T0 + (FIRST_PAGE + 2) * H4);
+    await page.waitForTimeout(2500);
+    expect(srv.newest).toBe(2);
+  } finally {
+    live.dispose();
+  }
+});
+
 test("вид в истории при догоне остаётся на тех же свечах (вкладка видна, сокета нет — история сразу)", async ({ page }) => {
   const calls: string[] = [];
   await clockAt(page, serverAt(FIRST_PAGE));

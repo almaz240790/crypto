@@ -16,9 +16,11 @@
  *   сокет открыт и свеж (сообщение за ONLINE_MS) — ничего; открыт, но молчит — переподключение (дальше
  *   reconnect); не открыт — onResync("wake") сразу (история по REST) и переподключение, если сокет не
  *   подключается уже.
+ * Пока сокет, сменивший прежний, открывается (resyncPending), другие поводы догона (просрочка) ждут: его открытие —
+ * один догон по reconnect, а не два.
  * Без анимаций — просто новые числа.
  */
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 export type LiveSignal = { id: string; instrument_id: number; status: string; at: string };
 /** Минутная свеча; у формирующейся `at` — момент снимка на сервере. */
@@ -60,6 +62,8 @@ export const PONG_TIMEOUT_MS = 5000;
 /** Пауза перед переподключением после закрытия сокета: от и плюс случайное до. */
 export const RETRY_MS = 3000;
 export const RETRY_JITTER_MS = 2000;
+/** Сколько ждать открытия сокета, сменившего прежний, прежде чем догонять другими поводами (сети нет — не ждём). */
+export const RECONNECT_WAIT_MS = 10_000;
 
 /** Цена b не старше a: закрытая минута (`price`) приходит позже тиков и не должна откатывать цену. */
 export function isNewer(a: LivePrice | undefined, b: LivePrice): boolean {
@@ -169,6 +173,8 @@ export class LiveSocket {
   private lastTick = -Infinity;
   private pingAt: number | null = null;
   private opened = 0;
+  /** Начало подключения (unix мс): адрес, рукопожатие; null — не подключаемся. */
+  private dialAt: number | null = null;
   /** Последнее отданное «онлайн» (null — ещё не отдавали: первая проверка скажет как есть). */
   private online: boolean | null = null;
   private readonly WS: typeof WebSocket;
@@ -216,6 +222,15 @@ export class LiveSocket {
     if (!ws || ws.readyState !== 0) this.reconnectNow();
   }
 
+  /**
+   * Открывается сокет, сменивший прежний (переподключение после обрыва, полуоткрытого сокета, возврата вкладки): его
+   * открытие вызовет onReconnect — один догон. Не дольше RECONNECT_WAIT_MS: сети нет — пусть догоняют другие поводы.
+   */
+  get resyncPending(): boolean {
+    if (this.stopped || this.opened === 0 || this.dialAt === null) return false;
+    return Date.now() - this.dialAt < RECONNECT_WAIT_MS;
+  }
+
   /** Подписка сменилась — отправить, если сокет открыт. */
   resubscribe(): void {
     const ws = this.ws;
@@ -230,6 +245,7 @@ export class LiveSocket {
 
   private async connect(): Promise<void> {
     if (this.stopped) return;
+    this.dialAt ??= Date.now();
     const url = await this.opts.url();
     if (this.stopped || this.ws) return;
     const ws = new this.WS(url);
@@ -239,6 +255,7 @@ export class LiveSocket {
     // сокет, сменённый новым, ничего не трогает: его поздний onclose не гасит «онлайн» нового
     ws.onopen = () => {
       if (this.ws !== ws) return;
+      this.dialAt = null;
       this.lastMsg = Date.now();
       this.opened++;
       this.opts.onConnected(true);
@@ -264,6 +281,7 @@ export class LiveSocket {
     ws.onclose = () => {
       if (this.ws !== ws) return;
       this.ws = null;
+      this.dialAt = null;
       this.lost();
       if (!this.stopped) this.retry = setTimeout(() => void this.connect(), RETRY_MS + Math.random() * RETRY_JITTER_MS);
     };
@@ -377,5 +395,7 @@ export function useLive(symbols: string[], token: string | null, handlers: LiveH
     sockRef.current?.resubscribe();
   }, [key]);
 
-  return { prices, connected, online };
+  // новый сокет открывается — его открытие и есть догон (просрочка ждёт, LIVE-3)
+  const resyncPending = useCallback(() => sockRef.current?.resyncPending ?? false, []);
+  return { prices, connected, online, resyncPending };
 }
