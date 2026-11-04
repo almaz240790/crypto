@@ -430,15 +430,33 @@
   display: inline-flex;
 }
 
-/* граница панелей: зона 9 px по линии LWC, курсор row-resize; линия --accent и ручка — при наведении */
+/* граница панелей (PaneChrome, paneGeo.PANE_UI): зона над линией LWC — в нижней полосе верхней панели (высота
+   и положение — inline), поверх заголовков (5): заголовок панели ниже начинается от линии и зону не закрывает */
 .sep {
   position: absolute;
   left: 0;
-  height: 9px;
-  z-index: 4;
-  transform: translateY(-50%);
+  z-index: 6;
   cursor: row-resize;
   touch-action: none;
+}
+
+/* граница идёт только вверх / только вниз (пределы доли основной и минимума панели) */
+.sep[data-dir="up"] {
+  cursor: n-resize;
+}
+
+.sep[data-dir="down"] {
+  cursor: s-resize;
+}
+
+/* стоит: основная на своей доле при сжатых окном панелях — без ручки, указатель уходит графику */
+.sep[data-dir="none"] {
+  pointer-events: none;
+}
+
+.sep[data-dir="none"] .sepLine,
+.sep[data-dir="none"] .sepGrip {
+  display: none;
 }
 
 .sep:focus-visible {
@@ -449,79 +467,64 @@
   position: absolute;
   left: 0;
   right: 0;
-  top: 50%;
   height: 2px;
-  margin-top: -1px;
   background: var(--accent);
   opacity: 0;
   pointer-events: none;
 }
 
+/* ручка: зона касания — сам элемент (размер и место — inline: у правого края графика, левее «A»), видимая часть —
+   ::before по центру линии */
 .sepGrip {
   position: absolute;
-  left: 50%;
-  top: 50%;
+  display: grid;
+  place-items: center;
+}
+
+.sepGrip::before {
+  content: "";
   width: 32px;
   height: 8px;
+  box-sizing: border-box;
   border: 1px solid var(--border);
   border-radius: 4px;
   background:
     linear-gradient(var(--text-3), var(--text-3)) center 2px / 16px 1px no-repeat,
     linear-gradient(var(--text-3), var(--text-3)) center 4px / 16px 1px no-repeat,
     var(--surface-raised);
-  transform: translate(-50%, -50%);
   opacity: 0;
-  pointer-events: none;
 }
 
 .sep:hover .sepLine,
 .sep:focus-visible .sepLine,
 .sep[data-active] .sepLine,
-.sep:hover .sepGrip,
-.sep:focus-visible .sepGrip,
-.sep[data-active] .sepGrip {
+.sep:hover .sepGrip::before,
+.sep:focus-visible .sepGrip::before,
+.sep[data-active] .sepGrip::before {
   opacity: 1;
 }
 
-.sep:hover .sepGrip,
-.sep[data-active] .sepGrip {
+.sep:hover .sepGrip::before,
+.sep[data-active] .sepGrip::before {
   border-color: var(--accent);
 }
 
-/* шкала цены под курсором: её можно тянуть — подсветка колонки и знак «↕» (без всплывающей подсказки) */
+/* шкала цены под курсором: её можно тянуть (курсор ns-resize ставит LWC) — полоса --accent по левому краю шкалы,
+   без заливки: метка цены, обратный отсчёт и деления не бледнеют */
 .scaleHover {
   position: absolute;
   z-index: 3;
-  display: grid;
-  place-items: center;
-  background: color-mix(in srgb, var(--row-hover) 55%, transparent);
-  box-shadow: inset 1px 0 0 var(--text-3);
+  box-shadow: inset 2px 0 0 var(--accent);
   pointer-events: none;
 }
 
-.scaleGrip {
-  display: grid;
-  place-items: center;
-  width: 20px;
-  height: 28px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--surface-raised);
-  color: var(--text-2);
-}
-
-.scaleGrip svg {
-  width: 14px;
-  height: 14px;
-}
-
-/* «A» (автомасштаб) — внизу шкалы цены панели, растянутой вручную */
+/* «A» (автомасштаб) — правый нижний угол области графика панели, растянутой вручную, вплотную к шкале цены
+   (место и размер — inline, paneGeo.autoBox): не на шкале — не закрывает деления и метку последнего значения */
 .autoHost {
   position: absolute;
   z-index: 5;
-  display: flex;
-  justify-content: center;
-  transform: translateY(calc(-100% - 4px));
+  display: grid;
+  place-items: center;
   pointer-events: none;
 }
 
@@ -534,7 +537,8 @@
   pointer-events: auto;
 }
 
-/* однократная подсказка: поверх графика над первой границей, справа; клики проходят на график, кроме «закрыть» */
+/* однократная подсказка: поверх графика над первой границей, справа над её ручкой; клики проходят на график,
+   кроме «закрыть» */
 .panesHint {
   position: absolute;
   z-index: 6;
@@ -603,13 +607,19 @@
     display: inline-flex;
   }
 
-  .sep {
-    height: var(--touch-min);
-  }
-
-  .sepGrip {
+  /* ручка под пальцем видна всегда, крупнее (зона касания 44 × 44 — inline) */
+  .sepGrip::before {
     width: 40px;
     height: 10px;
     opacity: 1;
+  }
+
+  /* :hover под пальцем «залипает» после касания: линия --accent — только пока границу тянут */
+  .sep:hover:not([data-active]) .sepLine {
+    opacity: 0;
+  }
+
+  .sep:hover:not([data-active]) .sepGrip::before {
+    border-color: var(--border);
   }
 }

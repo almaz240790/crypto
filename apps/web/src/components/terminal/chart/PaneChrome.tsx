@@ -1,23 +1,24 @@
 "use client";
 
 import type { ChartStore } from "@platform/charts";
-import { INTERACTION } from "@platform/charts";
+import { INTERACTION, separatorRange } from "@platform/charts";
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { IconButton, Menu, Popover, usePopover } from "@/components/ui";
-import { IconArrowDown, IconArrowUp, IconClose, IconGear, IconMaximize, IconMore, IconRestore, IconScaleVertical } from "@/components/ui/icons";
+import { IconArrowDown, IconArrowUp, IconClose, IconGear, IconMaximize, IconMore, IconRestore } from "@/components/ui/icons";
 import { useT } from "@/i18n/client";
 import { MQ, useMediaQuery } from "@/lib/breakpoints";
 import { IndicatorParams } from "../sheets/IndicatorParams";
 import { PaneValue } from "./PaneValue";
-import { paneSeparators, type ChartGeo, type PaneGeo, type PaneSep } from "./paneGeo";
+import { autoBox, gripBox, paneSeparators, PANE_UI, sepAbove, type ChartGeo, type PaneGeo, type PaneSep } from "./paneGeo";
 import c from "./chart.module.css";
 
 /**
  * Управление панелями графика (ADR-0009, «Управление панелями»; как в TradingView): поверх холста LWC —
  * заголовки панелей с кнопками «выше», «ниже», «развернуть / вернуть», «настройки», «убрать», границы панелей
- * с ручкой (перетаскивание — высота, двойной клик — высоты по умолчанию), кнопка «A» (автомасштаб) у шкалы цены,
- * растянутой вручную, подсветка шкалы под курсором и однократная подсказка. Геометрию считает ChartSurface
- * (координаты колонки графика, CSS px), действия выполняет он же: здесь только DOM и указатель.
+ * с ручкой (перетаскивание — высота, двойной клик — высоты по умолчанию), кнопка «A» (автомасштаб) в углу панели
+ * у шкалы цены, растянутой вручную, полоса у шкалы под курсором и однократная подсказка. Геометрию считает
+ * ChartSurface (координаты колонки графика, CSS px), действия выполняет он же: здесь только DOM и указатель.
+ * Слои: заголовки — 5, граница с ручкой — 6 (линию и ручку заголовок не закрывает), открытое меню заголовка — 8.
  */
 
 export type { ChartGeo, PaneGeo, PaneSep } from "./paneGeo";
@@ -89,10 +90,15 @@ export function PaneChrome({ host, store, geo, maximized, compact, hint, mainTit
     };
   }, [host]);
 
+  // подсказка на экране (десктоп): кнопки первой панели видны, пока она о них говорит
+  const [hintOn, setHintOn] = useState(false);
   const others = geo.panes.filter((p) => p.index > 0);
   const seps = paneSeparators(geo.panes, maximized !== null);
   const main = geo.panes[0];
   const hovered = hover ? geo.panes.find((p) => p.index === hover.index) : undefined;
+  const heights: number[] = [];
+  for (const p of geo.panes) heights[p.index] = p.height;
+  const grip = gripBox(geo.plotW, coarse);
   return (
     <>
       {maximized && main && (
@@ -104,28 +110,26 @@ export function PaneChrome({ host, store, geo, maximized, compact, hint, mainTit
         </div>
       )}
       {others.map((p, i) => (
-        <PaneHeader key={p.key} pane={p} store={store} first={i === 0} last={i === others.length - 1} maximized={maximized} compact={compact} hover={hover?.index === p.index} {...act} />
+        <PaneHeader key={p.key} pane={p} store={store} first={i === 0} last={i === others.length - 1} maximized={maximized} compact={compact} hover={hover?.index === p.index || (i === 0 && hintOn && !compact)} {...act} />
       ))}
       {seps.map((sep) => (
-        <Separator key={sep.key} sep={sep} coarse={coarse} width={geo.width} onResize={act.onResize} onReset={act.onResetHeights} />
+        <Separator key={sep.key} sep={sep} range={separatorRange(heights, sep.above, sep.below, geo.limits)} coarse={coarse} width={geo.width} plotW={geo.plotW} onResize={act.onResize} onReset={act.onResetHeights} />
       ))}
-      {!coarse && hovered && hover?.scale && hovered.scalable && !hovered.collapsed && (
-        <div className={c.scaleHover} data-testid="scale-hover" style={{ left: geo.plotW, top: hovered.top, width: geo.scaleW, height: hovered.height }} aria-hidden="true">
-          <span className={c.scaleGrip}>
-            <IconScaleVertical />
-          </span>
-        </div>
-      )}
+      {/* шкала под курсором: её можно тянуть — полоса --accent по её левому краю, без заливки (метки не бледнеют) */}
+      {!coarse && hovered && hover?.scale && hovered.scalable && !hovered.collapsed && <div className={c.scaleHover} data-testid="scale-hover" style={{ left: geo.plotW, top: hovered.top, width: geo.scaleW, height: hovered.height }} aria-hidden="true" />}
       {geo.panes
         .filter((p) => p.manual && !p.collapsed)
-        .map((p) => (
-          <div key={p.key} className={c.autoHost} style={{ left: geo.plotW, top: p.top + p.height, width: geo.scaleW }}>
-            <IconButton size="xs" className={c.autoBtn} label={t("автомасштаб: {name}", { name: p.index === 0 ? t("цена") : p.title })} title={t("Вернуть автомасштаб (то же — двойной клик по шкале)")} onClick={() => act.onAutoScale(p.index)}>
-              A
-            </IconButton>
-          </div>
-        ))}
-      {hint && others.length > 0 && seps[0] && <PanesHint y={seps[0].y} right={geo.width - geo.plotW} coarse={coarse} />}
+        .map((p) => {
+          const box = autoBox(p, geo.plotW, coarse);
+          return (
+            <div key={p.key} className={c.autoHost} data-testid={`auto-${p.testId}`} style={{ left: box.left, top: box.top, width: box.size, height: box.size }}>
+              <IconButton size="xs" className={c.autoBtn} label={t("автомасштаб: {name}", { name: p.index === 0 ? t("цена") : p.title })} title={t("Вернуть автомасштаб (то же — двойной клик по шкале)")} onClick={() => act.onAutoScale(p.index)}>
+                A
+              </IconButton>
+            </div>
+          );
+        })}
+      {hint && others.length > 0 && seps[0] && <PanesHint y={seps[0].y - sepAbove(coarse)} right={geo.width - grip.left - grip.w} coarse={coarse} compact={compact} onShown={setHintOn} />}
     </>
   );
 }
@@ -133,7 +137,7 @@ export function PaneChrome({ host, store, geo, maximized, compact, hint, mainTit
 type HeaderProps = Actions & { pane: PaneGeo; store: ChartStore; first: boolean; last: boolean; maximized: string | null; compact: boolean; hover: boolean };
 
 /**
- * Заголовок панели (24 px, под пальцем 44): имя цветом экземпляра, значения, «свернуть / развернуть» и действия.
+ * Заголовок панели (24 px, под пальцем 44): имя цветом экземпляра, «свернуть / развернуть», действия и значения.
  * Действия на десктопе — при наведении на панель и при фокусе с клавиатуры, под пальцем — всегда; на телефоне —
  * в меню «⋯». Свайп вниз по заголовку сворачивает панель, вверх — раскрывает (план 2A.7).
  */
@@ -175,7 +179,8 @@ function PaneHeader({ pane, store, first, last, maximized, compact, hover, onCol
       <span className={c.paneTitle} style={pane.color ? { color: pane.color } : undefined}>
         {name}
       </span>
-      {pane.values && !pane.collapsed && <PaneValue store={store} uid={pane.key} compact={pane.compactValues} />}
+      {/* кнопки — сразу за именем и ▾, значения — после них: ширина значений меняется с перекрестием, а цели
+          под курсором не сдвигаются (как в TradingView) */}
       {toggle}
       {compact ? (
         <Menu
@@ -218,6 +223,7 @@ function PaneHeader({ pane, store, first, last, maximized, compact, hover, onCol
           )}
         </span>
       )}
+      {pane.values && !pane.collapsed && <PaneValue store={store} uid={pane.key} compact={pane.compactValues} />}
       {canParams && pane.inst && (
         <Popover open={pop.open} onClose={pop.close} anchor={pop.anchor} label={t("Параметры {name}", { name })} id={pop.id} width={240}>
           <div className={c.paramsPop}>
@@ -231,14 +237,22 @@ function PaneHeader({ pane, store, first, last, maximized, compact, hover, onCol
 }
 
 /**
- * Граница панелей: зона 9 px (под пальцем 44), курсор row-resize; при наведении и перетаскивании — линия --accent
- * и ручка по центру (под пальцем ручка видна всегда). Двойной клик — высоты по умолчанию; стрелки — шаг 8 px.
+ * Граница панелей (ADR-0009): зона над линией — в нижней полосе верхней раскрытой панели (8 px, под пальцем 12), так
+ * её не закрывает заголовок панели ниже; ручка — у правого края области графика, левее «A» (32 × 12, под пальцем
+ * зона касания 44 × 44 и ручка видна всегда), поверх заголовков. Курсор — куда граница может пойти: row-resize,
+ * n-resize (только вверх), s-resize (только вниз); стоит (основная на своей доле при сжатых окном панелях) — без
+ * ручки и пропускает указатель к графику. Двойной клик (двойное касание) — высоты по умолчанию; стрелки — шаг 8 px.
  */
-function Separator({ sep, coarse, width, onResize, onReset }: { sep: PaneSep; coarse: boolean; width: number; onResize: Actions["onResize"]; onReset: () => void }) {
+function Separator({ sep, range, coarse, width, plotW, onResize, onReset }: { sep: PaneSep; range: readonly [number, number]; coarse: boolean; width: number; plotW: number; onResize: Actions["onResize"]; onReset: () => void }) {
   const t = useT();
   const start = useRef<number | null>(null);
   const lastTap = useRef(0);
   const [active, setActive] = useState(false);
+  const above = sepAbove(coarse);
+  const grip = gripBox(plotW, coarse);
+  const [up, down] = range;
+  const dir = up < 0 && down > 0 ? "both" : up < 0 ? "up" : down > 0 ? "down" : "none";
+  const locked = dir === "none";
   const end = useCallback(
     (e: ReactPointerEvent<HTMLDivElement>) => {
       const y0 = start.current;
@@ -272,15 +286,17 @@ function Separator({ sep, coarse, width, onResize, onReset }: { sep: PaneSep; co
       role="separator"
       aria-orientation="horizontal"
       aria-label={t("граница панелей")}
-      title={t("Потяните — высота панели. Двойной клик — высоты по умолчанию")}
-      tabIndex={0}
+      aria-disabled={locked || undefined}
+      title={locked ? undefined : t("Потяните — высота панели. Двойной клик — высоты по умолчанию")}
+      tabIndex={locked ? -1 : 0}
       className={c.sep}
+      data-dir={dir}
       data-active={active || undefined}
       data-coarse={coarse || undefined}
       data-testid="pane-separator"
-      style={{ top: sep.y, width }}
+      style={{ top: sep.y - above, height: above + PANE_UI.sepBelow, width }}
       onPointerDown={(e) => {
-        if (e.button !== 0) return;
+        if (e.button !== 0 || locked) return;
         e.preventDefault();
         e.stopPropagation();
         e.currentTarget.setPointerCapture?.(e.pointerId);
@@ -299,18 +315,20 @@ function Separator({ sep, coarse, width, onResize, onReset }: { sep: PaneSep; co
       }}
       onKeyDown={onKey}
     >
-      <span className={c.sepLine} aria-hidden="true" />
-      <span className={c.sepGrip} aria-hidden="true" />
+      <span className={c.sepLine} style={{ top: above - 1 }} aria-hidden="true" />
+      <span className={c.sepGrip} data-testid="pane-grip" style={{ left: grip.left, top: above - grip.h / 2, width: grip.w, height: grip.h }} aria-hidden="true" />
     </div>
   );
 }
 
 /**
  * Однократная подсказка (как уведомление о разметке): когда появляется первая панель под графиком — плашка поверх
- * графика над первой границей, справа (не строка раскладки, клики проходят на график, кроме «закрыть»). Флаг
- * в localStorage ставится при показе; плашка исчезает сама через 15 с.
+ * графика над первой границей, справа над её ручкой (не строка раскладки, клики проходят на график, кроме «закрыть»).
+ * Флаг в localStorage ставится при показе; плашка исчезает сама через 15 с. Текст называет, где кнопки: на десктопе
+ * они появляются при наведении (и пока видна подсказка — у первой панели), под пальцем видны всегда, на телефоне —
+ * в меню «⋯».
  */
-function PanesHint({ y, right, coarse }: { y: number; right: number; coarse: boolean }) {
+function PanesHint({ y, right, coarse, compact, onShown }: { y: number; right: number; coarse: boolean; compact: boolean; onShown: (on: boolean) => void }) {
   const t = useT();
   const [shown, setShown] = useState(false);
   useEffect(() => {
@@ -324,14 +342,15 @@ function PanesHint({ y, right, coarse }: { y: number; right: number; coarse: boo
     const timer = setTimeout(() => setShown(false), HINT_MS);
     return () => clearTimeout(timer);
   }, []);
+  useEffect(() => {
+    onShown(shown);
+    return () => onShown(false);
+  }, [shown, onShown]);
   if (!shown) return null;
+  const buttons = compact ? t("Кнопка «⋯» в заголовке панели — порядок, развернуть, убрать.") : coarse ? t("Кнопки в заголовке панели — порядок, развернуть, убрать.") : t("Наведите на панель — в её заголовке кнопки: порядок, развернуть, убрать.");
   return (
-    <div role="note" aria-label={t("Как управлять панелями")} className={c.panesHint} data-testid="panes-hint" style={{ top: y, right: right + 8 }}>
-      <p className={c.panesHintText}>
-        {coarse
-          ? t("Потяните границу — высота панели. Потяните шкалу справа — растянуть по вертикали. «A» у шкалы — вернуть. Кнопки в заголовке панели — порядок, развернуть, убрать.")
-          : t("Потяните границу — высота панели. Потяните шкалу справа — растянуть по вертикали. Двойной клик по шкале — вернуть. Кнопки в заголовке панели — порядок, развернуть, убрать.")}
-      </p>
+    <div role="note" aria-label={t("Как управлять панелями")} className={c.panesHint} data-testid="panes-hint" style={{ top: y, right }}>
+      <p className={c.panesHintText}>{[t("Потяните границу — высота панели."), t("Потяните шкалу справа — растянуть по вертикали."), coarse ? t("«A» у шкалы — вернуть.") : t("Двойной клик по шкале — вернуть."), buttons].join(" ")}</p>
       <IconButton size="xs" className={c.panesHintClose} label={t("закрыть подсказку")} onClick={() => setShown(false)}>
         <IconClose />
       </IconButton>

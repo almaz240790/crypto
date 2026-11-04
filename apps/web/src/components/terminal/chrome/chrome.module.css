@@ -330,7 +330,9 @@
 }
 
 @media (pointer: coarse) {
+  /* выше зоны границы под графиком (12 px над линией, PaneChrome): кнопки не заходят на неё */
   .corner {
+    bottom: 16px;
     opacity: 1;
   }
 }
