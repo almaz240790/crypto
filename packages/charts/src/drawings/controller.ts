@@ -1,7 +1,8 @@
 import { INTERACTION } from "../presets";
 import type { Candle } from "../types";
 import { hitTest, magnetSnap, type Hit, type Projector } from "./geometry";
-import { CLICK_SLOP_PX, DBLCLICK_MS, DBLCLICK_SLOP_PX, DEFAULT_STYLE, FIB_LEVELS, HANDLE_PX, HANDLE_TOUCH_PX, WIDE_TYPES, pointsNeeded, type Drawing, type DrawingType, type Point } from "./types";
+import { POSITION_PARTS, POSITION_PART_INDEX, atrAt, positionDir, positionFromEntry, setPositionEnd, setPositionPrice } from "./position";
+import { CLICK_SLOP_PX, DBLCLICK_MS, DBLCLICK_SLOP_PX, DEFAULT_STYLE, FIB_LEVELS, HANDLE_PX, HANDLE_TOUCH_PX, POSITION_BARS, POSITION_EDGE_PX, POSITION_KNOB_TOUCH_PX, POSITION_MIN_PX, WIDE_TYPES, isPosition, pointsNeeded, type Drawing, type DrawingType, type Point } from "./types";
 
 /**
  * Контроллер жестов рисования (план 2A.5, 2A.7; ADR-0009, «Рисование»): постановка точек кликами и касаниями,
@@ -19,7 +20,10 @@ import { CLICK_SLOP_PX, DBLCLICK_MS, DBLCLICK_SLOP_PX, DEFAULT_STYLE, FIB_LEVELS
  *   жест графика (масштаб шкалы, прокрутка);
  * - правка рисунка (хэндлы, тело) рисунков не создаёт. Мышь правит любой рисунок под курсором; палец — только
  *   выбранный: по невыбранному касание выбирает, сдвиг и щипок принадлежат графику. Касание мимо снимает выбор,
- *   сдвиг графика — нет.
+ *   сдвиг графика — нет;
+ * - позиция Long/Short — одним нажатием на цену входа: стоп по ATR(14), цель 1:2, ширина ~30 свечей (position.ts).
+ *   Правка: ручки входа, стопа и цели двигают свою цену (по вертикали, не за вход), правый край — длительность,
+ *   тело — всю позицию.
  */
 export type ControllerEvents = {
   onCreate: (d: Drawing) => void;
@@ -40,6 +44,10 @@ export type ControllerOptions = {
   getDrawings: () => Drawing[];
   getCandles: () => readonly Candle[];
   tfSeconds: number;
+  /** Длительность бара сейчас (смена таймфрейма без пересоздания контроллера); без неё — tfSeconds. */
+  getTfSeconds?: () => number;
+  /** Шаг цены инструмента: стоп и цель позиции — по нему. */
+  getTick?: () => number | null;
   timeframe: string | null;
   touch: boolean;
   magnet: boolean;
@@ -84,7 +92,9 @@ export class DrawingController {
   private lastPlace: { at: number; x: number; y: number } | null = null;
   private gesture: Gesture | null = null;
   private readonly pointers = new Set<number>();
-  private drag: { hit: Hit; start: Xy; origin: Point[] } | null = null;
+  private drag: { hit: Hit; type: DrawingType; start: Xy; origin: Point[] } | null = null;
+  /** ATR по свечам графика — кэш на тот же буфер (позиция одним нажатием). */
+  private atrCache: { candles: readonly Candle[]; n: number; last: number; time: number; atr: number | null } | null = null;
   /** Касания (touch*) не доходят до LWC: палец двигает точку или рисунок, а не график. */
   private blockTouch = false;
   private readonly handlers: Array<[EventTarget, string, (e: Event) => void]> = [];
@@ -140,12 +150,21 @@ export class DrawingController {
     return this.opts.touch ? HANDLE_TOUCH_PX / 2 : HANDLE_PX;
   }
 
+  /** Ручки позиции: под пальцем — цель 44 px. */
+  get knobTolerance(): number {
+    return this.opts.touch ? POSITION_KNOB_TOUCH_PX : HANDLE_PX;
+  }
+
+  private get tf(): number {
+    return this.opts.getTfSeconds?.() ?? this.opts.tfSeconds;
+  }
+
   /**
    * Рисунок пользователя под точкой (x, y) панели — та же геометрия, что у выбора и перетаскивания. Разметка
    * графика (наведение и клик по объектам сцены) уступает рисункам: они важнее.
    */
   hitAt(x: number, y: number): string | null {
-    return hitTest(this.opts.getDrawings(), x, y, this.proj.projector(), this.tolerance)?.id ?? null;
+    return hitTest(this.opts.getDrawings(), x, y, this.proj.projector(), this.tolerance, this.knobTolerance)?.id ?? null;
   }
 
   /** Бросить начатый рисунок (инструмент не меняется). */
@@ -204,7 +223,7 @@ export class DrawingController {
     const c = this.opts.getCandles();
     if (c.length === 0) return time;
     const last = c[c.length - 1]!.time;
-    if (time > last) return last + Math.round((time - last) / this.opts.tfSeconds) * this.opts.tfSeconds;
+    if (time > last) return last + Math.round((time - last) / this.tf) * this.tf;
     let lo = 0, hi = c.length - 1;
     while (lo < hi) {
       const mid = (lo + hi) >> 1;
@@ -294,7 +313,7 @@ export class DrawingController {
     this.blockTouch = touch;
     DrawingController.consume(e);
     const d = this.opts.getDrawings().find((q) => q.id === hit.id)!;
-    this.drag = { hit, start, origin: d.points.map((p) => ({ ...p })) };
+    this.drag = { hit, type: d.type, start, origin: d.points.map((p) => ({ ...p })) };
     this.ev.onSelect(hit.id);
     this.capture(e);
   }
@@ -303,7 +322,7 @@ export class DrawingController {
   private editHit(p: Xy, touch: boolean): Hit | null {
     const selected = this.opts.getSelectedId?.() ?? null;
     const ds = this.opts.getDrawings().filter((d) => !d.locked && (!touch || d.id === selected));
-    return hitTest(ds, p.x, p.y, this.proj.projector(), this.tolerance);
+    return hitTest(ds, p.x, p.y, this.proj.projector(), this.tolerance, this.knobTolerance);
   }
 
   private move(e: PointerLike): void {
@@ -363,7 +382,7 @@ export class DrawingController {
       return this.addPoint(at.x, at.y, g.touch);
     }
     // касание по невыбранному рисунку выбирает его (правится пальцем, когда выбран); мимо — снять выбор
-    const hit = g.touch && g.plot ? hitTest(this.opts.getDrawings().filter((d) => !d.locked), at.x, at.y, this.proj.projector(), this.tolerance) : null;
+    const hit = g.touch && g.plot ? hitTest(this.opts.getDrawings().filter((d) => !d.locked), at.x, at.y, this.proj.projector(), this.tolerance, this.knobTolerance) : null;
     this.ev.onSelect(hit?.id ?? null);
   }
 
@@ -384,9 +403,23 @@ export class DrawingController {
   }
 
   private dragTo(x: number, y: number): void {
-    const { hit, start, origin } = this.drag!;
-    const pts = origin.map((p) => ({ ...p }));
-    if (hit.part === "point") {
+    const { hit, type, start, origin } = this.drag!;
+    let pts = origin.map((p) => ({ ...p }));
+    if (hit.part === "point" && isPosition(type)) {
+      // ручка позиции: вход, стоп, цель — только цена (по вертикали, с магнитом); правый край — только время
+      // смещение от места нажатия (не «прыжок» ручки под палец: цель касания — 44 px)
+      const part = POSITION_PARTS[hit.index];
+      const pr = this.proj.projector();
+      if (part === "end") {
+        const x0 = pr.x(origin[1]!.time);
+        const t = this.proj.timeAt((x0 ?? start.x) + x - start.x);
+        if (t !== null) pts = setPositionEnd({ type, points: origin }, this.snapTime(t), this.tf);
+      } else if (part) {
+        const y0 = pr.y(origin[POSITION_PART_INDEX[part]]!.price);
+        const at = this.toPoint(x, (y0 ?? start.y) + y - start.y);
+        if (at) pts = setPositionPrice({ type, points: origin }, part, at.price, this.opts.getTick?.() ?? null);
+      }
+    } else if (hit.part === "point") {
       const np = this.toPoint(x, y);
       if (np) pts[hit.index] = np;
     } else {
@@ -497,9 +530,56 @@ export class DrawingController {
     this.ev.onDraft(this.makeDraft(this.preview ? [...this.pending, this.preview] : this.pending));
   }
 
+  /** ATR(14) на свече входа — по свечам графика, с кэшем на тот же буфер и время. */
+  private atrFor(time: number): number | null {
+    const candles = this.opts.getCandles();
+    const last = candles[candles.length - 1]?.time ?? -1;
+    const c = this.atrCache;
+    if (c && c.candles === candles && c.n === candles.length && c.last === last && c.time === time) return c.atr;
+    const atr = atrAt(candles, time);
+    this.atrCache = { candles, n: candles.length, last, time, atr };
+    return atr;
+  }
+
+  /**
+   * Правый край новой позиции: POSITION_BARS свечей правее свечи входа, но не дальше правого края области свечей
+   * (POSITION_EDGE_PX) — ручка края и подписи на экране; не уже POSITION_MIN_PX и не меньше одной свечи.
+   */
+  private positionEnd(entry: Point): number {
+    const c = this.opts.getCandles();
+    const tf = this.tf;
+    let end = entry.time + POSITION_BARS * tf;
+    if (c.length > 0) {
+      const n = c.length;
+      const lastT = c[n - 1]!.time;
+      let i = n - 1 + Math.round((entry.time - lastT) / tf);
+      if (entry.time <= lastT) {
+        let lo = 0, hi = n - 1;
+        while (lo < hi) {
+          const mid = (lo + hi) >> 1;
+          if (c[mid]!.time < entry.time) lo = mid + 1;
+          else hi = mid;
+        }
+        i = lo;
+      }
+      const j = i + POSITION_BARS;
+      end = j <= n - 1 ? c[j]!.time : lastT + (j - (n - 1)) * tf;
+    }
+    const pr = this.proj.projector();
+    const x0 = pr.x(entry.time), x1 = pr.x(end);
+    const limit = pr.width - POSITION_EDGE_PX;
+    if (x0 !== null && x1 !== null && x1 > limit) {
+      const t = this.proj.timeAt(Math.max(limit, x0 + POSITION_MIN_PX));
+      if (t !== null) end = this.snapTime(t);
+    }
+    return Math.max(end, entry.time + tf);
+  }
+
   private makeDraft(points: Point[]): Drawing {
     const type = this.tool ?? "trend";
-    const pts = points.slice(0, pointsNeeded(type));
+    let pts = points.slice(0, pointsNeeded(type));
+    // позиция одним нажатием: стоп по ATR, цель 1:2, ширина ~30 свечей
+    if (isPosition(type) && pts[0]) pts = positionFromEntry(positionDir(type), pts[0], { atr: this.atrFor(pts[0].time), end: this.positionEnd(pts[0]), tick: this.opts.getTick?.() ?? null });
     const color = type === "position-long" ? "up" : type === "position-short" ? "down" : DEFAULT_STYLE.color;
     return {
       id: this.opts.newId(),

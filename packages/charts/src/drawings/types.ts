@@ -64,17 +64,41 @@ export const FIB_KEY_LEVELS: readonly number[] = [0.5, 0.618];
 /** Непрозрачность промежуточных уровней Фибоначчи (0 и 1 и выделенные — непрозрачные). */
 export const FIB_MINOR_ALPHA = 0.6;
 
-/** Сколько точек нужно поставить, чтобы рисунок был завершён. */
+/**
+ * Позиция Long/Short — как в TradingView (ADR-0009, «Рисование», дополнение «Позиция»): одно нажатие на цену входа
+ * ставит готовую позицию. Стоп — на POSITION_STOP_ATR × ATR(POSITION_ATR_PERIOD) от входа (ниже у Long, выше у
+ * Short), без ATR — POSITION_FALLBACK_PCT % цены; цель — POSITION_RR риска за входом; ширина — POSITION_BARS свечей
+ * вправо от свечи входа, но не дальше правого края области свечей (POSITION_EDGE_PX), и не уже POSITION_MIN_PX.
+ */
+export const POSITION_ATR_PERIOD = 14;
+export const POSITION_STOP_ATR = 1;
+export const POSITION_FALLBACK_PCT = 1;
+export const POSITION_RR = 2;
+export const POSITION_BARS = 30;
+export const POSITION_EDGE_PX = 8;
+export const POSITION_MIN_PX = 40;
+/** Заливка зон прибыли и риска — та же доля цвета, что у токенов --up-fill / --down-fill (12 %): свечи видны. */
+export const POSITION_FILL_ALPHA = 0.12;
+/** Ручка позиции под пальцем — цель касания 44 px (половина — радиус попадания). */
+export const POSITION_KNOB_TOUCH_PX = 22;
+/** Видимый радиус ручки позиции: мышь, палец. */
+export const POSITION_KNOB_R = 4;
+export const POSITION_KNOB_TOUCH_R = 10;
+
+export const POSITION_TYPES: readonly DrawingType[] = ["position-long", "position-short"];
+export const isPosition = (t: DrawingType): t is "position-long" | "position-short" => t === "position-long" || t === "position-short";
+
+/** Сколько точек нужно поставить, чтобы рисунок был завершён. Позиция — одним нажатием (стоп и цель — по ATR). */
 export function pointsNeeded(type: DrawingType): number {
   switch (type) {
     case "hline":
     case "hray":
     case "vline":
     case "note":
-      return 1;
-    case "channel":
     case "position-long":
     case "position-short":
+      return 1;
+    case "channel":
       return 3;
     default:
       return 2;

@@ -75,7 +75,8 @@ describe("геометрия", () => {
   it("число точек по типу и зона касания на телефоне", () => {
     expect(pointsNeeded("hline")).toBe(1);
     expect(pointsNeeded("trend")).toBe(2);
-    expect(pointsNeeded("position-long")).toBe(3);
+    expect(pointsNeeded("position-long")).toBe(1);
+    expect(pointsNeeded("channel")).toBe(3);
     expect(HANDLE_TOUCH_PX).toBe(28);
   });
 

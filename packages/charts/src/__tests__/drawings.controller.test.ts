@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { DrawingController, type DrawProjector } from "../drawings/controller";
+import { atrAt } from "../drawings/position";
 import { CLICK_SLOP_PX, DBLCLICK_MS, DEFAULT_STYLE, HANDLE_TOUCH_PX, type Drawing } from "../drawings/types";
+import type { Candle } from "../types";
 import { INTERACTION } from "../presets";
 import { bars, H, T0 } from "./fakes/lwc";
 
@@ -57,7 +59,7 @@ const projOf = (pxBar: number): DrawProjector => ({
 });
 const CANDLES = bars(100);
 
-function setup(o: { magnet?: boolean; items?: Drawing[]; coarse?: boolean; pxBar?: number } = {}) {
+function setup(o: { magnet?: boolean; items?: Drawing[]; coarse?: boolean; pxBar?: number; candles?: Candle[]; tick?: number | null; tf?: () => number } = {}) {
   const doc = new FakeTarget();
   const el = Object.assign(new FakeTarget(), { ownerDocument: doc, getBoundingClientRect: () => ({ left: 0, top: 0 }), setPointerCapture: () => undefined });
   let items: Drawing[] = o.items ?? [];
@@ -68,7 +70,7 @@ function setup(o: { magnet?: boolean; items?: Drawing[]; coarse?: boolean; pxBar
   const ctrl = new DrawingController(
     el as unknown as HTMLElement,
     projOf(o.pxBar ?? PX_BAR),
-    { getDrawings: () => items, getCandles: () => CANDLES, tfSeconds: H, timeframe: null, touch: o.coarse ?? false, magnet: o.magnet ?? false, newId: () => `n${++n}`, getSelectedId: () => selected, now: () => clock.now },
+    { getDrawings: () => items, getCandles: () => o.candles ?? CANDLES, tfSeconds: H, ...(o.tf ? { getTfSeconds: o.tf } : {}), getTick: () => o.tick ?? null, timeframe: null, touch: o.coarse ?? false, magnet: o.magnet ?? false, newId: () => `n${++n}`, getSelectedId: () => selected, now: () => clock.now },
     {
       onCreate: (d) => {
         log.created.push(d);
@@ -125,7 +127,10 @@ function setup(o: { magnet?: boolean; items?: Drawing[]; coarse?: boolean; pxBar
     el.dispatch("dblclick", { clientX: x, clientY: y, stopPropagation: () => (stopped = true) });
     return !stopped;
   };
-  return { ctrl, el, doc, log, items: () => items, selected: () => selected, clock, mouse: pointer("mouse"), finger: pointer("touch"), pen: pointer("pen"), pointer, touchReachesChart, dblReachesChart, lastDraft, fire };
+  const select = (id: string | null) => {
+    selected = id;
+  };
+  return { ctrl, el, doc, log, items: () => items, selected: () => selected, select, clock, mouse: pointer("mouse"), finger: pointer("touch"), pen: pointer("pen"), pointer, touchReachesChart, dblReachesChart, lastDraft, fire };
 }
 
 /** Точка на свече i с ценой p — в пикселях. */
@@ -708,5 +713,199 @@ describe("отмена после перетаскивания", () => {
     expect(finals).toHaveLength(1);
     expect(finals[0]!.origin).toEqual(line.points);
     expect(s.log.moves.filter((m) => !m.final).every((m) => m.origin === undefined)).toBe(true);
+  });
+});
+
+/**
+ * Позиция Long/Short как в TradingView (ADR-0009, «Рисование», дополнение «Позиция»): одно нажатие на цену входа —
+ * готовая позиция (стоп — ATR(14), цель 1:2, ~30 свечей вправо, не дальше края панели); ручки входа, стопа и цели
+ * двигают свою цену, правый край — длительность, тело — всю позицию; график под правкой не едет.
+ */
+describe("позиция: одно нажатие", () => {
+  const atr14 = (i: number) => atrAt(CANDLES, T0 + i * H)!;
+
+  it("клик мышью — вход по клику, стоп на ATR(14) ниже, цель 1:2, правый край — через 30 свечей; инструмент снят", () => {
+    const s = setup();
+    s.ctrl.setTool("position-long");
+    s.mouse.tap(...at(40, 100));
+    expect(s.log.created).toHaveLength(1);
+    const d = s.log.created[0]!;
+    const a = atr14(40);
+    expect(a).toBeGreaterThan(0);
+    expect(d.type).toBe("position-long");
+    expect(d.style.color).toBe("up");
+    expect(d.points[0]).toEqual({ time: T0 + 40 * H, price: 100 });
+    expect(d.points[1]!.price).toBeCloseTo(100 - a, 9);
+    expect(d.points[2]!.price).toBeCloseTo(100 + 2 * a, 9);
+    expect(d.points[1]!.time).toBe(T0 + 70 * H);
+    expect(d.points[2]!.time).toBe(T0 + 70 * H);
+    expect(s.log.done).toEqual([true]);
+    expect(s.ctrl.tool).toBeNull();
+    // дальше клики позиций не ставят (раньше нужны были ещё два нажатия — стоп и цель)
+    s.mouse.tap(...at(50, 95));
+    s.mouse.tap(...at(50, 110));
+    expect(s.log.created).toHaveLength(1);
+  });
+
+  it("касание пальцем — Short: стоп выше на ATR, цель ниже на 2 ATR; сдвиг до касания — графику", () => {
+    const s = setup({ coarse: true });
+    s.ctrl.setTool("position-short");
+    const pan = s.finger.drag(...at(30, 100), ...at(10, 100));
+    expect(pan.d.stopped).toBe(false);
+    expect(s.log.created).toHaveLength(0);
+    s.finger.tap(...at(30, 102));
+    expect(s.log.created).toHaveLength(1);
+    const d = s.log.created[0]!;
+    const a = atr14(30);
+    expect(d.type).toBe("position-short");
+    expect(d.style.color).toBe("down");
+    expect(d.points[1]!.price).toBeCloseTo(102 + a, 9);
+    expect(d.points[2]!.price).toBeCloseTo(102 - 2 * a, 9);
+    expect(s.ctrl.tool).toBeNull();
+  });
+
+  it("мышь с дрожью руки (нажать-протянуть на 4 px) — та же позиция там, где нажали", () => {
+    const s = setup();
+    s.ctrl.setTool("position-long");
+    s.mouse.drag(...at(40, 100), at(40, 100)[0] + 4, at(40, 100)[1] + 1, 2);
+    expect(s.log.created).toHaveLength(1);
+    expect(s.log.created[0]!.points[0]).toEqual({ time: T0 + 40 * H, price: 100 });
+  });
+
+  it("правый край — не дальше края области свечей (у последних свечей), но не уже 40 px", () => {
+    const s = setup();
+    s.ctrl.setTool("position-long");
+    s.mouse.tap(...at(90, 100));
+    // 30 свечей вправо — за краем (1000 px): край — на свече под x = 992
+    expect(s.log.created[0]!.points[1]!.time).toBe(T0 + 99 * H);
+    s.ctrl.setTool("position-long");
+    s.mouse.tap(...at(98, 100));
+    // у самого края — не уже 40 px (4 свечи)
+    expect(s.log.created[1]!.points[1]!.time).toBe(T0 + 102 * H);
+  });
+
+  it("без ATR (свечей меньше 14) — стоп на 1 % цены; цены — по шагу инструмента", () => {
+    const s = setup({ candles: bars(10), tick: 0.1 });
+    s.ctrl.setTool("position-long");
+    s.mouse.tap(...at(5, 100));
+    const d = s.log.created[0]!;
+    expect(d.points[1]!.price).toBe(99);
+    expect(d.points[2]!.price).toBe(102);
+    const t = setup({ tick: 0.1 });
+    t.ctrl.setTool("position-short");
+    t.mouse.tap(...at(40, 100));
+    const p = t.log.created[0]!.points;
+    for (const q of p.slice(1)) expect(Math.round(q.price * 10) / 10).toBe(q.price);
+  });
+
+  it("длительность бара — текущего таймфрейма (смена таймфрейма без пересоздания контроллера)", () => {
+    let tf = H;
+    const s = setup({ tf: () => tf, candles: [] });
+    s.ctrl.setTool("position-long");
+    tf = H / 4;
+    s.mouse.tap(100, 400);
+    const d = s.log.created[0]!;
+    expect(d.points[1]!.time - d.points[0]!.time).toBe(30 * (H / 4));
+  });
+});
+
+/** Long: вход 100 на свече 20, стоп 96, цель 108, правый край — свеча 50. На экране: x 200…500, y 400 / 416 / 368. */
+const POS: Drawing = {
+  id: "P",
+  type: "position-long",
+  points: [
+    { time: T0 + 20 * H, price: 100 },
+    { time: T0 + 50 * H, price: 96 },
+    { time: T0 + 50 * H, price: 108 },
+  ],
+  style: { ...DEFAULT_STYLE, color: "up" },
+  locked: false,
+  timeframe: null,
+  updated_at: 0,
+};
+
+describe("позиция: ручки и тело", () => {
+  const last = (s: ReturnType<typeof setup>) => s.log.moves.at(-1)!;
+
+  it("ручка стопа двигает только стоп (по вертикали); конец — шаг отмены от положения до перетаскивания", () => {
+    const s = setup({ items: [POS] });
+    const d = s.mouse.down(350, 416);
+    expect(d.stopped).toBe(true);
+    s.mouse.move(360, 430);
+    s.mouse.move(370, 440);
+    s.mouse.up(370, 440);
+    const m = last(s);
+    expect(m.final).toBe(true);
+    expect(m.origin).toEqual(POS.points);
+    expect(m.points).toEqual([POS.points[0], { time: T0 + 50 * H, price: 90 }, POS.points[2]]);
+    expect(s.log.created).toHaveLength(0);
+  });
+
+  it("стоп не переходит за вход, цель — тоже, вход остаётся между ними (позиция не выворачивается)", () => {
+    const s = setup({ items: [POS], tick: 0.1 });
+    s.mouse.drag(350, 416, 350, 300);
+    expect(last(s).points[1]!.price).toBe(99.9);
+    const t = setup({ items: [POS], tick: 0.1 });
+    t.mouse.drag(350, 368, 350, 500);
+    expect(last(t).points[2]!.price).toBe(100.1);
+    const u = setup({ items: [POS], tick: 0.1 });
+    u.mouse.drag(200, 400, 200, 100);
+    expect(last(u).points[0]).toEqual({ time: T0 + 20 * H, price: 107.9 });
+    const v = setup({ items: [POS] });
+    v.mouse.drag(200, 400, 200, 392);
+    expect(last(v).points[0]!.price).toBe(102);
+    expect(last(v).points.slice(1)).toEqual(POS.points.slice(1));
+  });
+
+  it("ручка цели и линия цели по всей длине; правый край — длительность; тело — вся позиция", () => {
+    const s = setup({ items: [POS] });
+    s.mouse.drag(350, 368, 350, 340);
+    expect(last(s).points[2]!.price).toBe(115);
+    const line = setup({ items: [POS] });
+    line.mouse.drag(450, 368, 450, 360);
+    expect(last(line).points[2]!.price).toBe(110);
+    const end = setup({ items: [POS] });
+    end.mouse.drag(500, 400, 600, 420);
+    expect(last(end).points).toEqual([POS.points[0], { time: T0 + 60 * H, price: 96 }, { time: T0 + 60 * H, price: 108 }]);
+    const body = setup({ items: [POS] });
+    body.mouse.drag(300, 384, 330, 404);
+    expect(last(body).points).toEqual([
+      { time: T0 + 23 * H, price: 95 },
+      { time: T0 + 53 * H, price: 91 },
+      { time: T0 + 53 * H, price: 103 },
+    ]);
+  });
+
+  it("палец: ручка выбранной позиции — цель 44 px; график под правкой не едет; невыбранная — касание выбирает", () => {
+    const s = setup({ items: [POS], coarse: true });
+    // невыбранная: сдвиг по телу — графику
+    const pan = s.finger.drag(300, 405, 250, 405);
+    expect(pan.d.stopped).toBe(false);
+    expect(s.log.moves).toHaveLength(0);
+    s.finger.tap(300, 405);
+    expect(s.selected()).toBe("P");
+    // в 19 px от ручки стопа (радиус касания 22): правится стоп — от места касания, без прыжка под палец;
+    // touch-события до графика не доходят
+    const d = s.finger.down(350 + 15, 416 + 12);
+    expect(d.stopped).toBe(true);
+    expect(s.touchReachesChart("touchstart", 1)).toBe(false);
+    s.finger.move(365, 440);
+    expect(s.touchReachesChart("touchmove", 1)).toBe(false);
+    s.finger.move(365, 452);
+    s.finger.up(365, 452);
+    const m = last(s);
+    expect(m.final).toBe(true);
+    expect(m.points[1]!.price).toBeCloseTo(96 - 6, 9);
+    expect(m.points[0]).toEqual(POS.points[0]);
+    expect(m.points[2]).toEqual(POS.points[2]);
+  });
+
+  it("попадание: ручки раньше линий, линии раньше тела, правый край по высоте позиции", () => {
+    const s = setup({ items: [POS] });
+    expect(s.ctrl.hitAt(200, 400)).toBe("P");
+    expect(s.ctrl.hitAt(505, 380)).toBe("P");
+    expect(s.ctrl.hitAt(300, 390)).toBe("P");
+    expect(s.ctrl.hitAt(600, 390)).toBeNull();
+    expect(s.ctrl.hitAt(300, 300)).toBeNull();
   });
 });
