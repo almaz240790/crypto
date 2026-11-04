@@ -110,7 +110,8 @@ type Props = {
     series: boolean;
     draft: Drawing | null;
     onCreate: (d: Drawing) => void;
-    onMove: (id: string, points: Point[], final: boolean) => void;
+    /** Перетаскивание; final — конец, origin — точки до него (шаг отмены — от них). */
+    onMove: (id: string, points: Point[], final: boolean, origin?: Point[]) => void;
     onSelect: (id: string | null) => void;
     onDraft: (d: Drawing | null) => void;
     /** Сколько точек начатого рисунка поставлено (0 — не начат). */
@@ -607,10 +608,11 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
         touch: prim.touch,
         magnet: true,
         newId: () => `d_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`,
+        getSelectedId: () => drawingsRef.current?.state.selectedId ?? null,
       },
       {
         onCreate: (d) => drawingsRef.current?.onCreate(d),
-        onMove: (id, pts, final) => drawingsRef.current?.onMove(id, pts, final),
+        onMove: (id, pts, final, origin) => drawingsRef.current?.onMove(id, pts, final, origin),
         onSelect: (id) => drawingsRef.current?.onSelect(id),
         onDraft: (d) => drawingsRef.current?.onDraft(d),
         onStep: (n) => drawingsRef.current?.onStep(n),

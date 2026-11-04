@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { channelOffset, distToSegment, extend, fibLevels, hitTest, lineAt, magnetSnap, positionStats, rulerInfo, type Projector } from "../drawings/geometry";
-import { addDrawing, alive, canRedo, canUndo, clearDrawings, createState, mergeRemote, redo, removeDrawing, resolve, toggleLock, undo, updateDrawing, visibleOn } from "../drawings/store";
+import { addDrawing, alive, canRedo, canUndo, clearDrawings, commitMove, createState, mergeRemote, redo, removeDrawing, resolve, toggleLock, undo, updateDrawing, visibleOn } from "../drawings/store";
 import { HANDLE_TOUCH_PX, UNDO_STEPS, pointsNeeded, type Drawing } from "../drawings/types";
 import { DrawingsPrimitive, formatDrawingPrice } from "../drawings/primitive";
 import type { Candle } from "../types";
@@ -43,6 +43,23 @@ describe("хранилище рисунков", () => {
     const before = s.past.length;
     s = updateDrawing(s, "a", { points: [{ time: 0, price: 1 }, { time: 60, price: 2 }] }, false);
     expect(s.past.length).toBe(before);
+  });
+
+  it("отмена после перетаскивания возвращает рисунок на место до него, а не в последнее промежуточное", () => {
+    const origin = [{ time: 0, price: 100 }, { time: 60, price: 110 }];
+    let s = addDrawing(createState(), d("a", "trend", origin));
+    const steps = s.past.length;
+    // перетаскивание: промежуточные положения без записи, конец — с положением до перетаскивания
+    s = updateDrawing(s, "a", { points: [{ time: 0, price: 100 }, { time: 60, price: 95 }] }, false);
+    s = updateDrawing(s, "a", { points: [{ time: 0, price: 100 }, { time: 60, price: 90 }] }, false);
+    s = commitMove(s, "a", [{ time: 0, price: 100 }, { time: 60, price: 90 }], origin);
+    expect(s.past.length).toBe(steps + 1);
+    expect(s.items[0]!.points[1]!.price).toBe(90);
+    s = undo(s);
+    expect(alive(s)).toHaveLength(1);
+    expect(s.items[0]!.points).toEqual(origin);
+    s = redo(s);
+    expect(s.items[0]!.points[1]!.price).toBe(90);
   });
 
   it("видимость по таймфрейму и «скрыть все»", () => {

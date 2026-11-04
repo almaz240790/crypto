@@ -6,6 +6,7 @@ import {
   canRedo,
   canUndo,
   clearDrawings,
+  commitMove,
   createState,
   mergeRemote,
   redo,
@@ -175,7 +176,8 @@ export function useDrawings(symbol: string, authed: boolean) {
           }
           return addDrawing(s, d);
         }),
-      move: (id: string, points: Point[], final: boolean) => setState((s) => updateDrawing(s, id, { points }, final)),
+      // перетаскивание: промежуточные положения — без шага отмены; конец — один шаг от положения до перетаскивания
+      move: (id: string, points: Point[], final: boolean, origin?: Point[]) => setState((s) => (final && origin ? commitMove(s, id, points, origin) : updateDrawing(s, id, { points }, final))),
       select: (id: string | null) => setState((s) => select(s, id)),
       remove: (id: string) => setState((s) => removeDrawing(s, id)),
       clear: () => setState((s) => clearDrawings(s)),

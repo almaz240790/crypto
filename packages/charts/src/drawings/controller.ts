@@ -1,7 +1,7 @@
 import { INTERACTION } from "../presets";
 import type { Candle } from "../types";
 import { hitTest, magnetSnap, type Hit, type Projector } from "./geometry";
-import { CLICK_SLOP_PX, DEFAULT_STYLE, FIB_LEVELS, HANDLE_PX, HANDLE_TOUCH_PX, pointsNeeded, type Drawing, type DrawingType, type Point } from "./types";
+import { CLICK_SLOP_PX, DBLCLICK_MS, DBLCLICK_SLOP_PX, DEFAULT_STYLE, FIB_LEVELS, HANDLE_PX, HANDLE_TOUCH_PX, WIDE_TYPES, pointsNeeded, type Drawing, type DrawingType, type Point } from "./types";
 
 /**
  * Контроллер жестов рисования (план 2A.5, 2A.7; ADR-0009, «Рисование»): постановка точек кликами и касаниями,
@@ -12,13 +12,22 @@ import { CLICK_SLOP_PX, DEFAULT_STYLE, FIB_LEVELS, HANDLE_PX, HANDLE_TOUCH_PX, p
  * - один рисунок на выбор инструмента: после него инструмент снимается (курсор), пока не включена «серия» (setSeries);
  * - точки ставятся нажатиями: первое — точка A, предпросмотр тянется за указателем, второе — точка B и готово;
  *   мышью можно и нажать-протянуть-отпустить. Одноточечные (линии, заметка) готовы с первого нажатия;
- * - палец: пока точка A не поставлена, жест принадлежит графику (сдвиг, щипок); точку A ставит только касание
- *   без сдвига. После точки A жест пальцем двигает следующую точку (график стоит), касание ставит её;
- * - правка рисунка (хэндлы, тело) рисунков не создаёт; касание мимо снимает выбор, сдвиг графика — нет.
+ * - палец (и перо — у него те же touch-события): пока точка A не поставлена, жест принадлежит графику (сдвиг,
+ *   щипок); точку A ставит только касание без сдвига. После точки A жест пальцем двигает следующую точку (график
+ *   стоит), касание ставит её;
+ * - точки ставятся только в области свечей основной панели: нажатие на шкалу цены или времени, в другой панели —
+ *   жест графика (масштаб шкалы, прокрутка);
+ * - правка рисунка (хэндлы, тело) рисунков не создаёт. Мышь правит любой рисунок под курсором; палец — только
+ *   выбранный: по невыбранному касание выбирает, сдвиг и щипок принадлежат графику. Касание мимо снимает выбор,
+ *   сдвиг графика — нет.
  */
 export type ControllerEvents = {
   onCreate: (d: Drawing) => void;
-  onMove: (id: string, points: Point[], final: boolean) => void;
+  /**
+   * Перетаскивание рисунка: final = false — промежуточное положение (без шага отмены); final = true — конец, origin —
+   * точки до перетаскивания (шаг отмены пишется от них).
+   */
+  onMove: (id: string, points: Point[], final: boolean, origin?: Point[]) => void;
   onSelect: (id: string | null) => void;
   onDraft: (d: Drawing | null) => void;
   /** Рисунок завершён; ended — инструмент снят (без «серии», а у измерителя всегда). */
@@ -35,6 +44,10 @@ export type ControllerOptions = {
   touch: boolean;
   magnet: boolean;
   newId: () => string;
+  /** Выбранный рисунок: пальцем правится только он. */
+  getSelectedId?: () => string | null;
+  /** Часы, мс (по умолчанию performance.now): двойной клик сразу после рисунка. */
+  now?: () => number;
 };
 
 /** Координаты графика: время и цена под точкой панели и обратно (TimeProjector). */
@@ -46,12 +59,14 @@ export type DrawProjector = {
 
 type Xy = { x: number; y: number };
 type PointerLike = Pick<PointerEvent, "clientX" | "clientY" | "pointerId" | "pointerType" | "button" | "stopPropagation" | "preventDefault">;
+type ClientXy = Pick<MouseEvent, "clientX" | "clientY">;
 
 /**
  * Жест указателя над графиком — от первого нажатия до отпускания всех пальцев.
  * pass — жест отдан графику (сдвиг, щипок, касание мимо); place — постановка точки рисунка; edit — правка рисунка.
+ * touch — палец или перо; plot — начат в области свечей основной панели (не на шкалах и не в другой панели).
  */
-type Gesture = { id: number; touch: boolean; start: Xy; moved: boolean; multi: boolean; mode: "pass" | "place" | "edit" };
+type Gesture = { id: number; touch: boolean; start: Xy; moved: boolean; multi: boolean; plot: boolean; mode: "pass" | "place" | "edit" };
 
 export class DrawingController {
   tool: DrawingType | null = null;
@@ -63,6 +78,10 @@ export class DrawingController {
   /** Предпросмотр протянут пальцем: касание рядом с ним подтверждает именно его. */
   private previewDragged = false;
   private previewBefore: { p: Point | null; dragged: boolean } = { p: null, dragged: false };
+  /** Место последней поставленной точки на экране — до магнита и привязки ко времени: «то же место» сравнивается с ним. */
+  private lastRaw: Xy | null = null;
+  /** Последнее нажатие или отпускание постановки точки: двойной клик рядом с ним — рисование, а не сброс вида. */
+  private lastPlace: { at: number; x: number; y: number } | null = null;
   private gesture: Gesture | null = null;
   private readonly pointers = new Set<number>();
   private drag: { hit: Hit; start: Xy; origin: Point[] } | null = null;
@@ -88,9 +107,10 @@ export class DrawingController {
     on(doc, "pointercancel", (e) => this.cancelGesture(e as PointerEvent));
     // LWC сдвигает и масштабирует по touchstart/touchmove, а не по pointer-событиям: их отсекаем отдельно
     for (const k of ["touchstart", "touchmove", "touchend", "touchcancel"]) on(el, k, (e) => this.touch(e as TouchEvent));
-    // двойной клик при рисовании — две точки, а не сброс вида
+    // двойной клик при рисовании — две точки, а не сброс вида; в том числе тот, чьё первое отпускание завершило
+    // рисунок и сняло инструмент
     on(el, "dblclick", (e) => {
-      if (this.tool) e.stopPropagation();
+      if (this.tool || this.placedJustNow(e as MouseEvent)) e.stopPropagation();
     });
   }
 
@@ -131,15 +151,38 @@ export class DrawingController {
   /** Бросить начатый рисунок (инструмент не меняется). */
   private reset(): void {
     this.pending = [];
+    this.lastRaw = null;
     this.preview = null;
     this.previewDragged = false;
     this.ev.onDraft(null);
     this.ev.onStep?.(0);
   }
 
-  private local(e: PointerLike): Xy {
+  private local(e: ClientXy): Xy {
     const r = this.el.getBoundingClientRect();
     return { x: e.clientX - r.left, y: e.clientY - r.top };
+  }
+
+  /** Точка — в области свечей основной панели (левее шкалы цены, выше шкалы времени и других панелей). */
+  private inPlot(p: Xy): boolean {
+    const pr = this.proj.projector();
+    return p.x >= 0 && p.y >= 0 && p.x < pr.width && p.y < pr.height;
+  }
+
+  private clock(): number {
+    return this.opts.now ? this.opts.now() : performance.now();
+  }
+
+  private markPlace(p: Xy): void {
+    this.lastPlace = { at: this.clock(), x: p.x, y: p.y };
+  }
+
+  /** dblclick пришёл сразу после постановки точки рядом с ней. */
+  private placedJustNow(e: ClientXy): boolean {
+    const lp = this.lastPlace;
+    if (!lp || this.clock() - lp.at > DBLCLICK_MS) return false;
+    const { x, y } = this.local(e);
+    return Math.hypot(x - lp.x, y - lp.y) <= DBLCLICK_SLOP_PX;
   }
 
   private toPoint(x: number, y: number): Point | null {
@@ -203,16 +246,22 @@ export class DrawingController {
 
   private down(e: PointerLike): void {
     if (e.button !== 0 && e.pointerType === "mouse") return;
-    const touch = e.pointerType === "touch";
+    // перо — как палец: iPad (Apple Pencil) и Android (S Pen) шлют для него и touch-события, которые LWC сдвигает
+    const touch = e.pointerType !== "mouse";
     const g0 = this.gesture;
     if (g0 && g0.touch && touch && e.pointerId !== g0.id) {
-      // второй палец — щипок: начатый рисунок не трогаем (точка возвращается на место), масштаб — графику
+      // второй палец — щипок, масштаб — графику: начатый рисунок не трогаем (точка возвращается на место), правка
+      // рисунка под первым пальцем отменяется (рисунок — на место, без шага отмены)
       this.pointers.add(e.pointerId);
       g0.multi = true;
       if (g0.mode === "place") {
         g0.mode = "pass";
         this.blockTouch = false;
         this.restorePreview();
+      } else if (g0.mode === "edit") {
+        g0.mode = "pass";
+        this.blockTouch = false;
+        this.abortDrag(g0);
       }
       return;
     }
@@ -221,9 +270,11 @@ export class DrawingController {
     this.pointers.clear();
     this.pointers.add(e.pointerId);
     const start = this.local(e);
-    const g: Gesture = { id: e.pointerId, touch, start, moved: false, multi: false, mode: "pass" };
+    const g: Gesture = { id: e.pointerId, touch, start, moved: false, multi: false, plot: this.inPlot(start), mode: "pass" };
     this.gesture = g;
     this.blockTouch = false;
+    // шкалы цены и времени, другие панели — жесты графика (масштаб шкалы, прокрутка): ни точек, ни правки
+    if (!g.plot) return;
     if (this.tool) {
       // мышью нажатие всегда ставит точку (можно протянуть); пальцем — только когда рисунок уже начат,
       // иначе это жест графика, а точку A ставит касание без сдвига (в up)
@@ -231,12 +282,13 @@ export class DrawingController {
         g.mode = "place";
         this.previewBefore = { p: this.preview, dragged: this.previewDragged };
         this.blockTouch = touch;
+        this.markPlace(start);
         DrawingController.consume(e);
         this.capture(e);
       }
       return;
     }
-    const hit = hitTest(this.opts.getDrawings().filter((d) => !d.locked), start.x, start.y, this.proj.projector(), this.tolerance);
+    const hit = this.editHit(start, touch);
     if (!hit) return;
     g.mode = "edit";
     this.blockTouch = touch;
@@ -245,6 +297,13 @@ export class DrawingController {
     this.drag = { hit, start, origin: d.points.map((p) => ({ ...p })) };
     this.ev.onSelect(hit.id);
     this.capture(e);
+  }
+
+  /** Незаблокированные рисунки под точкой: мышью правится любой, пальцем и пером — только выбранный. */
+  private editHit(p: Xy, touch: boolean): Hit | null {
+    const selected = this.opts.getSelectedId?.() ?? null;
+    const ds = this.opts.getDrawings().filter((d) => !d.locked && (!touch || d.id === selected));
+    return hitTest(ds, p.x, p.y, this.proj.projector(), this.tolerance);
   }
 
   private move(e: PointerLike): void {
@@ -261,18 +320,20 @@ export class DrawingController {
     if (own && g.mode === "place") {
       DrawingController.consume(e);
       if (!g.moved) return;
-      // мышь протянули от первой точки: A — там, где нажали, следующая — под указателем
+      // мышь протянули от первой точки: A — там, где нажали, следующая — под указателем; одноточечный рисунок этим
+      // уже готов (точка — где нажали), отпускание его завершит
       if (this.pending.length === 0) {
         const a = this.toPoint(g.start.x, g.start.y);
         if (!a) return;
         this.pending = [a];
-        this.ev.onStep?.(1);
+        this.lastRaw = g.start;
+        if (pointsNeeded(this.tool) > 1) this.ev.onStep?.(1);
       }
       this.previewAt(x, y);
       return;
     }
-    // мышь без нажатия: предпросмотр следующей точки за курсором
-    if (!g && e.pointerType !== "touch" && this.pending.length > 0) this.previewAt(x, y);
+    // мышь без нажатия: предпросмотр следующей точки за курсором (над шкалами — не ведём)
+    if (!g && e.pointerType === "mouse" && this.pending.length > 0 && this.inPlot({ x, y })) this.previewAt(x, y);
   }
 
   private up(e: PointerLike): void {
@@ -295,8 +356,15 @@ export class DrawingController {
     if (g.multi || !at) return;
     if (g.mode === "place") return this.placeEnd(g, at.x, at.y);
     if (g.moved) return; // сдвиг графика: ни точки, ни снятия выбора
-    if (this.tool) this.addPoint(at.x, at.y, g.touch); // палец: касание ставит точку A (одноточечный — сразу рисунок)
-    else this.ev.onSelect(null);
+    if (this.tool) {
+      // палец: касание ставит точку A (одноточечный — сразу рисунок); на шкалах и в других панелях — нет
+      if (!g.plot) return;
+      this.markPlace(at);
+      return this.addPoint(at.x, at.y, g.touch);
+    }
+    // касание по невыбранному рисунку выбирает его (правится пальцем, когда выбран); мимо — снять выбор
+    const hit = g.touch && g.plot ? hitTest(this.opts.getDrawings().filter((d) => !d.locked), at.x, at.y, this.proj.projector(), this.tolerance) : null;
+    this.ev.onSelect(hit?.id ?? null);
   }
 
   private cancelGesture(e: PointerLike): void {
@@ -340,14 +408,26 @@ export class DrawingController {
     this.drag = null;
     if (!drag) return;
     const d = this.opts.getDrawings().find((q) => q.id === drag.hit.id);
-    if (g.moved && d) this.ev.onMove(drag.hit.id, d.points, true);
+    if (g.moved && d) this.ev.onMove(drag.hit.id, d.points, true, drag.origin);
     else if (!g.moved) this.ev.onSelect(drag.hit.id);
+  }
+
+  /** Правка прервана (второй палец — щипок графика): рисунок — на место, без шага отмены. */
+  private abortDrag(g: Gesture): void {
+    const drag = this.drag;
+    this.drag = null;
+    if (drag && g.moved) this.ev.onMove(drag.hit.id, drag.origin, false);
   }
 
   /** Конец жеста постановки точки. */
   private placeEnd(g: Gesture, x: number, y: number): void {
-    // мышь: клик — следующая точка; нажали-протянули-отпустили — точка там, где отпустили (A поставлена в move)
-    if (!g.touch) return this.addPoint(x, y, false);
+    this.markPlace({ x, y });
+    if (!g.touch) {
+      // мышь: клик — следующая точка; нажали-протянули-отпустили — точка там, где отпустили (A поставлена в move);
+      // одноточечный, протянутый на пару пикселей (дрожь руки), готов уже с A — завершить, а не ждать второго клика
+      if (this.tool && this.pending.length >= pointsNeeded(this.tool)) return this.finish();
+      return this.addPoint(x, y, false);
+    }
     if (g.moved) {
       // палец протянул следующую точку: она остаётся там, где его подняли; поставит её касание
       this.previewDragged = this.preview !== null;
@@ -367,18 +447,32 @@ export class DrawingController {
     if (!this.tool) return;
     const p = at ?? this.toPoint(x, y);
     if (!p) return;
-    const last = this.pending[this.pending.length - 1];
-    if (last && !at) {
-      // второе нажатие в ту же точку — не рисунок нулевой длины (и не двойной клик)
-      const dist = this.distTo(last, x, y);
-      if (dist !== null && dist <= (touch ? INTERACTION.tapSlopPx : CLICK_SLOP_PX * 2)) return;
-    }
+    if (this.sameAsLast(p, x, y, touch, !at)) return;
     this.pending.push(p);
+    this.lastRaw = { x, y };
     this.preview = null;
     this.previewDragged = false;
     if (this.pending.length >= pointsNeeded(this.tool)) return this.finish();
     this.emitDraft();
     this.ev.onStep?.(this.pending.length);
+  }
+
+  /**
+   * Нажатие не даёт следующую точку (рисунок нулевой длины, двойной клик или двойное касание): та же точка, что
+   * предыдущая (магнит и привязка ко времени свели их); у Фибоначчи и прямоугольника — та же свеча (нулевая
+   * ширина); то же место на экране — сравнение с местом прошлого нажатия до магнита (магнит уводит точку на 12 px,
+   * дальше допуска) и с самой точкой.
+   */
+  private sameAsLast(p: Point, x: number, y: number, touch: boolean, checkPlace: boolean): boolean {
+    const last = this.pending[this.pending.length - 1];
+    if (!last || !this.tool) return false;
+    if (last.time === p.time && last.price === p.price) return true;
+    if (this.pending.length === 1 && WIDE_TYPES.includes(this.tool) && last.time === p.time) return true;
+    if (!checkPlace) return false;
+    const slop = touch ? INTERACTION.tapSlopPx : CLICK_SLOP_PX * 2;
+    if (this.lastRaw && Math.hypot(x - this.lastRaw.x, y - this.lastRaw.y) <= slop) return true;
+    const dist = this.distTo(last, x, y);
+    return dist !== null && dist <= slop;
   }
 
   private finish(): void {
