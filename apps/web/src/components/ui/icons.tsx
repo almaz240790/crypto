@@ -146,3 +146,40 @@ export const IconSteps = () => (
     <path d="M4 6h6M7 12h7M10 18h10" />
   </Svg>
 );
+/** «Панель выше» (ADR-0009, «Управление панелями»). */
+export const IconArrowUp = () => (
+  <Svg>
+    <path d="M12 19V5M6 11l6-6 6 6" />
+  </Svg>
+);
+/** «Панель ниже». */
+export const IconArrowDown = () => (
+  <Svg>
+    <path d="M12 5v14M6 13l6 6 6-6" />
+  </Svg>
+);
+/** «Развернуть панель на весь график»: рамка со стрелками наружу. */
+export const IconMaximize = () => (
+  <Svg>
+    <path d="M14 4h6v6M10 20H4v-6M20 4l-7 7M4 20l7-7" />
+  </Svg>
+);
+/** «Вернуть панели»: стрелки внутрь. */
+export const IconRestore = () => (
+  <Svg>
+    <path d="M20 4l-7 7M4 20l7-7M13 5v6h6M11 19v-6H5" />
+  </Svg>
+);
+/** «Настройки» (параметры индикатора): шестерёнка. */
+export const IconGear = () => (
+  <Svg>
+    <circle cx="12" cy="12" r="3" />
+    <path d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M5.6 18.4l1.8-1.8M16.6 7.4l1.8-1.8" />
+  </Svg>
+);
+/** Вертикальный масштаб шкалы цены: стрелки вверх и вниз. */
+export const IconScaleVertical = () => (
+  <Svg>
+    <path d="M12 3v18M8 7l4-4 4 4M8 17l4 4 4-4" />
+  </Svg>
+);

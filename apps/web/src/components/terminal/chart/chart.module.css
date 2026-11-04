@@ -356,3 +356,248 @@
     min-height: var(--touch-min);
   }
 }
+
+/* ── управление панелями (ADR-0009, «Управление панелями») ── */
+
+/* заголовок панели (план 2A.7): 24 px, под пальцем 44; свайп вниз сворачивает, вверх — раскрывает */
+.paneHead {
+  position: absolute;
+  left: 4px;
+  min-height: 24px;
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 2px 0 6px;
+  border-radius: 6px;
+  background: var(--legend-bg);
+  color: var(--text-2);
+  font-size: 11px;
+  line-height: 1;
+  touch-action: none;
+}
+
+/* открытое меню «⋯» или окно параметров — поверх соседних заголовков, границ и подсказки */
+.paneHead:focus-within {
+  z-index: 8;
+}
+
+.paneHead[data-collapsed] {
+  right: 4px;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--surface);
+}
+
+.paneTitle {
+  white-space: nowrap;
+}
+
+/* кнопки заголовка — xs (20 px) на десктопе, 44 под пальцем (IconButton) */
+.paneBtn {
+  color: var(--text-2);
+}
+
+.paneBtn:disabled {
+  color: var(--text-3);
+}
+
+/* «выше / ниже / развернуть / настройки / убрать»: при наведении на панель и при фокусе; место не занимают,
+   пока скрыты, — заголовок не закрывает линию индикатора */
+.paneActions {
+  display: none;
+  gap: 2px;
+  margin-left: 2px;
+  padding-left: 4px;
+  border-left: 1px solid var(--border);
+}
+
+.paneHead[data-hover] .paneActions,
+.paneHead:focus-within .paneActions,
+.paneActions[data-open] {
+  display: inline-flex;
+}
+
+/* граница панелей: зона 9 px по линии LWC, курсор row-resize; линия --accent и ручка — при наведении */
+.sep {
+  position: absolute;
+  left: 0;
+  height: 9px;
+  z-index: 4;
+  transform: translateY(-50%);
+  cursor: row-resize;
+  touch-action: none;
+}
+
+.sep:focus-visible {
+  outline: none;
+}
+
+.sepLine {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 2px;
+  margin-top: -1px;
+  background: var(--accent);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.sepGrip {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 32px;
+  height: 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background:
+    linear-gradient(var(--text-3), var(--text-3)) center 2px / 16px 1px no-repeat,
+    linear-gradient(var(--text-3), var(--text-3)) center 4px / 16px 1px no-repeat,
+    var(--surface-raised);
+  transform: translate(-50%, -50%);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.sep:hover .sepLine,
+.sep:focus-visible .sepLine,
+.sep[data-active] .sepLine,
+.sep:hover .sepGrip,
+.sep:focus-visible .sepGrip,
+.sep[data-active] .sepGrip {
+  opacity: 1;
+}
+
+.sep:hover .sepGrip,
+.sep[data-active] .sepGrip {
+  border-color: var(--accent);
+}
+
+/* шкала цены под курсором: её можно тянуть — подсветка колонки и знак «↕» (без всплывающей подсказки) */
+.scaleHover {
+  position: absolute;
+  z-index: 3;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--row-hover) 55%, transparent);
+  box-shadow: inset 1px 0 0 var(--text-3);
+  pointer-events: none;
+}
+
+.scaleGrip {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-raised);
+  color: var(--text-2);
+}
+
+.scaleGrip svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* «A» (автомасштаб) — внизу шкалы цены панели, растянутой вручную */
+.autoHost {
+  position: absolute;
+  z-index: 5;
+  display: flex;
+  justify-content: center;
+  transform: translateY(calc(-100% - 4px));
+  pointer-events: none;
+}
+
+.autoBtn {
+  border-color: var(--border);
+  background: var(--surface-raised);
+  color: var(--text);
+  font-family: var(--font-mono), monospace;
+  font-weight: 600;
+  pointer-events: auto;
+}
+
+/* однократная подсказка: поверх графика над первой границей, справа; клики проходят на график, кроме «закрыть» */
+.panesHint {
+  position: absolute;
+  z-index: 6;
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  max-width: min(340px, calc(100% - 96px));
+  padding: 8px 6px 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow);
+  color: var(--text);
+  transform: translateY(calc(-100% - 10px));
+  pointer-events: none;
+}
+
+.panesHintText {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.panesHintClose {
+  pointer-events: auto;
+}
+
+/* «Как управлять графиком» в окне «?» */
+.helpList {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.helpRow {
+  display: grid;
+  gap: 1px;
+}
+
+.helpWord {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.helpExplain {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.legendSection {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+@media (pointer: coarse) {
+  .paneHead {
+    min-height: var(--touch-min);
+  }
+
+  /* под пальцем наведения нет: кнопки заголовка и ручка границы видны всегда */
+  .paneActions {
+    display: inline-flex;
+  }
+
+  .sep {
+    height: var(--touch-min);
+  }
+
+  .sepGrip {
+    width: 40px;
+    height: 10px;
+    opacity: 1;
+  }
+}

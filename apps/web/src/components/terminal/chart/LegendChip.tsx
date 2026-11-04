@@ -3,6 +3,7 @@
 import type { ChartState, ChartStore, LegendEntry } from "@platform/charts";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useT } from "@/i18n/client";
+import { MQ, useMediaQuery } from "@/lib/breakpoints";
 import { useChartStore } from "./useChartStore";
 import c from "./chart.module.css";
 
@@ -30,6 +31,7 @@ export function LiqUnavailableNote({ store, on, inline = false }: { store: Chart
  * inline) и окно «Что на графике» — по строке
  * на каждый вид разметки, который сейчас на графике (scene.legend), и две постоянные: «Цена» и «Выделение».
  * Слово и пояснение — из chartText (t()), образец — цветом тона (--chart-*). Закрывается по Esc и клику снаружи.
+ * Ниже — «Как управлять графиком» (ADR-0009, «Управление панелями»): масштаб, сдвиг, шкала цен, границы и кнопки панелей.
  */
 export function LegendChip({ store, inline = false }: { store: ChartStore; inline?: boolean }) {
   const legend = useChartStore(selectLegend, store);
@@ -71,9 +73,38 @@ export function LegendChip({ store, inline = false }: { store: ChartStore; inlin
               </li>
             ))}
           </ul>
+          <ChartHelp />
         </div>
       )}
     </div>
+  );
+}
+
+/** «Как управлять графиком»: жест — что делает; под пальцем — касания вместо колеса и двойного клика. */
+function ChartHelp() {
+  const t = useT();
+  const coarse = useMediaQuery(MQ.coarse);
+  const rows: [string, string][] = [
+    [coarse ? t("Щипок") : t("Колесо мыши или щипок"), t("масштаб по времени")],
+    [t("Перетаскивание графика"), t("сдвиг; если шкалу цен растянули — и по вертикали")],
+    [t("Шкала цен справа"), t("потяните вверх или вниз — вертикальный масштаб")],
+    [coarse ? t("«A» или двойное касание шкалы") : t("«A» или двойной клик по шкале"), t("вернуть автомасштаб")],
+    [t("Граница между панелями"), coarse ? t("потяните — высота панели; двойное касание — высоты по умолчанию") : t("потяните — высота панели; двойной клик — высоты по умолчанию")],
+    [t("Кнопки в заголовке панели"), t("выше, ниже, развернуть на весь график, настройки, убрать")],
+  ];
+  if (!coarse) rows.push([t("Горячие клавиши"), t("в меню «⋯» на панели инструментов")]);
+  return (
+    <section className={c.legendSection} aria-label={t("Как управлять графиком")}>
+      <strong className={c.legendHead}>{t("Как управлять графиком")}</strong>
+      <dl className={c.helpList}>
+        {rows.map(([word, explain]) => (
+          <div key={word} className={c.helpRow}>
+            <dt className={c.helpWord}>{word}</dt>
+            <dd className={c.helpExplain}>{explain}</dd>
+          </div>
+        ))}
+      </dl>
+    </section>
   );
 }
 

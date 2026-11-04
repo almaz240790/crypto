@@ -77,7 +77,7 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
   const { sheet, setSheet, closeSheet, ohlcMore, setOhlcMore, bars, setBars, objects, setObjects, panelOverlay, panelTab, setPanelTab, showPanel, objWidth, objResize, toast, say, notifyOnce } = useTerminalUi(wide);
   // вопросы о графике — Premium (админы и владелец — всегда); минутные ТФ закрыты гостю и на Free
   const { askAccess, intradayLocked } = usePlan();
-  const { st, resolved, legacyFound, patch, toggleIndicator, addIndicator, removeInstance, setInstanceParams, toggleInstanceHidden, togglePanel, toggleLayer, selectMarkup, applyTemplate, applyLayout } = useTerminalSettings(authed);
+  const { st, resolved, legacyFound, patch, toggleIndicator, addIndicator, removeInstance, setInstanceParams, toggleInstanceHidden, togglePanel, toggleLayer, selectMarkup, applyTemplate, applyLayout, setPaneLayout, removePane } = useTerminalSettings(authed);
   // «Разбор» (резерв): вкладка и пункт тулбара — владельцу и админам, если ресурс topdown ответил 200
   const topdown = useTopdown(symbol, tf, user);
   const role = user?.role ?? null;
@@ -405,6 +405,11 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
                 legend={legend}
                 scale={st.scale}
                 overlay={overlayCandles}
+                paneLayout={st.paneLayout}
+                onPaneLayout={setPaneLayout}
+                onRemovePane={removePane}
+                onInstanceParams={setInstanceParams}
+                paneHint
                 corner={desktop && !sel && !dr.limitHit ? <ChartCorner onZoom={zoom} onReset={reset} /> : null}
                 topRight={desktop && dr.tool ? <DrawModeChip tool={t(TOOL_TITLES[dr.tool])} onFinish={finishTool} /> : null}
                 onAxisHeight={setAxisH}
