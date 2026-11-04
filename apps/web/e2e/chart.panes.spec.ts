@@ -540,6 +540,29 @@ test.describe("телефон: нехватка строк — общая стр
     }
   });
 
+  test("телефон вертикально: в общей строке видно не меньше двух кнопок целиком, правый край тает; «развернуть» — не меньше 60 % высоты", async ({ page }) => {
+    // 16 индикаторов на 390×844: место справа под ручку — только если она на середине строки (раньше 160 px всегда)
+    await load(page, ["ema", "sma", "vwap", "supertrend", "bb", "ichimoku", "keltner", "rsi", "macd", "stoch", "atr", "volume", "cci", "obv"], []);
+    const group = page.getByTestId("pane-group");
+    await expect(group).toBeVisible();
+    await page.waitForTimeout(300);
+    const list = group.locator("[class*=paneGroupList]");
+    const lb = (await list.boundingBox())!;
+    const boxes = await group.locator("button[data-pane]").evaluateAll((els) => els.map((e) => e.getBoundingClientRect()).map((r) => ({ left: r.left, right: r.right })));
+    const full = boxes.filter((b) => b.left >= lb.x - 0.5 && b.right <= lb.x + lb.width + 0.5);
+    expect(full.length, "кнопок целиком").toBeGreaterThanOrEqual(2);
+    if (boxes.length > full.length) await expect(list).toHaveAttribute("data-more", "true");
+    // «⋯ → Развернуть на весь график» у нижней панели: остальные — в общей строке, развёрнутая — не меньше 60 %
+    const obv = page.getByTestId("pane-obv");
+    await obv.getByRole("button", { name: /^действия/ }).tap();
+    await page.getByRole("menuitem", { name: /Развернуть/ }).tap();
+    await expect(group).toBeVisible();
+    await page.waitForTimeout(300);
+    const hs = await page.evaluate(() => (document.querySelector("[data-testid=terminal]") as Host).__chart.panes().map((p) => p.getHeight()));
+    const total = hs.reduce((a, b) => a + b, 0);
+    expect(hs.at(-1)! / total).toBeGreaterThanOrEqual(0.6);
+  });
+
   test("кнопка общей строки раскрывает и верхнюю панель, когда раскрытые уже заняли все строки; вертикально — все раскрыты", async ({ page }) => {
     // телефон боком шире 900 px: раскладка десктопа, все панели раскрыты — верхние свёрнуты раскладкой в общую строку
     await load(page, ["rsi", "macd"], ["oi", "funding"], { width: 932, height: 430 });

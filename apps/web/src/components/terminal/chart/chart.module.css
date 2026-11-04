@@ -470,6 +470,11 @@
   display: none;
 }
 
+/* кнопки дальше края — правый край тает: видно, что список листается вбок */
+.paneGroupList[data-more] {
+  mask-image: linear-gradient(to right, var(--surface) calc(100% - 24px), transparent);
+}
+
 .paneChip {
   flex: none;
   height: 20px;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { autoBox, gripBox, groupCovers, paneSeparators, PANE_UI, sepAbove, type PaneGeo } from "./paneGeo";
+import { autoBox, gripBox, groupCovers, groupReserve, paneSeparators, PANE_UI, sepAbove, type PaneGeo } from "./paneGeo";
 
 /** Границы панелей (ADR-0009, «Управление панелями»): какая пара панелей меняется при перетаскивании. */
 const pane = (index: number, top: number, collapsed = false): PaneGeo => ({ key: index === 0 ? "main" : `p${index}`, index, title: "", top, height: 90, collapsed, testId: "", values: false, compactValues: false, inst: null, manual: false, scalable: true });
@@ -68,5 +68,23 @@ describe("общая строка свёрнутых панелей", () => {
   it("свёрнутые общей строки — не границы: граница только между раскрытыми", () => {
     const panes = [pane(0, 0), sliver(1, 300), sliver(2, 303), pane(3, 306), host(4, 397)];
     expect(paneSeparators(panes, false)).toEqual([{ y: 300, above: 0, below: 3, key: "p1" }]);
+  });
+});
+
+describe("groupReserve: место справа у общей строки", () => {
+  const row = (top: number, height = 44): PaneGeo => ({ ...pane(3, top), height, group: [] });
+  const grip = gripBox(330, true); // 390 px: область графика 330, шкала 60
+
+  it("ручка не на середине строки (телефон: граница на 15 px выше строки) — только отступ от края, кнопкам вся ширина", () => {
+    expect(groupReserve(row(436), [{ y: 421, above: 0, below: 1, key: "p1" }], grip, 382)).toBe(PANE_UI.edge);
+    // строка внизу, далеко от единственной ручки
+    expect(groupReserve(row(527), [{ y: 421, above: 0, below: 1, key: "p1" }], grip, 382)).toBe(PANE_UI.edge);
+    expect(groupReserve(row(436), [], grip, 382)).toBe(PANE_UI.edge);
+  });
+
+  it("ручка ложится на середину строки (граница на её верху) — место под ручку до правого края", () => {
+    expect(groupReserve(row(436), [{ y: 436, above: 0, below: 3, key: "p3" }], grip, 382)).toBe(382 - grip.left);
+    // мышь: ручка 12 px у верха строки 24 px середину не задевает
+    expect(groupReserve(row(436, 24), [{ y: 436, above: 0, below: 3, key: "p3" }], gripBox(1300, false), 1360)).toBe(PANE_UI.edge);
   });
 });

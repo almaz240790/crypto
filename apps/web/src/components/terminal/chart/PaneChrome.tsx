@@ -2,7 +2,7 @@
 
 import type { ChartStore } from "@platform/charts";
 import { INTERACTION, separatorRange } from "@platform/charts";
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { IconButton, Menu, Popover, usePopover } from "@/components/ui";
 import { IconArrowDown, IconArrowUp, IconClose, IconGear, IconMaximize, IconMore, IconRestore } from "@/components/ui/icons";
 import { useT } from "@/i18n/client";
@@ -10,7 +10,7 @@ import { MQ, useMediaQuery } from "@/lib/breakpoints";
 import { plural } from "@/lib/format";
 import { IndicatorParams } from "../sheets/IndicatorParams";
 import { PaneValue } from "./PaneValue";
-import { autoBox, gripBox, groupCovers, paneSeparators, PANE_UI, sepAbove, type ChartGeo, type PaneGeo, type PaneSep } from "./paneGeo";
+import { autoBox, gripBox, groupCovers, groupReserve, paneSeparators, PANE_UI, sepAbove, type ChartGeo, type PaneGeo, type PaneSep } from "./paneGeo";
 import c from "./chart.module.css";
 
 /**
@@ -117,7 +117,7 @@ export function PaneChrome({ host, store, geo, maximized, compact, hint, mainTit
       ))}
       {others.map((p, i) =>
         p.group ? (
-          <PaneGroupRow key={p.key} pane={p} reserve={Math.max(PANE_UI.edge, geo.width - grip.left)} onCollapse={act.onCollapse} />
+          <PaneGroupRow key={p.key} pane={p} reserve={groupReserve(p, seps, grip, geo.width)} onCollapse={act.onCollapse} />
         ) : p.grouped ? null : (
           <PaneHeader key={p.key} pane={p} store={store} first={i === 0} last={i === others.length - 1} maximized={maximized} compact={compact} hover={hover?.index === p.index || (i === 0 && hintOn && !compact)} {...act} />
         ),
@@ -146,18 +146,34 @@ export function PaneChrome({ host, store, geo, maximized, compact, hint, mainTit
 
 /**
  * Общая строка свёрнутых панелей (строк на все панели не хватает, planPanes): «ещё N панелей» и кнопка раскрытия
- * на каждую (её data-pane — testid панели). Высота — строка заголовка host (24 px, под пальцем 44). Справа место
- * под ручку границы и «A» (reserve): ручка 44 × 44 не ложится на кнопки. Кнопка раскрывает панель, выходя из
- * «развернуть»; панель раскрыта последней — при нехватке строк сворачиваются раньше раскрытые.
+ * на каждую (её data-pane — testid панели). Высота — строка заголовка host (24 px, под пальцем 44). Справа — место
+ * под ручку границы, если она ложится на середину строки (groupReserve). Кнопки не помещаются — список
+ * прокручивается вбок, правый край тает (data-more). Кнопка раскрывает панель, выходя из «развернуть»; панель
+ * раскрыта последней — при нехватке строк сворачиваются раньше раскрытые.
  */
 function PaneGroupRow({ pane, reserve, onCollapse }: { pane: PaneGeo; reserve: number; onCollapse: Actions["onCollapse"] }) {
   const t = useT();
   const group = pane.group ?? [];
   const n = group.length;
+  const list = useRef<HTMLSpanElement>(null);
+  const [more, setMore] = useState(false);
+  useLayoutEffect(() => {
+    const el = list.current;
+    if (!el) return;
+    const check = () => setMore(el.scrollLeft + el.clientWidth < el.scrollWidth - 1);
+    check();
+    const ro = new ResizeObserver(check);
+    ro.observe(el);
+    el.addEventListener("scroll", check, { passive: true });
+    return () => {
+      ro.disconnect();
+      el.removeEventListener("scroll", check);
+    };
+  }, [n]);
   return (
     <div className={c.paneGroup} data-testid="pane-group" role="group" aria-label={t("свёрнутые панели")} style={{ top: pane.top, height: pane.height, paddingRight: reserve }}>
       <span className={c.paneGroupLabel}>{t(plural(n, "ещё {n} панель", "ещё {n} панели", "ещё {n} панелей"), { n })}</span>
-      <span className={c.paneGroupList}>
+      <span ref={list} className={c.paneGroupList} data-more={more || undefined}>
         {group.map((g) => (
           <button key={g.key} type="button" className={c.paneChip} data-pane={g.testId} aria-expanded={false} aria-label={t("развернуть панель {name}", { name: g.title })} title={t("развернуть панель {name}", { name: g.title })} onClick={() => onCollapse(g.key, false)}>
             {g.title} <span aria-hidden="true">▴</span>

@@ -143,10 +143,17 @@ export function planPanes(total: number, panes: readonly PaneWant[], o: { mainMi
 export const mainMinShareFor = (device: Device): number => VIEW[device].mainMinShare;
 
 /**
+ * Развёрнутой панели — не меньше этой доли высоты графика: иначе остальные панели — в общей строке (planMaximized).
+ * На телефоне шесть заголовков по 44 px оставляли развёрнутой 77 из 385 px (iPhone SE) — меньше, чем до «развернуть».
+ */
+export const MAXIMIZED_MIN_SHARE = 0.6;
+
+/**
  * «Развернуть» панель (ADR-0009, «Управление панелями»): index-я дополнительная панель получает всю высоту,
- * остальные и основная — свёрнуты до заголовка (rowPx). Временный вид, в настройках не хранится. Если строк на
- * основную и остальные панели не хватает (развёрнутой осталось бы меньше строки — много панелей на низком экране),
- * остальные собираются в одну общую строку «ещё N панелей» с полосками GROUPED_PX, как в planPanes.
+ * остальные и основная — свёрнуты до заголовка (rowPx). Временный вид, в настройках не хранится. Если заголовки
+ * основной и остальных панелей оставили бы развёрнутой меньше MAXIMIZED_MIN_SHARE высоты (много панелей на низком
+ * экране, строки под пальцем по 44 px), остальные собираются в одну общую строку «ещё N панелей» с полосками
+ * GROUPED_PX, как в planPanes.
  */
 export function planMaximized(total: number, count: number, index: number, rowPx: number): PanePlan {
   if (total <= 0 || count <= 0 || index < 0 || index >= count)
@@ -158,7 +165,7 @@ export function planMaximized(total: number, count: number, index: number, rowPx
   const grouped = Array.from({ length: count }, () => false);
   const others = Array.from({ length: count }, () => rowPx);
   let host: number | null = null;
-  if (total - count * rowPx < rowPx && count > 1) {
+  if (count > 1 && total - count * rowPx < Math.max(rowPx, total * MAXIMIZED_MIN_SHARE)) {
     host = index === count - 1 ? count - 2 : count - 1;
     for (let i = 0; i < count; i++) {
       if (i === index) continue;

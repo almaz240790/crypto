@@ -43,6 +43,6 @@ export { AxisCountdown } from "./controller/axisCountdown";
 export { composeSnapshot } from "./controller/snapshot";
 export type { SnapshotStyle } from "./controller/snapshot";
 export { ChartController, createChartController } from "./controller/ChartController";
-export { commitPaneHeights, dragSeparator, EMPTY_PANE_LAYOUT, fitHeights, GROUPED_PX, isEmptyPaneLayout, mainMinShareFor, movePaneKey, normalizePaneLayout, orderPaneKeys, PANE_MAX_PX, planMaximized, planPanes, prunePaneLayout, separatorRange, type SepLimits } from "./controller/paneManager";
+export { commitPaneHeights, dragSeparator, EMPTY_PANE_LAYOUT, fitHeights, GROUPED_PX, isEmptyPaneLayout, mainMinShareFor, MAXIMIZED_MIN_SHARE, movePaneKey, normalizePaneLayout, orderPaneKeys, PANE_MAX_PX, planMaximized, planPanes, prunePaneLayout, separatorRange, type SepLimits } from "./controller/paneManager";
 export type { PaneLayout, PanePlan, PaneWant } from "./controller/paneManager";
 export type { ChartControllerOptions, ChartHandle, ChartInputs, FocusTarget } from "./controller/ChartController";

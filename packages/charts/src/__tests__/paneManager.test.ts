@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { commitPaneHeights, dragSeparator, EMPTY_PANE_LAYOUT, fitHeights, GROUPED_PX, isEmptyPaneLayout, mainMinShareFor, movePaneKey, normalizePaneLayout, orderPaneKeys, PANE_MAX_PX, planMaximized, planPanes, prunePaneLayout, separatorRange, type PaneWant, type SepLimits } from "../controller/paneManager";
+import { commitPaneHeights, dragSeparator, EMPTY_PANE_LAYOUT, fitHeights, GROUPED_PX, isEmptyPaneLayout, mainMinShareFor, MAXIMIZED_MIN_SHARE, movePaneKey, normalizePaneLayout, orderPaneKeys, PANE_MAX_PX, planMaximized, planPanes, prunePaneLayout, separatorRange, type PaneWant, type SepLimits } from "../controller/paneManager";
 import { VIEW } from "../presets";
 
 const open = (want = 90): PaneWant => ({ want, collapsed: false });
@@ -291,5 +291,21 @@ describe("Управление панелями (ADR-0009): раскладка �
     expect(planMaximized(300, 11, 10, 44).host).toBe(9);
     // место есть — у каждой своя строка
     expect(planMaximized(800, 11, 2, 24).host).toBeNull();
+  });
+
+  it("planMaximized на телефоне: заголовки остальных оставили бы развёрнутой меньше 60 % — общая строка", () => {
+    // iPhone SE 375×667 и 390×844: семь панелей под пальцем — раньше развёрнутой 77 и 255 px под шестью заголовками
+    for (const total of [385, 571]) {
+      const p = planMaximized(total, 7, 6, 44);
+      expect(p.host).toBe(5);
+      expect(p.grouped.filter(Boolean)).toHaveLength(6);
+      expect(p.others[6]).toBe(total - 44 - 44 - 5 * GROUPED_PX);
+      expect(p.others[6]).toBeGreaterThanOrEqual(MAXIMIZED_MIN_SHARE * total);
+      expect(p.main + sum(p.others)).toBe(total);
+    }
+    // две панели — заголовков мало, у каждой своя строка
+    expect(planMaximized(571, 2, 1, 44).host).toBeNull();
+    // десктоп: семь заголовков по 24 px в 700 px — своя строка у каждой
+    expect(planMaximized(700, 7, 3, 24).host).toBeNull();
   });
 });

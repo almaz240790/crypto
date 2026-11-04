@@ -123,3 +123,18 @@ export function groupCovers(panes: readonly PaneGeo[]): { key: string; top: numb
   close();
   return out;
 }
+
+/** Полоса посередине общей строки (± px), на которую не должна ложиться ручка границы. */
+export const GRIP_MID_PX = 4;
+
+/**
+ * Место справа у общей строки, px: под ручку границы — только если ручка ложится на середину строки (там центры
+ * кнопок); иначе — отступ от края. «A» и шкалу цены не резервируем: у свёрнутой панели «A» нет, а строка и так
+ * закрывает шкалу. Раньше место под ручку, «A» и шкалу (160 px на 390) было всегда — на телефоне в строке
+ * помещалась одна кнопка.
+ */
+export function groupReserve(p: PaneGeo, seps: readonly PaneSep[], grip: { left: number; w: number; h: number }, width: number): number {
+  const mid = p.top + p.height / 2;
+  const over = seps.some((sep) => sep.y + grip.h / 2 > mid - GRIP_MID_PX && sep.y - grip.h / 2 < mid + GRIP_MID_PX);
+  return over ? Math.max(PANE_UI.edge, width - grip.left) : PANE_UI.edge;
+}
