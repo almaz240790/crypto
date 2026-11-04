@@ -1,9 +1,9 @@
 "use client";
 
-import { restThrough, type Candle, type LiveStep, type Timeframe } from "@platform/charts";
+import type { Candle, LiveStep, Timeframe } from "@platform/charts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FIGURE_TFS, getCandles, getDerivatives, getFigures, getLayers, getPatterns, toCandle, type CandlesResponse, type Derivatives, type FiguresResponse, type LayersResponse, type PatternsResponse } from "@/lib/chart";
-import { CatchUpGate, LiveBar } from "@/lib/liveBar";
+import { CatchUpGate, LiveBar, type CatchUpResult } from "@/lib/liveBar";
 import { useLive, type LiveCandle, type LiveTick, type ResyncReason } from "@/lib/useLive";
 
 /**
@@ -19,12 +19,6 @@ function serverTime(r: CandlesResponse): number | undefined {
   const t = Date.parse(r.server_time) / 1000;
   return Number.isFinite(t) ? t : undefined;
 }
-
-/**
- * Последняя минута, учтённая ответом целиком: поле through (последняя закрытая минута в БД — текущая свеча свёрнута
- * только из закрытых), у старого API — оценка по времени сервера; без времени сервера — неизвестно (null).
- */
-const pageThrough = (r: CandlesResponse, at: number | undefined): number | null => r.through ?? (at !== undefined ? restThrough(at) : null);
 
 /** Закрытые свечи и текущая из ответа истории (у 1m текущая — недописанная минута с флагом open). */
 function splitPage(r: CandlesResponse): { closed: Candle[]; current: Candle | null } {
@@ -86,6 +80,38 @@ export function useTerminalData(symbol: string, tf: Timeframe, token: string | n
     [symbol, tf],
   );
 
+  /**
+   * Догон: свежая порция истории вливается в LiveBar (catchUp: хвост заменяется окончательными свечами, пропущенные
+   * дописываются, тики и минуты потока новее ответа остаются); график получает хвост или замену через подписку live.
+   * Возвращает, просрочена ли свеча и после ответа — сервер сам отстаёт (пауза просрочки удваивается).
+   */
+  const catchUp = useCallback(async (): Promise<CatchUpResult> => {
+    const gen = genRef.current;
+    if (!live.started) return {};
+    const r = await getCandles(symbol, tf);
+    if (gen !== genRef.current) return {};
+    const { closed, current: cur } = splitPage(r);
+    const at = serverTime(r);
+    const lastBefore = live.closed.at(-1)?.time;
+    const ev = live.catchUp(closed, cur, r.through, at, r.has_older);
+    setRestAt(at ?? 0);
+    if (ev) {
+      setCandles(live.closed);
+      setCurrent(live.bar);
+      if (ev.reset) {
+        setHasOlder(r.has_older);
+        sinceRef.current = closed[0]?.time;
+      }
+    }
+    if (live.closed.at(-1)?.time !== lastBefore) refreshDerived(gen, !!ev?.reset);
+    const due = live.dueAt(LIVE_GRACE_S);
+    // ответ старее потока с дырами — ещё один догон (CatchUpGate: ровно один повтор)
+    return { late: due !== null && due * 1000 <= Date.now(), again: live.takeResync() };
+  }, [live, symbol, tf, refreshDerived]);
+  // очередь догона — своя у каждой живой свечи (инструмент, таймфрейм)
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- новая очередь вместе с live
+  const gate = useMemo(() => new CatchUpGate(), [live]);
+
   useEffect(() => {
     let dead = false;
     const gen = ++genRef.current;
@@ -105,7 +131,7 @@ export function useTerminalData(symbol: string, tf: Timeframe, token: string | n
         const { closed, current: cur } = splitPage(r);
         const at = serverTime(r);
         // тики, пришедшие раньше свечей, уже в свече и истории; минуты не новее through ответ уже учёл
-        const history = live.start(cur, closed, pageThrough(r, at));
+        const history = live.start(cur, closed, r.through, at);
         setCandles(history);
         setHasOlder(r.has_older);
         setTick(r.tick_size);
@@ -119,6 +145,8 @@ export function useTerminalData(symbol: string, tf: Timeframe, token: string | n
           getFigures(symbol, tf, closed[0]?.time)
             .then((fr) => !dead && setFigures(fr))
             .catch(() => {});
+        // пропуск в событиях до загрузки, переподключение или возврат вкладки до неё — догон сразу
+        if (live.takeResync()) gate.request("gap", catchUp);
       })
       .catch((e: Error) => !dead && setError(e.message));
     getLayers(symbol, tf)
@@ -132,38 +160,7 @@ export function useTerminalData(symbol: string, tf: Timeframe, token: string | n
       if (currentTimer.current) clearTimeout(currentTimer.current);
       currentTimer.current = null;
     };
-  }, [symbol, tf, live]);
-
-  /**
-   * Догон: свежая порция истории вливается в LiveBar (catchUp: хвост заменяется окончательными свечами, пропущенные
-   * дописываются, тики и минуты потока новее ответа остаются); график получает хвост или замену через подписку live.
-   * Возвращает, просрочена ли свеча и после ответа — сервер сам отстаёт (пауза просрочки удваивается).
-   */
-  const catchUp = useCallback(async () => {
-    const gen = genRef.current;
-    if (!live.started) return false;
-    const r = await getCandles(symbol, tf);
-    if (gen !== genRef.current) return false;
-    const { closed, current: cur } = splitPage(r);
-    const at = serverTime(r);
-    const lastBefore = live.closed.at(-1)?.time;
-    const ev = live.catchUp(closed, cur, pageThrough(r, at), at, r.has_older);
-    setRestAt(at ?? 0);
-    if (ev) {
-      setCandles(live.closed);
-      setCurrent(live.bar);
-      if (ev.reset) {
-        setHasOlder(r.has_older);
-        sinceRef.current = closed[0]?.time;
-      }
-    }
-    if (live.closed.at(-1)?.time !== lastBefore) refreshDerived(gen, !!ev?.reset);
-    const due = live.dueAt(LIVE_GRACE_S);
-    return due !== null && due * 1000 <= Date.now();
-  }, [live, symbol, tf, refreshDerived]);
-  // очередь догона — своя у каждой живой свечи (инструмент, таймфрейм)
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- новая очередь вместе с live
-  const gate = useMemo(() => new CatchUpGate(), [live]);
+  }, [symbol, tf, live, gate, catchUp]);
 
   const loadOlder = useCallback(
     async (before: number) => {
@@ -209,8 +206,15 @@ export function useTerminalData(symbol: string, tf: Timeframe, token: string | n
   const onTick = useCallback((m: LiveTick) => onStep(live.tick(m)), [live, onStep]);
   const onForming = useCallback((m: LiveCandle) => onStep(live.forming(m)), [live, onStep]);
   const onCandle = useCallback((m: LiveCandle) => onStep(live.candle(m)), [live, onStep]);
-  // сокет открыт заново или вкладка видна при неоткрытом сокете (решает LiveSocket.wake) — догон
-  const onResync = useCallback((reason: ResyncReason) => gate.request(reason, catchUp), [gate, catchUp]);
+  // сокет открыт заново или вкладка видна при неоткрытом сокете (решает LiveSocket.wake) — догон; до загрузки свечей —
+  // сразу после неё (ответ мог быть прочитан до обрыва)
+  const onResync = useCallback(
+    (reason: ResyncReason) => {
+      if (live.started) gate.request(reason, catchUp);
+      else live.resyncLater();
+    },
+    [live, gate, catchUp],
+  );
 
   const { prices, connected, online } = useLive([symbol], token, { onTick, onForming, onCandle, onResync });
 

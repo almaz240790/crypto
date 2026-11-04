@@ -1,6 +1,6 @@
 import type { LiveStep } from "@platform/charts";
 import { describe, expect, it } from "vitest";
-import { CatchUpGate, EARLY_MAX, LIVE_BACKOFF_MAX_MS, LIVE_RETRY_MS, LiveBar, replaceByTime, RESYNC_MIN_MS, type LiveEvent } from "./liveBar";
+import { CatchUpGate, EARLY_MAX, LIVE_BACKOFF_MAX_MS, LIVE_RETRY_MS, LiveBar, pageThrough, replaceByTime, RESYNC_MIN_MS, type CatchUpResult, type LiveEvent } from "./liveBar";
 
 /** Живая свеча терминала (ADR-0010): тики раз в секунду сворачиваются в текущую свечу tf без нового бара. */
 
@@ -179,6 +179,12 @@ describe("LiveBar: история, снимок минуты, переподкл
     expect(new LiveBar("BTCUSDT", "4h").dueAt(8)).toBeNull();
   });
 
+  it("through ответа: поле API, без него — оценка по времени сервера, без времени — неизвестно", () => {
+    expect(pageThrough(T + 60, T + 200)).toBe(T + 60);
+    expect(pageThrough(null, T + 200)).toBe(T + 120); // идущая 08:03 — в недописанной, учтена 08:02
+    expect(pageThrough(undefined, undefined)).toBeNull();
+  });
+
   it("до старта копится не больше EARLY_MAX событий; догон до старта ничего не делает", () => {
     const { live } = bar();
     for (let i = 0; i < EARLY_MAX + 50; i++) live.tick({ s: "BTCUSDT", p: String(90 + i / 1000), at: iso(T + 60 + i * 0.01) });
@@ -188,24 +194,114 @@ describe("LiveBar: история, снимок минуты, переподкл
   });
 });
 
+/** Поток с дырами и ответ догона старее его последней закрытой минуты (LIVE-1); пропуск до старта (LIVE-4). */
+describe("LiveBar: поток с пропуском во время запроса и до загрузки", () => {
+  const M = 60;
+  const m = (k: number) => T + k * M;
+  const msg = (t: number, v: number, h = 101, l = 99, o = 100) => ({ s: "BTCUSDT", tf: "1m" as const, c: { t, o: String(o), h: String(h), l: String(l), c: "100.5", v: String(v) } });
+  const C = (time: number, volume: number, high = 101, low = 99, open_ = false, open = 100) => ({ time, open, high, low, close: 100.5, volume, open_ });
+
+  it("минута с пропуском пришла, пока шёл запрос: ответ — до through, минуты потока после него — сверху, тики остаются", () => {
+    const { live } = bar();
+    const hist = [C(T - 4 * 3600, 3)];
+    live.start(C(T, 2, 101, 99, true), hist, m(1));
+    live.candle(msg(m(2), 1));
+    expect(live.bar!.volume).toBe(3);
+    // обрыв: минуты 3 и 4 пропущены (в минуте 3 — пик 120); новый сокет, запрос догона ушёл, БД прочитана до записи
+    // минуты 5 — а она пришла по сокету раньше ответа
+    expect(live.candle(msg(m(5), 1))!.gap).toBe(true);
+    live.tick({ s: "BTCUSDT", p: "100.9", at: iso(m(6) + 10) });
+    const ev = live.catchUp(hist, C(T, 5, 120, 99, true), m(4), m(5) + 50, true)!;
+    expect(ev.bar).toMatchObject({ time: T, volume: 6, high: 120, close: 100.9 });
+    expect(ev.tail!.bars.at(-1)).toBe(ev.bar);
+    expect(live.takeResync()).toBe(false);
+    // дальше — обычная свёртка, без новой дыры
+    const next = live.candle(msg(m(6), 1))!;
+    expect(next.gap).toBe(false);
+    expect(next.bar).toMatchObject({ volume: 7, high: 120 });
+  });
+
+  it("через границу интервала: open и объём новой свечи — из ответа и минуты потока, закрытая — из ответа", () => {
+    const { live } = bar();
+    const N = T + 4 * 3600;
+    const hist = [C(T - 4 * 3600, 3)];
+    live.start(C(T, 10, 101, 99, true), hist, m(10));
+    // телефон спал через границу: новый сокет принёс минуту 7 новой свечи, пока шёл запрос
+    expect(live.candle(msg(N + 7 * M, 1, 106, 104, 105))!.gap).toBe(true);
+    expect(live.bar).toMatchObject({ time: N, open: 105, volume: 1 });
+    const ev = live.catchUp([...hist, C(T, 240)], C(N, 7, 103, 89, true, 90), N + 6 * M, undefined, true)!;
+    expect(ev.bar).toMatchObject({ time: N, open: 90, high: 106, low: 89, volume: 8 });
+    expect(live.closed.at(-1)).toMatchObject({ time: T, volume: 240 });
+  });
+
+  it("минуты потока не покрывают промежуток после through — ответ как раньше и ещё один догон; следующий ответ покрывает", () => {
+    const { live } = bar();
+    live.start(C(T, 2, 101, 99, true), [], m(1));
+    live.candle(msg(m(2), 1));
+    live.candle(msg(m(5), 1)); // 3 и 4 пропущены
+    // ответ на запрос, ушедший ещё до записи минуты 4: through — минута 3
+    live.catchUp([], C(T, 4, 120, 99, true), m(3), undefined, true);
+    expect(live.takeResync()).toBe(true);
+    const ev = live.catchUp([], C(T, 6, 120, 99, true), m(5), undefined, true)!;
+    expect(ev.bar).toMatchObject({ volume: 6, high: 120 });
+    expect(live.takeResync()).toBe(false);
+  });
+
+  it("пропуск без запроса в пути: ответ новее потока — как всегда, дыра закрыта", () => {
+    const { live } = bar();
+    live.start(C(T, 2, 101, 99, true), [], m(1));
+    live.candle(msg(m(4), 1)); // 2 и 3 пропущены
+    const ev = live.catchUp([], C(T, 5, 101, 99, true), m(4), undefined, true)!;
+    expect(ev.bar).toMatchObject({ volume: 5 });
+    expect(live.candle(msg(m(6), 1))!.gap).toBe(true); // 5 пропущена — снова пропуск
+  });
+
+  it("пропуск в событиях до загрузки, вытесненная закрытая минута, переподключение до загрузки — догон сразу после старта", () => {
+    const a = new LiveBar("BTCUSDT", "4h");
+    a.candle(msg(m(3), 1)); // минута 2 пропущена; through ответа — 1
+    a.start(C(T, 2, 101, 99, true), [], m(1));
+    expect(a.bar!.volume).toBe(3);
+    expect(a.takeResync()).toBe(true);
+    expect(a.takeResync()).toBe(false);
+    // тот же поток без пропуска — догон не нужен
+    const ok = new LiveBar("BTCUSDT", "4h");
+    ok.candle(msg(m(2), 1));
+    ok.start(C(T, 2, 101, 99, true), [], m(1));
+    expect(ok.takeResync()).toBe(false);
+    // переподключение до загрузки: до старта не отдаётся, после — один раз
+    const b = new LiveBar("BTCUSDT", "4h");
+    b.resyncLater();
+    expect(b.takeResync()).toBe(false);
+    b.start(current, []);
+    expect(b.takeResync()).toBe(true);
+    // закрытая минута вытеснена тиками из буфера ранних событий
+    const c = new LiveBar("BTCUSDT", "4h");
+    c.candle(msg(m(2), 1));
+    for (let i = 0; i < EARLY_MAX; i++) c.tick({ s: "BTCUSDT", p: "100", at: iso(m(3) + i * 0.1) });
+    c.start(C(T, 2, 101, 99, true), [], m(1));
+    expect(c.takeResync()).toBe(true);
+  });
+});
+
 /** Очередь догона: никогда не два запроса сразу; поводы во время запроса — по правилам (ADR-0003, ADR-0010). */
 describe("CatchUpGate", () => {
   function gate(late = false) {
     let now = 1_000_000;
-    const pending: ((v: boolean) => void)[] = [];
+    const pending: ((v: CatchUpResult) => void)[] = [];
     let runs = 0;
+    let again = false;
     const run = () =>
-      new Promise<boolean>((resolve) => {
+      new Promise<CatchUpResult>((resolve) => {
         runs++;
         pending.push(resolve);
       });
     const inner = new CatchUpGate(() => now);
     const g = { request: (r: Parameters<CatchUpGate["request"]>[0]) => inner.request(r, run), get inFlight() { return inner.inFlight; }, get overdueEvery() { return inner.overdueEvery; } };
     const finish = async () => {
-      pending.shift()!(late);
+      pending.shift()!({ late, again });
       await new Promise((r) => setTimeout(r, 0));
     };
-    return { g, finish, runs: () => runs, advance: (ms: number) => (now += ms), setLate: (v: boolean) => (late = v) };
+    return { g, finish, runs: () => runs, advance: (ms: number) => (now += ms), setLate: (v: boolean) => (late = v), setAgain: (v: boolean) => (again = v) };
   }
 
   it("никогда не два запроса сразу; reconnect во время запроса — ровно один повтор после него", async () => {
@@ -229,6 +325,26 @@ describe("CatchUpGate", () => {
     for (const r of ["wake", "gap", "overdue"] as const) expect(t.g.request(r)).toBe(false);
     await t.finish();
     expect(t.runs()).toBe(1);
+  });
+
+  it("ответ не покрыл поток (again) — ровно один повтор сразу, без паузы gap; повтор сам повтора не просит", async () => {
+    const t = gate();
+    t.setAgain(true);
+    expect(t.g.request("gap")).toBe(true);
+    await t.finish();
+    expect(t.runs()).toBe(2); // повтор начат сразу, хотя RESYNC_MIN_MS не прошло
+    expect(t.g.inFlight).toBe(true);
+    await t.finish();
+    expect(t.runs()).toBe(2);
+    expect(t.g.inFlight).toBe(false);
+    // следующий эпизод — снова один повтор
+    t.advance(RESYNC_MIN_MS);
+    t.g.request("gap");
+    await t.finish();
+    expect(t.runs()).toBe(4);
+    t.setAgain(false);
+    await t.finish();
+    expect(t.runs()).toBe(4);
   });
 
   it("gap — не чаще RESYNC_MIN_MS после любого догона; wake и reconnect — всегда", async () => {
@@ -272,7 +388,7 @@ describe("CatchUpGate", () => {
   it("ошибка запроса не блокирует очередь", async () => {
     let fail = true;
     const g = new CatchUpGate();
-    const run = () => (fail ? Promise.reject(new Error("net")) : Promise.resolve(false));
+    const run = () => (fail ? Promise.reject(new Error("net")) : Promise.resolve({}));
     expect(g.request("wake", run)).toBe(true);
     await new Promise((r) => setTimeout(r, 0));
     expect(g.inFlight).toBe(false);

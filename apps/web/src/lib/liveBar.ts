@@ -10,8 +10,12 @@
  * считаются дважды. Догон (переподключение, пропуск, возврат вкладки, просрочка) — catchUp: порция истории сливается с
  * концом (catchUpLive), текущую с тиками решает liveRestart, график получает хвост для Terminal.replaceTail или замену
  * целиком. Когда догонять, решает CatchUpGate — не больше одного запроса за раз.
+ *
+ * Поток с дырами (пропуск — gap) не выигрывает у ответа только потому, что его последняя закрытая минута новее through:
+ * его свеча — без пропущенных минут. Тогда ответ — правда до through, а закрытые минуты потока после through
+ * сворачиваются поверх него заново (replay); не покрывают промежуток — нужен ещё один догон (needsCatchUp).
  */
-import { catchUpLive, firstChange, liveCandle, liveDueAt, liveForming, liveRestart, liveStart, liveTick, type Candle, type LiveBarState, type LiveStep, type Timeframe } from "@platform/charts";
+import { catchUpLive, firstChange, liveCandle, liveDueAt, liveForming, liveRestart, liveStart, liveTick, restThrough, type Candle, type LiveBarState, type LiveStep, type Timeframe } from "@platform/charts";
 import type { LiveBarMsg, LiveCandle, LiveTick } from "./useLive";
 
 /**
@@ -26,6 +30,8 @@ export type LiveSource = { subscribe(fn: LiveListener): () => void; snapshot(): 
 
 /** Сколько событий до загрузки свечей держим (тики раз в секунду — пара минут). */
 export const EARLY_MAX = 200;
+/** Сколько последних закрытых минут потока держим для replay при догоне (запрос дольше — ещё один догон). */
+export const REPLAY_MINUTES = 64;
 
 /** Догон по пропуску в живых событиях — не чаще, мс (после любого догона). */
 export const RESYNC_MIN_MS = 10_000;
@@ -35,6 +41,14 @@ export const LIVE_BACKOFF_MAX_MS = 300_000;
 
 export function barFromMsg(c: LiveBarMsg, open: boolean): Candle {
   return { time: c.t, open: Number(c.o), high: Number(c.h), low: Number(c.l), close: Number(c.c), volume: Number(c.v), open_: open };
+}
+
+/**
+ * Последняя минута, учтённая ответом целиком: поле through (последняя закрытая минута в БД — текущая свеча свёрнута
+ * только из закрытых), у старого API — оценка по времени сервера (restThrough); без времени сервера — неизвестно.
+ */
+export function pageThrough(through: number | null | undefined, serverTime: number | undefined): number | null {
+  return through ?? (serverTime !== undefined ? restThrough(serverTime) : null);
 }
 
 /** Момент снимка формирующейся минуты (unix с); нет или не разобрать — undefined. */
@@ -64,6 +78,12 @@ export class LiveBar implements LiveSource {
   private hist: Candle[] = [];
   private early: Early[] = [];
   private readonly listeners = new Set<LiveListener>();
+  /** Последние закрытые минуты потока (не 1m) — для replay поверх ответа при догоне. */
+  private minutes: Candle[] = [];
+  /** В потоке была дыра (gap) после последнего ответа, который покрыл его целиком. */
+  private dirty = false;
+  /** Догон нужен ещё раз: дыра до старта, переподключение до старта, ответ не покрыл поток. */
+  private resync = false;
 
   constructor(
     readonly symbol: string,
@@ -75,8 +95,8 @@ export class LiveBar implements LiveSource {
    * учтённая ответом): дальше события меняют текущую свечу. События, пришедшие до загрузки, сворачиваются сразу;
    * возвращается история с их поправками (уточнённые и закрытые ими свечи) — её и показывать, текущая — `bar`.
    */
-  start(current: Candle | null, history: readonly Candle[] = [], through?: number | null): Candle[] {
-    this.state = liveStart(this.tf, current, history.at(-1) ?? null, through);
+  start(current: Candle | null, history: readonly Candle[] = [], through?: number | null, serverTime?: number): Candle[] {
+    this.state = liveStart(this.tf, current, history.at(-1) ?? null, pageThrough(through, serverTime));
     this.hist = history.slice();
     const early = this.early;
     this.early = [];
@@ -85,8 +105,26 @@ export class LiveBar implements LiveSource {
       if (!step) continue;
       this.state = step.state;
       this.record(step);
+      // пропуск в ранних событиях (минута закрылась между ответом и подпиской, обрыв во время загрузки) — догон
+      if (step.gap) this.dirty = this.resync = true;
     }
     return this.hist;
+  }
+
+  /**
+   * Нужен догон, а повода больше не будет: пропуск в событиях до старта, вытесненная из буфера закрытая минута,
+   * переподключение или возврат вкладки до старта (resyncLater), ответ догона не покрыл поток с дырами. Читается один
+   * раз — флаг сбрасывается.
+   */
+  takeResync(): boolean {
+    const r = this.resync && this.state !== null;
+    if (r) this.resync = false;
+    return r;
+  }
+
+  /** Повод догона пришёл до загрузки свечей (переподключение, возврат вкладки): догнать сразу после старта. */
+  resyncLater(): void {
+    this.resync = true;
   }
 
   get started(): boolean {
@@ -136,16 +174,34 @@ export class LiveBar implements LiveSource {
    * объекты, закрытые потоком после ответа — остаются (catchUpLive); порция не стыкуется — история заменяется. Текущая —
    * новее из двух, у той же свечи — объём из стороны с большим числом целых минут, high/low — объединение, close тика
    * новее ответа, неподтверждённые минуты после through — сверху (liveRestart). Тики, пришедшие во время запроса, уже
-   * в автомате и на графике — ответ их не откатывает.
+   * в автомате и на графике — ответ их не откатывает. through — поле ответа (null — его нет: оценка restThrough по
+   * serverTime). Поток с дырами и ответ старее его последней закрытой минуты — replay закрытых минут потока поверх
+   * ответа; не покрывают — takeResync() скажет «ещё раз».
    *
    * null — не начато или ничего не изменилось; иначе шаг уже отдан подписчикам: `tail` или `reset`.
    */
-  catchUp(page: readonly Candle[], current: Candle | null, through: number | null, serverTime: number | undefined, hasOlder: boolean): LiveEvent | null {
+  catchUp(page: readonly Candle[], current: Candle | null, through: number | null | undefined, serverTime: number | undefined, hasOlder: boolean): LiveEvent | null {
     const s = this.state;
     if (!s) return null;
     const old = this.hist;
-    const { bars, replaced } = catchUpLive({ closed: old, current: s.head, through: s.lastClosed }, page, current, through ?? -Infinity, this.tf);
-    const state = liveRestart(s, this.tf, bars.current, bars.closed.at(-1) ?? null, through, serverTime);
+    let thr = pageThrough(through, serverTime);
+    let pg = page;
+    let cur = current;
+    let rebuilt: LiveBarState | null = null;
+    if (this.dirty && this.tf !== "1m") {
+      if ((thr ?? -Infinity) >= s.lastClosed) this.dirty = false; // ответ покрыл всё, что подтвердил поток
+      else if (through != null && Number.isFinite(through)) {
+        const r = this.replay(page, current, through, s);
+        if (r) {
+          ({ closed: pg, state: rebuilt } = r);
+          cur = rebuilt.head;
+          thr = rebuilt.lastClosed;
+          this.dirty = false;
+        } else this.resync = true;
+      }
+    }
+    const { bars, replaced } = catchUpLive({ closed: old, current: s.head, through: s.lastClosed }, pg, cur, thr ?? -Infinity, this.tf);
+    const state = rebuilt && bars.current === rebuilt.head ? rebuilt : liveRestart(s, this.tf, bars.current, bars.closed.at(-1) ?? null, thr, serverTime);
     this.state = state;
     const next = bars.closed as Candle[];
     const head = state.head;
@@ -165,11 +221,38 @@ export class LiveBar implements LiveSource {
     return ev;
   }
 
+  /**
+   * Поток с дырами, ответ старее его последней закрытой минуты (through < lastClosed): ответ — правда до through,
+   * закрытые минуты потока после through сворачиваются поверх него тем же автоматом, сверху — неподтверждённые минуты
+   * потока (формирующаяся, тики) и последний тик. null — минуты потока не покрывают промежуток без пропуска.
+   */
+  private replay(page: readonly Candle[], current: Candle | null, through: number, s: LiveBarState): { closed: Candle[]; state: LiveBarState } | null {
+    let st = liveStart(this.tf, current, page.at(-1) ?? null, through);
+    if (st.lastClosed !== through) return null;
+    let closed = page.slice();
+    const take = (step: LiveStep) => {
+      st = step.state;
+      if (step.amended) closed = replaceByTime(closed, step.amended);
+      if (step.closed.length) closed = [...closed, ...step.closed];
+    };
+    for (const m of this.minutes) {
+      if (m.time <= through || m.time > s.lastClosed) continue;
+      const step = liveCandle(st, m);
+      if (step.gap) return null;
+      take(step);
+    }
+    if (st.lastClosed !== s.lastClosed) return null;
+    st = { ...st, lastTick: s.lastTick };
+    for (const m of s.minutes) take(liveForming(st, m));
+    return { closed, state: st };
+  }
+
   private event(e: Early): LiveStep | null {
     if (e.m.s !== this.symbol) return null;
     if (!this.state) {
       this.early.push(e);
-      if (this.early.length > EARLY_MAX) this.early.shift();
+      // вытеснена закрытая минута — свеча без неё: догон после старта
+      if (this.early.length > EARLY_MAX && this.early.shift()!.kind === "candle") this.dirty = this.resync = true;
       return null;
     }
     const step = this.apply(e);
@@ -180,7 +263,17 @@ export class LiveBar implements LiveSource {
     const s = this.state!;
     if (e.kind === "tick") return liveTick(s, Number(e.m.p), Date.parse(e.m.at) / 1000);
     if (e.kind === "forming") return liveForming(s, barFromMsg(e.m.c, true), asOf(e.m.c));
-    return liveCandle(s, barFromMsg(e.m.c, false));
+    const m = barFromMsg(e.m.c, false);
+    if (this.tf !== "1m" && m.time > s.lastClosed) this.keep(m);
+    return liveCandle(s, m);
+  }
+
+  /** Закрытая минута потока — в буфер для replay (по времени, без повторов, не больше REPLAY_MINUTES). */
+  private keep(m: Candle): void {
+    const list = this.minutes.filter((x) => x.time !== m.time);
+    list.push(m);
+    list.sort((a, b) => a.time - b.time);
+    this.minutes = list.length > REPLAY_MINUTES ? list.slice(-REPLAY_MINUTES) : list;
   }
 
   /** История React: уточнённая закрытая — на месте, закрытые событием — справа. */
@@ -191,6 +284,7 @@ export class LiveBar implements LiveSource {
 
   private emit(step: LiveStep): LiveStep | null {
     const changed = step.bar !== this.state?.head || step.closed.length > 0 || step.amended !== null || step.gap;
+    if (step.gap) this.dirty = true;
     this.state = step.state;
     if (!changed) return null;
     this.record(step);
@@ -205,17 +299,20 @@ export type CatchUpReason = "reconnect" | "wake" | "gap" | "overdue";
 /**
  * Когда догонять (план 2A.7, ADR-0003/0010): одна очередь на все поводы — никогда не два запроса сразу.
  * - reconnect во время запроса — ровно один повтор после него (минуты за обрыв могли не попасть в ответ);
- * - wake, gap, overdue во время запроса — отбрасываются: их покрывает ответ, который уже в пути;
+ * - wake, gap, overdue во время запроса — отбрасываются: их покрывает ответ, который уже в пути; если ответ оказался
+ *   старее минуты с пропуском (LiveBar не смог свернуть поток поверх него) — run вернёт again, и будет ровно один
+ *   повтор (повтор сам повтора не просит);
  * - gap — не чаще RESYNC_MIN_MS после любого догона;
  * - overdue — не чаще паузы (LIVE_RETRY_MS), которая удваивается до LIVE_BACKOFF_MAX_MS, пока сервер сам отстаёт.
- * run выполняет запрос и сообщает, просрочена ли свеча и после ответа (сервер отстаёт); повтор после reconnect — с run
- * последней просьбы. Часы — подменяемые (vitest).
+ * run выполняет запрос и сообщает, просрочена ли свеча и после ответа (late — сервер отстаёт) и нужен ли ещё догон
+ * (again); повтор — с run последней просьбы. Часы — подменяемые (vitest).
  */
-export type CatchUpRun = () => Promise<boolean | void>;
+export type CatchUpResult = { late?: boolean; again?: boolean };
+export type CatchUpRun = () => Promise<CatchUpResult | void>;
 
 export class CatchUpGate {
   private busy = false;
-  private again: CatchUpRun | null = null;
+  private again: { run: CatchUpRun; followUp: boolean } | null = null;
   private last = -Infinity;
   private backoff = LIVE_RETRY_MS;
 
@@ -232,8 +329,12 @@ export class CatchUpGate {
 
   /** Попросить догон; true — запрос начат. */
   request(reason: CatchUpReason, run: CatchUpRun): boolean {
+    return this.start(reason, run, false);
+  }
+
+  private start(reason: CatchUpReason, run: CatchUpRun, followUp: boolean): boolean {
     if (this.busy) {
-      if (reason === "reconnect") this.again = run;
+      if (reason === "reconnect") this.again = { run, followUp: false };
       return false;
     }
     const now = this.clock();
@@ -242,8 +343,9 @@ export class CatchUpGate {
     this.busy = true;
     this.last = now;
     void run()
-      .then((late) => {
-        this.backoff = late ? Math.min(this.backoff * 2, LIVE_BACKOFF_MAX_MS) : LIVE_RETRY_MS;
+      .then((r) => {
+        this.backoff = r?.late ? Math.min(this.backoff * 2, LIVE_BACKOFF_MAX_MS) : LIVE_RETRY_MS;
+        if (r?.again && !followUp) this.again ??= { run, followUp: true };
       })
       .catch(() => {
         // сеть недоступна — следующая попытка по таймеру просрочки или событию
@@ -252,7 +354,7 @@ export class CatchUpGate {
         this.busy = false;
         const next = this.again;
         this.again = null;
-        if (next) this.request("reconnect", next);
+        if (next) this.start("reconnect", next.run, next.followUp);
       });
     return true;
   }
