@@ -24,21 +24,26 @@ export type PopoverProps = {
   children: ReactNode;
 };
 
-/** Поставить окно у якоря (position: fixed) — прямо в style, без лишнего рендера. */
+/**
+ * Поставить окно у якоря (position: fixed) — прямо в style, без лишнего рендера. max-height не сбрасывается:
+ * scrollHeight (overflow: auto) и так — полная высота содержимого, а сброс обнулял бы прокрутку окна.
+ */
 function position(el: HTMLElement, anchor: HTMLElement, align: Align) {
   const a = anchor.getBoundingClientRect();
-  el.style.maxHeight = "";
+  const scrolled = el.scrollTop;
   const p = placePopup({ left: a.left, top: a.top, width: a.width, height: a.height }, { width: el.offsetWidth, height: el.scrollHeight }, { width: window.innerWidth, height: window.innerHeight }, { align });
   el.style.left = `${p.left}px`;
   el.style.top = `${p.top}px`;
   el.style.maxHeight = `${p.maxHeight}px`;
   el.dataset.side = p.side;
+  if (el.scrollTop !== scrolled) el.scrollTop = scrolled;
 }
 
 /**
- * Следит за открытым окном: позиция при прокрутке, ресайзе и смене размера содержимого; закрытие по клику
- * снаружи (кроме якоря — его клик сам переключает окно). Возвращает фокус на якорь при закрытии, если он
- * оставался внутри окна (или потерялся).
+ * Следит за открытым окном: позиция при прокрутке страницы (не самого окна), ресайзе и смене размера
+ * содержимого; закрытие по клику снаружи (кроме якоря — его клик сам переключает окно). Перед закрытием
+ * снимается фокус с поля внутри окна: его onBlur (применить введённое) успевает, пока поле на месте.
+ * Возвращает фокус на якорь при закрытии, если он оставался внутри окна (или потерялся).
  */
 export function usePopupBehaviour(ref: { current: HTMLElement | null }, anchor: HTMLElement | null, open: boolean, align: Align, onClose: () => void, focusOnOpen: (el: HTMLElement) => void) {
   const closeRef = useRef(onClose);
@@ -51,22 +56,30 @@ export function usePopupBehaviour(ref: { current: HTMLElement | null }, anchor: 
     const el = ref.current;
     if (!open || !el || !anchor) return;
     const place = () => position(el, anchor, align);
+    // прокрутка внутри самого окна (колесо, Tab к нижнему полю) — не повод его переставлять
+    const onScroll = (e: Event) => {
+      if (e.target instanceof Node && el.contains(e.target)) return;
+      place();
+    };
     place();
     focusRef.current(el);
     const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(place) : null;
     ro?.observe(el);
     window.addEventListener("resize", place);
-    window.addEventListener("scroll", place, true);
+    window.addEventListener("scroll", onScroll, true);
     const outside = (e: PointerEvent) => {
       const t = e.target as Node | null;
       if (t && (el.contains(t) || anchor.contains(t))) return;
+      // клик снаружи размонтирует окно раньше, чем браузер уведёт фокус: blur — сейчас, пока поле в DOM
+      const active = document.activeElement;
+      if (active instanceof HTMLElement && el.contains(active)) active.blur();
       closeRef.current();
     };
     document.addEventListener("pointerdown", outside, true);
     return () => {
       ro?.disconnect();
       window.removeEventListener("resize", place);
-      window.removeEventListener("scroll", place, true);
+      window.removeEventListener("scroll", onScroll, true);
       document.removeEventListener("pointerdown", outside, true);
       const active = document.activeElement;
       if (!active || active === document.body || el.contains(active)) anchor.focus({ preventScroll: true });

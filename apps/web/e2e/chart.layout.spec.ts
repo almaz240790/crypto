@@ -325,3 +325,48 @@ for (const width of [1280, 1024]) {
     for (const name of [/^Найдено/, /^Рисунки/, "Слои", "Раскладки"]) await expect(row.getByRole("tab", { name })).toBeVisible();
   });
 }
+
+/** Сохранение с множеством индикаторов: окно «Индикаторы» выше окна браузера (прокрутка внутри окна). */
+const MANY_INDICATORS = { layers_v: 5, type: "candles", indicators: ["ema", "sma", "supertrend", "bb", "ichimoku", "keltner", "rsi", "macd", "stoch", "atr", "volume"].map((id) => ({ id, params: {} })), markup: { preset: "clean", overrides: {} }, panels: [], scale: "linear", overlay: null };
+
+test("«Индикаторы» выше окна: колесо и Tab прокручивают окно, нижние флажки достижимы", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 600 });
+  await page.addInitScript((v) => localStorage.setItem("pl-terminal", JSON.stringify(v)), MANY_INDICATORS);
+  await open(page);
+  await page.getByRole("button", { name: /^Индикаторы/ }).click();
+  const dlg = page.getByRole("dialog", { name: "Индикаторы" });
+  await expect(dlg).toBeVisible();
+  expect(await dlg.evaluate((el) => el.scrollHeight - el.clientHeight)).toBeGreaterThan(40);
+  const d = (await dlg.boundingBox())!;
+  await page.mouse.move(d.x + d.width / 2, d.y + d.height / 2);
+  await page.mouse.wheel(0, 400);
+  await expect.poll(() => dlg.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+  // последний флажок «Под графиком» — в видимой части окна после фокуса с клавиатуры
+  const last = dlg.getByRole("checkbox").last();
+  await last.focus();
+  await expect.poll(async () => {
+    const b = (await last.boundingBox())!;
+    return b.y + b.height <= d.y + d.height + 1;
+  }).toBe(true);
+});
+
+test("период, введённый в поле, применяется и при клике мимо окна — в «Индикаторах» и в «Параметрах» легенды", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await open(page);
+  const t = await box(page, "[data-testid=terminal]");
+  const outside = { x: t.x + t.width - 160, y: t.y + t.height - 160 };
+  await page.getByRole("button", { name: /^Индикаторы/ }).click();
+  const dlg = page.getByRole("dialog", { name: "Индикаторы" });
+  await dlg.getByLabel("Период EMA 50").fill("21");
+  await page.mouse.click(outside.x, outside.y);
+  await expect(dlg).toHaveCount(0);
+  const legend = page.getByTestId("legend");
+  await expect(legend).toContainText("EMA 21");
+  await legend.getByText("EMA 21").hover();
+  await page.getByRole("button", { name: "настроить EMA 21" }).click();
+  const params = page.getByRole("dialog", { name: "Параметры EMA 21" });
+  await params.getByLabel("Период EMA 21").fill("77");
+  await page.mouse.click(outside.x, outside.y);
+  await expect(params).toHaveCount(0);
+  await expect(legend).toContainText("EMA 77");
+});
