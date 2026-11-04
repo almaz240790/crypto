@@ -353,6 +353,35 @@ describe("уточнение закрытой свечи (ADR-0010)", () => {
   });
 });
 
+describe("свежая история справа после пропуска (ADR-0010, W2)", () => {
+  const withGap = () => [...bars(0, 300), { ...bars(303, 1)[0]!, open_: true }]; // 300–302 пропущены
+
+  it("у правого края: пропущенные свечи вставляются, текущая остаётся у края", () => {
+    make();
+    term.setCandles(withGap());
+    chart.ts.setVisibleLogicalRange({ from: 200, to: 305 });
+    term.merge([...bars(298, 5), { ...bars(303, 1)[0]!, close: 1.7, open_: true }]);
+    expect(term.candles.length).toBe(304);
+    expect(term.candles.slice(-4).map((c) => c.time)).toEqual(bars(300, 4).map((c) => c.time));
+    expect(term.candles.at(-1)).toMatchObject({ close: 1.7, open_: true });
+    expect(chart.series[0]!.data.length).toBe(304);
+    expect(chart.ts.getVisibleLogicalRange()).toEqual({ from: 203, to: 308 });
+  });
+
+  it("в прокрученной истории вид на тех же свечах; свечи старше буфера не берутся", () => {
+    make();
+    term.setCandles(withGap());
+    chart.ts.setVisibleLogicalRange({ from: 50, to: 150 });
+    term.merge([...bars(-5, 3), ...bars(300, 3)]);
+    expect(term.candles.length).toBe(304);
+    expect(term.candles[0]!.time).toBe(bars(0, 1)[0]!.time);
+    expect(chart.ts.getVisibleLogicalRange()).toEqual({ from: 50, to: 150 });
+    const calls = chart.series[0]!.setDataCalls;
+    term.merge([]);
+    expect(chart.series[0]!.setDataCalls).toBe(calls);
+  });
+});
+
 describe("формат цены инструмента", () => {
   it("основная серия и наложенные линии получают шаг цены; формат переживает смену типа графика", () => {
     make();

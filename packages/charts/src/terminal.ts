@@ -252,6 +252,26 @@ export class Terminal {
     this.volume.update(vol[i]!, i < last);
   }
 
+  /**
+   * Свежая история справа с сервера (после переподключения или пропуска в живых событиях, ADR-0010):
+   * свечи с тем же временем заменяются, недостающие вставляются, свечи старше буфера не берутся (их
+   * подгрузит addOlder). Вид остаётся на тех же свечах; у правого края — у края: вставленные перед
+   * текущей свечой бары не уводят её за экран.
+   */
+  merge(bars: readonly Candle[]): void {
+    const before = this.buffer;
+    if (before.trimmedRight > 0) return;
+    const first = before.candles[0]?.time;
+    const fresh = first === undefined ? bars.slice() : bars.filter((c) => c.time >= first);
+    if (!fresh.length) return;
+    const last = this.lastIndex();
+    const r = this.chart.timeScale().getVisibleLogicalRange();
+    const atEdge = last !== null && r !== null && r.to >= last - 0.5;
+    this.buffer = replaceNewest(before, fresh);
+    this.requesting = false;
+    this.renderAnchored(atEdge ? before.candles[before.candles.length - 1]?.time : first);
+  }
+
   /** Отдельная панель под индикатор: возвращает индекс панели. */
   addPane(height = 100): number {
     const idx = this.panes++;
