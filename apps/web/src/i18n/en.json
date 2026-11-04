@@ -1082,7 +1082,7 @@
   "Funding, OI, ликвидации, L/S ratio по корзинам таймфрейма": "Funding, OI, liquidations and L/S ratio in timeframe buckets",
   "Скринер по всем инструментам": "Screener across all instruments",
   "Скринер в CSV": "Screener as CSV",
-  "Список инструментов": "List of instruments",
+  "Список инструментов по капитализации (поле rank)": "Instruments by market cap (rank field)",
   "Последние цены": "Latest prices",
   "Ваш журнал сделок": "Your trade journal",
   "Аналитика вашего журнала": "Your journal analytics",
