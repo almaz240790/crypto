@@ -515,6 +515,35 @@ describe("through из ответа: минута, недописанная в �
     expect(a.bar).toEqual({ time: B, open: 5, high: 6.5, low: 4, close: 6, volume: 6, open_: true });
     expect(liveCandle(a.state, m1(B + M, 6, 7, 6, 6.8, 2)).bar).toMatchObject({ high: 7, close: 6.8, volume: 8 });
   });
+
+  it("формирующаяся первая минута поверх такой текущей — снимок той же минуты: объём не складывается, open — из ответа", () => {
+    const B = T + 5 * M;
+    // загрузка 5m в 07:05:30: текущая — недописанная первая минута (объём 4), through — 07:04
+    const s = liveStart("5m", { time: B, open: 5, high: 6, low: 4, close: 5.5, volume: 4, open_: true }, bar(T, 1), B - M);
+    const f5 = liveForming(s, { time: B, open: 5, high: 6.2, low: 4, close: 6, volume: 5, open_: true });
+    expect(f5.bar).toEqual({ time: B, open: 5, high: 6.2, low: 4, close: 6, volume: 5, open_: true });
+    // тик той же минуты (минута из тиков — open цены тика, объём 0) объём и open не трогает
+    const t = liveTick(f5.state, 6.4, B + 40);
+    expect(t.bar).toMatchObject({ open: 5, high: 6.4, close: 6.4, volume: 5 });
+    expect(liveForming(t.state, { time: B, open: 5, high: 6.4, low: 3.9, close: 6.3, volume: 7, open_: true }, B + 50).bar).toMatchObject({ open: 5, low: 3.9, close: 6.3, volume: 7 });
+    // снимок старше ответа (объём меньше) объём ответа не уменьшает
+    expect(liveForming(s, { time: B, open: 5, high: 5.5, low: 4.5, close: 5.2, volume: 3, open_: true }).bar).toMatchObject({ high: 6, low: 4, volume: 4, close: 5.2 });
+    // только тик до формирующейся: свеча ответа с ценой тика
+    expect(liveTick(s, 7, B + 10).bar).toEqual({ time: B, open: 5, high: 7, low: 4, close: 7, volume: 4, open_: true });
+    // следующая минута — уже сверху; закрытая первая — заменяет, вторая неподтверждённая остаётся
+    const n = liveForming(f5.state, { time: B + M, open: 6, high: 6.5, low: 5.8, close: 6.1, volume: 2, open_: true });
+    expect(n.bar).toMatchObject({ volume: 7, close: 6.1 });
+    expect(liveCandle(n.state, m1(B, 5, 6.3, 4, 6, 8)).bar).toMatchObject({ open: 5, high: 6.5, volume: 10, close: 6.1 });
+    // неподтверждённые сверх LIVE_PENDING_MINUTES: первая подтверждается как есть — тоже без двойного счёта
+    const Q = T + 15 * M;
+    let p = liveForming(liveStart("15m", { time: Q, open: 5, high: 6, low: 4, close: 5.5, volume: 4, open_: true }, bar(T, 1), Q - M), { time: Q, open: 5, high: 6, low: 4, close: 6, volume: 5, open_: true }).state;
+    for (let i = 1; i <= LIVE_PENDING_MINUTES; i++) p = liveForming(p, { time: Q + i * M, open: 6, high: 6, low: 6, close: 6, volume: 1, open_: true }).state;
+    expect(p.base).toMatchObject({ time: Q, volume: 5 });
+    expect(p.head!.volume).toBe(5 + LIVE_PENDING_MINUTES);
+    // через through (минута перед интервалом уже позже base) — обычная свёртка: base — свёртка закрытых минут
+    const later = liveStart("5m", { time: B, open: 5, high: 6, low: 4, close: 5.5, volume: 4, open_: true }, bar(T, 1), B);
+    expect(liveForming(later, { time: B + M, open: 5.5, high: 6, low: 5, close: 5.8, volume: 2, open_: true }).bar!.volume).toBe(6);
+  });
 });
 
 describe("догон в автомате: liveRestart по ответу истории", () => {
@@ -545,6 +574,16 @@ describe("догон в автомате: liveRestart по ответу исто
     const r2 = liveRestart(s, "4h", cur({ volume: 1110, close: 106 }), null, T0 + 660, T0 + 700);
     expect(r2.head).toMatchObject({ volume: 1110, close: 106 });
     expect(r2.minutes).toEqual([]);
+  });
+
+  it("догон в первой минуте интервала: формирующаяся минута потока поверх ответа с той же недописанной минутой — объём не дважды", () => {
+    const B = T0 + 300; // 5m
+    const s = liveForming(liveStart("5m", { ...cur(), time: B - 300, volume: 9 }, null, B - 60), { time: B, open: 100, high: 101, low: 99.5, close: 100.8, volume: 3, open_: true }).state;
+    expect(s.head).toMatchObject({ time: B, volume: 3 });
+    // ответ: текущая — та же первая минута (объём 3.5), through — минута перед интервалом
+    const r = liveRestart(s, "5m", { time: B, open: 100, high: 100.9, low: 99.4, close: 100.6, volume: 3.5, open_: true }, { ...cur(), time: B - 300, open_: false }, B - 60, B + 20);
+    expect(r.head).toMatchObject({ time: B, open: 100, high: 101, low: 99.4, close: 100.8, volume: 3.5 });
+    expect(liveForming(r, { time: B, open: 100, high: 101, low: 99.4, close: 100.7, volume: 4, open_: true }).bar).toMatchObject({ volume: 4, close: 100.7 });
   });
 
   it("поток впереди ответа (его head выбран): автомат тот же, lastClosed не уменьшается, история — из ответа", () => {

@@ -83,7 +83,7 @@ db_only = pytest.mark.skipif(not _db_available(), reason="БД с миграци
 
 @db_only
 def test_load_candles_with_and_without_before() -> None:
-    from app.chart_data import current_candle, load_candles
+    from app.chart_data import current_candle, load_candles, open_minutes
     from app.db import SessionLocal
     from app.models import Instrument
     from app.models.market import Candle as CandleRow
@@ -161,6 +161,9 @@ def test_load_candles_with_and_without_before() -> None:
             assert cur is not None and cur.candle is not None
             assert cur.candle.volume == 130 and cur.candle.high == 231
             assert cur.through == start + timedelta(minutes=129)
+            # недописанные минуты после through — то, что хранимая свеча Binance уже содержит
+            assert open_minutes(s, inst.id, cur.through, start) == (Decimal(50), Decimal(0), 0)
+            assert open_minutes(s, inst.id, start + timedelta(minutes=130), start)[0] == 0
             # в новом интервале закрытых минут ещё нет — through: последняя закрытая перед ним
             cur = current_candle(s, inst.id, Timeframe.H1, now)
             assert cur is not None and cur.candle is not None and cur.candle.volume == 10
@@ -213,14 +216,23 @@ def test_candles_current_from_closed_minutes_and_through(monkeypatch: pytest.Mon
             assert body["candles"][-1]["v"] == "7" and body["candles"][-1]["open"] is True
             assert body["candles"][0]["v"] == "10" and body["current"] is None
             assert body["through"] == int(last.timestamp())
-        # хранимая 4h, а минутная история начинается позже начала интервала — свеча как есть,
-        # through неизвестен
+        # хранимая 4h, а минутная история начинается позже начала интервала — свеча без объёма
+        # недописанных минут после through (они придут потоком), through — последняя закрытая
         start = bucket_start(Timeframe.H4, now)
-        stored = Candle(start, d(1), d(9), d(1), d(5), d(999))
-        late_fold = Candle(start, d(1), d(3), d(1), d(2), d(7))
-        late = LiveBucket(late_fold, start + timedelta(minutes=30), start)
+        stored = Candle(start, d(1), d(9), d(1), d(5), d(999), d(9990), 90)
+        late_fold = Candle(start, d(1), d(3), d(1), d(2), d(7), d(70), 7)
+        late = LiveBucket(late_fold, start + timedelta(minutes=30), start + timedelta(minutes=34))
+        seen: list[tuple[datetime, datetime]] = []
+
+        def open_part(db: object, i: int, after: datetime, s: datetime) -> tuple:
+            seen.append((after, s))
+            return d(4), d(40), 3
+
+        monkeypatch.setattr(chart, "open_minutes", open_part)
         body = get("4h", [stored], late)
-        assert body["candles"][-1]["v"] == "999" and body["through"] is None
+        assert body["candles"][-1]["v"] == "995" and body["candles"][-1]["h"] == "9"
+        assert body["through"] == int((start + timedelta(minutes=34)).timestamp())
+        assert seen == [(start + timedelta(minutes=34), start)]
         # 1h: закрытых минут в интервале нет — недописанная остаётся, through — последняя закрытая
         # перед интервалом
         h1 = bucket_start(Timeframe.H1, now)
@@ -239,6 +251,21 @@ def test_candles_current_from_closed_minutes_and_through(monkeypatch: pytest.Mon
         assert body["through"] is None
     finally:
         app.dependency_overrides.pop(auth.get_db, None)
+
+
+def test_without_open_minutes_not_below_closed_fold() -> None:
+    from app.chart_data import without_open_minutes
+
+    d = Decimal
+    start = datetime(2026, 10, 26, 8, tzinfo=UTC)
+    stored = Candle(start, d(1), d(9), d(1), d(5), d(100), d(1000), 50)
+    folded = Candle(start, d(1), d(3), d(1), d(2), d(60), d(600), 30)
+    c = without_open_minutes(stored, folded, (d(4), d(40), 3))
+    assert (c.volume, c.quote_volume, c.trades) == (d(96), d(960), 47)
+    assert (c.open, c.high, c.low, c.close) == (d(1), d(9), d(1), d(5))
+    # снимки разных потоков: вычитание не опускает объём ниже закрытых минут
+    c = without_open_minutes(stored, folded, (d(50), d(500), 40))
+    assert (c.volume, c.quote_volume, c.trades) == (d(60), d(600), 30)
 
 
 def test_bucket_last_and_sum() -> None:

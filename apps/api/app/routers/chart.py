@@ -23,7 +23,9 @@ from app.chart_data import (
     layers_cached,
     load_candles,
     load_derivatives,
+    open_minutes,
     signal_layer,
+    without_open_minutes,
 )
 from app.config import settings
 from app.entitlements import entitlements_for
@@ -63,7 +65,7 @@ def candles(
     Идущий интервал (tf ≥ 5m) — свёртка только закрытых минут; ``through`` — последняя закрытая
     минута в БД на момент ответа (unix-время; null — неизвестно, клиент оценивает по
     ``server_time``): минуты WebSocket не позже неё уже учтены, более поздние клиент сворачивает
-    сам."""
+    сам. Хранимая свеча 4h/1d/1w без минут с начала интервала — без объёма недописанных минут."""
     timeframe = _tf(tf)
     ent = entitlements_for(db, user)
     if timeframe in INTRADAY and not ent.intraday:
@@ -85,9 +87,11 @@ def candles(
                 # после through, ни одна не учтётся дважды и не потеряется
                 if live.candle is not None and (timeframe in AGGREGATED or live.first == start):
                     rows = [*rows[:-1], live.candle]
-                elif live.candle is not None:
-                    # хранимая свеча, а минут с начала интервала нет: что в ней учтено — неизвестно
-                    through = None
+                elif live.candle is not None and live.through is not None:
+                    # хранимая свеча, а минут с начала интервала нет: в ней уже есть недописанные
+                    # минуты после through — их объём вычитается, клиент досворачивает их сам
+                    part = open_minutes(db, inst.id, live.through, start)
+                    rows = [*rows[:-1], without_open_minutes(rows[-1], live.candle, part)]
             elif live.candle is not None:
                 cur = candle_dict(live.candle, open_=True)
     # последняя хранимая свеча tf может быть ещё не закрыта — помечаем

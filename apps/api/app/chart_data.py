@@ -10,7 +10,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -188,6 +188,40 @@ def current_candle(
         {"i": instrument_id, "w": start - THROUGH_LOOKBACK, "s": start},
     ).scalar()
     return LiveBucket(None, None, last.astimezone(UTC) if last is not None else None)
+
+
+def open_minutes(
+    db: Session, instrument_id: int, after: datetime, start: datetime
+) -> tuple[Decimal, Decimal, int]:
+    """Объём, объём в котируемой и сделки недописанных минут интервала после ``after`` (идущая
+    минута и закрытая на бирже, но ещё не записанная закрытой) — хранимая свеча Binance их
+    уже содержит."""
+    row = db.execute(
+        text(
+            "select coalesce(sum(volume), 0), coalesce(sum(quote_volume), 0), "
+            "coalesce(sum(trades), 0) from candles where instrument_id=:i and timeframe='1m' "
+            "and open_time > :a and open_time >= :s and not is_closed"
+        ),
+        {"i": instrument_id, "a": after, "s": start},
+    ).one()
+    return Decimal(row[0]), Decimal(row[1]), int(row[2])
+
+
+def without_open_minutes(
+    stored: Candle, folded: Candle, open_part: tuple[Decimal, Decimal, int]
+) -> Candle:
+    """Хранимая свеча Binance идущего интервала, когда минутная история начинается позже начала
+    интервала: объём — без недописанных минут после through (клиент досворачивает их сам, не
+    дважды), но не меньше свёртки закрытых минут; цены — как есть (high/low тех минут —
+    объединение, close уточнят тики). Свеча и минута пишутся из разных потоков Binance — объём
+    точен до пары секунд торгов между их снимками."""
+    v, q, n = open_part
+    return replace(
+        stored,
+        volume=max(stored.volume - v, folded.volume),
+        quote_volume=max(stored.quote_volume - q, folded.quote_volume),
+        trades=max(stored.trades - n, folded.trades),
+    )
 
 
 def fold(m1: list[Candle], start: datetime) -> Candle:

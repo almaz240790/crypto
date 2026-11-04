@@ -231,7 +231,7 @@ function headOf(tf: Timeframe, base: Candle | null, minutes: readonly Candle[], 
   for (const m of minutes) ht = Math.max(ht ?? -Infinity, bucketStart(tf, m.time));
   if (ht === null) return null;
   let acc = base && base.time === ht ? base : null;
-  for (const m of minutes) if (bucketStart(tf, m.time) === ht) acc = merge(acc, m, ht);
+  for (const m of minutes) if (bucketStart(tf, m.time) === ht) acc = fold(acc, base, m, ht, lastClosed);
   return acc && tf === "1m" && acc.time <= lastClosed ? { ...acc, open_: false } : acc;
 }
 
@@ -279,6 +279,26 @@ function merge(acc: Candle | null, m: Candle, time: number): Candle {
   return { time, open: acc.open, high: Math.max(acc.high, m.high), low: Math.min(acc.low, m.low), close: m.close, volume: acc.volume + m.volume, open_: true };
 }
 
+/**
+ * base — снимок той же минуты, что m, а не свёртка до неё: base новее последней закрытой минуты (в нём нет ни одной
+ * подтверждённой минуты корзины) и m — первая минута корзины. Так бывает, когда текущая с сервера — ответ без закрытых
+ * минут интервала (в ней только недописанная первая минута) или неподтверждённые минуты потока остались поверх такой
+ * текущей при догоне.
+ */
+function sameMinute(base: Candle, m: Candle, lastClosed: number): boolean {
+  return base.time === m.time && base.time > lastClosed;
+}
+
+/**
+ * Свёртка неподтверждённой минуты m в свечу acc корзины time. Если acc — сам base и он снимок той же минуты
+ * (sameMinute), минута не складывается, а сливается как два снимка одной минуты: объём — больший (он только растёт),
+ * high/low — объединение, open — из base (у минуты из тиков open — цена первого тика), close — минуты (тики).
+ */
+function fold(acc: Candle | null, base: Candle | null, m: Candle, time: number, lastClosed: number): Candle {
+  if (acc === null || acc !== base || !sameMinute(acc, m, lastClosed)) return merge(acc, m, time);
+  return { time, open: acc.open, high: Math.max(acc.high, m.high), low: Math.min(acc.low, m.low), close: m.close, volume: Math.max(acc.volume, m.volume), open_: true };
+}
+
 function sameBar(a: Candle, b: Candle): boolean {
   return a.time === b.time && a.open === b.open && a.high === b.high && a.low === b.low && a.close === b.close && a.volume === b.volume;
 }
@@ -297,11 +317,11 @@ function confirm(tf: Timeframe, p: Parts, m: Candle, closed = false): Parts {
     if (!base || base.time < b) {
       if (base) finished.push(base);
       base = merge(null, x, b);
-    } else if (closed && x === m && base.time === b && x.time === b) {
-      // закрытая первая минута корзины заменяет base: в нём могла быть только она же, недописанная (текущая с сервера,
-      // в которую попала формирующаяся первая минута, — ответ без закрытых минут интервала); иначе её объём считался бы
-      // дважды
-      base = merge(null, x, b);
+    } else if (base.time === b && sameMinute(base, x, p.lastClosed)) {
+      // первая минута корзины, а base — снимок её же, недописанной (текущая с сервера, в которую попала формирующаяся
+      // первая минута, — ответ без закрытых минут интервала): закрытая минута base заменяет, неподтверждённая сверх
+      // LIVE_PENDING_MINUTES — сливается с ним как снимок той же минуты; иначе её объём считался бы дважды
+      base = closed && x === m ? merge(null, x, b) : fold(base, base, x, b, p.lastClosed);
     } else if (base.time === b) base = merge(base, x, b);
     // base.time > b: минута старше свечи с сервера — уже в ней
   }
@@ -321,7 +341,7 @@ function settle(s: LiveBarState, p: Parts, touched: number, extra: Partial<LiveB
   const { tf } = s;
   const view = (B: number): Candle | null => {
     let acc = p.finished.find((f) => f.time === B) ?? (p.base && p.base.time === B ? p.base : null);
-    for (const m of p.minutes) if (bucketStart(tf, m.time) === B) acc = merge(acc, m, B);
+    for (const m of p.minutes) if (bucketStart(tf, m.time) === B) acc = fold(acc, p.base, m, B, p.lastClosed);
     return acc;
   };
   let ht: number | null = p.base ? p.base.time : null;
