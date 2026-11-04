@@ -168,6 +168,15 @@ describe("живая свеча: снимок минуты против тика
     const steps = run(liveStart("4h", cur4h), [(s) => liveTick(s, 103, m + 11), (s) => liveTick(s, 110, m + 10)]);
     expect(steps[1]!.bar).toMatchObject({ close: 103, high: 110 });
   });
+
+  it("смена источника (биржа → сервер): снимок, отстающий от прежнего, объём минуты не уменьшает, close тика не откатывает", () => {
+    // kline биржи: снимок 12:10:20 (объём 9), сделка 12:10:21; затем снимок сервера на 12:10:15 — объём 6
+    const binance = run(liveStart("4h", cur4h), [(s) => liveForming(s, snap(101.9), m + 20), (s) => liveTick(s, 102.4, m + 21)]).at(-1)!.state;
+    const server = liveForming(binance, { time: m, open: 101, high: 101.95, low: 100.6, close: 101.5, volume: 6, open_: true }, m + 15);
+    expect(server.bar).toMatchObject({ close: 102.4, volume: 1009, high: 105, low: 95 });
+    // следующий снимок биржи — свой объём и close
+    expect(liveForming(server.state, { ...snap(102.1), volume: 11 }, m + 25).bar).toMatchObject({ close: 102.1, volume: 1011 });
+  });
 });
 
 describe("живая свеча: последняя закрытая свеча истории (W1) и пропуски (W2)", () => {

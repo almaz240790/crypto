@@ -433,9 +433,10 @@ export function liveCandle(s: LiveBarState, m: Candle): LiveStep {
 }
 
 /**
- * Формирующаяся минута с сервера (`forming`): снимок o/h/l/c/v; тики после снимка расширяют high/low.
+ * Формирующаяся минута (`forming` сервера или kline 1m биржи): снимок o/h/l/c/v; тики после снимка расширяют high/low.
  * `asOf` — момент снимка (unix с): close из снимка, только если он не старше последнего тика этой
  * минуты; без `asOf` (старый сервер) close тика сохраняется — снимок REST-опроса обычно старше тика.
+ * Объём минуты — не меньше прежнего снимка: снимок другого источника, отстающий от прежнего, его не уменьшает.
  */
 export function liveForming(s: LiveBarState, f: Candle, asOf?: number): LiveStep {
   if (f.time <= s.lastClosed) return unchanged(s);
@@ -448,7 +449,9 @@ export function liveForming(s: LiveBarState, f: Candle, asOf?: number): LiveStep
   const prev = s.minutes.find((x) => x.time === f.time);
   const high = Math.max(f.high, prev?.high ?? f.high, keepTick ? t.price : f.high);
   const low = Math.min(f.low, prev?.low ?? f.low, keepTick ? t.price : f.low);
-  const next: Candle = { ...f, high, low, close: keepTick ? t.price : f.close, open_: true };
+  // объём минуты только растёт: снимок старше прежнего (смена источника — биржа → сервер, ADR-0010) его не уменьшает
+  const volume = Math.max(f.volume, prev?.volume ?? 0);
+  const next: Candle = { ...f, high, low, close: keepTick ? t.price : f.close, volume, open_: true };
   return settle(s, withMinute(s.tf, parts(s), next), bucketStart(s.tf, f.time));
 }
 
