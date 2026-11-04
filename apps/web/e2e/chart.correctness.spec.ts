@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { FIRST_PAGE, H4, SUBCENT, T0, mock } from "./helpers/chart";
+import { liveSocket } from "./helpers/live";
 import { VIEW, barsForWidth } from "../../../packages/charts/src/presets";
 
 /**
@@ -175,17 +176,14 @@ test("история слева: один запрос на подход к кр
 
 test("закрытие свечи по WebSocket: масштаб, прокрутка и подгруженная история сохраняются", async ({ page }) => {
   const calls: string[] = [];
-  const sockets: { send(m: string): void }[] = [];
-  await page.routeWebSocket(/\/v1\/ws/, (ws) => {
-    sockets.push(ws);
-    ws.onMessage(() => {});
-  });
+  // заглушка сокета — общая (отвечает на ping: иначе сторож соединения переподключался бы и добавлял запросы истории)
+  const live = await liveSocket(page, { ticks: false, at: () => 0 });
   await mock(page, calls);
   await page.goto("/chart/BTCUSDT/4h");
   await ready(page);
   // «онлайн» — по тику (ADR-0010); тик внутри текущей свечи нового бара не добавляет
-  await expect.poll(() => sockets.length).toBe(1);
-  sockets[0]!.send(JSON.stringify({ t: "tick", s: "BTCUSDT", p: "101.2", at: new Date((T0 + FIRST_PAGE * H4 + 60) * 1000).toISOString() }));
+  await expect.poll(() => live.subs.length).toBe(1);
+  live.send({ t: "tick", s: "BTCUSDT", p: "101.2", at: new Date((T0 + FIRST_PAGE * H4 + 60) * 1000).toISOString() });
   await expect(page.getByLabel("состояние")).toContainText("онлайн");
   // подгрузили историю и встали в середину
   await setLogical(page, { from: 30, to: 130 });
@@ -195,7 +193,7 @@ test("закрытие свечи по WebSocket: масштаб, прокрут
   const view = (await timeRange(page))!;
   // минутная свеча из следующего интервала H4: текущая закрывается, начинается новая
   const t = T0 + (FIRST_PAGE + 1) * H4;
-  sockets[0]!.send(JSON.stringify({ t: "candle", s: "BTCUSDT", tf: "1m", c: { t, o: "101", h: "102", l: "100", c: "101.5", v: "5" } }));
+  live.send({ t: "candle", s: "BTCUSDT", tf: "1m", c: { t, o: "101", h: "102", l: "100", c: "101.5", v: "5" } });
   await expect.poll(() => mainLen(page)).toBe(FIRST_PAGE + 2 + 500);
   await page.waitForTimeout(300);
   expect(await timeRange(page)).toEqual(view);
@@ -205,6 +203,7 @@ test("закрытие свечи по WebSocket: масштаб, прокрут
   const main = (await seriesOf(page))[0]!;
   expect(main.first).toBe(T0 - 500 * H4);
   expect(main.last).toBe(t);
+  live.dispose();
 });
 
 /**
