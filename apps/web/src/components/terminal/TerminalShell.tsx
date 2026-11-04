@@ -78,8 +78,9 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
   // вопросы о графике — Premium (админы и владелец — всегда); минутные ТФ закрыты гостю и на Free
   const { askAccess, intradayLocked } = usePlan();
   const { st, resolved, legacyFound, patch, toggleIndicator, addIndicator, removeInstance, setInstanceParams, toggleInstanceHidden, togglePanel, toggleLayer, selectMarkup, applyTemplate, applyLayout } = useTerminalSettings(authed);
-  // «Разбор» (резерв): вкладка появляется, только если ресурс topdown ответил 200
-  const topdown = useTopdown(symbol, tf, authed);
+  // «Разбор» (резерв): вкладка и пункт тулбара — владельцу и админам, если ресурс topdown ответил 200
+  const topdown = useTopdown(symbol, tf, user);
+  const role = user?.role ?? null;
   const alertPop = usePopover();
   const closeAlertPop = alertPop.close;
   const onAlertCreated = useCallback(() => {
@@ -311,6 +312,7 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
   const curScale = st.scale;
   const onOverlay = useCallback((overlay: string | null) => patch({ overlay, scale: overlay && curScale === "linear" ? "percent" : curScale }), [patch, curScale]);
   const onLayers = useCallback(() => showPanel("layers"), [showPanel]);
+  const onTopdown = useCallback(() => showPanel("topdown"), [showPanel]);
   const onAlertSubmit = useCallback(() => addPriceAlert(alertDraft.price, alertDraft.op, alertDraft.op === "enter_range" ? alertDraft.price2 : undefined, undefined, alertDraft.frequency), [addPriceAlert, alertDraft]);
   const onObjects = useCallback(() => setObjects(objects === "shown" ? "hidden" : "shown"), [objects, setObjects]);
   return (
@@ -347,6 +349,8 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
             custom={resolved.custom}
             onMarkup={selectMarkup}
             onLayers={onLayers}
+            topdown={topdown}
+            onTopdown={onTopdown}
             authed={authed}
             alertsCount={alerts.length}
             alert={alertPop}
@@ -527,7 +531,7 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
               </BottomSheet>
             )}
           </div>
-          {desktop && <SidePanel store={store} tab={panelTab} onTab={setPanelTab} onClose={closePanel} overlay={panelOverlay} resize={objResize} topdown={topdown} found={foundData} drawings={panelDrawings} layers={panelLayers} layouts={panelLayouts} />}
+          {desktop && <SidePanel store={store} tab={panelTab} onTab={setPanelTab} onClose={closePanel} overlay={panelOverlay} resize={objResize} topdown={topdown} role={role} found={foundData} drawings={panelDrawings} layers={panelLayers} layouts={panelLayouts} />}
         </div>
         {!desktop && (
           <PhoneBottom

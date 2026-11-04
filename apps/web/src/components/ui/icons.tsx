@@ -140,3 +140,9 @@ export const IconBookmark = () => (
     <path d="M7 4h10v16l-5-4-5 4z" />
   </Svg>
 );
+/** «Разбор сверху вниз» (резерв): три ступени — неделя, день, 4ч. */
+export const IconSteps = () => (
+  <Svg>
+    <path d="M4 6h6M7 12h7M10 18h10" />
+  </Svg>
+);

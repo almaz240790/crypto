@@ -4,7 +4,7 @@ import type { ChartStore, ChartType, IndicatorInstance, MarkupSettings, PanelKey
 import { useRouter } from "next/navigation";
 import { memo, useRef, useState, type Ref } from "react";
 import { Button, IconButton, Menu, Popover, usePopover, type MenuItemSpec } from "@/components/ui";
-import { IconBell, IconCamera, IconExpand, IconGrid, IconIndicators, IconKeyboard, IconMore, IconPanel } from "@/components/ui/icons";
+import { IconBell, IconCamera, IconExpand, IconGrid, IconIndicators, IconKeyboard, IconMore, IconPanel, IconSteps } from "@/components/ui/icons";
 import { useT } from "@/i18n/client";
 import type { FigureOnChart, PatternOnChart } from "@/lib/chart";
 import type { Instrument } from "@/lib/user";
@@ -22,12 +22,14 @@ import { ViewMenu } from "./ViewMenu";
 import c from "./chrome.module.css";
 
 /**
- * Порядок сброса при нехватке ширины (план 2B.9, §3.3): 1 «Объекты» — иконка с бейджем; 2 «Мультичарт» и 3 «Снимок» —
- * в «⋯»; 4 «Вид» — иконка; 5 «Индикаторы» и «Алерт» — без иконки; 6 «Разметка» — иконка.
+ * Порядок сброса при нехватке ширины (план 2B.9, §3.3): 1 «Объекты» — иконка с бейджем; «Разбор» (резерв, только
+ * владельцу и админам), 2 «Мультичарт» и 3 «Снимок» — в «⋯»; 4 «Вид» — иконка; 5 «Индикаторы» и «Алерт» — без иконки;
+ * 6 «Разметка» — иконка.
  * Таймфреймы и «⋯» не сбрасываются никогда.
  */
 const TOOLBAR_SHED: readonly ShedStep[] = [
   { id: "objects", action: "compact" },
+  { id: "topdown", action: "hide" },
   { id: "multi", action: "hide" },
   { id: "snap", action: "hide" },
   { id: "view", action: "compact" },
@@ -64,6 +66,9 @@ type Props = {
   custom: boolean;
   onMarkup: (id: PresetId) => void;
   onLayers: () => void;
+  /** «Разбор» (резерв §3.3): ресурс topdown ответил 200 — пункт открывает вкладку «Разбор» правой панели. */
+  topdown: boolean;
+  onTopdown: () => void;
   authed: boolean;
   alertsCount: number;
   alert: PopoverState;
@@ -102,9 +107,10 @@ export const TerminalToolbar = memo(function TerminalToolbar(p: Props) {
   const markupName = p.custom ? t("Свой") : presetTitle(p.markup.preset, t);
   // бейдж «Объекты» приходит позже (сцена, паттерны) и меняет ширину с числом цифр — тогда строка перемеряется
   const [foundShape, setFoundShape] = useState(0);
-  const key = [p.tf, p.intradayLocked, p.guest, n, p.alertsCount, markupName, foundShape].join("|");
+  const key = [p.tf, p.intradayLocked, p.guest, n, p.alertsCount, markupName, foundShape, p.topdown].join("|");
   const { ref: rowRef, fit } = useOverflow<HTMLDivElement>(TOOLBAR_SHED, key);
   const more: MenuItemSpec[] = [
+    ...(p.topdown && fit.hidden.has("topdown") ? [{ id: "topdown", label: t("Разбор"), icon: <IconSteps />, onSelect: p.onTopdown }] : []),
     ...(fit.hidden.has("snap") ? [{ id: "snap", label: t("Снимок"), icon: <IconCamera />, onSelect: p.onSnapshot }] : []),
     ...(fit.hidden.has("multi") ? [{ id: "multi", label: t("Мультичарт"), icon: <IconGrid />, onSelect: () => router.push("/multichart") }] : []),
     ...(fit.hidden.size ? [{ type: "separator" as const, id: "sep" }] : []),
@@ -160,6 +166,14 @@ export const TerminalToolbar = memo(function TerminalToolbar(p: Props) {
           <AlertForm authed={p.authed} draft={p.alertDraft} onDraft={p.onAlertDraft} onSubmit={p.onAlertSubmit} count={p.alertsCount} />
         </Popover>
       </div>
+      {p.topdown && (
+        <div {...overflowItem("topdown", fit)}>
+          <Button variant="ghost" title={t("Разбор сверху вниз: неделя → день → 4ч")} onClick={p.onTopdown}>
+            <IconSteps />
+            {t("Разбор")}
+          </Button>
+        </div>
+      )}
       <span className={c.spacer} />
       <span {...overflowItem("snap", fit)}>
         <IconButton label={t("Снимок")} title={t("Снимок PNG с водяным знаком")} onClick={p.onSnapshot}>

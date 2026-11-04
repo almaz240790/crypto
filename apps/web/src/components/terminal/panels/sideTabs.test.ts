@@ -9,9 +9,12 @@ describe("вкладки правой панели (план 2B.9 §8)", () => {
     expect(SIDE_TABS.map((x) => x.id)).toEqual(["found", "topdown", "drawings", "layers", "layouts"]);
   });
 
-  it("«Разбор» скрыт, пока ресурс topdown не ответил 200", () => {
-    expect(visibleTabs({ topdown: false }).map((x) => x.id)).toEqual(["found", "drawings", "layers", "layouts"]);
-    expect(visibleTabs({ topdown: true }).map((x) => x.id)).toContain("topdown");
+  it("«Разбор» скрыт, пока ресурс topdown не ответил 200, и виден только владельцу и админам", () => {
+    expect(visibleTabs({ topdown: false, role: "owner" }).map((x) => x.id)).toEqual(["found", "drawings", "layers", "layouts"]);
+    expect(visibleTabs({ topdown: true, role: "owner" }).map((x) => x.id)).toContain("topdown");
+    expect(visibleTabs({ topdown: true, role: "admin" }).map((x) => x.id)).toContain("topdown");
+    expect(visibleTabs({ topdown: true, role: "user" }).map((x) => x.id)).not.toContain("topdown");
+    expect(visibleTabs({ topdown: true, role: null }).map((x) => x.id)).not.toContain("topdown");
   });
 
   it("у всех заголовков есть перевод; со счётчиком — только «Найдено» и «Рисунки»", () => {

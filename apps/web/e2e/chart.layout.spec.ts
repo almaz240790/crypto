@@ -249,6 +249,28 @@ test("алерт: цена в форме — по шагу инструмент�
   await expect(summary).toContainText("Закрытие последней свечи 4ч");
 });
 
+test("«Разбор» (резерв): гость и обычный пользователь не проверяют ресурс; владельцу после сбоя — повтор, вкладка и пункт тулбара", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  // гость: запроса /v1/chart/topdown нет (сервер ответил бы 404)
+  const guestCalls = await open(page);
+  await page.waitForTimeout(3200);
+  expect(guestCalls.filter((c) => c.startsWith("/v1/chart/topdown"))).toEqual([]);
+  // владелец: первый ответ 502 — не окончательный, повтор; 200 — вкладка «Разбор» и пункт тулбара
+  const calls: string[] = [];
+  await mock(page, calls, true);
+  await page.route("**/v1/auth/me", (r) => r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ id: 1, email: "o@example.com", name: null, email_verified: true, role: "owner", locale: "ru", timezone: "UTC", theme: "system", risk: {} }) }));
+  let n = 0;
+  await page.route("**/v1/chart/topdown**", (r) => (n++ === 0 ? r.fulfill({ status: 502, body: "" }) : r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ preview: true }) })));
+  await page.goto("/chart/BTCUSDT/4h");
+  const aside = page.getByRole("complementary", { name: "панель объектов" });
+  await expect(aside.getByRole("tab", { name: "Разбор" })).toBeVisible({ timeout: 15_000 });
+  expect(n).toBe(2);
+  await aside.getByRole("tab", { name: "Найдено", exact: false }).first().click();
+  await page.getByTestId("terminal-toolbar").getByRole("button", { name: "Разбор" }).click();
+  await expect(aside.getByRole("tab", { name: "Разбор" })).toHaveAttribute("aria-selected", "true");
+  await expect(aside).toContainText("Разбор появится позже");
+});
+
 test("рейка: «развернуть меню» открывает весь сайдбар; Esc закрывает и возвращает фокус", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await open(page);

@@ -27,8 +27,9 @@ type Props = {
   overlay: boolean;
   /** Перетаскивание левого края панели (ширина хранится в useTerminalUi). */
   resize: { start: (e: ReactPointerEvent<HTMLElement>) => void; step: (delta: number) => void; active: boolean };
-  /** Ресурс «Разбора» ответил 200 — вкладка видна. */
+  /** Ресурс «Разбора» ответил 200 — вкладка видна (владельцу и админам, role). */
   topdown: boolean;
+  role: string | null;
   found: FoundData;
   drawings: {
     items: readonly Drawing[];
@@ -64,10 +65,10 @@ type Props = {
  * «Слои», «Раскладки»; ряд 40 px, стрелки ←/→, активная — полоса --accent. Ширина меняется разделителем
  * (контракт pl-objects-w). Вкладки обёрнуты в memo и получают стабильные пропсы владельца.
  */
-export const SidePanel = memo(function SidePanel({ store, tab, onTab, onClose, overlay, resize, topdown, found, drawings, layers, layouts }: Props) {
+export const SidePanel = memo(function SidePanel({ store, tab, onTab, onClose, overlay, resize, topdown, role, found, drawings, layers, layouts }: Props) {
   const { t, locale } = useLocale();
   const idBase = useId();
-  const tabs = visibleTabs({ topdown });
+  const tabs = visibleTabs({ topdown, role });
   const active = tabs.some((x) => x.id === tab) ? tab : "found";
   // «Найдено (n)» меняет ширину с числом цифр (сцена и данные приходят позже) — тогда ряд перемеряется
   const [foundShape, setFoundShape] = useState(0);
