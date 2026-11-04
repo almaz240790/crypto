@@ -1,4 +1,5 @@
 import { test, type Page } from "@playwright/test";
+import { blockBinance } from "./binance";
 
 /** Заглушки API терминала для e2e (план 3.17). */
 export const T0 = 1_792_000_000 - (1_792_000_000 % 14400);
@@ -99,6 +100,9 @@ export async function mock(page: Page, calls: string[], authed = false, server: 
   server.alerts ??= rich ? RICH_ALERTS.map((a) => ({ ...a })) : [];
   // адрес сайта — из baseURL проекта (CI: :3101), чтобы спеки можно было прогнать и против другой сборки
   if (authed) await page.context().addCookies([{ name: "pl_auth", value: "1", url: test.info().project.use.baseURL ?? "http://localhost:3101" }]);
+  // прямой поток биржи (ADR-0010, дополнение): по умолчанию недоступен, как из контейнера и CI — цена с сервера (заглушки
+  // /v1/ws); спеки потока ставят helpers/binance на страницу — маршрут страницы важнее
+  await blockBinance(page.context());
   await page.route("**/v1/**", (route) => {
     const u = new URL(route.request().url());
     const p = u.pathname;

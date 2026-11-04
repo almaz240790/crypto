@@ -126,7 +126,7 @@ test("живая цена: тики каждые 250 мс двигают цен�
     const strip = state(page);
     await expect(strip).toContainText("онлайн");
     // «онлайн» — тик за последние 5 с: подсказка точки говорит, что это значит
-    await expect(strip.locator('[title="цена обновляется раз в секунду"]')).toHaveCount(1);
+    await expect(strip.locator('[title="цена с сервера, раз в секунду"]')).toHaveCount(1);
     // пользователь приблизил график: живые обновления вид не трогают
     await expect.poll(async () => (await lastBar(page)).len).toBe(FIRST_PAGE + 1);
     await setLogical(page, { from: 180, to: 305 });
@@ -164,7 +164,7 @@ test("живая цена: тики каждые 250 мс двигают цен�
     // тики прекратились — через 5 с «без связи», сокет при этом открыт (отвечает на ping — не переподключаемся)
     live.state.ticks = false;
     await expect(strip).toContainText("без связи", { timeout: 8000 });
-    await expect(strip.locator('[title="цена обновляется раз в секунду"]')).toHaveCount(0);
+    await expect(strip.locator('[title="цена с сервера, раз в секунду"]')).toHaveCount(0);
     live.state.ticks = true;
     await expect(strip).toContainText("онлайн", { timeout: 2000 });
     expect(live.sockets).toHaveLength(1);
