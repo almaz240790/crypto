@@ -1,0 +1,432 @@
+/*
+ * Шапка и тулбар терминала на десктопе (план 2B.9, ADR «Раскладка терминала»): слова — Manrope,
+ * числа — IBM Plex Mono (tabular), выбранное и нажатое — --row-hover и полоса --accent.
+ */
+
+/* ---------- строки с приоритетами (useOverflow) ---------- */
+
+.header > [data-overflow-item],
+.state > [data-overflow-item],
+.toolbar > [data-overflow-item] {
+  flex: none;
+}
+
+.state > [data-ov-hidden],
+.toolbar > [data-ov-hidden] {
+  display: none;
+}
+
+.state > [data-compact] [data-ov-extra],
+.toolbar > [data-compact] [data-ov-extra] {
+  display: none;
+}
+
+/* ---------- шапка состояния 44 px ---------- */
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-3);
+  min-width: 0;
+  padding: 0 var(--gap-3);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+/* инструмент: имя 16/600 и биржа; прозрачный нативный select поверх (выбор и e2e selectOption) */
+.symbol {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  align-items: baseline;
+  gap: 6px;
+  height: 32px;
+  padding: 0 var(--gap-2);
+  border-radius: var(--radius);
+  color: var(--text);
+  line-height: 32px;
+  white-space: nowrap;
+}
+
+.symbol:hover,
+.symbol:focus-within {
+  background: var(--row-hover);
+}
+
+.symbol:focus-within {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
+.symbolName {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.symbolTag {
+  color: var(--text-3);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.symbol svg {
+  align-self: center;
+  color: var(--text-3);
+}
+
+.symbol select {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+  font: inherit;
+}
+
+/* группа «состояние»: цена и факты; лишнее прячется по приоритету и остаётся в «Сводке» */
+.state {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: var(--gap-4);
+  min-width: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.price {
+  display: inline-flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-mono), monospace;
+  font-size: 20px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.price:hover,
+.price[aria-expanded="true"] {
+  background: var(--row-hover);
+}
+
+.price[data-dir="up"] {
+  color: var(--up);
+}
+
+.price[data-dir="down"] {
+  color: var(--down);
+}
+
+.fact {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  color: var(--text-2);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.num {
+  color: var(--text);
+  font-family: var(--font-mono), monospace;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.num[data-dir="up"] {
+  color: var(--up);
+}
+
+.num[data-dir="down"] {
+  color: var(--down);
+}
+
+.basis {
+  color: var(--text-3);
+}
+
+.trend {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--row-hover);
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.chip[data-dir="up"] {
+  color: var(--up);
+}
+
+.chip[data-dir="down"] {
+  color: var(--down);
+}
+
+.live {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+}
+
+.live::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-3);
+}
+
+.live[data-on]::before {
+  background: var(--up);
+}
+
+/* «Сводка»: все факты шапки, в том числе спрятанные */
+.summary {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px var(--gap-3);
+  margin: 0;
+  font-size: 13px;
+}
+
+.summary dt {
+  color: var(--text-2);
+}
+
+.summary dd {
+  margin: 0;
+  text-align: right;
+}
+
+.summaryNote {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+/* ---------- тулбар 40 px ---------- */
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-2);
+  min-width: 0;
+  padding: 4px var(--gap-2);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.spacer {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.toolbar button[aria-pressed="true"] {
+  background: var(--row-hover);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.badge {
+  min-width: 18px;
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface-raised);
+  color: var(--text-2);
+  font-family: var(--font-mono), monospace;
+  font-size: 11px;
+  line-height: 14px;
+  text-align: center;
+}
+
+/* закрытый минутный ТФ: доступен для клика, цвет --text-2, замок 10 px */
+.locked {
+  color: var(--text-2);
+}
+
+.lockedText {
+  margin: 0 0 var(--gap-3);
+  line-height: 1.45;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gap-2);
+}
+
+.hint {
+  margin: 0;
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.viewBody {
+  display: grid;
+  gap: var(--gap-3);
+}
+
+/* ---------- угол графика: −, +, ⟲ ---------- */
+
+.corner {
+  position: absolute;
+  left: 50%;
+  bottom: 8px;
+  transform: translateX(-50%);
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--radius);
+  background: var(--legend-bg);
+  opacity: 0.55;
+  pointer-events: auto;
+  transition: opacity 0.15s;
+}
+
+.corner:hover,
+.corner:focus-within {
+  opacity: 1;
+}
+
+/* ---------- режим рисования: чип сверху по центру графика ---------- */
+
+.drawChip {
+  position: absolute;
+  top: 40px;
+  left: 50%;
+  z-index: var(--z-chart-ui);
+  transform: translateX(-50%);
+  display: inline-flex;
+  gap: var(--gap-1);
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+/* ---------- выбор индикаторов: поиск, две колонки ---------- */
+
+.picker {
+  display: grid;
+  gap: var(--gap-3);
+}
+
+.pickerHead {
+  display: flex;
+  gap: var(--gap-2);
+  align-items: flex-end;
+}
+
+.pickerHead > :first-child {
+  flex: 1 1 auto;
+}
+
+.pickerGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--gap-3) var(--gap-4);
+  align-items: start;
+}
+
+.pickerGroup {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+
+.pickerGroup legend {
+  margin-bottom: 4px;
+  padding: 0;
+  color: var(--text-3);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.pickerRow {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-2);
+  min-height: 36px;
+  padding: 0 6px;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.pickerRow:hover {
+  background: var(--row-hover);
+}
+
+.pickerRow input {
+  accent-color: var(--accent);
+}
+
+.dot {
+  display: inline-block;
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+/* ---------- форма алерта ---------- */
+
+.alertForm {
+  display: grid;
+  gap: var(--gap-2);
+}
+
+.alertForm p {
+  margin: 0;
+}
+
+/* палец (iPad и сенсорные ноутбуки): строки шапки и тулбара 52 px, каждая цель не меньше 44 × 44 */
+@media (pointer: coarse) {
+  .pickerRow,
+  .symbol,
+  .price,
+  .header a,
+  .header button,
+  .toolbar a,
+  .toolbar button,
+  .drawChip button,
+  .actions a,
+  .actions button,
+  .alertForm button,
+  .alertForm input,
+  .alertForm select,
+  .viewBody select,
+  .pickerHead input,
+  .pickerHead button {
+    min-height: var(--touch-min);
+  }
+
+  .toolbar button,
+  .toolbar a {
+    min-width: var(--touch-min);
+  }
+}

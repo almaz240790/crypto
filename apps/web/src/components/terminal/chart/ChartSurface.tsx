@@ -3,7 +3,7 @@
 import { COMPACT_FORMAT, ChartController, INTERACTION, NONE, PERCENT_FORMAT, alpha, resolvePreset, VALUE_FORMAT, alignToCandles, tickPrecision, tokensFromElement, type AlertLine, type Candle, type ChartHandle, type ChartStore, type ChartType, type Device, type ExternalObject, type MarkupSettings, type PanelKey, type ScaleMode, type Terminal, type Timeframe } from "@platform/charts";
 import { DrawingController, DrawingsPrimitive, INDICATORS, defaultParams, indicatorById, visibleOn, type Drawing, type DrawingType, type DrawingsState, type IndicatorSpec, type Layer, type LayerContext, type Point, TF_SECONDS } from "@platform/charts";
 import type { ISeriesApi, PriceFormat, UTCTimestamp } from "lightweight-charts";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { Derivatives, FigureOnChart, LayersResponse, PatternOnChart } from "@/lib/chart";
 import s from "../terminal.module.css";
 import { useT } from "@/i18n/client";
@@ -71,6 +71,11 @@ type Props = {
   onCrosshair?: (info: CrosshairInfo | null) => void;
   /** Вызывается с управлением видом после создания графика и с null при размонтировании. */
   onReady?: (controls: TerminalControls | null) => void;
+  /**
+   * Кнопки в углу основной панели (десктоп, план 2B.9): ставятся внизу по центру над шкалой времени,
+   * их прямоугольник уходит в uiObstacles — подписи разметки его обходят.
+   */
+  corner?: ReactNode;
   /** Режим ценовой шкалы и наложенный инструмент (план 2A.3). */
   scale?: ScaleMode;
   overlay?: Candle[] | null;
@@ -140,7 +145,7 @@ function indexOfTime(candles: readonly Candle[], time: number): number {
  * терминалом, темой, классом устройства, сценой разметки (один OverlayPrimitive), шкалой и наведением.
  * Здесь до PR D остаются эффекты данных, индикаторов, панелей производных и рисунков (через controller.terminal).
  */
-export function ChartSurface({ candles, current, tf, type, indicators, markup, authed, store, device = "auto", layers, patterns, figures, alerts, external = NONE, derivatives, panels, tick, dataKey = "", onNeedOlder, drawings, onCrosshair, onReady, scale = "linear", overlay = null }: Props) {
+export function ChartSurface({ candles, current, tf, type, indicators, markup, authed, store, device = "auto", layers, patterns, figures, alerts, external = NONE, derivatives, panels, tick, dataKey = "", onNeedOlder, drawings, onCrosshair, onReady, corner, scale = "linear", overlay = null }: Props) {
   const t = useT();
   const ref = useRef<HTMLDivElement>(null);
   const ctrlRef = useRef<ChartController | null>(null);
@@ -157,6 +162,9 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
   const valuesRef = useRef<Map<string, { label: string; values: (number | null)[]; color: string; price: boolean }>>(new Map());
   const stickyRef = useRef(false);
   const [heads, setHeads] = useState<PaneHead[]>([]);
+  /** Основная панель: ширина области свечей (без шкалы цены) и высота — для кнопок в углу. */
+  const [mainBox, setMainBox] = useState<{ w: number; h: number } | null>(null);
+  const cornerRef = useRef<HTMLDivElement>(null);
   const collapsedRef = useRef<Set<string>>(new Set());
   const paneObsRef = useRef<ResizeObserver | null>(null);
   const swipeRef = useRef<{ key: string; y: number } | null>(null);
@@ -195,6 +203,13 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
       return { key: e.key, title: e.title, top: r ? Math.round(r.top - r0.top) : 0, collapsed: collapsedRef.current.has(e.key), color: e.color };
     });
     setHeads((prev) => (prev.length === next.length && prev.every((h, i) => h.key === next[i]!.key && h.title === next[i]!.title && h.top === next[i]!.top && h.collapsed === next[i]!.collapsed && h.color === next[i]!.color) ? prev : next));
+    const term = termRef.current;
+    const mainEl = term?.chart.panes()[0]?.getHTMLElement();
+    if (term && mainEl) {
+      const w = Math.round(term.chart.timeScale().width());
+      const h = Math.round(mainEl.getBoundingClientRect().height);
+      setMainBox((prev) => (prev && prev.w === w && prev.h === h ? prev : { w, h }));
+    }
   }, [paneEntries]);
 
   // все панели раскладываются разом: свёрнутые — 24 px, раскрытые — своя высота, свечам — остаток (не меньше половины)
@@ -577,9 +592,29 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     requestAnimationFrame(relayout);
   }, [derivatives, panels, candles, historyRev, themeVersion, tf, paneAdded, relayout]);
 
+  // угол графика — препятствие для подписей разметки (координаты основной панели, CSS px)
+  const hasCorner = !!corner;
+  useLayoutEffect(() => {
+    const ctrl = ctrlRef.current;
+    const el = ref.current;
+    if (!ctrl || !el) return;
+    const box = hasCorner ? cornerRef.current?.firstElementChild?.getBoundingClientRect() : null;
+    if (!box) {
+      ctrl.set({ uiObstacles: NONE });
+      return;
+    }
+    const r0 = el.getBoundingClientRect();
+    ctrl.set({ uiObstacles: [{ x: box.left - r0.left, y: box.top - r0.top, w: box.width, h: box.height }] });
+  }, [hasCorner, mainBox]);
+
   return (
     <div className={s.chart}>
       <div ref={ref} className={s.canvas} data-testid="terminal" />
+      {corner && mainBox && (
+        <div ref={cornerRef} className={s.cornerHost} style={{ width: mainBox.w, height: mainBox.h }}>
+          {corner}
+        </div>
+      )}
       <ObjectTooltip store={store} coarse={coarse} />
       {device !== "cell" && <LegendChip store={store} />}
       {device !== "cell" && <LiqUnavailableNote store={store} on={resolvePreset(markup, "desktop", { authed }).layers.liq_map} />}

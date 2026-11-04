@@ -70,7 +70,9 @@ test("вход по email и паролю", async ({ page }) => {
   await expect(page).toHaveURL(/\/chart(\/|$)/);
   await expect(page.getByTitle("trader@example.com")).toBeVisible();
   expect(calls).toContain("POST /v1/auth/login");
-  await page.getByRole("button", { name: "Выйти" }).click();
+  // на графике вместо сайдбара — рейка (план 2B.9): «Выйти» в развёрнутом меню
+  await page.getByRole("button", { name: "развернуть меню" }).click();
+  await page.getByRole("dialog", { name: "меню" }).getByRole("button", { name: "Выйти" }).click();
   await expect(page).toHaveURL(/\/login$/);
 });
 

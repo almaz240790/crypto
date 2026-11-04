@@ -1,11 +1,28 @@
+/*
+ * Страница терминала заполняет остаток высоты каркаса (AppShell rail: flex-колонка) — без calc от высоты
+ * шапки и без «мёртвой» полосы. Телефон: верхняя строка, состояние, график, нижняя строка (PR C2 заменит);
+ * десктоп: шапка 44, тулбар 40, область графика.
+ */
 .page {
+  position: relative;
+  flex: 1 1 auto;
   display: grid;
-  grid-template-rows: auto auto 1fr auto;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
   grid-template-columns: minmax(0, 1fr);
-  height: calc(100dvh - 56px);
-  min-height: 480px;
+  min-height: 0;
   min-width: 0;
   overflow: hidden;
+  background: var(--bg);
+}
+
+.page[data-layout="desktop"] {
+  grid-template-rows: 44px 40px minmax(0, 1fr);
+}
+
+@media (pointer: coarse) {
+  .page[data-layout="desktop"] {
+    grid-template-rows: 52px 52px minmax(0, 1fr);
+  }
 }
 
 .top {
@@ -80,26 +97,22 @@
   padding: 2px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: var(--bg-2);
+  background: var(--surface);
 }
 
 .tfs a {
   padding: 4px 9px;
   border-radius: 6px;
-  font-family: var(--font-mono);
   font-size: 12px;
+  font-weight: 600;
   color: var(--text-2);
   text-decoration: none;
 }
 
 .tfs a[aria-current="page"] {
-  background: var(--bg);
+  background: var(--row-hover);
   color: var(--text);
-  box-shadow: 0 1px 0 var(--border);
-}
-
-.tfs a[data-primary="true"] {
-  font-weight: 600;
+  box-shadow: inset 0 -2px 0 var(--accent);
 }
 
 .tfs a[aria-disabled="true"] {
@@ -126,6 +139,8 @@
 
 .area {
   position: relative;
+  /* всегда третья строка сетки .page: строки над ней пустые, когда панели скрыты (⤢ на телефоне) */
+  grid-row: 3;
   min-height: 0;
   height: 100%;
   display: grid;
@@ -134,8 +149,23 @@
 
 @media (min-width: 900px) {
   .area {
-    /* ширина панели объектов задаётся переменной (перетаскивание разделителя, план 2A.8) */
+    grid-template-columns: 40px minmax(0, 1fr);
+  }
+
+  /* ≥ 1280: панель встроена в сетку; ширина — переменная (перетаскивание разделителя, план 2A.8) */
+  .area[data-objects="shown"][data-panel="inline"] {
     grid-template-columns: 40px minmax(0, 1fr) var(--objects-w, 300px);
+  }
+
+  /* 900–1279: панель выдвигается поверх графика, ширина графика не меняется */
+  .area[data-panel="overlay"] .objects {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: var(--objects-w, 300px);
+    z-index: var(--z-drawer);
+    box-shadow: var(--shadow-lg);
   }
 
   .objects {
@@ -164,9 +194,6 @@
     outline: none;
   }
 
-  .area[data-objects="hidden"] {
-    grid-template-columns: 40px minmax(0, 1fr);
-  }
 }
 
 .toolbar {
@@ -175,7 +202,7 @@
   gap: 2px;
   padding: 4px;
   border-right: 1px solid var(--border);
-  background: var(--bg-2);
+  background: var(--surface);
   overflow-y: auto;
 }
 
@@ -183,7 +210,7 @@
   display: none;
   flex-direction: column;
   border-left: 1px solid var(--border);
-  background: var(--bg-2);
+  background: var(--surface);
   min-height: 0;
   font-size: 13px;
 }
@@ -236,12 +263,30 @@
 
 .objTabs {
   display: flex;
+  align-items: center;
   border-bottom: 1px solid var(--border);
 }
 
+.objClose {
+  flex: none;
+  padding: 0 4px;
+}
+
+.objActions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.objSignals {
+  display: block;
+  padding: 8px;
+}
+
 .objTab {
-  flex: 1;
+  flex: 1 1 auto;
   height: 34px;
+  padding: 0 4px;
+  white-space: nowrap;
   border: 0;
   border-bottom: 2px solid transparent;
   background: transparent;
@@ -317,7 +362,7 @@
 .chart {
   position: relative;
   height: 100%;
-  min-height: 300px;
+  min-height: 160px;
   touch-action: none;
   overscroll-behavior: contain;
   /* внутренние слои LWC с большими z-index не должны перекрывать листы и тулбары */
@@ -328,6 +373,34 @@
 .canvas {
   position: absolute;
   inset: 0;
+}
+
+/* основная панель (без шкалы цены): в ней — угол с кнопками масштаба (десктоп) */
+.cornerHost {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: var(--z-chart-ui);
+  pointer-events: none;
+}
+
+/* тост: поверх колонки графика по центру снизу, раскладку не сдвигает */
+.toast {
+  position: absolute;
+  left: 50%;
+  bottom: 48px;
+  z-index: var(--z-toast);
+  transform: translateX(-50%);
+  max-width: min(560px, calc(100% - 32px));
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-raised);
+  color: var(--text);
+  font-size: 13px;
+  box-shadow: var(--shadow-lg);
+  pointer-events: none;
 }
 
 /* заголовок панели индикатора (план 2A.7): 24 px, свайп вниз сворачивает, вверх — раскрывает */
@@ -553,8 +626,9 @@
     display: none;
   }
 
-  .page[data-bars="hidden"] {
-    height: 100dvh;
+  /* ландшафт телефона с панелями: как раньше, страница не ниже 480 px и прокручивается (раскладка — PR C2) */
+  .page[data-layout="phone"]:not([data-bars="hidden"]) {
+    min-height: 480px;
   }
 
   .fsBtn {
@@ -572,10 +646,6 @@
 }
 
 @media (max-width: 639.98px) {
-  .page {
-    height: calc(100dvh - 48px);
-  }
-
   .top {
     flex-wrap: nowrap;
     overflow-x: auto;
@@ -662,7 +732,7 @@
 }
 
 .found[data-selected] {
-  background: var(--bg-2);
+  background: var(--row-hover);
 }
 
 .foundDetails {
@@ -794,12 +864,12 @@
   font-size: 14px;
 }
 
-/* мультичарт (план 3.17 v2): 2 или 4 графика, десктоп */
+/* мультичарт (план 3.17 v2): 2 или 4 графика, десктоп; заполняет остаток высоты каркаса */
 .multi {
+  flex: 1 1 auto;
   display: grid;
-  grid-template-rows: auto 1fr;
-  height: calc(100dvh - 56px);
-  min-height: 480px;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
 }
 
 .multiBar {
@@ -998,4 +1068,10 @@
 
 .markupWarn {
   color: var(--warn);
+}
+
+/* карточка выбранного рисунка на десктопе — слева снизу, не во всю ширину */
+.page[data-layout="desktop"] .card {
+  right: auto;
+  max-width: min(720px, calc(100% - 16px));
 }

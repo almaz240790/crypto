@@ -1,8 +1,11 @@
 "use client";
 
 import { LAYER_KEYS, TOOL_TITLES, type Drawing, type DrawingType, type LayerKey, type MarkupSettings, type PanelKey, type PresetId, type SceneIndex } from "@platform/charts";
+import Link from "next/link";
 import type React from "react";
 import { useState } from "react";
+import { Button, IconButton } from "@/components/ui";
+import { IconClose } from "@/components/ui/icons";
 import s from "./terminal.module.css";
 import { AskBox, FiguresList, FoundList, LevelsList } from "./FoundPanel";
 import { TEMPLATES } from "./templates";
@@ -52,12 +55,24 @@ export function DrawToolbar({ tool, onTool, magnet, onMagnet, canUndo, canRedo, 
   );
 }
 
+/** Вкладки правой панели (десктоп). */
+export type ObjectsTab = "found" | "drawings" | "layers" | "layouts";
+
 type Props = {
+  /** Открытая вкладка: управляет владелец («Настроить слои…» в «Разметке» открывает «Слои»). */
+  tab: ObjectsTab;
+  onTab: (tab: ObjectsTab) => void;
+  /** Закрыть панель (✕ в ряду вкладок; то же — «Объекты» в тулбаре и Esc, когда панель поверх графика). */
+  onClose?: () => void;
+  /** «сигналов по инструменту: N» внизу «Найдено» (вошедшим, если сигналы есть). */
+  signals?: { symbol: string; n: number } | null;
   drawings: Drawing[];
   selectedId: string | null;
   onSelect: (id: string | null) => void;
   onLock: (id: string) => void;
   onRemove: (id: string) => void;
+  /** «удалить все» во вкладке «Рисунки» (с подтверждением у владельца). */
+  onClearAll?: () => void;
   /** Разметка: пресет с поправками и итоговые слои (resolvePreset). */
   markup: MarkupSettings;
   custom: boolean;
@@ -85,7 +100,7 @@ export const layerKeysFor = (authed: boolean): LayerKey[] => (Object.keys(LAYER_
 /** Правая панель объектов (десктоп): рисунки, слои, раскладки и шаблоны. */
 export function ObjectsPanel(p: Props) {
   const t = useT();
-  const [tab, setTab] = useState<"found" | "drawings" | "layers" | "layouts">("found");
+  const { tab, onTab: setTab } = p;
   const [name, setName] = useState("");
   return (
     <aside className={s.objects} aria-label={t("панель объектов")}>
@@ -113,6 +128,13 @@ export function ObjectsPanel(p: Props) {
             {k === "found" ? t("Найдено ({n})", { n: p.found.count ?? p.found.items.length + p.found.figures.length }) : k === "drawings" ? t("Рисунки ({n})", { n: p.drawings.length }) : k === "layers" ? t("Слои") : t("Раскладки")}
           </button>
         ))}
+        {p.onClose && (
+          <span className={s.objClose}>
+            <IconButton size="sm" label={t("закрыть панель объектов")} onClick={p.onClose}>
+              <IconClose />
+            </IconButton>
+          </span>
+        )}
       </div>
       {tab === "found" && (
         <div className={s.objScroll}>
@@ -122,10 +144,22 @@ export function ObjectsPanel(p: Props) {
           <FiguresList items={p.found.figures} stats={p.found.figureStats} selected={p.found.selectedFigure} onSelect={p.found.onSelectFigure} tick={p.found.tick} />
           <strong className={s.objHead}>{t("Свечные паттерны")}</strong>
           <FoundList items={p.found.items} stats={p.found.stats} selected={p.found.selected} onSelect={p.found.onSelect} tf={p.found.tf} symbol={p.found.symbol} canExplain={p.found.canExplain} />
+          {p.signals && p.signals.n > 0 && (
+            <Link className={`caption ${s.objSignals}`} href={`/signals?symbol=${p.signals.symbol}&tab=all`}>
+              {t("сигналов по инструменту: {n}", { n: p.signals.n })}
+            </Link>
+          )}
         </div>
       )}
       {tab === "drawings" && (
         <ul className={s.objList}>
+          {p.onClearAll && p.drawings.length > 0 && (
+            <li className={s.objActions}>
+              <Button size="sm" variant="danger" onClick={p.onClearAll}>
+                {t("удалить все")}
+              </Button>
+            </li>
+          )}
           {p.drawings.length === 0 && <li className="caption">{t("Рисунков нет. Alt+H — линия, Alt+T — трендовая.")}</li>}
           {p.drawings.map((d) => (
             <li key={d.id} className={s.objRow} data-selected={d.id === p.selectedId || undefined}>

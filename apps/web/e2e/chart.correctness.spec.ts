@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { FIRST_PAGE, H4, SUBCENT, T0, mock } from "./helpers/chart";
+import { VIEW, barsForWidth } from "../../../packages/charts/src/presets";
 
 /**
  * Корректность графика (ADR-0006, PR «График: корректность»): формат цен по шагу инструмента, история слева
@@ -71,6 +72,12 @@ function newCoin(page: Page) {
     const items = before ? [] : Array.from({ length: 100 }, (_, i) => candle(NEW_FIRST + i));
     return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ symbol: NEW_COIN, tf: "4h", candles: items, current: before ? null : { ...candle(FIRST_PAGE), open: true }, has_older: false, tick_size: "0.01", server_time: "" }) });
   });
+}
+/** Наложение второго инструмента — в окне «Вид» тулбара (план 2B.9); окно закрывается Esc. */
+async function overlayTo(page: Page, symbol: string) {
+  await page.getByRole("button", { name: "Вид", exact: true }).click();
+  await page.getByRole("dialog", { name: "Вид" }).getByLabel("наложение").selectOption(symbol);
+  await page.keyboard.press("Escape");
 }
 const olderCalls = (calls: string[]) => calls.filter((c) => c.startsWith("/v1/chart/candles") && c.includes("before=")).length;
 
@@ -197,25 +204,39 @@ test("закрытие свечи по WebSocket: масштаб, прокрут
   expect(main.last).toBe(t);
 });
 
-test("сброс вида: число свечей от ширины (около 8 px на свечу), а не 150 — при загрузке, кнопкой и двойным кликом", async ({ page }) => {
+/**
+ * Шаг свечи после сброса вида — по формуле контроллера (presets.barsForWidth): последние n свечей
+ * и свободная зона справа rightOffsetPx, шаг (W − R) / n, но не шире maxBarPx. Ширина области от
+ * раскладки (рейка, панели) — здесь не число из головы, а то, что показывает сам график.
+ */
+async function expectedSpacing(page: Page): Promise<number> {
+  const w = await page.evaluate(() => (document.querySelector('[data-testid="terminal"]') as HTMLElement & { __chart: { timeScale(): { width(): number } } }).__chart.timeScale().width());
+  const view = VIEW.desktop;
+  return (w - view.rightOffsetPx) / barsForWidth(w, view, "4h");
+}
+
+test("сброс вида: число свечей от ширины (по формуле barsForWidth, не шире maxBarPx), а не 150 — при загрузке, кнопкой и двойным кликом", async ({ page }) => {
   const calls: string[] = [];
   await mock(page, calls);
   await page.goto("/chart/BTCUSDT/4h");
   await ready(page);
-  await expect.poll(() => barSpacing(page)).toBeGreaterThan(7);
-  expect(await barSpacing(page)).toBeLessThan(9);
+  // ширина области известна, когда шкала цены размечена: ожидание пересчитывается в каждой попытке
+  const near = async () => Math.abs((await barSpacing(page)) - (await expectedSpacing(page)));
+  await expect.poll(near).toBeLessThanOrEqual(0.5);
+  const want = await expectedSpacing(page);
+  expect(want).toBeLessThanOrEqual(VIEW.desktop.maxBarPx);
   await page.getByRole("button", { name: "отдалить" }).click();
   await page.getByRole("button", { name: "отдалить" }).click();
-  await expect.poll(() => barSpacing(page)).toBeLessThan(6);
+  await expect.poll(() => barSpacing(page)).toBeLessThan(want * 0.8);
   await page.getByRole("button", { name: "показать последние свечи" }).click();
-  await expect.poll(() => barSpacing(page)).toBeGreaterThan(7);
+  await expect.poll(near).toBeLessThanOrEqual(0.5);
   await page.getByRole("button", { name: "приблизить" }).click();
   await page.getByRole("button", { name: "приблизить" }).click();
-  await expect.poll(() => barSpacing(page)).toBeGreaterThan(10);
+  await expect.poll(() => barSpacing(page)).toBeGreaterThan(want * 1.2);
   const box = (await page.getByTestId("terminal").boundingBox())!;
   await page.mouse.dblclick(box.x + box.width * 0.5, box.y + box.height * 0.5);
-  await expect.poll(() => barSpacing(page)).toBeLessThan(9);
-  expect(await barSpacing(page)).toBeGreaterThan(7);
+  await expect.poll(near).toBeLessThanOrEqual(0.5);
+  expect(await barSpacing(page)).toBeLessThanOrEqual(VIEW.desktop.maxBarPx + 0.5);
 });
 
 test("1W: открытый интерес не совпадает со свечами — карты ликвидаций нет, вместо неё короткое пояснение", async ({ page }) => {
@@ -283,7 +304,7 @@ test("светлая тема: линия наложенного инструм�
   await mock(page, calls);
   await page.goto("/chart/BTCUSDT/4h");
   await ready(page);
-  await page.getByLabel("наложение").selectOption("ETHUSDT");
+  await overlayTo(page, "ETHUSDT");
   const darkWarn = await token(page, "--warn");
   const lineColors = async () => (await seriesOf(page)).filter((s) => s.type === "Line" && s.len > 0).map((s) => (s.color ?? "").toLowerCase());
   await expect.poll(lineColors).toContain(darkWarn);
@@ -302,7 +323,7 @@ test("наложение с более длинной историей: точк
   await newCoin(page);
   await page.goto(`/chart/${NEW_COIN}/4h`);
   await ready(page);
-  await page.getByLabel("наложение").selectOption("ETHUSDT");
+  await overlayTo(page, "ETHUSDT");
   const warn = await token(page, "--warn");
   const overlay = async () => (await seriesOf(page)).find((s) => s.type === "Line" && (s.color ?? "").toLowerCase() === warn && s.len > 0) ?? null;
   await expect.poll(async () => (await overlay())?.len ?? 0).toBeGreaterThan(0);

@@ -70,6 +70,10 @@
   --down-fill: color-mix(in srgb, var(--down) 12%, transparent);
   --warn-fill: color-mix(in srgb, var(--warn) 12%, transparent);
   --focus: var(--accent);
+  /* Подложка под выдвижным меню и листами (одна для обеих тем) */
+  --scrim: rgb(0 0 0 / 40%);
+  /* Плашка подписей поверх графика (только DOM: угол графика, легенда; canvas color-mix не читает) */
+  --legend-bg: color-mix(in srgb, var(--surface) 82%, transparent);
   --shadow: 0 1px 2px rgb(15 23 42 / 6%);
   --shadow-lg: 0 24px 64px rgb(15 23 42 / 12%);
   /* Свечение под скриншотом продукта на главной (бирюзовое, только для маркетинговых страниц) */

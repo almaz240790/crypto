@@ -66,6 +66,14 @@ describe("breakpoints", () => {
     expect(bad).toEqual([]);
   });
 
+  it("высота страницы — заливкой flex, а не calc от высоты шапки (calc(100dvh - …) нет в src)", () => {
+    const bad = files(".", /\.(css|tsx?)$/)
+      .filter((f) => !/\.test\.tsx?$/.test(f))
+      .filter((f) => /calc\(\s*100dvh\s*-/.test(readFileSync(f, "utf8")))
+      .map((f) => relative(SRC, f));
+    expect(bad).toEqual([]);
+  });
+
   it("в коде терминала, AppShell и ui — медиа-запросы только из MQ (без литералов ширины)", () => {
     const bad: string[] = [];
     for (const f of SCOPE.flatMap((p) => files(p, /\.tsx?$/))) {

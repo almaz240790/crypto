@@ -101,3 +101,29 @@ export const IconInfo = () => (
     <path d="M12 11v5M12 8h.01" />
   </Svg>
 );
+/** Меню разделов (рейка AppShell). */
+export const IconMenu = () => (
+  <Svg>
+    <path d="M4 7h16M4 12h16M4 17h16" />
+  </Svg>
+);
+/** Колокол алерта (монохромный, план 2A.6). */
+export const IconBell = () => (
+  <Svg>
+    <path d="M6 16v-5a6 6 0 0 1 12 0v5l2 2H4z" />
+    <path d="M10 20a2 2 0 0 0 4 0" />
+  </Svg>
+);
+/** Индикаторы: линия поверх свечей. */
+export const IconIndicators = () => (
+  <Svg>
+    <path d="M3 17l5-6 4 4 4-7 5 5" />
+    <path d="M3 21h18" />
+  </Svg>
+);
+/** Полный экран. */
+export const IconExpand = () => (
+  <Svg>
+    <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" />
+  </Svg>
+);

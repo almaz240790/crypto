@@ -2,6 +2,7 @@
 
 import type React from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { ObjectsTab } from "../DesktopPanels";
 
 /**
  * Состояние интерфейса терминала (план 2B.9): открытый лист, панели, ширина панели объектов, тост.
@@ -11,10 +12,18 @@ import { useCallback, useEffect, useRef, useState } from "react";
 export type SheetId = "indicators" | "layers" | "draw" | "found" | "alert" | "ask";
 
 const OBJECTS_W_KEY = "pl-objects-w";
+/** Открыта ли правая панель на широком экране (≥ 1280): shown | hidden, по умолчанию shown. */
+const OBJECTS_KEY = "pl-objects";
 export const OBJECTS_W_DEFAULT = 300;
-const OBJECTS_W_MIN = 240;
+const OBJECTS_W_MIN = 280;
 const OBJECTS_W_MAX = 600;
-const clampW = (w: number) => Math.round(Math.min(OBJECTS_W_MAX, Math.max(OBJECTS_W_MIN, w)));
+/** Не шире 40 % окна: на 1280 панель оставляет графику не меньше 60 %. */
+const OBJECTS_W_SHARE = 0.4;
+const clampW = (w: number) => {
+  const max = typeof window === "undefined" ? OBJECTS_W_MAX : Math.max(OBJECTS_W_MIN, Math.min(OBJECTS_W_MAX, window.innerWidth * OBJECTS_W_SHARE));
+  return Math.round(Math.min(max, Math.max(OBJECTS_W_MIN, w)));
+};
+type Shown = "shown" | "hidden";
 
 export const TOAST_MS = 2500;
 
@@ -24,15 +33,58 @@ export type ObjectsResize = {
   start: (e: React.PointerEvent<HTMLElement>) => void;
 };
 
-export function useTerminalUi() {
+/**
+ * wide — окно не уже 1280 px: правая панель встроена в сетку и по умолчанию открыта (состояние в pl-objects).
+ * Уже — панель выдвигается поверх графика, при загрузке закрыта и не запоминается.
+ */
+export function useTerminalUi(wide: boolean) {
   const [sheet, setSheet] = useState<SheetId | null>(null);
   const closeSheet = useCallback(() => setSheet(null), []);
   // карточка значений под перекрестием: на телефоне индикаторы свёрнуты, чтобы не закрывать график
   const [ohlcMore, setOhlcMore] = useState(false);
   const [bars, setBars] = useState<"shown" | "hidden">("shown");
-  const [objects, setObjects] = useState<"shown" | "hidden">("shown");
+  const [objectsPref, setObjectsPref] = useState<Shown>("shown");
+  const [overlayOpen, setOverlayOpen] = useState(false);
+  const [panelTab, setPanelTab] = useState<ObjectsTab>("found");
+  useEffect(() => {
+    try {
+      if (localStorage.getItem(OBJECTS_KEY) === "hidden") queueMicrotask(() => setObjectsPref("hidden"));
+    } catch {
+      /* приватный режим */
+    }
+  }, []);
+  // переход через 1280 закрывает выдвинутую панель: на широком экране действует запомненное состояние
+  const [wasWide, setWasWide] = useState(wide);
+  if (wasWide !== wide) {
+    setWasWide(wide);
+    setOverlayOpen(false);
+  }
+  const objects: Shown = wide ? objectsPref : overlayOpen ? "shown" : "hidden";
+  const setObjects = useCallback(
+    (v: Shown) => {
+      if (!wide) {
+        setOverlayOpen(v === "shown");
+        return;
+      }
+      setObjectsPref(v);
+      try {
+        localStorage.setItem(OBJECTS_KEY, v);
+      } catch {
+        /* приватный режим */
+      }
+    },
+    [wide],
+  );
+  /** Открыть панель на вкладке (например, «Слои» из «Разметки»). */
+  const showPanel = useCallback(
+    (tab: ObjectsTab) => {
+      setPanelTab(tab);
+      setObjects("shown");
+    },
+    [setObjects],
+  );
 
-  // ширина панели объектов (десктоп): 240–600 px, хранится локально
+  // ширина панели объектов (десктоп): 280 – min(600, 40 % окна) px, хранится локально
   const [objW, setObjW] = useState(OBJECTS_W_DEFAULT);
   const [objDrag, setObjDrag] = useState(false);
   useEffect(() => {
@@ -94,7 +146,7 @@ export function useTerminalUi() {
   );
   useEffect(() => () => clearTimeout(toastTimer.current), []);
 
-  return { sheet, setSheet, closeSheet, ohlcMore, setOhlcMore, bars, setBars, objects, setObjects, objW, objResize, toast, say, notifyOnce };
+  return { sheet, setSheet, closeSheet, ohlcMore, setOhlcMore, bars, setBars, objects, setObjects, panelOverlay: !wide, panelTab, setPanelTab, showPanel, objW, objResize, toast, say, notifyOnce };
 }
 
 export type TerminalUi = ReturnType<typeof useTerminalUi>;

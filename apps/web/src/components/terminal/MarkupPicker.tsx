@@ -6,7 +6,7 @@ import { useT } from "@/i18n/client";
 import s from "./terminal.module.css";
 
 /** Название пресета (литералы — для check-i18n и проверки текстов владельцем). */
-function presetTitle(id: PresetId, t: (s: string) => string): string {
+export function presetTitle(id: PresetId, t: (s: string) => string): string {
   switch (id) {
     case "clean":
       return t("Чистый");
@@ -24,7 +24,7 @@ function presetTitle(id: PresetId, t: (s: string) => string): string {
 }
 
 /** Одна строка пояснения к пресету: что он показывает на графике. */
-function presetNote(id: PresetId, t: (s: string) => string): string {
+export function presetNote(id: PresetId, t: (s: string) => string): string {
   switch (id) {
     case "clean":
       return t("Свечи, ближайшие поддержка, сопротивление и зона");

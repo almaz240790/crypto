@@ -10,13 +10,14 @@ test("график: загрузка, строка состояния, смен�
   await expect(page.getByTestId("terminal").locator("canvas").first()).toBeVisible();
   const strip = page.getByLabel("состояние");
   await expect(strip).toContainText("цена");
-  await expect(strip).toContainText("Тренд: день вверх");
+  // шапка десктопа (план 2B.9): тренд — чипы «День ↑ Неделя ↑»
+  await expect(strip).toContainText("День ↑");
   await expect(strip).toContainText("Ход за свечу");
   expect(calls.some((c) => c.startsWith("/v1/chart/candles?symbol=BTCUSDT&tf=4h"))).toBe(true);
-  // таймфрейм H4 выделен, 1m без входа недоступен
-  await expect(page.getByRole("link", { name: "H4" })).toHaveAttribute("aria-current", "page");
-  await expect(page.getByRole("link", { name: "1M" })).toHaveAttribute("aria-disabled", "true");
-  await page.getByRole("link", { name: "1D" }).click();
+  // таймфрейм 4ч выделен (подписи TF_LABEL), 1м без входа — кнопка с замком (окно «Минутные таймфреймы»)
+  await expect(page.getByRole("link", { name: "4ч" })).toHaveAttribute("aria-current", "page");
+  await expect(page.getByRole("button", { name: "1м", exact: true })).toHaveAttribute("data-locked", "true");
+  await page.getByRole("link", { name: "1Д" }).click();
   await expect(page).toHaveURL(/\/chart\/BTCUSDT\/1d$/);
   await expect.poll(() => calls.some((c) => c.includes("tf=1d"))).toBe(true);
   // индикаторы: добавить RSI (отдельная панель), слои: выключить зоны
@@ -26,19 +27,22 @@ test("график: загрузка, строка состояния, смен�
   await page.getByRole("button", { name: "Готово" }).click();
   await expect(page.getByRole("button", { name: "Индикаторы (3)" })).toBeVisible();
   await expect(strip).toContainText("Фандинг 0.0120 %");
-  await page.getByRole("button", { name: "Слои" }).click();
+  // слои — во вкладке «Слои» правой панели (на десктопе нижней строки нет)
+  const objects = page.getByRole("complementary", { name: "панель объектов" });
+  await objects.getByRole("tab", { name: "Слои" }).click();
   // exact: иначе совпадает и радиокнопка разметки «Уровни и зоны»
-  await page.getByRole("dialog", { name: "Слои" }).getByLabel("Зоны", { exact: true }).uncheck();
-  await page.getByRole("dialog", { name: "Слои" }).getByLabel("Профиль объёма").check();
-  await page.getByRole("button", { name: "Готово" }).click();
-  // тип графика
-  await page.getByLabel("тип графика").selectOption("heikin");
+  await objects.getByLabel("Зоны", { exact: true }).uncheck();
+  await objects.getByLabel("Профиль объёма", { exact: true }).check();
+  // тип графика — в окне «Вид»
+  await page.getByRole("button", { name: "Вид", exact: true }).click();
+  await page.getByRole("dialog", { name: "Вид" }).getByLabel("тип графика").selectOption("heikin");
+  await page.keyboard.press("Escape");
   await expect(strip).toContainText("Heikin Ashi");
   // настройки сохраняются между загрузками
   await page.reload();
   await expect(page.getByRole("button", { name: "Индикаторы (3)" })).toBeVisible();
-  await page.getByRole("button", { name: "Слои" }).click();
-  await expect(page.getByRole("dialog", { name: "Слои" }).getByLabel("Профиль объёма")).toBeChecked();
+  await objects.getByRole("tab", { name: "Слои" }).click();
+  await expect(objects.getByLabel("Профиль объёма", { exact: true })).toBeChecked();
 });
 
 test("график: смена инструмента и сигналы по инструменту", async ({ page }) => {
@@ -48,7 +52,8 @@ test("график: смена инструмента и сигналы по и�
   await expect(page.getByText("сигналов по инструменту: 1")).toBeVisible();
   await page.getByLabel("инструмент", { exact: true }).selectOption("ETHUSDT");
   await expect(page).toHaveURL(/\/chart\/ETHUSDT\/4h$/);
-  await expect(page.getByRole("link", { name: "1M" })).not.toHaveAttribute("aria-disabled", "true");
+  // вошедшему с Premium минутные ТФ доступны ссылкой
+  await expect(page.getByRole("link", { name: "1м", exact: true })).toBeVisible();
 });
 
 test("рисование: трендовая линия двумя кликами, отмена, удаление клавишей, позиция в журнал", async ({ page }) => {
@@ -59,8 +64,9 @@ test("рисование: трендовая линия двумя кликам�
   await expect(term.locator("canvas").first()).toBeVisible();
   const count = page.getByTestId("drawings-count");
   await expect(count).toHaveText("рисунков: 0");
-  await page.getByRole("button", { name: "Рисовать" }).click();
-  await page.getByRole("dialog", { name: "Рисование" }).getByRole("button", { name: "Трендовая линия" }).click();
+  // инструменты на десктопе — в левой панели рисования
+  const tools = page.getByRole("toolbar", { name: "панель рисования" });
+  await tools.getByRole("button", { name: "Трендовая линия" }).click();
   await expect(page.getByRole("button", { name: /Рисую: Трендовая линия/ })).toBeVisible();
   const box = (await term.boundingBox())!;
   await page.mouse.click(box.x + box.width * 0.3, box.y + box.height * 0.4);
@@ -78,8 +84,7 @@ test("рисование: трендовая линия двумя кликам�
   await page.keyboard.press("Delete");
   await expect(count).toHaveText("рисунков: 0");
   // позиция long: вход, стоп, цель → карточка с R:R и ссылкой в журнал
-  await page.getByRole("button", { name: "Рисовать" }).click();
-  await page.getByRole("dialog", { name: "Рисование" }).getByRole("button", { name: "Позиция Long" }).click();
+  await tools.getByRole("button", { name: "Позиция Long" }).click();
   await page.mouse.click(box.x + box.width * 0.5, box.y + box.height * 0.5);
   await page.mouse.click(box.x + box.width * 0.5, box.y + box.height * 0.6);
   await page.mouse.click(box.x + box.width * 0.5, box.y + box.height * 0.3);
@@ -99,8 +104,7 @@ test("синхронизация рисунков: запись на серве�
   await page.goto("/chart/BTCUSDT/4h");
   const term = page.getByTestId("terminal");
   await expect(term.locator("canvas").first()).toBeVisible();
-  await page.getByRole("button", { name: "Рисовать" }).click();
-  await page.getByRole("dialog", { name: "Рисование" }).getByRole("button", { name: "Горизонтальная линия" }).click();
+  await page.getByRole("toolbar", { name: "панель рисования" }).getByRole("button", { name: "Горизонтальная линия" }).click();
   const box = (await term.boundingBox())!;
   await page.mouse.click(box.x + box.width * 0.4, box.y + box.height * 0.5);
   await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 1");
@@ -116,8 +120,9 @@ test("синхронизация рисунков: запись на серве�
   await expect(page2.getByTestId("drawings-count")).toHaveText("рисунков: 1");
   // на втором устройстве удаляем (новее) — первое после перезагрузки тоже без рисунка
   page2.once("dialog", (d) => d.accept());
-  await page2.getByRole("button", { name: "Рисовать" }).click();
-  await page2.getByRole("dialog", { name: "Рисование" }).getByRole("button", { name: "удалить все" }).click();
+  const o2 = page2.getByRole("complementary", { name: "панель объектов" });
+  await o2.getByRole("tab", { name: "Рисунки (1)" }).click();
+  await o2.getByRole("button", { name: "удалить все" }).click();
   await expect(page2.getByTestId("drawings-count")).toHaveText("рисунков: 0");
   await expect.poll(() => (server.drawings[0]?.deleted_at ? 1 : 0)).toBe(1);
   await ctx2.close();
@@ -428,19 +433,23 @@ test("шкала: логарифмическая и процентная, нал
   const mode = () => page.evaluate(() => (document.querySelector('[data-testid="terminal"]') as Host).__chart.priceScale("right").options().mode);
   const lines = () => page.evaluate(() => (document.querySelector('[data-testid="terminal"]') as Host).__chart.panes()[0]!.getSeries().filter((s) => s.seriesType() === "Line").length);
   expect(await mode()).toBe(0);
-  await page.getByLabel("шкала").selectOption("log");
+  // шкала и наложение — в окне «Вид»; окно остаётся открытым, пока в нём выбирают
+  await page.getByRole("button", { name: "Вид", exact: true }).click();
+  const view = page.getByRole("dialog", { name: "Вид" });
+  await view.getByLabel("шкала").selectOption("log");
   await expect.poll(mode).toBe(1);
   const before = await lines();
-  await page.getByLabel("наложение").selectOption("ETHUSDT");
+  await view.getByLabel("наложение").selectOption("ETHUSDT");
   await expect.poll(() => calls.some((c) => c.startsWith("/v1/chart/candles?symbol=ETHUSDT&tf=4h"))).toBe(true);
   await expect.poll(lines).toBe(before + 1);
-  await page.getByLabel("шкала").selectOption("percent");
+  await view.getByLabel("шкала").selectOption("percent");
   await expect.poll(mode).toBe(2);
-  await page.getByLabel("наложение").selectOption("");
+  await view.getByLabel("наложение").selectOption("");
   await expect.poll(lines).toBe(before);
   await page.reload();
   await expect(page.getByTestId("terminal").locator("canvas").first()).toBeVisible();
-  await expect(page.getByLabel("шкала")).toHaveValue("percent");
+  await page.getByRole("button", { name: "Вид", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "Вид" }).getByLabel("шкала")).toHaveValue("percent");
 });
 
 test("уровни: поддержка, сопротивление и карта ликвидаций — слоями и списком в «Найдено»", async ({ page }) => {

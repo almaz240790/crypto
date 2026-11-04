@@ -14,7 +14,7 @@ export async function generateMetadata(): Promise<Metadata> {
 export default async function MultiChartRoute() {
   const t = await getT();
   return (
-    <AppShell title={t("Мультичарт")} flush>
+    <AppShell title={t("Мультичарт")} flush rail>
       <MultiChartClient />
     </AppShell>
   );
