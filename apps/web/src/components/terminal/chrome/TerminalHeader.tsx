@@ -27,8 +27,10 @@ const HEADER_SHED: readonly ShedStep[] = [
 export type HeaderFacts = {
   price: number | null;
   tick: string | null;
-  /** Изменение от закрытия предыдущей свечи, %. */
+  /** Изменение от закрытия последней закрытой свечи, %. */
   change: number | null;
+  /** Закрытие последней закрытой свечи — то же число, что разделитель «Найдено → Уровни» (в «Сводке»). */
+  lastClose: number | null;
   trend: Trend | null;
   atr: string | null;
   funding: { rate: string; next: number | null } | null;
@@ -92,6 +94,8 @@ function Summary(p: HeaderFacts & { tf: Timeframe }) {
     <dl className={c.summary}>
       <dt>{t("Цена")}</dt>
       <dd className={c.num}>{formatPrice(p.price, p.tick)}</dd>
+      <dt>{t("Закрытие последней свечи {tf}", { tf: tfLabel })}</dt>
+      <dd className={c.num}>{formatPrice(p.lastClose, p.tick)}</dd>
       <dt>{t("Изменение за свечу {tf}", { tf: tfLabel })}</dt>
       <dd className={c.num} data-dir={p.change == null ? undefined : p.change >= 0 ? "up" : "down"}>
         {formatPct(p.change)}
@@ -147,8 +151,8 @@ export const TerminalHeader = memo(function TerminalHeader(p: Props) {
   const key = [p.symbol, p.tf, priceText.length, changeText.length, p.trend ? `${p.trend.day}${p.trend.week}` : "-", p.atr ?? "-", fundingText, p.funding?.next != null, p.heikin].join("|");
   const { ref: rowRef, fit } = useOverflow<HTMLDivElement>(HEADER_SHED, key);
   const facts = useMemo<HeaderFacts>(
-    () => ({ price: p.price, tick: p.tick, change: p.change, trend: p.trend, atr: p.atr, funding: p.funding, heikin: p.heikin, connected: p.connected, lastTime: p.lastTime }),
-    [p.price, p.tick, p.change, p.trend, p.atr, p.funding, p.heikin, p.connected, p.lastTime],
+    () => ({ price: p.price, tick: p.tick, change: p.change, lastClose: p.lastClose, trend: p.trend, atr: p.atr, funding: p.funding, heikin: p.heikin, connected: p.connected, lastTime: p.lastTime }),
+    [p.price, p.tick, p.change, p.lastClose, p.trend, p.atr, p.funding, p.heikin, p.connected, p.lastTime],
   );
   return (
     <header className={c.header} data-testid="terminal-header">
@@ -159,7 +163,7 @@ export const TerminalHeader = memo(function TerminalHeader(p: Props) {
           <span className="sr-only">{t("цена")} </span>
           {priceText}
         </button>
-        <span className={c.fact} title={t("Изменение от закрытия предыдущей свечи {tf}", { tf: tfLabel })} {...overflowItem("change", fit)}>
+        <span className={c.fact} title={t("Изменение от закрытия последней свечи {tf}", { tf: tfLabel })} {...overflowItem("change", fit)}>
           <span className={c.num} data-dir={p.change == null ? undefined : p.change >= 0 ? "up" : "down"}>
             {changeText}
           </span>

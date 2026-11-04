@@ -37,8 +37,11 @@ export function TimeframeBar({ symbol, tf, intradayLocked, guest, ref }: Props) 
       if (el && !locked.open) locked.toggle(el);
     },
   }));
+  // окно открыто у одного сегмента: только он «развёрнут» и ссылается на окно (aria-controls)
+  const openTf = locked.open ? locked.anchor?.getAttribute("data-tf") : null;
   const items: SegmentItem<Timeframe>[] = tfOrder(intradayLocked).map((x) => {
     const closed = intradayLocked && INTRADAY.includes(x);
+    const owner = openTf === x;
     if (!closed) return { value: x, label: t(TF_LABEL[x]), href: `/chart/${symbol}/${x}`, attrs: { "data-tf": x } };
     return {
       value: x,
@@ -49,7 +52,7 @@ export function TimeframeBar({ symbol, tf, intradayLocked, guest, ref }: Props) 
       ),
       ariaLabel: t(TF_LABEL[x]),
       title: guest ? t("после входа, подписка Pro") : t("с подпиской Pro"),
-      attrs: { "data-tf": x, "data-locked": "true", "aria-haspopup": "dialog", "aria-expanded": locked.open },
+      attrs: { "data-tf": x, "data-locked": "true", "aria-haspopup": "dialog", "aria-expanded": owner, "aria-controls": owner ? locked.id : undefined },
     };
   });
   return (

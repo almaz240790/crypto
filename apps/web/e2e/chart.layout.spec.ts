@@ -146,8 +146,22 @@ test("закрытый минутный ТФ у гостя: клик и клав
   // порядок у гостя: доступные, затем закрытые
   const order = await page.getByRole("navigation", { name: "таймфрейм" }).locator("a, button").allTextContents();
   expect(order.map((x) => x.trim())).toEqual(["1ч", "4ч", "1Д", "1Н", "1м", "5м", "15м"]);
-  await page.getByRole("button", { name: "1м", exact: true }).click();
+  const seg = (name: string) => page.getByRole("button", { name, exact: true });
+  await seg("5м").click();
   const dlg = page.getByRole("dialog", { name: "Минутные таймфреймы" });
+  await expect(dlg).toBeVisible();
+  // развёрнут только сегмент, у которого открыто окно; он же ссылается на окно
+  const dlgId = await dlg.getAttribute("id");
+  await expect(seg("5м")).toHaveAttribute("aria-expanded", "true");
+  await expect(seg("5м")).toHaveAttribute("aria-controls", dlgId!);
+  for (const other of ["1м", "15м"]) {
+    await expect(seg(other)).toHaveAttribute("aria-expanded", "false");
+    await expect(seg(other)).not.toHaveAttribute("aria-controls", /./);
+  }
+  await page.keyboard.press("Escape");
+  await expect(dlg).toHaveCount(0);
+  await expect(seg("5м")).toHaveAttribute("aria-expanded", "false");
+  await seg("1м").click();
   await expect(dlg).toBeVisible();
   await expect(dlg.getByRole("link", { name: "Войти" })).toHaveAttribute("href", "/login?next=/chart/BTCUSDT/1m");
   expect(page.url()).toBe(url);
@@ -155,6 +169,8 @@ test("закрытый минутный ТФ у гостя: клик и клав
   await expect(dlg).toHaveCount(0);
   await page.locator("body").press("1");
   await expect(dlg).toBeVisible();
+  await expect(seg("1м")).toHaveAttribute("aria-expanded", "true");
+  await expect(seg("5м")).toHaveAttribute("aria-expanded", "false");
   expect(page.url()).toBe(url);
 });
 
@@ -171,6 +187,66 @@ test("светлая тема: активный ТФ отличается от �
   for (const sel of ["[data-testid=terminal-toolbar]", "[data-testid=terminal-header]", 'aside[aria-label="панель объектов"]', '[role="toolbar"][aria-label="панель рисования"]']) {
     expect(await page.locator(sel).evaluate((el) => getComputedStyle(el).backgroundColor), sel).not.toBe("rgba(0, 0, 0, 0)");
   }
+  // чипы тренда «День ↑» / «Неделя ↑»: текст --up не ниже AA 4.5:1 к фону под ним (D17)
+  const header = page.getByTestId("terminal-header");
+  await expect(header.getByText(/^Неделя/)).toBeVisible();
+  const ratios = await header.locator("[data-dir]").evaluateAll((els) => {
+    const rgb = (c: string) => (c.match(/[\d.]+/g) ?? []).map(Number);
+    const lum = ([r, g, b]: number[]) => {
+      const f = (v: number) => ((v /= 255) <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
+      return 0.2126 * f(r!) + 0.7152 * f(g!) + 0.0722 * f(b!);
+    };
+    const bg = (el: Element | null): number[] => {
+      for (; el; el = el.parentElement) {
+        const c = rgb(getComputedStyle(el).backgroundColor);
+        if (c.length === 3 || (c.length === 4 && c[3]! > 0)) return c.slice(0, 3);
+      }
+      return [255, 255, 255];
+    };
+    return els
+      .filter((el) => el.textContent?.trim())
+      .map((el) => {
+        const a = lum(rgb(getComputedStyle(el).color));
+        const b = lum(bg(el));
+        return [el.textContent!.trim(), (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05)] as const;
+      });
+  });
+  expect(ratios.length).toBeGreaterThanOrEqual(2);
+  for (const [text, r] of ratios) expect(r, text).toBeGreaterThanOrEqual(4.5);
+  // нажатый инструмент — фон --row-hover и полоса --accent снизу, без рамки (как сегменты и кнопки тулбара)
+  const tool = page.getByRole("toolbar", { name: "панель рисования" }).getByRole("button", { name: "Трендовая линия" });
+  await tool.click();
+  await expect(tool).toHaveAttribute("aria-pressed", "true");
+  const st = await tool.evaluate((el) => {
+    const cs = getComputedStyle(el);
+    return { shadow: cs.boxShadow, border: cs.borderTopColor, bg: cs.backgroundColor };
+  });
+  expect(st.shadow).toMatch(/inset/);
+  expect(st.shadow).toMatch(/-2px/);
+  expect(st.border).toBe("rgba(0, 0, 0, 0)");
+  expect(st.bg).not.toBe("rgba(0, 0, 0, 0)");
+  await page.keyboard.press("Escape");
+  // угол «− + →|» непрозрачен, пока курсор над колонкой графика, а не только над самим углом (§3.4)
+  const corner = page.locator("[data-corner]");
+  const term = await box(page, "[data-testid=terminal]");
+  await page.mouse.move(term.x + term.width * 0.3, term.y + term.height * 0.3);
+  await expect.poll(() => corner.evaluate((el) => getComputedStyle(el).opacity)).toBe("1");
+  await page.mouse.move(term.x + term.width / 2, 10);
+  await expect.poll(() => corner.evaluate((el) => getComputedStyle(el).opacity)).toBe("0.55");
+});
+
+test("алерт: цена в форме — по шагу инструмента, без экспоненты и шума float; «Сводка» — закрытие последней свечи", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await open(page, `/chart/${SUBCENT}/4h`, true);
+  await page.getByRole("button", { name: /^Алерт/ }).click();
+  const form = page.getByRole("form", { name: "новый алерт по цене" });
+  // шаг 1.000E-7 — ровно 7 знаков после запятой, как у шкалы и шапки
+  await expect(form.getByLabel("цена алерта")).toHaveValue(/^0\.\d{7}$/);
+  await page.keyboard.press("Escape");
+  // разделитель «Найдено → Уровни» и «Сводка» показывают одно и то же закрытие — основу изменения «за свечу 4ч»
+  await page.getByTestId("terminal-header").getByRole("button", { name: /^цена / }).click();
+  const summary = page.getByRole("dialog", { name: "Сводка" });
+  await expect(summary).toContainText("Закрытие последней свечи 4ч");
 });
 
 test("рейка: «развернуть меню» открывает весь сайдбар; Esc закрывает и возвращает фокус", async ({ page }) => {
@@ -264,7 +340,7 @@ test("панели индикаторов: RSI с уровнями 30/70 пун�
   expect(share).toBeGreaterThanOrEqual(0.54);
 });
 
-test("«Найдено»: вкладка = Уровни + Фигуры + Паттерны, разделы, таблица уровней с «Закрытие свечи», вопрос — в конце", async ({ page }) => {
+test("«Найдено»: вкладка = Уровни + Фигуры + Паттерны, разделы, таблица уровней с «Закрытие последней свечи 4ч», вопрос — в конце", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await open(page, "/chart/BTCUSDT/4h", true);
   const aside = page.getByRole("complementary", { name: "панель объектов" });
@@ -279,7 +355,7 @@ test("«Найдено»: вкладка = Уровни + Фигуры + Пат�
     })
     .toBe(true);
   const levels = aside.getByRole("list", { name: "уровни поддержки и сопротивления" });
-  await expect(levels).toContainText("Закрытие свечи");
+  await expect(levels).toContainText("Закрытие последней свечи 4ч");
   // классы: num — только у цен, расстояние — pct
   for (const p of await levels.locator("span.num").allTextContents()) expect(p).toMatch(/^\d[\d\s]*\.\d$/);
   await expect(levels.locator("[class*=pct]").first()).toContainText("%");

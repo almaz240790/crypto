@@ -26,6 +26,7 @@ import { FoundTab, type FoundData } from "./panels/found/FoundTab";
 import { useTerminalSettings } from "./state/useTerminalSettings";
 import { useTopdown } from "./state/useTopdown";
 import { useChartAlerts } from "./state/useChartAlerts";
+import { alertPriceText } from "./state/alertPrice";
 import { useLayouts } from "./state/useLayouts";
 import { useTerminalUi } from "./state/useTerminalUi";
 import { useInstruments } from "./state/useInstruments";
@@ -185,7 +186,8 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
   useLayoutEffect(() => {
     priceRef.current = price;
   });
-  const openAlert = useCallback(() => resetDraft(priceRef.current), [resetDraft]);
+  const tick = data.tick;
+  const openAlert = useCallback(() => resetDraft(priceRef.current, tick), [resetDraft, tick]);
   const openAlertSheet = () => {
     openAlert();
     setSheet("alert");
@@ -271,7 +273,7 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
   const fundingRate = data.derivatives?.funding_current ?? null;
   const fundingNext = data.derivatives?.next_funding_t ?? null;
   const funding = useMemo(() => (fundingRate ? { rate: fundingRate, next: fundingNext } : null), [fundingRate, fundingNext]);
-  const facts: HeaderFacts = { price, tick: data.tick, change, trend, atr: data.layers?.structure?.atr ?? null, funding, heikin: st.type === "heikin", connected: data.connected, lastTime: last?.time ?? null };
+  const facts: HeaderFacts = { price, tick: data.tick, change, lastClose, trend, atr: data.layers?.structure?.atr ?? null, funding, heikin: st.type === "heikin", connected: data.connected, lastTime: last?.time ?? null };
   const zoom = useCallback((f: number) => controls.current?.zoom(f), []);
   const reset = useCallback(() => controls.current?.reset(), []);
   const syncText = user && dr.sync !== "off" ? (dr.sync === "ok" ? t("синхронизировано") : dr.sync === "queued" ? t("в очереди") : t("ошибка синхронизации")) : null;
@@ -424,7 +426,7 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
                     className={s.chip}
                     onClick={() => {
                       const p = sel.points[0]!.price;
-                      addPriceAlert(String(p), price != null && price < p ? "cross_up" : "cross_down", undefined, sel.id);
+                      addPriceAlert(alertPriceText(p, data.tick), price != null && price < p ? "cross_up" : "cross_down", undefined, sel.id);
                     }}
                   >
                     {t("алерт на уровне")}

@@ -6,6 +6,7 @@ import { Tooltip } from "@/components/ui";
 import { IconInfo } from "@/components/ui/icons";
 import { useT } from "@/i18n/client";
 import { formatPrice } from "@/lib/format";
+import { TF_LABEL, type Timeframe } from "@/lib/timeframes";
 import { zoneName } from "@/lib/zones";
 import { isLiqRow } from "./counts";
 import p from "../panels.module.css";
@@ -30,10 +31,12 @@ type Props = {
   index: SceneIndex | null;
   tick: string | null;
   /**
-   * Закрытие последней закрытой свечи: разделитель «Закрытие свечи» между уровнями выше и ниже. Уровни и расстояния
-   * считаются по закрытым свечам, поэтому разделитель — не «текущая цена» (она в шапке и на шкале и идёт тиками).
+   * Закрытие последней закрытой свечи: разделитель «Закрытие последней свечи 4ч» между уровнями выше и ниже. Уровни и
+   * расстояния считаются по закрытым свечам, поэтому разделитель — не «текущая цена» (она в шапке и на шкале и идёт
+   * тиками); изменение в шапке «за свечу 4ч» считается от этого же закрытия, и «Сводка» показывает его рядом с ценой.
    */
   lastClose: number | null;
+  tf: Timeframe;
   selected: string | null;
   onPick: (id: string | null) => void;
 };
@@ -41,12 +44,14 @@ type Props = {
 /**
  * «Найдено → Уровни» (план 2B.9 §8.1, 2A.4): каталог сцены — независимо от слоёв (на графике подписи может отрезать
  * пресет или бюджет, здесь видны все). Таблица с выровненными колонками: тип (полоса тона и слово) | цена |
- * расстояние от цены | подробности (касания, источники зоны словами). Между уровнями выше и ниже — «Закрытие свечи».
+ * расстояние от цены | подробности (касания, источники зоны словами). Между уровнями выше и ниже — «Закрытие последней
+ * свечи 4ч» (не меняется на тиках: панель не перерисовывается).
  * Цены — formatPrice по шагу инструмента (класс num — только у цен, контракт e2e), расстояние — класс pct.
  * Ликвидации — последней строкой, свёрнутой группой «Ликвидации (оценка)» с пояснением в подсказке.
  */
-export const LevelsTable = memo(function LevelsTable({ index, tick, lastClose, selected, onPick }: Props) {
+export const LevelsTable = memo(function LevelsTable({ index, tick, lastClose, tf, selected, onPick }: Props) {
   const t = useT();
+  const tfLabel = t(TF_LABEL[tf]);
   const px = (v: number) => formatPrice(v, tick);
   const rows = index?.levels ?? [];
   const main = rows.filter((r) => !isLiqRow(r.kind));
@@ -99,8 +104,8 @@ export const LevelsTable = memo(function LevelsTable({ index, tick, lastClose, s
       <ul className={p.levels} aria-label={t("уровни поддержки и сопротивления")}>
         {above.map(row)}
         {lastClose !== null && (
-          <li className={p.divider} title={t("Расстояния до уровней — от закрытия последней свечи")}>
-            <span>{t("Закрытие свечи")}</span> <span className="num">{px(lastClose)}</span>
+          <li className={p.divider} title={t("Расстояния до уровней — от закрытия последней свечи {tf}; текущая цена — в шапке и на шкале", { tf: tfLabel })}>
+            <span>{t("Закрытие последней свечи {tf}", { tf: tfLabel })}</span> <span className="num">{px(lastClose)}</span>
           </li>
         )}
         {below.map(row)}
@@ -111,7 +116,7 @@ export const LevelsTable = memo(function LevelsTable({ index, tick, lastClose, s
                 <span>
                   {t("Ликвидации (оценка)")} · {liq.length}
                 </span>
-                <Tooltip text={liqTitle}>
+                <Tooltip label={t("Пояснение")} text={liqTitle}>
                   <IconInfo />
                 </Tooltip>
               </summary>

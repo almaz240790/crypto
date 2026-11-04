@@ -66,7 +66,7 @@ export const FoundTab = memo(function FoundTab({ store, data, ask = true }: { st
     <div className={p.found}>
       <SegmentedControl mode="tabs" items={items} value={section} onSelect={setSection} label={t("разделы найденного")} size="sm" className={p.sections} />
       <div className={p.section}>
-        {section === "levels" && <LevelsTable index={index} tick={data.tick} lastClose={data.lastClose} selected={selection} onPick={data.onLevel} />}
+        {section === "levels" && <LevelsTable index={index} tick={data.tick} lastClose={data.lastClose} tf={data.tf} selected={selection} onPick={data.onLevel} />}
         {section === "figures" && <FiguresList items={data.figures} stats={data.figureStats} selected={figureSel} onSelect={onFigure} tick={data.tick} visibleFrom={visibleFrom} />}
         {section === "patterns" && <PatternsList items={data.patterns} stats={data.patternStats} selected={patternSel} onSelect={onPattern} tf={data.tf} symbol={data.symbol} canExplain={data.canExplain} visibleFrom={visibleFrom} />}
         {data.signals && data.signals.n > 0 && (

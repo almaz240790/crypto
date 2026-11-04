@@ -4,6 +4,7 @@ import type { AlertLine } from "@platform/charts";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useT } from "@/i18n/client";
 import { createAlert, getAlerts, type Alert } from "@/lib/alerts";
+import { alertPriceText } from "./alertPrice";
 
 /** Ценовые алерты инструмента в терминале (план 2A.6): список, линии на графике, черновик формы, создание. */
 
@@ -50,8 +51,8 @@ export function useChartAlerts({ symbol, authed, say, onCreated }: { symbol: str
     },
     [authed, say, t, symbol, loadAlerts, onCreated],
   );
-  /** Новый черновик формы: цена — текущая (или пусто), условие «пересечение вверх», один раз. */
-  const resetDraft = useCallback((price: number | null) => setDraft({ ...EMPTY_ALERT_DRAFT, price: price == null ? "" : String(price) }), []);
+  /** Новый черновик формы: цена — текущая по шагу инструмента (или пусто), условие «пересечение вверх», один раз. */
+  const resetDraft = useCallback((price: number | null, tick: string | null) => setDraft({ ...EMPTY_ALERT_DRAFT, price: price == null ? "" : alertPriceText(price, tick) }), []);
   const alertLines = useMemo<AlertLine[]>(() => alertLinesOf(alerts), [alerts]);
   return { alerts, alertLines, draft, setDraft, resetDraft, addPriceAlert };
 }

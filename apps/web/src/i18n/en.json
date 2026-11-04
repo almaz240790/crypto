@@ -1301,7 +1301,7 @@
   "До закрытия свечи": "Until candle close",
   "Ещё": "More",
   "Изменение за свечу {tf}": "Change per {tf} candle",
-  "Изменение от закрытия предыдущей свечи {tf}": "Change from the previous {tf} candle close",
+  "Изменение от закрытия последней свечи {tf}": "Change from the last {tf} candle close",
   "Минутные таймфреймы": "Minute timeframes",
   "Мультичарт: 2 или 4 графика": "Multichart: 2 or 4 charts",
   "На графике": "On the chart",
@@ -1375,8 +1375,8 @@
   "свернуть": "show less",
   "ещё {n}": "{n} more",
   "убрать наложение": "remove overlay",
-  "Закрытие свечи": "Candle close",
-  "Расстояния до уровней — от закрытия последней свечи": "Distances to levels are from the last candle close",
+  "Закрытие последней свечи {tf}": "Last {tf} candle close",
+  "Расстояния до уровней — от закрытия последней свечи {tf}; текущая цена — в шапке и на шкале": "Distances to levels are from the last {tf} candle close; the current price is in the header and on the scale",
   "Ещё инструменты (колесо мыши)": "More tools (mouse wheel)",
   "ещё инструменты": "more tools"
 }
