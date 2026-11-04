@@ -8,8 +8,11 @@ import { describe, expect, it } from "vitest";
  * Неопределённый токен даёт прозрачный фон без ошибки (так было с --bg-2: тулбар, панель и ТФ без заливки).
  */
 const SRC = fileURLToPath(new URL("..", import.meta.url));
-/** Переменные раскладки (задаются в style из TSX) и шрифты next/font (класс на <html>). */
-const ALLOW = new Set(["--objects-w", "--panel-col", "--price-axis-w", "--time-scale-h", "--font-sans", "--font-mono", "--font-serif"]);
+/**
+ * Переменные раскладки (задаются в style из TSX), отступ под статус-бар iPhone (--safe-top, globals.css) и шрифты
+ * next/font (класс на <html>).
+ */
+const ALLOW = new Set(["--objects-w", "--panel-col", "--price-axis-w", "--time-scale-h", "--safe-top", "--font-sans", "--font-mono", "--font-serif"]);
 
 function files(dir: string, out: string[] = []): string[] {
   for (const name of readdirSync(dir)) {

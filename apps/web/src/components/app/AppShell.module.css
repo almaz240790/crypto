@@ -1,7 +1,7 @@
 .shell {
   display: grid;
   grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
-  min-height: 100vh;
+  min-height: calc(100vh - var(--safe-top));
 }
 
 .side {
@@ -190,11 +190,12 @@
   display: none;
 }
 
-/* Страница-инструмент (план 2B.9): рейка 56 px, страница ровно в окно, содержимое заполняет остаток */
+/* Страница-инструмент (план 2B.9): рейка 56 px, страница ровно в окно, содержимое заполняет остаток. Окно — без
+   отступа под статус-бар iPhone (--safe-top, globals.css: body сдвинут на него вниз), иначе страница прокручивается */
 .shell[data-rail] {
   grid-template-columns: var(--sidebar-w-collapsed) minmax(0, 1fr);
-  height: 100vh;
-  height: 100dvh;
+  height: calc(100vh - var(--safe-top));
+  height: calc(100dvh - var(--safe-top));
   min-height: 0;
   overflow: hidden;
 }

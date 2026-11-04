@@ -598,3 +598,48 @@ test.describe("палец на десктопной раскладке (iPad 102
     expect((await sep.boundingBox())!.width).toBeGreaterThanOrEqual(44);
   });
 });
+
+test.describe("iPhone с сайтом на главном экране: отступ под статус-бар (--safe-top = 59 px)", () => {
+  test.use({ hasTouch: true, isMobile: true });
+
+  for (const [w, h] of [[390, 844], [1440, 900]] as const) {
+    test(`${w}×${h}: страница ровно в окно без прокрутки, верх каркаса — с y = 59, тост не сжимает график`, async ({ page }) => {
+      await page.setViewportSize({ width: w, height: h });
+      // сохранение v4 — один раз показывает тост «Разметка графика обновлена»
+      await page.addInitScript(() => {
+        if (sessionStorage.getItem("seeded")) return;
+        sessionStorage.setItem("seeded", "1");
+        localStorage.setItem("pl-terminal", JSON.stringify({ type: "candles", indicators: [{ id: "ema", params: { period: 50 } }], layers: { structure: true, zones: true, liq_map: true }, layers_v: 4, panels: [], scale: "linear", overlay: null }));
+      });
+      // статус-бар iPhone: env(safe-area-inset-top) в браузере — 0, поэтому отступ задаётся напрямую
+      const safeTop = () => page.evaluate(() => new Promise((r) => {
+        document.documentElement.style.setProperty("--safe-top", "59px");
+        requestAnimationFrame(() => requestAnimationFrame(r));
+      }));
+      await open(page);
+      await safeTop();
+      const status = page.getByRole("status");
+      await expect(status).toContainText("Разметка графика обновлена");
+      const geo = () =>
+        page.evaluate(() => {
+          const shell = document.querySelector<HTMLElement>("[data-rail]")!;
+          const term = document.querySelector<HTMLElement>("[data-testid=terminal]")!.getBoundingClientRect();
+          return { scroll: document.scrollingElement!.scrollHeight, inner: innerHeight, top: shell.getBoundingClientRect().top, chartH: Math.round(term.height), chartTop: Math.round(term.top) };
+        });
+      const withToast = await geo();
+      expect(withToast.top).toBe(59);
+      expect(withToast.scroll).toBe(withToast.inner);
+      // тост — плашка поверх колонки графика: без него график той же высоты и на том же месте
+      const toastBox = (await status.boundingBox())!;
+      expect(toastBox.y).toBeGreaterThanOrEqual(withToast.chartTop - 1);
+      await page.reload();
+      await expect(page.getByTestId("terminal").locator("canvas").first()).toBeVisible();
+      await safeTop();
+      await expect(page.getByRole("status")).toHaveCount(0);
+      const without = await geo();
+      expect(without.chartH).toBe(withToast.chartH);
+      expect(without.chartTop).toBe(withToast.chartTop);
+      expect(without.scroll).toBe(without.inner);
+    });
+  }
+});

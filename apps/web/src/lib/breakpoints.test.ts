@@ -72,10 +72,11 @@ describe("breakpoints", () => {
     expect(bad).toEqual([]);
   });
 
-  it("высота страницы — заливкой flex, а не calc от высоты шапки (calc(100dvh - …) нет в src)", () => {
+  it("высота страницы — заливкой flex, а не calc от высоты шапки (в src из calc(100dvh - …) — только окно без --safe-top)", () => {
+    // вычитать можно только отступ под статус-бар iPhone (окно каркаса), но не высоту шапки или нижней строки
     const bad = files(".", /\.(css|tsx?)$/)
       .filter((f) => !/\.test\.tsx?$/.test(f))
-      .filter((f) => /calc\(\s*100dvh\s*-/.test(readFileSync(f, "utf8")))
+      .filter((f) => [...readFileSync(f, "utf8").matchAll(/calc\(\s*100dvh\s*-([^;]*)/g)].some((m) => m[1]!.trim() !== "var(--safe-top))"))
       .map((f) => relative(SRC, f));
     expect(bad).toEqual([]);
   });

@@ -14,6 +14,19 @@ body {
   color: var(--text);
 }
 
+/*
+ * Сайт на главном экране iPhone: статус-бар полупрозрачный поверх страницы (viewport-fit=cover,
+ * black-translucent), и iOS размывает полосу под ним. Содержимое начинается ниже статус-бара;
+ * в браузере и на компьютере отступ равен нулю.
+ */
+:root {
+  --safe-top: env(safe-area-inset-top, 0px);
+}
+
+body {
+  padding-top: var(--safe-top);
+}
+
 html {
   font-family: var(--font-sans), system-ui, sans-serif;
   font-size: var(--fs-body);
