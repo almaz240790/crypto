@@ -13,7 +13,7 @@ import { createBuffer, EDGE, needsNewer, needsOlder, prependOlder, pushLatest, r
 import { heikinAshi } from "./heikin";
 import { LayerManager } from "./layers";
 import { INTERACTION, VIEW } from "./presets";
-import { planPanes } from "./controller/paneManager";
+import { planPanes, type PanePlan } from "./controller/paneManager";
 import { chartOptions, PRICE_MARGIN_TOP_MAX, PRICE_MARGINS, seriesColors } from "./theme";
 import type { Candle, ChartType, ThemeTokens } from "./types";
 
@@ -64,7 +64,6 @@ export class Terminal {
   private priceFormat: PriceFormat = DEFAULT_PRICE_FORMAT;
   /** Серии на шкале цены основной панели (наложенные индикаторы): у них формат цены инструмента. */
   private readonly priceSeries = new Set<ISeriesApi<SeriesType>>();
-  private panes = 1;
   private scaleMode: ScaleMode = "linear";
   private overlay: ISeriesApi<"Line"> | null = null;
   /** Свечи наложенного инструмента целиком; на графике — только на времени свечей буфера (см. overlayData). */
@@ -267,12 +266,41 @@ export class Terminal {
     if (appended || dropped) this.applyOverlay();
   }
 
-  /** Отдельная панель под индикатор: возвращает индекс панели. */
+  /**
+   * Отдельная панель под индикатор (в конце, под остальными): возвращает её индекс. Индекс — у созданной панели,
+   * а не счётчик: после удаления панели счётчик убегал вперёд, и серия новой панели попадала на панель дальше,
+   * а созданная оставалась пустой полосой.
+   */
   addPane(height = 100): number {
-    const idx = this.panes++;
-    const pane = this.chart.panes()[idx] ?? this.chart.addPane();
+    const pane = this.chart.addPane();
     pane.setHeight(height);
-    return idx;
+    return pane.paneIndex();
+  }
+
+  /**
+   * Переставить панель на место index (1 … n − 1; основная — всегда 0): «выше» и «ниже» в заголовке панели и порядок
+   * из настроек. Соседними обменами (swapPanes проверяет индексы по модели): pane.moveTo сверяет их с виджетами
+   * панелей, а те появляются только в следующем кадре — панели, добавленные в том же кадре, падали бы с ошибкой.
+   */
+  movePane(pane: IPaneApi<Time>, index: number): void {
+    const n = this.chart.panes().length;
+    const to = Math.min(n - 1, Math.max(1, index));
+    let i = pane.paneIndex();
+    if (i < 1) return;
+    for (; i > to; i--) this.chart.swapPanes(i - 1, i);
+    for (; i < to; i++) this.chart.swapPanes(i, i + 1);
+  }
+
+  /** Автомасштаб правой шкалы панели (false — пользователь растянул шкалу вручную). */
+  paneAutoScale(index: number): boolean {
+    const pane = this.chart.panes()[index];
+    if (!pane) return true;
+    return pane.priceScale("right").options().autoScale !== false;
+  }
+
+  /** Вернуть или снять автомасштаб правой шкалы панели (кнопка «A» и двойной клик по шкале). */
+  setPaneAutoScale(index: number, on: boolean): void {
+    this.chart.panes()[index]?.priceScale("right").applyOptions({ autoScale: on });
   }
 
   /**
@@ -283,15 +311,40 @@ export class Terminal {
   layoutPanes(heights: Map<IPaneApi<Time>, number>, mainMinShare: number = VIEW.desktop.mainMinShare): void {
     const panes = this.chart.panes();
     if (panes.length < 2) return;
-    const total = panes.reduce((acc, p) => acc + p.getHeight(), 0);
+    const total = this.panesTotal();
     if (total <= 0) return;
-    const plan = planPanes(
-      total,
-      panes.slice(1).map((p) => heights.get(p) ?? p.getHeight()),
-      mainMinShare,
+    this.applyPanePlan(
+      planPanes(
+        total,
+        panes.slice(1).map((p) => heights.get(p) ?? p.getHeight()),
+        mainMinShare,
+      ),
     );
-    panes[0]!.setStretchFactor(plan.main);
-    panes.slice(1).forEach((p, i) => p.setStretchFactor(plan.others[i]!));
+  }
+
+  /** Высоты панелей сверху вниз (px): основная и дополнительные — stretch-факторами в пикселях. */
+  applyPanePlan(plan: PanePlan): void {
+    const panes = this.chart.panes();
+    if (panes.length < 2 || plan.others.length !== panes.length - 1) return;
+    panes[0]!.setStretchFactor(Math.max(MIN_STRETCH, plan.main));
+    panes.slice(1).forEach((p, i) => p.setStretchFactor(Math.max(MIN_STRETCH, plan.others[i]!)));
+  }
+
+  /**
+   * Высота всех панелей вместе, px: контейнер без шкалы времени и линий между панелями. Высоты панелей (getHeight)
+   * LWC пересчитывает только в следующем кадре: сразу после добавления или удаления панели их сумма — прежняя,
+   * и stretch-факторы по ней давали другие доли (основная 585 вместо 606 после «убрать»).
+   */
+  panesTotal(): number {
+    const panes = this.chart.panes();
+    const axis = this.chart.timeScale().height?.() ?? 0;
+    const h = (this.container.clientHeight || 0) - axis - Math.max(0, panes.length - 1);
+    return h > 0 && axis > 0 ? h : panes.reduce((acc, p) => acc + p.getHeight(), 0);
+  }
+
+  /** Высоты всех панелей сверху вниз, px (0 — основная). */
+  paneHeights(): number[] {
+    return this.chart.panes().map((p) => p.getHeight());
   }
 
   /**
@@ -490,6 +543,10 @@ export class Terminal {
       ts.setVisibleLogicalRange(range);
     }
     this.chart.priceScale("right").applyOptions({ autoScale: true });
+    // шкалы панелей индикаторов, растянутые вручную, — тоже (как «сбросить вид» в TradingView)
+    this.chart.panes().forEach((p, i) => {
+      if (i > 0) p.priceScale("right").applyOptions({ autoScale: true });
+    });
     return range;
   }
 

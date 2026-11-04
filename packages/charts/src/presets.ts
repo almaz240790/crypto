@@ -107,6 +107,8 @@ export interface ViewPreset {
   paneIndicatorPx: number;
   paneDerivPx: number;
   paneCollapsedPx: number;
+  /** Раскрытая панель не ниже этого при перетаскивании границы (ADR-0009 «Управление панелями»). */
+  paneMinPx: number;
   maxExpandedPanes: number;
   labels: LabelBudget;
   axis: AxisBudget;
@@ -180,8 +182,11 @@ export const PRESETS: Readonly<Record<PresetId, LayerPreset>> = {
 /** Пресет по умолчанию — «Чистый»; утверждает владелец (ADR-0008). */
 export const DEFAULT_PRESET: PresetId = "clean";
 
-/** Панели под графиком; доля основной панели — у устройства: десктоп 0.55, телефон и ячейка 0.6 (M19, PaneManager). */
-const PANES = { paneIndicatorPx: 90, paneDerivPx: 80, paneCollapsedPx: 24 } as const;
+/**
+ * Панели под графиком; доля основной панели — у устройства: десктоп 0.55, телефон и ячейка 0.6 (M19, PaneManager).
+ * paneMinPx — нижний предел раскрытой панели при перетаскивании границы: заголовок 24 px и пара делений шкалы.
+ */
+const PANES = { paneIndicatorPx: 90, paneDerivPx: 80, paneCollapsedPx: 24, paneMinPx: 48 } as const;
 
 export const VIEW: Readonly<Record<Device, ViewPreset>> = {
   desktop: {

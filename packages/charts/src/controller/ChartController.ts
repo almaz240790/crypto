@@ -417,6 +417,12 @@ export class ChartController {
 
   // ── вид ──
 
+  /** Точка (clientX) — над правой шкалой цены (правее области свечей). */
+  private overPriceScale(clientX: number): boolean {
+    const w = this.terminal.chart.timeScale().width();
+    return w > 0 && clientX - this.el.getBoundingClientRect().left > w;
+  }
+
   private plotWidth(): number {
     return this.terminal.chart.timeScale().width() || this.el.clientWidth;
   }
@@ -741,7 +747,11 @@ export class ChartController {
     };
     ts.subscribeSizeChange?.(onSize);
     this.cleanups.push(() => ts.unsubscribeSizeChange?.(onSize));
-    const onDbl = () => this.reset();
+    // двойной клик по шкале цены — автомасштаб этой шкалы (axisDoubleClickReset LWC), вид по времени не сбрасывается
+    const onDbl = (e: MouseEvent) => {
+      if (this.overPriceScale(e.clientX)) return;
+      this.reset();
+    };
     // вид двигал пользователь (перетаскивание, колесо, щипок): сброс при смене ширины его не трогает
     const onUser = () => {
       this.userMoved = true;

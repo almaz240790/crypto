@@ -38,7 +38,9 @@ export function chartOptions(t: ThemeTokens, fontSize: number = DEFAULT_SCALE_FO
       fontSize,
       // логотип TradingView в углу графика выключен; атрибуция по лицензии — ссылкой в подвале сайта
       attributionLogo: false,
-      panes: { separatorColor: t.border, separatorHoverColor: alpha(t.accent, 0.2), enableResize: true },
+      // граница панелей — линия --border; перетаскивание, ручку и двойной клик рисует web поверх (ADR-0009,
+      // «Управление панелями»): у встроенной ручки LWC нет ни видимой ручки, ни доли основной панели, ни сброса
+      panes: { separatorColor: t.border, separatorHoverColor: alpha(t.accent, 0.2), enableResize: false },
     },
     grid: { vertLines: { color: alpha(t.border, 0.6) }, horzLines: { color: alpha(t.border, 0.6) } },
     crosshair: {

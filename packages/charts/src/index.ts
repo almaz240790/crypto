@@ -42,6 +42,6 @@ export { AxisCountdown } from "./controller/axisCountdown";
 export { composeSnapshot } from "./controller/snapshot";
 export type { SnapshotStyle } from "./controller/snapshot";
 export { ChartController, createChartController } from "./controller/ChartController";
-export { mainMinShareFor, planPanes } from "./controller/paneManager";
-export type { PanePlan } from "./controller/paneManager";
+export { dragSeparator, EMPTY_PANE_LAYOUT, isEmptyPaneLayout, mainMinShareFor, movePaneKey, normalizePaneLayout, orderPaneKeys, PANE_MAX_PX, planMaximized, planPanes, prunePaneLayout } from "./controller/paneManager";
+export type { PaneLayout, PanePlan } from "./controller/paneManager";
 export type { ChartControllerOptions, ChartHandle, ChartInputs, FocusTarget } from "./controller/ChartController";

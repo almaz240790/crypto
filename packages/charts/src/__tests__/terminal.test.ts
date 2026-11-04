@@ -106,6 +106,30 @@ vi.mock("lightweight-charts", () => {
         return i < 0 ? null : i;
       },
       coordinateToLogical: () => null,
+      height: () => 28,
+    };
+    type FakePane = { stretch: number; height: number; autoScale: boolean; setHeight(h: number): void; getHeight(): number; setStretchFactor(v: number): void; getStretchFactor(): number; paneIndex(): number; moveTo(i: number): void; priceScale(id: string): { options(): { autoScale: boolean }; applyOptions(o: { autoScale?: boolean }): void } };
+    const mkPane = (): FakePane => {
+      const p: FakePane = {
+        stretch: 1,
+        height: 100,
+        autoScale: true,
+        setHeight: (h) => (p.height = h),
+        getHeight: () => p.height,
+        setStretchFactor: (v) => (p.stretch = v),
+        getStretchFactor: () => p.stretch,
+        paneIndex: () => chart.paneList.indexOf(p),
+        moveTo: () => {
+          throw new Error("moveTo сверяет индекс с виджетами панелей — Terminal его не вызывает");
+        },
+        priceScale: () => ({
+          options: () => ({ autoScale: p.autoScale }),
+          applyOptions: (o) => {
+            if (o.autoScale !== undefined) p.autoScale = o.autoScale;
+          },
+        }),
+      };
+      return p;
     };
     const chart = {
       width: 800,
@@ -123,10 +147,21 @@ vi.mock("lightweight-charts", () => {
       scales: [] as { id: string; opts: Record<string, unknown> }[],
       priceScale: (id = "right") => ({ applyOptions: (o: Record<string, unknown>) => chart.scales.push({ id, opts: o }) }),
       applyOptions: (o: Record<string, unknown>) => chart.applied.push(o),
-      panes: () => [],
-      addPane: () => ({ setHeight: () => {} }),
+      paneList: [] as FakePane[],
+      panes: () => chart.paneList,
+      swapPanes: (a: number, b: number) => {
+        const l = chart.paneList;
+        if (!l[a] || !l[b]) throw new Error("Invalid pane index");
+        [l[a], l[b]] = [l[b]!, l[a]!];
+      },
+      addPane: () => {
+        const p = mkPane();
+        chart.paneList.push(p);
+        return p;
+      },
       remove: () => {},
     };
+    chart.paneList.push(mkPane());
     state.charts.push(chart);
     return chart;
   };
@@ -147,7 +182,9 @@ import { EDGE, MAX_CANDLES } from "../buffer";
 import { PERCENT_FORMAT, VALUE_FORMAT, instrumentPriceFormat } from "../priceFormat";
 import { createTerminal, type Terminal } from "../terminal";
 
+type FakePaneT = { stretch: number; height: number; autoScale: boolean; paneIndex(): number };
 type FakeChart = {
+  paneList: FakePaneT[];
   width: number;
   series: FakeSeries[];
   applied: { layout?: { fontSize?: number; background?: unknown }; timeScale?: Record<string, unknown>; rightPriceScale?: { scaleMargins?: { top: number } } }[];
@@ -479,5 +516,71 @@ describe("сброс вида и масштаб у правого края", () 
     expect(last.timeScale?.barSpacing).toBeUndefined();
     expect(last.timeScale?.rightOffset).toBeUndefined();
     expect(last.timeScale?.rightOffsetPixels).toBeUndefined();
+  });
+});
+
+describe("панели под графиком (ADR-0009, «Управление панелями»)", () => {
+  it("addPane возвращает индекс созданной панели и после удаления прежней (раньше — убегающий счётчик)", () => {
+    make();
+    expect(term.addPane(90)).toBe(1);
+    expect(term.addPane(80)).toBe(2);
+    chart.paneList.splice(1, 1); // LWC убирает опустевшую панель
+    expect(term.addPane(90)).toBe(2);
+    expect(chart.paneList).toHaveLength(3);
+    expect(chart.paneList[2]!.height).toBe(90);
+  });
+
+  it("movePane: основная остаётся первой, индекс приводится к 1 … n − 1", () => {
+    make();
+    term.addPane();
+    term.addPane();
+    const [, a, b] = chart.paneList as never as Parameters<Terminal["movePane"]>[0][];
+    term.movePane(b!, 1);
+    expect(chart.paneList.map((p) => p.paneIndex())).toEqual([0, 1, 2]);
+    expect(chart.paneList[1]).toBe(b);
+    term.movePane(a!, 0);
+    expect(chart.paneList[1]).toBe(a);
+    term.movePane(a!, 9);
+    expect(chart.paneList[2]).toBe(a);
+  });
+
+  it("applyPanePlan и paneHeights: stretch-факторы в пикселях; план не той длины не применяется", () => {
+    make();
+    term.addPane();
+    term.addPane();
+    term.applyPanePlan({ main: 500, others: [120, 80] });
+    expect(chart.paneList.map((p) => p.stretch)).toEqual([500, 120, 80]);
+    term.applyPanePlan({ main: 1, others: [1] });
+    expect(chart.paneList.map((p) => p.stretch)).toEqual([500, 120, 80]);
+    term.applyPanePlan({ main: 0, others: [0, 300] });
+    expect(chart.paneList[0]!.stretch).toBeGreaterThan(0);
+    expect(term.paneHeights()).toEqual([100, 100, 100]);
+  });
+
+  it("panesTotal: высота контейнера без шкалы времени и линий между панелями; без размеров — сумма панелей", () => {
+    make();
+    term.addPane();
+    expect(term.panesTotal()).toBe(200);
+    term = createTerminal({ ...container(), clientHeight: 600 } as unknown as HTMLElement, { tokens });
+    chart = state.charts.at(-1) as FakeChart;
+    term.addPane();
+    term.addPane();
+    expect(term.panesTotal()).toBe(600 - 28 - 2);
+  });
+
+  it("автомасштаб шкалы панели: чтение, «A», сброс вида возвращает его всем панелям", () => {
+    make();
+    term.setCandles(bars(0, 200));
+    term.addPane();
+    expect(term.paneAutoScale(1)).toBe(true);
+    chart.paneList[1]!.autoScale = false; // пользователь растянул шкалу RSI
+    expect(term.paneAutoScale(1)).toBe(false);
+    term.setPaneAutoScale(1, true);
+    expect(term.paneAutoScale(1)).toBe(true);
+    chart.paneList[1]!.autoScale = false;
+    term.resetView(100);
+    expect(term.paneAutoScale(1)).toBe(true);
+    expect(term.paneAutoScale(7)).toBe(true);
+    term.setPaneAutoScale(7, false);
   });
 });
