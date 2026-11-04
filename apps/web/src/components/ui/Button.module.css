@@ -54,6 +54,14 @@
   font-size: var(--fs-caption);
 }
 
+/* под пальцем цель не меньше 44 px (ADR-0009); вид кнопки прежний, растёт только высота */
+@media (pointer: coarse) {
+  .btn {
+    height: auto;
+    min-height: var(--touch-min);
+  }
+}
+
 .lg {
   height: 40px;
   padding: 0 var(--gap-4);

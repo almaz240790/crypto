@@ -177,7 +177,7 @@ export default async function PatternStatsPage({ searchParams }: { searchParams:
           <Panel>
             <h2>{t("Графические фигуры")}</h2>
             <p className="caption">
-              {t("Доля подтверждённых фигур, у которых цена дошла до расчётной цели раньше инвалидации за 20 свечей. Только H4, D1 и W1. Фигуры не являются сигналами.")}
+              {t("Доля подтверждённых фигур, у которых цена дошла до расчётной цели раньше инвалидации за 20 свечей. Только 4ч, 1Д и 1Н. Фигуры не являются сигналами.")}
               {figures?.computed_at ? ` ${t("Обновлено {time}.", { time: formatTimeUTC(figures.computed_at) })}` : ""}
             </p>
             {!figItems.some((i) => i.n > 0) ? (

@@ -648,7 +648,6 @@
   "Деривативы": "Derivatives",
   "Детектор прогнан по истории с 2022 года той же версией правил; отметки не пересчитываются задним числом.": "The detector was run over history since 2022 with the same rule version; marks are not recomputed retroactively.",
   "Доля закрытия": "Close share",
-  "Доля подтверждённых фигур, у которых цена дошла до расчётной цели раньше инвалидации за 20 свечей. Только H4, D1 и W1. Фигуры не являются сигналами.": "Share of confirmed figures where price reached the computed target before invalidation within 20 candles. H4, D1 and W1 only. Figures are not signals.",
   "Заблокировать": "Lock",
   "Запись в журнале создана": "Journal record created",
   "Зоны": "Zones",
@@ -1379,5 +1378,6 @@
   "Закрытие последней свечи {tf}": "Last {tf} candle close",
   "Расстояния до уровней — от закрытия последней свечи {tf}; текущая цена — в шапке и на шкале": "Distances to levels are from the last {tf} candle close; the current price is in the header and on the scale",
   "Ещё инструменты (колесо мыши)": "More tools (mouse wheel)",
-  "ещё инструменты": "more tools"
+  "ещё инструменты": "more tools",
+  "Доля подтверждённых фигур, у которых цена дошла до расчётной цели раньше инвалидации за 20 свечей. Только 4ч, 1Д и 1Н. Фигуры не являются сигналами.": "Share of confirmed figures where price reached the computed target before invalidation within 20 candles. 4h, 1D and 1W only. Figures are not signals."
 }

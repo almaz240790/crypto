@@ -913,7 +913,8 @@
 
 .multiGrid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  /* minmax(0, …): шапка ячейки с ценой под курсором не раздвигает колонку и не двигает соседний график */
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   grid-auto-rows: minmax(0, 1fr);
   gap: 1px;
   background: var(--border);
@@ -931,6 +932,8 @@
   display: flex;
   align-items: center;
   gap: var(--gap-2);
+  min-width: 0;
+  overflow: hidden;
   min-height: 36px;
   padding: 0 8px;
   border-bottom: 1px solid var(--border);
@@ -945,6 +948,9 @@
 }
 
 .multiPrice {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--text);
   font-size: 13px;
   white-space: nowrap;
@@ -1002,6 +1008,12 @@
   align-items: center;
   gap: 6px;
   font-weight: 600;
+}
+
+@media (pointer: coarse) {
+  .markupItem label {
+    min-height: var(--touch-min);
+  }
 }
 
 .markupNote {

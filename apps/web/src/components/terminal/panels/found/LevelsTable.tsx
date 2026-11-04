@@ -116,7 +116,7 @@ export const LevelsTable = memo(function LevelsTable({ index, tick, lastClose, t
                 <span>
                   {t("Ликвидации (оценка)")} · {liq.length}
                 </span>
-                <Tooltip label={t("Пояснение")} text={liqTitle}>
+                <Tooltip label={t("Пояснение")} text={liqTitle} align="right">
                   <IconInfo />
                 </Tooltip>
               </summary>
