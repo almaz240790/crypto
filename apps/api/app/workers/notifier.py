@@ -5,7 +5,8 @@
 Здесь же пересчитываются снимки статистики (план 2.4): после закрытия сигнала и раз в
 ``STATS_EVERY`` секунд. И раз в ``MONITOR_EVERY`` секунд крутится монитор (план 6.7, задача
 2.16): проверяет heartbeat воркеров и свежесть свечей, открывает инциденты и шлёт алерты
-владельцам.
+владельцам. Раз в ``RANK_CHECK_EVERY`` секунд (и при старте) — порядок монет по капитализации
+(``app.coin_rank``): с CoinGecko, только если сохранённому в Redis больше суток.
 """
 
 from __future__ import annotations
@@ -18,11 +19,13 @@ import time
 from datetime import UTC, datetime
 from typing import Any
 
+import httpx
 import redis
 import redis.asyncio as aioredis
 import sentry_sdk
 from sqlalchemy import func, select
 
+from app.coin_rank import refresh_if_due
 from app.config import settings
 from app.db import SessionLocal
 from app.models import Signal, SignalEvent
@@ -38,6 +41,8 @@ POLL = 30
 MONITOR_EVERY = 60
 STATS_EVERY = 600
 BILLING_EVERY = 3600
+# порядок монет: проверка раз в час, запрос к CoinGecko — раз в сутки (после сбоя — через час)
+RANK_CHECK_EVERY = 3600
 # дайджесты и отчёт по журналу — раз в сутки после этого часа UTC (понедельник: + недельные)
 DIGEST_HOUR_UTC = 6
 KEY_DIGEST = "notifier:digest:"
@@ -108,6 +113,16 @@ def digests_once(now: datetime) -> dict[str, int]:
     return out
 
 
+def ranks_once() -> str:
+    """Синхронно: обновить порядок монет, если пора. ``fresh`` / ``updated`` / ``failed``."""
+    r = redis.from_url(settings.redis_url, socket_timeout=5)
+    try:
+        with httpx.Client() as client:
+            return refresh_if_due(r, client)
+    finally:
+        r.close()
+
+
 def monitor_once() -> str:
     """Синхронно: один прогон монитора. Возвращает общий статус."""
     r = redis.from_url(settings.redis_url, socket_timeout=5)
@@ -129,8 +144,15 @@ class Notifier:
         next_monitor = 0.0
         next_stats = 0.0
         next_billing = 0.0
+        next_ranks = 0.0
         digest_logged = False
         while not self.stop.is_set():
+            if time.monotonic() >= next_ranks:
+                next_ranks = time.monotonic() + RANK_CHECK_EVERY
+                try:
+                    await asyncio.to_thread(ranks_once)
+                except Exception:
+                    log.exception("порядок монет")
             if time.monotonic() >= next_billing:
                 next_billing = time.monotonic() + BILLING_EVERY
                 try:
