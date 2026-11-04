@@ -198,7 +198,8 @@ const PANE_W = 800;
 
 function render(drawings: Drawing[]) {
   const candles = bars(60);
-  const env = makeEnv(() => candles, { top: 130, bottom: 70 });
+  // шкала цены 150…70: все уровни Фибоначчи 120 → 80 (и 1.618 = 144.7) — в панели, подписи на экране
+  const env = makeEnv(() => candles, { top: 150, bottom: 70 });
   const prim = new DrawingsPrimitive(TOKENS);
   prim.attached({ chart: env.chart, series: env.series, requestUpdate: () => undefined } as never);
   prim.projector!.setBars(candles.map((c) => c.time), H);
@@ -219,7 +220,7 @@ describe("Фибоначчи и цвет рисунков по умолчани�
     for (const s of c.strokes) expect([TOKENS.accent, TOKENS.warn]).not.toContain(s.style);
     const byY = new Map(levels.map((s) => [Math.round(s.y0), s]));
     // та же шкала цены, что у render(): уровень → y
-    const { series } = makeEnv(() => bars(60), { top: 130, bottom: 70 });
+    const { series } = makeEnv(() => bars(60), { top: 150, bottom: 70 });
     const yOf = (level: number) => Math.round(series.priceToCoordinate(80 - (80 - 120) * level));
     const key = [0.5, 0.618].map((l) => byY.get(yOf(l))!);
     const minor = [0.236, 0.382, 0.705, 0.786, 1.272, 1.618].map((l) => byY.get(yOf(l))!);

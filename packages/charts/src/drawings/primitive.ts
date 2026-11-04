@@ -1,9 +1,12 @@
 import type { IChartApi, IPrimitivePaneRenderer, IPrimitivePaneView, ISeriesApi, ISeriesPrimitive, SeriesAttachedParameter, SeriesType, Time } from "lightweight-charts";
-import type { ThemeTokens } from "../types";
-import { formatPriceLabel } from "../format";
+import { layoutLabels } from "../layout/labels";
+import type { TextMeasurer } from "../layout/measure";
+import type { LabelCandidate, PlacedLabel, Rect } from "../layout/types";
 import { alpha } from "../theme";
-import { channelOffset, extend, fibLevels, lineAt, type Projector } from "./geometry";
-import { FIB_KEY_LEVELS, FIB_MINOR_ALPHA, HANDLE_PX, type Drawing, type Point, type StyleColor } from "./types";
+import type { ThemeTokens } from "../types";
+import { channelOffset, extend, fibLevels, lineAt, positionKnobs, positionScreen, type Projector } from "./geometry";
+import { DRAWING_TEXT, drawingColor, drawingLabels, formatDrawingPrice, toCandidate, type DrawingLabel, type DrawingText, type MeasureText, type RiskProfile } from "./labels";
+import { FIB_KEY_LEVELS, FIB_MINOR_ALPHA, HANDLE_PX, POSITION_FILL_ALPHA, POSITION_KNOB_R, POSITION_KNOB_TOUCH_R, isPosition, type Drawing, type Point } from "./types";
 
 /**
  * Примитив LWC, рисующий все рисунки поверх основной серии (план 2A.5): линии, каналы, зоны,
@@ -71,74 +74,47 @@ export class TimeProjector {
 
 type Ctx = CanvasRenderingContext2D;
 
-/** Плашка под подписью уровня: высота строки 11 px моноширинным и непрозрачность фона. */
-const LABEL_PLAQUE_H = 14;
+/** Плашка под подписью уровня: непрозрачность фона (читается поверх свечей в обеих темах). */
 const LABEL_PLAQUE_ALPHA = 0.85;
-/** Подпись от x: плашка — с x + 2 до конца текста + 2, текст — с x + 4 (label). */
-const LABEL_TEXT_DX = 4;
-const LABEL_PLAQUE_DX = 2;
+/** Плашка позиции: фон — та же непрозрачность, что у плашек разметки (--chart-plaque-alpha). */
+const POSITION_PLAQUE_ALPHA = 0.88;
+/** Отступ текста в плашке позиции. */
+const POSITION_TEXT_DX = 4;
+/** Пустая полоса свечей: подписи рисунков свечи не обходят. */
+const NO_CANDLES = { x0: 0, spacing: 0, halfWidth: 0, top: new Float32Array(0), bottom: new Float32Array(0) };
+const NO_BUDGET = { canvas: 0, perLayer: {} };
 
 class Renderer implements IPrimitivePaneRenderer {
   constructor(
-    private readonly drawings: Drawing[],
-    private readonly draft: Drawing | null,
-    private readonly selectedId: string | null,
+    private readonly src: DrawingsPrimitive,
     private readonly proj: Projector,
-    private readonly tokens: ThemeTokens,
-    private readonly touch: boolean,
-    private readonly precision: number | null,
   ) {}
 
   draw(target: Parameters<IPrimitivePaneRenderer["draw"]>[0]): void {
     target.useMediaCoordinateSpace(({ context: ctx, mediaSize }) => {
       const width = mediaSize.width;
-      for (const d of this.drawings) this.drawOne(ctx, d, width, d.id === this.selectedId);
-      if (this.draft) this.drawOne(ctx, this.draft, width, true);
+      const src = this.src;
+      const all = src.draft ? [...src.drawings, src.draft] : src.drawings;
+      for (const d of all) this.drawOne(ctx, d, width);
+      // подписи — поверх всех рисунков, на местах из общей раскладки с разметкой
+      const { labels, placed } = src.paintLabels(ctx, this.proj);
+      for (const l of labels) {
+        const r = placed.get(l.id);
+        if (r) this.drawLabel(ctx, l, r);
+      }
+      // ручки выбранного и начатого — поверх подписей
+      for (const d of all) if ((d === src.draft || d.id === src.selectedId) && !d.locked) this.drawHandles(ctx, d);
     });
   }
 
   private color(d: Drawing): string {
-    const t = this.tokens;
-    // "accent" — прежний цвет по умолчанию (выбрать его было нельзя): такие рисунки тоже нейтральные (StyleColor)
-    const map: Record<StyleColor, string> = { accent: t.text2, up: t.up, down: t.down, warn: t.warn, text2: t.text2, text3: t.text3 };
-    return map[d.style.color] ?? t.text2;
+    return drawingColor(this.src.tokens, d.style.color);
   }
 
   private setStroke(ctx: Ctx, d: Drawing, color = this.color(d)): void {
     ctx.strokeStyle = color;
     ctx.lineWidth = d.style.width;
     ctx.setLineDash(d.style.dashed ? [6, 4] : []);
-  }
-
-  private font(strong = false): string {
-    return `${strong ? "600 " : ""}11px ${this.tokens.fontMono}`;
-  }
-
-  private label(ctx: Ctx, text: string, x: number, y: number, color: string, opts: { plaque?: boolean; strong?: boolean } = {}): void {
-    ctx.font = this.font(opts.strong);
-    ctx.textBaseline = "bottom";
-    if (opts.plaque) {
-      // плашка цвета фона под подписью: читается поверх свечей в обеих темах
-      ctx.fillStyle = alpha(this.tokens.surface, LABEL_PLAQUE_ALPHA);
-      ctx.fillRect(x + LABEL_PLAQUE_DX, y - 3 - LABEL_PLAQUE_H, ctx.measureText(text).width + 2 * LABEL_PLAQUE_DX, LABEL_PLAQUE_H);
-    }
-    ctx.fillStyle = color;
-    ctx.fillText(text, x + LABEL_TEXT_DX, y - 3);
-  }
-
-  /**
-   * Где начать подпись уровня Фибоначчи (x для label): справа от рисунка; не помещается до края панели (правый
-   * конец — у последней свечи, подпись ушла бы под шкалу цены) — внутри рисунка у правого края, а если рисунок уже
-   * подписи — слева от него; в крайнем случае — у края панели.
-   */
-  private fibLabelX(ctx: Ctx, text: string, strong: boolean, left: number, right: number, width: number): number {
-    ctx.font = this.font(strong);
-    // от x до конца плашки: отступ текста, текст, поле плашки справа
-    const span = LABEL_TEXT_DX + ctx.measureText(text).width + LABEL_PLAQUE_DX;
-    if (right + span <= width) return right;
-    if (right - left >= span + LABEL_TEXT_DX) return right - span - LABEL_TEXT_DX + LABEL_PLAQUE_DX;
-    if (left - span - LABEL_PLAQUE_DX >= 0) return left - span - LABEL_PLAQUE_DX;
-    return Math.max(0, width - span);
   }
 
   private pts(d: Drawing): { x: number; y: number }[] | null {
@@ -151,7 +127,88 @@ class Renderer implements IPrimitivePaneRenderer {
     return out;
   }
 
-  private drawOne(ctx: Ctx, d: Drawing, width: number, selected: boolean): void {
+  /** Подпись на месте r из раскладки: текст, плашка Фибоначчи, плашка позиции или рамка заметки. */
+  private drawLabel(ctx: Ctx, l: DrawingLabel, r: Rect): void {
+    const t = this.src.tokens;
+    ctx.save();
+    ctx.setLineDash([]);
+    ctx.font = `${l.weight === 600 ? "600 " : ""}${l.px}px ${l.font === "sans" ? t.fontSans : t.fontMono}`;
+    switch (l.style) {
+      case "note":
+        ctx.fillStyle = alpha(l.color, 0.1);
+        ctx.fillRect(r.x, r.y, r.w, r.h);
+        ctx.strokeStyle = l.color;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w, r.h);
+        ctx.fillStyle = l.color;
+        ctx.textBaseline = "middle";
+        ctx.fillText(l.lines[0] ?? "", r.x + 6, r.y + r.h / 2);
+        break;
+      case "outline": {
+        // плашка позиции: фон цвета области, рамка и текст — цвета зоны (цель, стоп) или нейтральные (вход)
+        ctx.fillStyle = alpha(t.surface, POSITION_PLAQUE_ALPHA);
+        ctx.fillRect(r.x, r.y, r.w, r.h);
+        ctx.strokeStyle = l.color;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1);
+        ctx.fillStyle = l.color;
+        ctx.textBaseline = "middle";
+        const lh = (r.h - 2) / Math.max(1, l.lines.length);
+        l.lines.forEach((line, i) => ctx.fillText(line, r.x + POSITION_TEXT_DX, r.y + 1 + lh * (i + 0.5)));
+        break;
+      }
+      default:
+        if (l.style === "plaque") {
+          ctx.fillStyle = alpha(t.surface, LABEL_PLAQUE_ALPHA);
+          ctx.fillRect(r.x, r.y, r.w, r.h);
+        }
+        ctx.fillStyle = l.color;
+        ctx.textBaseline = "bottom";
+        ctx.fillText(l.lines[0] ?? "", r.x + 2, r.y + r.h);
+    }
+    ctx.restore();
+  }
+
+  private drawHandles(ctx: Ctx, d: Drawing): void {
+    const color = this.color(d);
+    const touch = this.src.touch;
+    ctx.save();
+    ctx.setLineDash([]);
+    ctx.lineWidth = 1.5;
+    if (isPosition(d.type)) {
+      // ручки позиции: вход, стоп, цель, правый край — крупнее точек (под пальцем — цель 44 px)
+      const s = positionScreen(d, this.proj);
+      if (s) {
+        const r = touch ? POSITION_KNOB_TOUCH_R : POSITION_KNOB_R;
+        const k = positionKnobs(s);
+        const tones: Record<keyof typeof k, string> = { entry: this.src.tokens.text2, stop: this.src.tokens.down, target: this.src.tokens.up, end: this.src.tokens.text2 };
+        for (const part of ["entry", "stop", "target", "end"] as const) {
+          ctx.fillStyle = this.src.tokens.surface;
+          ctx.strokeStyle = tones[part];
+          ctx.beginPath();
+          if (part === "end") ctx.rect(k[part].x - r * 0.6, k[part].y - r, r * 1.2, r * 2);
+          else ctx.arc(k[part].x, k[part].y, r, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+        }
+      }
+      ctx.restore();
+      return;
+    }
+    const pts = this.pts(d);
+    const r = touch ? 10 : HANDLE_PX / 2;
+    for (const p of pts ?? []) {
+      ctx.fillStyle = this.src.tokens.surface;
+      ctx.strokeStyle = color;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  private drawOne(ctx: Ctx, d: Drawing, width: number): void {
     const pts = this.pts(d);
     if (!pts || pts.length === 0) return;
     const color = this.color(d);
@@ -163,7 +220,6 @@ class Renderer implements IPrimitivePaneRenderer {
       case "hray": {
         const x0 = d.type === "hline" ? 0 : a!.x;
         line(ctx, x0, a!.y, width, a!.y);
-        this.label(ctx, formatDrawingPrice(d.points[0]!.price, this.precision), x0, a!.y, color);
         break;
       }
       case "vline":
@@ -178,14 +234,9 @@ class Renderer implements IPrimitivePaneRenderer {
         let { x: x2, y: y2 } = b;
         if (d.type === "ray" || d.type === "extended") ({ x1, y1, x2, y2 } = extend(x1, y1, x2, y2, width, d.type === "extended"));
         line(ctx, x1, y1, x2, y2);
-        if (d.type === "trend" || d.type === "ruler") {
-          const p1 = d.points[0]!, p2 = d.points[1]!;
-          const pct = p1.price ? ((p2.price - p1.price) / p1.price) * 100 : 0;
-          this.label(ctx, `${pct >= 0 ? "+" : ""}${pct.toFixed(2)} %${d.text ? " · " + d.text : ""}`, b.x, b.y, color);
-          if (d.type === "ruler") {
-            ctx.fillStyle = alpha(color, 0.08);
-            ctx.fillRect(Math.min(a!.x, b.x), Math.min(a!.y, b.y), Math.abs(b.x - a!.x), Math.abs(b.y - a!.y));
-          }
+        if (d.type === "ruler") {
+          ctx.fillStyle = alpha(color, 0.08);
+          ctx.fillRect(Math.min(a!.x, b.x), Math.min(a!.y, b.y), Math.abs(b.x - a!.x), Math.abs(b.y - a!.y));
         }
         break;
       }
@@ -213,13 +264,12 @@ class Renderer implements IPrimitivePaneRenderer {
         ctx.fillStyle = alpha(color, 0.12);
         ctx.fillRect(x, y, w, h);
         ctx.strokeRect(x + 0.5, y + 0.5, w, h);
-        if (d.text) this.label(ctx, d.text, x, y + 14, color);
         break;
       }
       case "fib": {
         if (!b) break;
         // нейтральные уровни одного цвета, без заливки: 0 и 1 — сплошные, 0.5 и 0.618 — сплошные и толще,
-        // остальные — пунктир полупрозрачный; подписи — на плашке, ключевые — полужирные
+        // остальные — пунктир полупрозрачный; подписи — на плашке, ключевые — полужирные (drawLabel)
         const left = Math.min(a!.x, b.x), right = Math.max(a!.x, b.x);
         for (const { level, price } of fibLevels(d.points[0]!, d.points[1]!, d.levels)) {
           const y = this.proj.y(price);
@@ -231,66 +281,37 @@ class Renderer implements IPrimitivePaneRenderer {
           ctx.setLineDash(solid ? [] : [4, 3]);
           line(ctx, left, y, right, y);
           ctx.globalAlpha = 1;
-          const text = `${level} · ${formatDrawingPrice(price, this.precision)}`;
-          this.label(ctx, text, this.fibLabelX(ctx, text, key, left, right, width), y, color, { plaque: true, strong: key });
         }
         break;
       }
       case "position-long":
       case "position-short": {
-        if (!b) break;
-        const entry = d.points[0]!, stop = d.points[1]!, target = d.points[2] ?? null;
-        const x = Math.min(a!.x, b.x), w = Math.max(Math.abs(b.x - a!.x), 40);
-        const yE = a!.y, yS = b.y;
-        ctx.fillStyle = alpha(this.tokens.down, 0.15);
-        ctx.fillRect(x, Math.min(yE, yS), w, Math.abs(yS - yE));
-        if (c) {
-          ctx.fillStyle = alpha(this.tokens.up, 0.15);
-          ctx.fillRect(x, Math.min(yE, c.y), w, Math.abs(c.y - yE));
-        }
+        // как в TradingView: зона прибыли (вход — цель) зелёная, зона риска (вход — стоп) красная, полупрозрачные —
+        // свечи под ними видны; линия входа нейтральная, края зон — цветом зоны
+        const s = positionScreen(d, this.proj);
+        if (!s) break;
+        const t = this.src.tokens;
+        const w = s.xR - s.xL;
+        ctx.fillStyle = alpha(t.up, POSITION_FILL_ALPHA);
+        ctx.fillRect(s.xL, Math.min(s.yE, s.yT), w, Math.abs(s.yT - s.yE));
+        ctx.fillStyle = alpha(t.down, POSITION_FILL_ALPHA);
+        ctx.fillRect(s.xL, Math.min(s.yE, s.yS), w, Math.abs(s.yS - s.yE));
         ctx.setLineDash([]);
-        ctx.strokeStyle = this.tokens.text2;
-        line(ctx, x, yE, x + w, yE);
-        this.label(ctx, `вход ${formatDrawingPrice(entry.price, this.precision)}`, x, yE, this.tokens.text2);
-        ctx.strokeStyle = this.tokens.down;
-        line(ctx, x, yS, x + w, yS);
-        this.label(ctx, `стоп ${formatDrawingPrice(stop.price, this.precision)}`, x, yS, this.tokens.down);
-        if (c && target) {
-          ctx.strokeStyle = this.tokens.up;
-          line(ctx, x, c.y, x + w, c.y);
-          const risk = Math.abs(entry.price - stop.price);
-          const rr = risk ? Math.abs(target.price - entry.price) / risk : 0;
-          this.label(ctx, `цель ${formatDrawingPrice(target.price, this.precision)} · R:R ${rr.toFixed(2)}`, x, c.y, this.tokens.up);
-        }
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = t.up;
+        line(ctx, s.xL, s.yT, s.xR, s.yT);
+        ctx.strokeStyle = t.down;
+        line(ctx, s.xL, s.yS, s.xR, s.yS);
+        ctx.strokeStyle = t.text2;
+        line(ctx, s.xL, s.yE, s.xR, s.yE);
         break;
       }
       case "note": {
-        ctx.font = `12px ${this.tokens.fontSans}`;
-        const text = d.text ?? "";
-        const w = ctx.measureText(text).width + 12;
-        ctx.fillStyle = alpha(color, 0.1);
-        ctx.fillRect(a!.x + 6, a!.y - 20, w, 18);
-        ctx.strokeRect(a!.x + 6.5, a!.y - 19.5, w, 18);
         ctx.fillStyle = color;
-        ctx.textBaseline = "middle";
-        ctx.fillText(text, a!.x + 12, a!.y - 11);
         ctx.beginPath();
         ctx.arc(a!.x, a!.y, 3, 0, Math.PI * 2);
         ctx.fill();
         break;
-      }
-    }
-    if (selected && !d.locked) {
-      const r = this.touch ? 10 : HANDLE_PX / 2;
-      for (const p of pts) {
-        ctx.setLineDash([]);
-        ctx.fillStyle = this.tokens.surface;
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
       }
     }
     ctx.restore();
@@ -304,16 +325,6 @@ function line(ctx: Ctx, x1: number, y1: number, x2: number, y2: number): void {
   ctx.stroke();
 }
 
-/**
- * Цена в подписи рисунка (горизонтальная линия, уровни Фибоначчи, вход/стоп/цель позиции): с точностью
- * инструмента и разрядами — как на шкале, в шапке и в списках. Без шага цены (precision = null) — прежняя
- * грубая запись.
- */
-export function formatDrawingPrice(p: number, precision: number | null): string {
-  if (precision !== null) return formatPriceLabel(p, precision);
-  return p >= 1000 ? p.toFixed(1) : p >= 1 ? p.toFixed(2) : p.toPrecision(4);
-}
-
 class View implements IPrimitivePaneView {
   constructor(private readonly source: DrawingsPrimitive) {}
   zOrder(): "top" {
@@ -322,7 +333,7 @@ class View implements IPrimitivePaneView {
   renderer(): IPrimitivePaneRenderer | null {
     const s = this.source;
     if (!s.projector) return null;
-    return new Renderer(s.drawings, s.draft, s.selectedId, s.projector.projector(), s.tokens, s.touch, s.precision);
+    return new Renderer(s, s.projector.projector());
   }
 }
 
@@ -334,8 +345,20 @@ export class DrawingsPrimitive implements ISeriesPrimitive<Time> {
   touch = false;
   /** Знаков после запятой у цен в подписях — по шагу цены инструмента; null — шаг ещё неизвестен. */
   precision: number | null = null;
+  /** Депозит и доля риска из настроек: у позиции — риск в $ и объём (вторая строка плашки входа). */
+  profile: RiskProfile | null = null;
+  /** Тексты плашек позиции (перевод — из web). */
+  text: DrawingText = DRAWING_TEXT;
+  /**
+   * Места подписей из общей раскладки с разметкой (ChartController.drawingLabels); без неё — своя раскладка только
+   * среди подписей рисунков (график без разметки, тесты).
+   */
+  linked: (() => readonly PlacedLabel[] | null) | null = null;
   private requestUpdate: (() => void) | null = null;
   private readonly views = [new View(this)];
+  /** Растёт при каждом update(): подписи раскладки разметки — того же состояния, что и кадр. */
+  private rev = 0;
+  private sent: { rev: number; labels: DrawingLabel[] } | null = null;
 
   constructor(public tokens: ThemeTokens) {}
 
@@ -349,9 +372,39 @@ export class DrawingsPrimitive implements ISeriesPrimitive<Time> {
     this.requestUpdate = null;
   }
 
-  update(patch: Partial<Pick<DrawingsPrimitive, "drawings" | "draft" | "selectedId" | "tokens" | "touch" | "precision">>): void {
+  update(patch: Partial<Pick<DrawingsPrimitive, "drawings" | "draft" | "selectedId" | "tokens" | "touch" | "precision" | "profile" | "text">>): void {
     Object.assign(this, patch);
+    this.rev++;
     this.requestUpdate?.();
+  }
+
+  private labels(proj: Projector, measure: MeasureText): DrawingLabel[] {
+    return drawingLabels({ drawings: this.drawings, draft: this.draft, selectedId: this.selectedId, proj, tokens: this.tokens, precision: this.precision, profile: this.profile, text: this.text, measure });
+  }
+
+  /**
+   * Кандидаты подписей рисунков для раскладки разметки (OverlayPrimitive зовёт в каждом кадре до отрисовки): ширины —
+   * измерителем темы, как у подписей разметки.
+   */
+  labelCandidates(measure: TextMeasurer): LabelCandidate[] {
+    if (!this.projector) return [];
+    const labels = this.labels(this.projector.projector(), (t, f, px, w) => measure.measure(t, f, px, w).w);
+    this.sent = { rev: this.rev, labels };
+    return labels.map(toCandidate);
+  }
+
+  /** Подписи кадра и их места: из общей раскладки, если она посчитана для этого состояния, иначе — своя раскладка. */
+  paintLabels(ctx: CanvasRenderingContext2D, proj: Projector): { labels: readonly DrawingLabel[]; placed: ReadonlyMap<string, Rect> } {
+    const linked = this.linked?.() ?? null;
+    if (linked && this.sent && this.sent.rev === this.rev) return { labels: this.sent.labels, placed: new Map(linked.map((p) => [p.id, p.rect])) };
+    const t = this.tokens;
+    const labels = this.labels(proj, (text, font, px, weight) => {
+      ctx.font = `${weight === 600 ? "600 " : ""}${px}px ${font === "sans" ? t.fontSans : t.fontMono}`;
+      return ctx.measureText(text).width;
+    });
+    const vp = { width: proj.width, height: proj.height, insetTop: 0, volumeTopY: proj.height, free: null, gutter: null };
+    const res = layoutLabels(labels.map(toCandidate), { candles: NO_CANDLES, rects: [] }, vp, NO_BUDGET);
+    return { labels, placed: new Map((res.external ?? []).map((p) => [p.id, p.rect])) };
   }
 
   paneViews(): readonly IPrimitivePaneView[] {
@@ -359,4 +412,4 @@ export class DrawingsPrimitive implements ISeriesPrimitive<Time> {
   }
 }
 
-export { lineAt, type Point };
+export { formatDrawingPrice, lineAt, type Point };

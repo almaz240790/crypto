@@ -121,7 +121,7 @@ describe("layoutLabels: свойства на 200 случайных сцена�
       for (const d of res.dropped.filter((x) => x.reason === "budget")) {
         const cand = byId.get(d.id)!;
         expect(cand.bypassBudget).toBe(false);
-        const cap = c.budget.perLayer[cand.layer];
+        const cap = c.budget.perLayer[cand.layer as (typeof LAYER_ORDER)[number]];
         const sameLayer = counted.filter((p) => p.layer === cand.layer);
         const byTotal = cap === undefined || sameLayer.length < cap;
         const rivals = byTotal ? counted : sameLayer;

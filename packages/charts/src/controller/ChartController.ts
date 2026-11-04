@@ -1,14 +1,14 @@
 import type { IChartApi, LogicalRange, MouseEventParams, PriceFormat, Time } from "lightweight-charts";
 import { formatCountdown } from "../format";
 import type { Layer, LayerContext } from "../layers";
-import type { Rect } from "../layout/types";
+import type { PlacedLabel, Rect } from "../layout/types";
 import type { TextMeasurer } from "../layout/measure";
 import type { ScreenScene } from "../layout/project";
 import { countdownSeconds } from "../live";
 import { barsForWidth, DEFAULT_PRESET, deviceFor, INTERACTION, resolvePreset, VIEW, type MarkupSettings, type ResolvedPreset, type ViewPreset } from "../presets";
 import { instrumentPriceFormat, priceFormatter, withHiddenTicks, type PriceFormatter } from "../priceFormat";
 import { timeToIndex } from "../render/projector";
-import { OverlayPrimitive } from "../render/OverlayPrimitive";
+import { OverlayPrimitive, type ExternalLabels } from "../render/OverlayPrimitive";
 import { buildScene, sceneHover, selectionId } from "../scene/build";
 import { deriveAnalytics, NONE, type AlertLine, type Analytics, type ExternalObject, type SceneInput, type SceneSelection } from "../scene/input";
 import type { SceneText } from "../scene/text";
@@ -297,6 +297,19 @@ export class ChartController {
   /** Наведение и клик выключены, пока gate(x, y) = false (инструмент рисования, рисунок под курсором). */
   setHitGate(gate: ((x: number, y: number) => boolean) | null): void {
     this.hitGate = gate;
+  }
+
+  /**
+   * Подписи рисунков пользователя — в раскладке разметки (ADR-0009, «Рисование»): подписи разметки ниже их приоритета
+   * обходят их; места подписей — drawingLabels().
+   */
+  setDrawingLabels(provider: ExternalLabels | null): void {
+    this.overlay.setExternalLabels(provider);
+  }
+
+  /** Места подписей рисунков в текущем кадре; null — кадра раскладки ещё нет. */
+  drawingLabels(): readonly PlacedLabel[] | null {
+    return this.overlay.externalPlaced();
   }
 
   // ── кадр стадий ──
