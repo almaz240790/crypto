@@ -249,10 +249,12 @@ function positionLabels(d: Drawing, base: number, o: DrawingLabelInput, out: Dra
     const h = lines.length * LABEL_H + 2 * POS_PAD_Y;
     const clampX = (x: number) => Math.min(Math.max(x, 0), Math.max(0, W - w));
     const clampY = (y: number) => Math.min(Math.max(y, 0), Math.max(0, H - h));
-    // посередине, у левого и правого края внутри, затем снаружи слева и справа
-    const xs = [...new Set([s.xC - w / 2, s.xL + POS_GAP, s.xR - w - POS_GAP, s.xL - w - POS_GAP, s.xR + POS_GAP].map(clampX))];
+    // над позицией: посередине, у левого и правого края — на всех высотах; лишь потом снаружи слева и справа (плашка
+    // у своей зоны важнее, чем у самой линии)
+    const inner = [...new Set([s.xC - w / 2, s.xL + POS_GAP, s.xR - w - POS_GAP].map(clampX))];
+    const outer = [...new Set([s.xL - w - POS_GAP, s.xR + POS_GAP].map(clampX))].filter((x) => !inner.includes(x));
     const slots: { x: number; y: number }[] = [];
-    for (const yy of ys) for (const x of xs) slots.push({ x, y: clampY(yy(h)) });
+    for (const xs of [inner, outer]) for (const yy of ys) for (const x of xs) slots.push({ x, y: clampY(yy(h)) });
     out.push({ id: `${d.id}#${part}`, drawingId: d.id, lines, style: "outline", color: tones[part], font: "mono", px: LABEL_PX, weight: 600, w, h, slots, mode: "soft", rank: base + rank });
   };
   // k — на сколько плашек дальше от линии (полоса текущей цены, подпись разметки старше — следующее место)

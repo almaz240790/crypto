@@ -131,10 +131,10 @@ describe("геометрия позиции", () => {
 const PROJ: Projector = { x: (t) => ((t - T0) / H) * 10, y: (p) => (200 - p) * 4, width: 1000, height: 800 };
 
 describe("ручки позиции", () => {
-  it("вход — слева, стоп и цель — посередине, правый край — справа на линии входа; ширина не меньше 40 px", () => {
+  it("вход, стоп и цель — у левого края своих линий, правый край — справа на линии входа; ширина не меньше 40 px", () => {
     const s = positionScreen(pos("position-long", 100, 96, 108), PROJ)!;
     expect(s).toEqual({ xL: 200, xR: 500, xC: 350, yE: 400, yS: 416, yT: 368 });
-    expect(positionKnobs(s)).toEqual({ entry: { x: 200, y: 400 }, stop: { x: 350, y: 416 }, target: { x: 350, y: 368 }, end: { x: 500, y: 400 } });
+    expect(positionKnobs(s)).toEqual({ entry: { x: 200, y: 400 }, stop: { x: 200, y: 416 }, target: { x: 200, y: 368 }, end: { x: 500, y: 400 } });
     const narrow = positionScreen(pos("position-long", 100, 96, 108, 20, 20), PROJ)!;
     expect(narrow.xR - narrow.xL).toBe(40);
     expect(positionScreen({ type: "trend", points: [] }, PROJ)).toBeNull();
@@ -142,9 +142,12 @@ describe("ручки позиции", () => {
 
   it("попадание: ручка (под пальцем — 22 px), линия по всей длине, правый край, тело, мимо", () => {
     const s = positionScreen(pos("position-long", 100, 96, 108), PROJ)!;
-    expect(positionHit(s, 350 + 15, 416 + 12, 14, 22)).toBe("stop");
+    expect(positionHit(s, 200 + 15, 416 + 12, 14, 22)).toBe("stop");
     // мышью (8 px) так далеко от ручки — мимо
-    expect(positionHit(s, 350 + 15, 416 + 12, 8, 8)).toBeNull();
+    expect(positionHit(s, 200 + 15, 416 + 12, 8, 8)).toBeNull();
+    // ручки входа и стопа рядом (зона риска 16 px): ближайшая
+    expect(positionHit(s, 200, 404, 14, 22)).toBe("entry");
+    expect(positionHit(s, 200, 413, 14, 22)).toBe("stop");
     expect(positionHit(s, 260, 369, 8, 8)).toBe("target");
     expect(positionHit(s, 260, 401, 8, 8)).toBe("entry");
     expect(positionHit(s, 502, 380, 8, 8)).toBe("end");
@@ -153,6 +156,7 @@ describe("ручки позиции", () => {
     // тонкая зона риска (16 px): полоса линии — не шире трети зоны, середина — тело
     expect(positionHit(s, 260, 408, 8, 8)).toBe("body");
     const d = pos("position-long", 100, 96, 108);
+    expect(hitTest([d], 200, 416, PROJ, 8)).toEqual({ id: "P", part: "point", index: 1 });
     expect(hitTest([d], 350, 416, PROJ, 8)).toEqual({ id: "P", part: "point", index: 1 });
     expect(hitTest([d], 500, 400, PROJ, 8)).toEqual({ id: "P", part: "point", index: 3 });
     expect(hitTest([d], 300, 384, PROJ, 8)).toEqual({ id: "P", part: "body", index: -1 });

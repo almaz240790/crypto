@@ -126,11 +126,11 @@ export function positionScreen(d: Pick<Drawing, "type" | "points">, proj: Pick<P
 }
 
 /**
- * Ручки позиции (как в TradingView): вход — у левого края линии входа, стоп и цель — посередине своих линий (не
- * сливаются с ручкой входа на узкой зоне), правый край — на линии входа справа.
+ * Ручки позиции (как в TradingView): вход, стоп и цель — у левого края своих линий, правый край — на линии входа
+ * справа. Середина линий свободна: там плашки цели, стопа и входа.
  */
 export function positionKnobs(s: PositionScreen): Readonly<Record<PositionPart, { x: number; y: number }>> {
-  return { entry: { x: s.xL, y: s.yE }, stop: { x: s.xC, y: s.yS }, target: { x: s.xC, y: s.yT }, end: { x: s.xR, y: s.yE } };
+  return { entry: { x: s.xL, y: s.yE }, stop: { x: s.xL, y: s.yS }, target: { x: s.xL, y: s.yT }, end: { x: s.xR, y: s.yE } };
 }
 
 /**

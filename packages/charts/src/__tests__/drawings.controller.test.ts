@@ -894,15 +894,15 @@ describe("позиция: ручки и тело", () => {
     expect(s.log.moves).toHaveLength(0);
     s.finger.tap(300, 405);
     expect(s.selected()).toBe("P");
-    // в 19 px от ручки стопа (радиус касания 22): правится стоп — от места касания, без прыжка под палец;
-    // touch-события до графика не доходят
-    const d = s.finger.down(350 + 15, 416 + 12);
+    // в 19 px от ручки стопа (у левого края, радиус касания 22): правится стоп — от места касания, без прыжка под
+    // палец; touch-события до графика не доходят
+    const d = s.finger.down(200 + 15, 416 + 12);
     expect(d.stopped).toBe(true);
     expect(s.touchReachesChart("touchstart", 1)).toBe(false);
-    s.finger.move(365, 440);
+    s.finger.move(215, 440);
     expect(s.touchReachesChart("touchmove", 1)).toBe(false);
-    s.finger.move(365, 452);
-    s.finger.up(365, 452);
+    s.finger.move(215, 452);
+    s.finger.up(215, 452);
     const m = last(s);
     expect(m.final).toBe(true);
     expect(m.points[1]!.price).toBeCloseTo(96 - 6, 9);
