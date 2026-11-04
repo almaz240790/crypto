@@ -69,6 +69,8 @@ export async function liveSocket(page: Page, o: LiveMockOptions): Promise<LiveMo
       }
     }
   }, o.every ?? 250);
+  // упавший тест не вызовет dispose — таймер тиков не переживает страницу
+  page.once("close", () => clearInterval(timer));
   return {
     state,
     sockets,
