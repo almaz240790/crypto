@@ -15,11 +15,20 @@ export interface PanePlan {
 export function planPanes(total: number, wants: readonly number[], mainMinShare: number): PanePlan {
   if (total <= 0 || wants.length === 0) return { main: Math.max(0, total), others: [] };
   const want = wants.map((h) => Math.max(1, h));
-  const sum = want.reduce((a, b) => a + b, 0);
-  const room = total * (1 - Math.min(1, Math.max(0, mainMinShare)));
-  const k = sum > room ? room / sum : 1;
+  const k = paneSqueeze(total, want, mainMinShare);
   const others = want.map((h) => h * k);
   return { main: total - others.reduce((a, b) => a + b, 0), others };
+}
+
+/**
+ * Коэффициент сжатия planPanes: 1 — панели помещаются, меньше 1 — окно ниже суммы желаемых высот, и все панели
+ * сжаты в k раз, а основная стоит ровно на своей доле.
+ */
+export function paneSqueeze(total: number, wants: readonly number[], mainMinShare: number): number {
+  if (total <= 0 || wants.length === 0) return 1;
+  const sum = wants.reduce((a, h) => a + Math.max(1, h), 0);
+  const room = total * (1 - Math.min(1, Math.max(0, mainMinShare)));
+  return sum > room ? room / sum : 1;
 }
 
 /** Доля основной панели по классу устройства (VIEW). */
@@ -102,21 +111,65 @@ export function movePaneKey(keys: readonly string[], key: string, dir: -1 | 1): 
 }
 
 /**
- * Перетаскивание границы (ADR-0009): высоты всех панелей сверху вниз (0 — основная), граница между a и b
- * (a выше b; свёрнутые между ними пропускает вызывающий). a растёт на dy, b — уменьшается на столько же: остальные
- * панели не двигаются. Основная — не меньше minMain (доля устройства), дополнительная — не меньше minPane.
+ * Пределы границы панелей (ADR-0009, «Управление панелями»), px. Основная — не меньше minMain (доля устройства),
+ * раскрытая — не ниже minPane. Если окно сжало панели (squeezed: planPanes с k < 1), пара, которой на двоих
+ * не хватает minPane, делит своё место до squeezedMin (заголовок панели) — иначе граница стоит и ничего не делает;
+ * а основная при сжатии не растёт: она держит свою долю, и после отпускания план вернул бы всё назад.
  */
-export function dragSeparator(heights: readonly number[], a: number, b: number, dy: number, minMain: number, minPane: number): number[] {
-  const next = [...heights];
+export interface SepLimits {
+  minMain: number;
+  minPane: number;
+  squeezedMin: number;
+  squeezed: boolean;
+}
+
+/**
+ * Насколько можно сдвинуть границу между a и b (a выше b; свёрнутые между ними пропускает вызывающий), px:
+ * [вверх ≤ 0, вниз ≥ 0]. Панель, которая уже ниже своего предела (сжатие окном, высоты с другого устройства),
+ * не «прыгает» к нему в начале перетаскивания — она может только расти. [0, 0] — граница стоит.
+ */
+export function separatorRange(heights: readonly number[], a: number, b: number, lim: SepLimits): [up: number, down: number] {
   const ha = heights[a];
   const hb = heights[b];
-  if (ha === undefined || hb === undefined || a === b || !Number.isFinite(dy)) return next;
-  const lo = a === 0 ? minMain : minPane;
-  const loB = b === 0 ? minMain : minPane;
-  const sum = ha + hb;
-  if (sum < lo + loB) return next;
-  const top = Math.min(sum - loB, Math.max(lo, ha + dy));
-  next[a] = top;
-  next[b] = sum - top;
+  if (ha === undefined || hb === undefined || a >= b) return [0, 0];
+  const base = (i: number) => (i === 0 ? lim.minMain : lim.minPane);
+  let loA = base(a);
+  let loB = base(b);
+  if (ha + hb < loA + loB) {
+    if (a !== 0) loA = Math.min(loA, lim.squeezedMin);
+    if (b !== 0) loB = Math.min(loB, lim.squeezedMin);
+  }
+  loA = Math.min(loA, ha);
+  loB = Math.min(loB, hb);
+  const up = Math.min(0, loA - ha);
+  const down = a === 0 && lim.squeezed ? 0 : Math.max(0, hb - loB);
+  return [up, down];
+}
+
+/**
+ * Перетаскивание границы (ADR-0009): высоты всех панелей сверху вниз (0 — основная), граница между a и b.
+ * a растёт на dy, b — уменьшается на столько же (в пределах separatorRange): остальные панели не двигаются.
+ */
+export function dragSeparator(heights: readonly number[], a: number, b: number, dy: number, lim: SepLimits): number[] {
+  const next = [...heights];
+  if (!Number.isFinite(dy)) return next;
+  const [up, down] = separatorRange(heights, a, b, lim);
+  if (up === 0 && down === 0) return next;
+  const d = Math.min(down, Math.max(up, dy));
+  next[a] = heights[a]! + d;
+  next[b] = heights[b]! - d;
   return next;
+}
+
+/**
+ * Конец перетаскивания границы (ADR-0009): в раскладку пишутся только две панели у границы (у основной записи нет),
+ * в желаемых px — экранная высота, делённая на коэффициент сжатия k (paneSqueeze). Сумма пары не меняется, значит
+ * и k: план даёт ту же картину, что видел пользователь, а на высоком окне — те же пропорции, а не сжатые px.
+ * Остальные записи не трогаются: панели, которых не касались, и дальше получают высоту по умолчанию.
+ */
+export function commitPaneHeights(heights: Readonly<Record<string, number>>, pair: readonly (readonly [key: string | null, px: number])[], k: number, minPx: number = VIEW.desktop.paneMinPx): Record<string, number> {
+  const out = { ...heights };
+  const f = k > 0 && k < 1 ? k : 1;
+  for (const [key, px] of pair) if (key && Number.isFinite(px)) out[key] = Math.round(Math.min(PANE_MAX_PX, Math.max(minPx, px / f)));
+  return out;
 }

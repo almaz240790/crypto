@@ -109,6 +109,13 @@ export interface ViewPreset {
   paneCollapsedPx: number;
   /** Раскрытая панель не ниже этого при перетаскивании границы (ADR-0009 «Управление панелями»). */
   paneMinPx: number;
+  /**
+   * То же под пальцем (pointer: coarse): заголовок там 44 px, и панели на 48 px пальцу почти негде коснуться
+   * графика — не ниже заголовка и полосы графика под ним.
+   */
+  paneMinTouchPx: number;
+  /** Свёрнутая панель под пальцем — заголовок 44 px (цель касания). */
+  paneCollapsedTouchPx: number;
   maxExpandedPanes: number;
   labels: LabelBudget;
   axis: AxisBudget;
@@ -184,9 +191,10 @@ export const DEFAULT_PRESET: PresetId = "clean";
 
 /**
  * Панели под графиком; доля основной панели — у устройства: десктоп 0.55, телефон и ячейка 0.6 (M19, PaneManager).
- * paneMinPx — нижний предел раскрытой панели при перетаскивании границы: заголовок 24 px и пара делений шкалы.
+ * paneMinPx — нижний предел раскрытой панели при перетаскивании границы: заголовок 24 px и пара делений шкалы;
+ * под пальцем — paneMinTouchPx: заголовок 44 px и полоса графика под ним (меньше — пальцу негде сдвинуть график).
  */
-const PANES = { paneIndicatorPx: 90, paneDerivPx: 80, paneCollapsedPx: 24, paneMinPx: 48 } as const;
+const PANES = { paneIndicatorPx: 90, paneDerivPx: 80, paneCollapsedPx: 24, paneMinPx: 48, paneMinTouchPx: 72, paneCollapsedTouchPx: 44 } as const;
 
 export const VIEW: Readonly<Record<Device, ViewPreset>> = {
   desktop: {

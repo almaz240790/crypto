@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dragSeparator, EMPTY_PANE_LAYOUT, isEmptyPaneLayout, mainMinShareFor, movePaneKey, normalizePaneLayout, orderPaneKeys, PANE_MAX_PX, planMaximized, planPanes, prunePaneLayout } from "../controller/paneManager";
+import { commitPaneHeights, dragSeparator, EMPTY_PANE_LAYOUT, isEmptyPaneLayout, mainMinShareFor, movePaneKey, normalizePaneLayout, orderPaneKeys, PANE_MAX_PX, paneSqueeze, planMaximized, planPanes, prunePaneLayout, separatorRange, type SepLimits } from "../controller/paneManager";
 import { VIEW } from "../presets";
 
 describe("PaneManager: высоты панелей (план 2A.7, M19)", () => {
@@ -81,20 +81,74 @@ describe("Управление панелями (ADR-0009): раскладка �
 
   it("dragSeparator: пара у границы меняется, сумма та же; доля основной и минимум панели держатся", () => {
     const h = [600, 90, 90];
+    const lim: SepLimits = { minMain: 400, minPane: 48, squeezedMin: 24, squeezed: false };
     // граница основная | RSI: вниз на 30 — основная растёт, RSI сжимается
-    expect(dragSeparator(h, 0, 1, 30, 400, 48)).toEqual([630, 60, 90]);
+    expect(dragSeparator(h, 0, 1, 30, lim)).toEqual([630, 60, 90]);
     // RSI не ниже 48
-    expect(dragSeparator(h, 0, 1, 80, 400, 48)).toEqual([642, 48, 90]);
+    expect(dragSeparator(h, 0, 1, 80, lim)).toEqual([642, 48, 90]);
     // основная не ниже доли устройства
-    expect(dragSeparator(h, 0, 1, -500, 400, 48)).toEqual([400, 290, 90]);
+    expect(dragSeparator(h, 0, 1, -500, lim)).toEqual([400, 290, 90]);
     // граница RSI | MACD: основная не меняется
-    expect(dragSeparator(h, 1, 2, -20, 400, 48)).toEqual([600, 70, 110]);
-    expect(dragSeparator(h, 1, 2, -200, 400, 48)).toEqual([600, 48, 132]);
-    // мало места — без изменений; неверные индексы и NaN — копия
-    expect(dragSeparator([600, 40, 40], 1, 2, 10, 400, 48)).toEqual([600, 40, 40]);
-    expect(dragSeparator(h, 1, 5, 10, 400, 48)).toEqual(h);
-    expect(dragSeparator(h, 1, 1, 10, 400, 48)).toEqual(h);
-    expect(dragSeparator(h, 0, 1, Number.NaN, 400, 48)).toEqual(h);
+    expect(dragSeparator(h, 1, 2, -20, lim)).toEqual([600, 70, 110]);
+    expect(dragSeparator(h, 1, 2, -200, lim)).toEqual([600, 48, 132]);
+    // неверные индексы и NaN — копия
+    expect(dragSeparator(h, 1, 5, 10, lim)).toEqual(h);
+    expect(dragSeparator(h, 1, 1, 10, lim)).toEqual(h);
+    expect(dragSeparator(h, 2, 1, 10, lim)).toEqual(h);
+    expect(dragSeparator(h, 0, 1, Number.NaN, lim)).toEqual(h);
+    // под пальцем предел выше (VIEW.paneMinTouchPx 72): RSI 90 | MACD 90 — ±18
+    expect(VIEW.desktop.paneMinTouchPx).toBe(72);
+    expect(separatorRange(h, 1, 2, { ...lim, minPane: 72, squeezedMin: 44 })).toEqual([-18, 18]);
+  });
+
+  it("сжатые окном панели (8 панелей на 1440×900): граница пары двигается, сжатая панель растёт за счёт соседки", () => {
+    // planPanes(790, 8 × ~90, 0.55): основная ровно на доле, панели по 40–46 px — меньше paneMinPx 48
+    const total = 790;
+    const wants = [90, 90, 90, 90, 90, 90, 80, 80];
+    const k = paneSqueeze(total, wants, 0.55);
+    expect(k).toBeLessThan(1);
+    const plan = planPanes(total, wants, 0.55);
+    const h = [plan.main, ...plan.others];
+    const lim: SepLimits = { minMain: total * 0.55, minPane: 48, squeezedMin: 24, squeezed: true };
+    // RSI | MACD (45.7 + 45.7 < 96): делят место до заголовка 24 px, в обе стороны
+    const [up, down] = separatorRange(h, 1, 2, lim);
+    expect(up).toBeCloseTo(24 - h[1]!, 6);
+    expect(down).toBeCloseTo(h[2]! - 24, 6);
+    const next = dragSeparator(h, 1, 2, 15, lim);
+    expect(next[1]).toBeCloseTo(h[1]! + 15, 6);
+    expect(next[2]).toBeCloseTo(h[2]! - 15, 6);
+    expect(next[1]! + next[2]!).toBeCloseTo(h[1]! + h[2]!, 6);
+    // основная | RSI: основная на своей доле и при сжатии не растёт — граница стоит (ручка не показывается)
+    expect(separatorRange(h, 0, 1, lim)).toEqual([0, 0]);
+    expect(dragSeparator(h, 0, 1, 30, lim)).toEqual(h);
+    // без сжатия основная растёт: [600, 40, 40] — пара ниже 48, делит место до 24
+    expect(dragSeparator([600, 40, 40], 1, 2, 10, { ...lim, minMain: 400, squeezed: false })).toEqual([600, 50, 30]);
+    // панель уже ниже предела, у соседки место есть: в начале не «прыгает» к 48, только растёт
+    expect(separatorRange([600, 45, 100], 1, 2, { ...lim, squeezed: false })).toEqual([0, 52]);
+    expect(dragSeparator([600, 45, 100], 1, 2, -10, { ...lim, squeezed: false })).toEqual([600, 45, 100]);
+  });
+
+  it("commitPaneHeights: только пара у границы, в желаемых px (÷ k); остальные записи и основная — без изменений", () => {
+    // 1024×768, RSI | MACD без сжатия: OI в раскладку не попадает
+    expect(commitPaneHeights({}, [["rsi#1", 70], ["macd#1", 110]], 1)).toEqual({ "rsi#1": 70, "macd#1": 110 });
+    // основная записи не имеет; чужие записи остаются
+    expect(commitPaneHeights({ oi: 120 }, [[null, 400], ["rsi#1", 60]], 1)).toEqual({ oi: 120, "rsi#1": 60 });
+    // пять панелей сжаты (k = 0.651): 69 и 49 px на экране — 106 и 75 в раскладке; план их возвращает к 69 и 49
+    const total = 651;
+    const before = [90, 90, 90, 90, 90];
+    const k = paneSqueeze(total, before, 0.55);
+    const saved = commitPaneHeights({}, [["rsi#1", 90 * k + 10], ["macd#1", 90 * k - 10]], k);
+    expect(Object.keys(saved)).toEqual(["rsi#1", "macd#1"]);
+    const replanned = planPanes(total, [saved["rsi#1"]!, saved["macd#1"]!, 90, 90, 90], 0.55);
+    expect(replanned.others[0]).toBeCloseTo(90 * k + 10, 0);
+    expect(replanned.others[1]).toBeCloseTo(90 * k - 10, 0);
+    // нетронутые панели — та же сжатая высота, а на высоком окне — свои 90, а не сжатые px
+    expect(replanned.others[2]).toBeCloseTo(90 * k, 0);
+    expect(planPanes(1200, [saved["rsi#1"]!, saved["macd#1"]!, 90, 90, 90], 0.55).others.slice(2)).toEqual([90, 90, 90]);
+    // пределы записи: не ниже paneMinPx, не выше PANE_MAX_PX; NaN не пишется
+    expect(commitPaneHeights({}, [["rsi#1", 10], ["oi", 1e9], ["ls", Number.NaN]], 1)).toEqual({ "rsi#1": 48, oi: PANE_MAX_PX });
+    expect(paneSqueeze(0, [90], 0.55)).toBe(1);
+    expect(paneSqueeze(800, [], 0.55)).toBe(1);
   });
 
   it("planMaximized: развёрнутая получает всё, остальные и основная — заголовок", () => {

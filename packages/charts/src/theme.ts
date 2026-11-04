@@ -54,7 +54,10 @@ export function chartOptions(t: ThemeTokens, fontSize: number = DEFAULT_SCALE_FO
     // колесо и трекпад обрабатывает Terminal сам (см. onWheel): горизонтальный жест — прокрутка,
     // вертикальный и pinch — масштаб вокруг курсора; встроенная обработка слишком резкая на трекпаде
     handleScale: { axisPressedMouseMove: true, pinch: true, mouseWheel: false },
-    handleScroll: { pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false, mouseWheel: false },
+    // вертикальный жест пальцем — сдвиг графика (при растянутой шкале — и по вертикали). С false LWC отдаёт браузеру
+    // любой жест круче ~27°, а колонка графика — touch-action: none, и график «не реагирует». Здесь, а не после
+    // создания: chartOptions применяется заново при каждой смене темы (в том числе системной)
+    handleScroll: { pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true, mouseWheel: false },
     localization: { locale: "ru-RU" },
   };
 }

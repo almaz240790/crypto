@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { paneSeparators, type PaneGeo } from "./paneGeo";
+import { autoBox, gripBox, paneSeparators, PANE_UI, sepAbove, type PaneGeo } from "./paneGeo";
 
 /** Границы панелей (ADR-0009, «Управление панелями»): какая пара панелей меняется при перетаскивании. */
 const pane = (index: number, top: number, collapsed = false): PaneGeo => ({ key: index === 0 ? "main" : `p${index}`, index, title: "", top, height: 90, collapsed, testId: "", values: false, compactValues: false, inst: null, manual: false, scalable: true });
@@ -13,11 +13,15 @@ describe("paneSeparators", () => {
     ]);
   });
 
-  it("свёрнутые пропускаются: тянется пара ближайших раскрытых выше и ниже", () => {
-    const s = paneSeparators([pane(0, 0), pane(1, 500, true), pane(2, 525), pane(3, 616, true)], false);
-    expect(s).toEqual([
-      { y: 500, above: 0, below: 2, key: "p1" },
-      { y: 525, above: 0, below: 2, key: "p2" },
+  it("свёрнутые пропускаются: одна граница на пару раскрытых — по низу верхней раскрытой (не на заголовке свёрнутой)", () => {
+    // основная | [p1 свёрнута] | p2 | [p3 свёрнута] — одна граница основная | p2 по низу основной
+    expect(paneSeparators([pane(0, 0), pane(1, 500, true), pane(2, 525), pane(3, 616, true)], false)).toEqual([{ y: 500, above: 0, below: 2, key: "p1" }]);
+    // телефон: RSI и MACD свёрнуты, OI раскрыт — одна граница по низу основной
+    expect(paneSeparators([pane(0, 0), pane(1, 400, true), pane(2, 445, true), pane(3, 490)], false)).toEqual([{ y: 400, above: 0, below: 3, key: "p1" }]);
+    // RSI | [MACD свёрнута] | OI — граница по низу RSI, а не над OI под заголовком MACD
+    expect(paneSeparators([pane(0, 0), pane(1, 500), pane(2, 591, true), pane(3, 616)], false)).toEqual([
+      { y: 500, above: 0, below: 1, key: "p1" },
+      { y: 591, above: 1, below: 3, key: "p2" },
     ]);
   });
 
@@ -25,5 +29,23 @@ describe("paneSeparators", () => {
     expect(paneSeparators([pane(0, 0), pane(1, 500, true)], false)).toEqual([]);
     expect(paneSeparators([pane(0, 0), pane(1, 500)], true)).toEqual([]);
     expect(paneSeparators([pane(0, 0)], false)).toEqual([]);
+  });
+});
+
+describe("места ручки и «A» у шкалы цены", () => {
+  it("«A» — в правом нижнем углу области графика, над зоной границы; ручка — левее «A», не на шкале", () => {
+    const p = { top: 500, height: 90 };
+    expect(autoBox(p, 1000, false)).toEqual({ left: 1000 - 4 - 20, top: 590 - 8 - 4 - 20, size: 20 });
+    expect(autoBox(p, 1000, true)).toEqual({ left: 1000 - 4 - 44, top: 590 - 12 - 4 - 44, size: 44 });
+    // низкая панель: «A» не выше её верха
+    expect(autoBox({ top: 500, height: 30 }, 1000, true).top).toBe(500);
+    const g = gripBox(1000, true);
+    expect(g).toEqual({ left: 1000 - 4 - 44 - 8 - 44, w: 44, h: 44 });
+    // ручка и «A» не пересекаются по горизонтали; ручка — целиком в области графика
+    expect(g.left + g.w).toBeLessThanOrEqual(autoBox(p, 1000, true).left - PANE_UI.gap);
+    expect(gripBox(1000, false).left + gripBox(1000, false).w).toBeLessThanOrEqual(1000 - 4 - 20 - 8);
+    expect(gripBox(10, true).left).toBe(0);
+    expect(sepAbove(false)).toBe(8);
+    expect(sepAbove(true)).toBe(12);
   });
 });

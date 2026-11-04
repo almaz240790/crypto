@@ -1,6 +1,6 @@
 "use client";
 
-import { COMPACT_FORMAT, ChartController, EMPTY_PANE_LAYOUT, FALLBACK_COLOR, INDICATOR_COLOR, INTERACTION, NONE, PERCENT_FORMAT, VIEW, alpha, dragSeparator, instanceColors, instanceTitle, mainMinShareFor, movePaneKey, orderPaneKeys, paneLevels, planMaximized, resolvePreset, VALUE_FORMAT, alignToCandles, tickPrecision, tokensFromElement, type AlertLine, type Candle, type ChartHandle, type ChartStore, type ChartType, type CrosshairSnapshot, type Device, type ExternalObject, type IndColor, type IndicatorInstance, type IndicatorValue, type MarkupSettings, type PaneLayout, type PanelKey, type ScaleMode, type Terminal, type Timeframe } from "@platform/charts";
+import { COMPACT_FORMAT, ChartController, EMPTY_PANE_LAYOUT, FALLBACK_COLOR, INDICATOR_COLOR, INTERACTION, NONE, PERCENT_FORMAT, VIEW, alpha, commitPaneHeights, dragSeparator, instanceColors, instanceTitle, mainMinShareFor, movePaneKey, orderPaneKeys, paneLevels, paneSqueeze, planMaximized, resolvePreset, VALUE_FORMAT, alignToCandles, tickPrecision, tokensFromElement, type AlertLine, type Candle, type ChartHandle, type ChartStore, type ChartType, type CrosshairSnapshot, type Device, type ExternalObject, type IndColor, type IndicatorInstance, type IndicatorValue, type MarkupSettings, type PaneLayout, type PanelKey, type ScaleMode, type SepLimits, type Terminal, type Timeframe } from "@platform/charts";
 import { DrawingController, DrawingsPrimitive, INDICATORS, defaultParams, indicatorById, visibleOn, type Drawing, type DrawingType, type DrawingsState, type IndicatorSpec, type Layer, type LayerContext, type Point, TF_SECONDS } from "@platform/charts";
 import { LineStyle, type IPriceLine, type ISeriesApi, type PriceFormat, type UTCTimestamp } from "lightweight-charts";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
@@ -12,6 +12,7 @@ import { useChartStore } from "./useChartStore";
 import { LegendChip, LiqUnavailableNote } from "./LegendChip";
 import { ObjectTooltip } from "./ObjectTooltip";
 import { PaneChrome, type ChartGeo, type PaneGeo, type PaneSep, type ResizePhase } from "./PaneChrome";
+import { autoBox } from "./paneGeo";
 import { MQ } from "@/lib/breakpoints";
 import c from "./chart.module.css";
 
@@ -131,10 +132,13 @@ const OVERLAY_SECONDARY_ALPHA = 0.55;
  * раскрыто не больше одной. Высоты по умолчанию — VIEW (индикатор 90, данные фьючерсов 80).
  */
 const PANE_COLLAPSED_PX = VIEW.desktop.paneCollapsedPx;
-const PANE_COLLAPSED_COARSE_PX = 44;
+const PANE_COLLAPSED_COARSE_PX = VIEW.desktop.paneCollapsedTouchPx;
 const PANE_INDICATOR_PX = VIEW.desktop.paneIndicatorPx;
 const PANE_CRYPTO_PX = VIEW.desktop.paneDerivPx;
-const NO_GEO: ChartGeo = { panes: [], plotW: 0, scaleW: 0, width: 0 };
+const NO_LIMITS: SepLimits = { minMain: 0, minPane: VIEW.desktop.paneMinPx, squeezedMin: PANE_COLLAPSED_PX, squeezed: false };
+const NO_GEO: ChartGeo = { panes: [], plotW: 0, scaleW: 0, width: 0, limits: NO_LIMITS };
+/** Сжатие планом ниже 1 на эту величину — уже сжатие (не погрешность деления). */
+const SQUEEZE_EPS = 1e-6;
 /** На телефоне раскрыта одна панель индикатора (последняя добавленная), остальные свёрнуты до заголовка. */
 const MAX_EXPANDED_MOBILE = 1;
 /** Свёртывание панелей на узком экране — по media query (lib/breakpoints) до D (PaneManager). */
@@ -196,8 +200,8 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
   const setLayoutRef = useRef<(l: PaneLayout) => void>(onPaneLayout ?? setOwnLayout);
   const indicatorsRef = useRef(indicators);
   const scaleRef = useRef(scale);
-  /** Перетаскивание границы: высоты панелей в начале (px сверху вниз). */
-  const dragRef = useRef<number[] | null>(null);
+  /** Перетаскивание границы: высоты панелей в начале (px сверху вниз), пределы и сжатие окном. */
+  const dragRef = useRef<{ heights: number[]; lim: SepLimits; k: number } | null>(null);
   const deviceNow = useChartStore((st) => st.status.device, store);
   /** Основная панель: ширина области свечей (без шкалы цены) и высота — для кнопок в углу. */
   const [mainBox, setMainBox] = useState<{ w: number; h: number } | null>(null);
@@ -242,6 +246,23 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     return out.filter((e) => e.series.length > 0).sort((a, b) => a.series[0]!.getPane().paneIndex() - b.series[0]!.getPane().paneIndex());
   }, [t]);
 
+  // желаемые высоты панелей под графиком (как в layoutAll): свёрнутая — заголовок, раскрытая — своя или по умолчанию
+  const paneWants = useCallback((entries: ReturnType<typeof paneEntries>) => entries.map((e) => (isCollapsed(e.key) ? collapsedPx : (layoutRef.current.heights[e.key] ?? e.height))), [isCollapsed, collapsedPx]);
+
+  /**
+   * Пределы границ (ADR-0009): основная — доля устройства, панель — не ниже paneMinPx (под пальцем paneMinTouchPx);
+   * k — сжатие окном (planPanes): по нему высоты пары после перетаскивания пишутся в желаемых px.
+   */
+  const sepState = useCallback((): { lim: SepLimits; k: number } | null => {
+    const term = termRef.current;
+    if (!term) return null;
+    const dev = store.getState().status.device;
+    const share = mainMinShareFor(dev);
+    const k = paneSqueeze(term.panesTotal(), paneWants(paneEntries()), share);
+    const sum = term.paneHeights().reduce((a, b) => a + b, 0);
+    return { k, lim: { minMain: sum * share, minPane: coarse ? VIEW[dev].paneMinTouchPx : VIEW[dev].paneMinPx, squeezedMin: collapsedPx, squeezed: k < 1 - SQUEEZE_EPS } };
+  }, [store, paneWants, paneEntries, coarse, collapsedPx]);
+
   const relayout = useCallback(() => {
     const el = ref.current;
     const term = termRef.current;
@@ -263,7 +284,7 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
         return { key: e.key, index: pane.paneIndex(), title: e.title, ...box(pane.getHTMLElement()), collapsed: isCollapsed(e.key), color: e.color, testId: e.testId, values: e.values, compactValues: COMPACT_INDICATORS.has(e.testId), inst: withParams, manual: !term.paneAutoScale(pane.paneIndex()), scalable: true };
       }),
     ];
-    const next: ChartGeo = { panes: panesGeo, plotW: Math.round(term.chart.timeScale().width()), scaleW: Math.round(term.chart.priceScale("right").width()), width: Math.round(r0.width) };
+    const next: ChartGeo = { panes: panesGeo, plotW: Math.round(term.chart.timeScale().width()), scaleW: Math.round(term.chart.priceScale("right").width()), width: Math.round(r0.width), limits: sepState()?.lim ?? NO_LIMITS };
     setGeo((prev) => (sameGeo(prev, next) ? prev : next));
     const mainEl = chartPanes[0]?.getHTMLElement();
     if (mainEl) {
@@ -276,7 +297,7 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
         onAxisHeightRef.current?.(axisH);
       }
     }
-  }, [paneEntries, isCollapsed]);
+  }, [paneEntries, isCollapsed, sepState]);
   const relayoutRef = useRef(relayout);
   useLayoutEffect(() => {
     relayoutRef.current = relayout;
@@ -300,10 +321,10 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
       if (total > 0) term.applyPanePlan(planMaximized(total, entries.length, max, collapsedPx));
       return;
     }
-    const heights = layoutRef.current.heights;
-    const want = new Map(entries.map((e) => [e.series[0]!.getPane(), isCollapsed(e.key) ? collapsedPx : (heights[e.key] ?? e.height)] as const));
+    const wants = paneWants(entries);
+    const want = new Map(entries.map((e, i) => [e.series[0]!.getPane(), wants[i]!] as const));
     term.layoutPanes(want, mainMinShareFor(store.getState().status.device));
-  }, [paneEntries, store, isCollapsed, collapsedPx]);
+  }, [paneEntries, store, isCollapsed, collapsedPx, paneWants]);
 
   // порядок панелей: сохранённые — на своих местах, новые — внизу (основная — всегда первая)
   const applyOrder = useCallback(() => {
@@ -380,32 +401,40 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     [paneEntries],
   );
   /**
-   * Граница панелей: в начале — высоты всех панелей; при движении — пара у границы (dragSeparator: доля основной
-   * и минимум панели); в конце — высоты раскрытых панелей в раскладку пользователя (без сдвига — ничего).
+   * Граница панелей: в начале — высоты всех панелей, пределы и сжатие окном; при движении — пара у границы
+   * (dragSeparator); в конце — в раскладку пользователя только эта пара, в желаемых px (commitPaneHeights: ÷ сжатие),
+   * остальные панели — как были (без сдвига — ничего).
    */
   const onResize = useCallback(
     (sep: PaneSep, dy: number, phase: ResizePhase) => {
       const term = termRef.current;
       if (!term) return;
-      if (phase === "start" || !dragRef.current) dragRef.current = term.paneHeights();
-      const start = dragRef.current;
-      const total = start.reduce((a, b) => a + b, 0);
-      const dev = store.getState().status.device;
-      const next = dragSeparator(start, sep.above, sep.below, dy, total * mainMinShareFor(dev), VIEW[dev].paneMinPx);
+      if (phase === "start" || !dragRef.current) {
+        const st = sepState();
+        if (!st) return;
+        dragRef.current = { heights: term.paneHeights(), ...st };
+      }
+      const d = dragRef.current;
+      const next = dragSeparator(d.heights, sep.above, sep.below, dy, d.lim);
       if (phase === "start") return;
       term.applyPanePlan({ main: next[0]!, others: next.slice(1) });
       requestAnimationFrame(relayout);
       if (phase !== "end") return;
       dragRef.current = null;
-      if (next.every((h, i) => Math.abs(h - start[i]!) < 0.5)) return;
-      const heights = { ...layoutRef.current.heights };
-      paneEntries().forEach((e) => {
-        const i = e.series[0]!.getPane().paneIndex();
-        if (!isCollapsed(e.key) && next[i] !== undefined) heights[e.key] = Math.round(next[i]!);
-      });
+      if (next.every((h, i) => Math.abs(h - d.heights[i]!) < 0.5)) return;
+      const entries = paneEntries();
+      const keyAt = (i: number) => entries.find((e) => e.series[0]!.getPane().paneIndex() === i)?.key ?? null;
+      const heights = commitPaneHeights(
+        layoutRef.current.heights,
+        [
+          [keyAt(sep.above), next[sep.above]!],
+          [keyAt(sep.below), next[sep.below]!],
+        ],
+        d.k,
+      );
       setLayoutRef.current({ ...layoutRef.current, heights });
     },
-    [store, relayout, paneEntries, isCollapsed],
+    [relayout, paneEntries, sepState],
   );
   /** Двойной клик по границе: высоты по умолчанию (порядок остаётся). */
   const onResetHeights = useCallback(() => {
@@ -464,8 +493,6 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     const term = ctrl.terminal;
     ctrlRef.current = ctrl;
     termRef.current = term;
-    // LWC с vertTouchDrag=false отдаёт браузеру любой жест круче ~27° — и график «не реагирует»
-    term.chart.applyOptions({ handleScroll: { vertTouchDrag: true } });
     // новый график пуст: следующие данные — замена, а не дописывание (и после повторного монтирования в StrictMode)
     loadedRef.current = null;
     // перекрестие → хранилище графика не чаще раза за кадр: читают только листы (легенда, значения панелей)
@@ -889,7 +916,10 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     term.setTopMargin(legendBottom == null ? 0 : (legendBottom + LEGEND_GAP_PX) / mainBox.h);
   }, [legendBottom, mainBox]);
 
-  // угол графика, чип справа сверху и легенда — препятствия для подписей разметки (координаты основной панели, CSS px)
+  // угол графика, чип справа сверху, легенда и «A» — препятствия для подписей разметки (координаты основной панели, CSS px)
+  const mainGeo = geo.panes[0];
+  const mainAuto = mainGeo?.manual && !mainGeo.collapsed ? autoBox(mainGeo, geo.plotW, coarse) : null;
+  const [autoL, autoT, autoS] = mainAuto ? [mainAuto.left, mainAuto.top, mainAuto.size] : [0, 0, 0];
   const hasCorner = !!corner;
   const hasTopRight = !!topRight;
   useLayoutEffect(() => {
@@ -902,8 +932,10 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
       if (box && box.width > 0) rects.push({ x: box.left - r0.left, y: box.top - r0.top, w: box.width, h: box.height });
     }
     if (legendBox) rects.push(legendBox);
+    // «A» у шкалы основной панели, растянутой вручную, — в её правом нижнем углу (PaneChrome, autoBox)
+    if (autoS > 0) rects.push({ x: autoL, y: autoT, w: autoS, h: autoS });
     ctrl.set({ uiObstacles: rects.length ? rects : NONE });
-  }, [hasCorner, hasTopRight, mainBox, legendBox]);
+  }, [hasCorner, hasTopRight, mainBox, legendBox, autoL, autoT, autoS]);
 
   return (
     <div ref={setWrap} className={s.chart}>
@@ -957,6 +989,9 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
 /** Геометрия панелей та же: PaneChrome не перерисовывается на каждом ResizeObserver. */
 function sameGeo(a: ChartGeo, b: ChartGeo): boolean {
   if (a.plotW !== b.plotW || a.scaleW !== b.scaleW || a.width !== b.width || a.panes.length !== b.panes.length) return false;
+  const la = a.limits;
+  const lb = b.limits;
+  if (Math.round(la.minMain) !== Math.round(lb.minMain) || la.minPane !== lb.minPane || la.squeezedMin !== lb.squeezedMin || la.squeezed !== lb.squeezed) return false;
   return a.panes.every((p, i) => {
     const q = b.panes[i]!;
     return p.key === q.key && p.index === q.index && p.title === q.title && p.top === q.top && p.height === q.height && p.collapsed === q.collapsed && p.color === q.color && p.manual === q.manual && p.scalable === q.scalable && p.inst === q.inst && p.values === q.values;

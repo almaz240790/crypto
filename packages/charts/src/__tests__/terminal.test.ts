@@ -181,13 +181,14 @@ vi.mock("lightweight-charts", () => {
 import { EDGE, MAX_CANDLES } from "../buffer";
 import { PERCENT_FORMAT, VALUE_FORMAT, instrumentPriceFormat } from "../priceFormat";
 import { createTerminal, type Terminal } from "../terminal";
+import { chartOptions } from "../theme";
 
 type FakePaneT = { stretch: number; height: number; autoScale: boolean; paneIndex(): number };
 type FakeChart = {
   paneList: FakePaneT[];
   width: number;
   series: FakeSeries[];
-  applied: { layout?: { fontSize?: number; background?: unknown }; timeScale?: Record<string, unknown>; rightPriceScale?: { scaleMargins?: { top: number } } }[];
+  applied: { layout?: { fontSize?: number; background?: unknown }; timeScale?: Record<string, unknown>; rightPriceScale?: { scaleMargins?: { top: number } }; handleScroll?: { vertTouchDrag?: boolean; horzTouchDrag?: boolean } }[];
   scales: { id: string; opts: { scaleMargins?: { top: number; bottom: number } } }[];
   ts: { setCalls: number; applied: Record<string, unknown>[]; getVisibleLogicalRange(): Range | null; setVisibleLogicalRange(r: Range): void };
   timeAt(i: number): number | undefined;
@@ -410,6 +411,16 @@ describe("наложенный инструмент и индексы шкалы
     expect(requests).toHaveLength(0);
     chart.ts.setVisibleLogicalRange({ from: 120, to: 220 });
     expect(requests).toHaveLength(1);
+  });
+});
+
+describe("жесты пальцем", () => {
+  it("вертикальный жест — сдвиг графика, и после смены темы (тема применяет chartOptions заново)", () => {
+    make();
+    expect(chartOptions(tokens).handleScroll).toMatchObject({ vertTouchDrag: true, horzTouchDrag: true });
+    term.setTheme({ ...tokens, surface: "#ffffff" });
+    expect(chart.applied.at(-1)!.handleScroll?.vertTouchDrag).toBe(true);
+    expect(chart.applied.at(-1)!.handleScroll?.horzTouchDrag).toBe(true);
   });
 });
 
