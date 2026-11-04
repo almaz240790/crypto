@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
  */
 const SRC = fileURLToPath(new URL("..", import.meta.url));
 /** Переменные раскладки (задаются в style из TSX) и шрифты next/font (класс на <html>). */
-const ALLOW = new Set(["--objects-w", "--panel-col", "--price-axis-w", "--font-sans", "--font-mono", "--font-serif"]);
+const ALLOW = new Set(["--objects-w", "--panel-col", "--price-axis-w", "--time-scale-h", "--font-sans", "--font-mono", "--font-serif"]);
 
 function files(dir: string, out: string[] = []): string[] {
   for (const name of readdirSync(dir)) {

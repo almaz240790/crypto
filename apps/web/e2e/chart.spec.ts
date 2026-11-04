@@ -471,7 +471,7 @@ test("уровни: поддержка, сопротивление и карта
   await expect(levels).toContainText("Поддержка");
   await expect(levels).toContainText("Сопротивление");
   await expect(levels).toContainText("ордер-блок");
-  await expect(levels).toContainText("Текущая цена");
+  await expect(levels).toContainText("Закрытие свечи");
   await expect(levels).toContainText("касаний:");
   await expect(levels).toContainText("Ликвидации");
   await expect(objects).toContainText("расчётная оценка");

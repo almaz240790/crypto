@@ -148,13 +148,15 @@
 }
 
 @media (min-width: 900px) {
+  /* колонка панели рисования: 40 px, под пальцем — 52 (кнопки 44 × 44) */
   .area {
-    grid-template-columns: 40px minmax(0, 1fr);
+    --draw-col: 40px;
+    grid-template-columns: var(--draw-col) minmax(0, 1fr);
   }
 
   /* ≥ 1280: панель встроена в сетку; ширина — переменная (перетаскивание разделителя, план 2A.8) */
   .area[data-objects="shown"][data-panel="inline"] {
-    grid-template-columns: 40px minmax(0, 1fr) var(--objects-w, 300px);
+    grid-template-columns: var(--draw-col) minmax(0, 1fr) var(--objects-w, 300px);
   }
 
   /* 900–1279: панель выдвигается поверх графика, ширина графика не меняется */
@@ -203,7 +205,40 @@
   padding: 4px;
   border-right: 1px solid var(--border);
   background: var(--surface);
+  overflow: hidden;
+}
+
+/* инструменты прокручиваются, отменить/повторить — внизу панели всегда; полосы прокрутки нет (в колонке 40 px она
+   съедала ширину кнопок) — вместо неё затухание снизу и «ещё инструменты» */
+.toolList {
+  display: flex;
+  flex: 0 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+}
+
+.toolList::-webkit-scrollbar {
+  display: none;
+}
+
+.toolList[data-more]::after {
+  content: "";
+  position: sticky;
+  bottom: 0;
+  flex: none;
+  height: 20px;
+  margin-top: -22px;
+  background: linear-gradient(transparent, var(--surface));
+  pointer-events: none;
+}
+
+.tool.toolMore {
+  height: 20px;
+  color: var(--text-3);
 }
 
 .objects {
@@ -277,9 +312,42 @@
 }
 
 .toolSep {
+  flex: none;
   height: 1px;
   background: var(--border);
-  margin: 4px 2px;
+  margin: 3px 2px;
+}
+
+/* палец на десктопной раскладке (iPad от 900 px): кнопки панели рисования 44 × 44, у разделителя панели объектов —
+   полоса касания 44 px (видимая линия — 4 px по центру); в панель заходит на 8 px, остальное — над шкалой цены */
+@media (min-width: 900px) and (pointer: coarse) {
+  .area {
+    --draw-col: 52px;
+  }
+
+  .toolbar {
+    padding: 3px;
+  }
+
+  .tool {
+    width: var(--touch-min);
+    height: var(--touch-min);
+  }
+
+  .tool.toolMore {
+    height: var(--touch-min);
+  }
+
+  .splitter {
+    left: calc(8px - var(--touch-min));
+    width: var(--touch-min);
+  }
+
+  .splitter:hover,
+  .splitter:focus-visible,
+  .splitter[data-active] {
+    background: linear-gradient(var(--accent), var(--accent)) 36px 0 / 4px 100% no-repeat;
+  }
 }
 
 .chartCol {
@@ -311,6 +379,22 @@
   top: 0;
   z-index: var(--z-chart-ui);
   pointer-events: none;
+}
+
+/* правый верхний угол основной панели (левее шкалы цены): чип режима рисования — не поверх легенды слева */
+.topRightHost {
+  position: absolute;
+  left: 0;
+  top: 8px;
+  z-index: var(--z-chart-ui);
+  display: flex;
+  justify-content: flex-end;
+  padding-right: 8px;
+  pointer-events: none;
+}
+
+.topRightHost > * {
+  pointer-events: auto;
 }
 
 /* тост: поверх колонки графика по центру снизу, раскладку не сдвигает */
@@ -873,8 +957,9 @@
   color: var(--warn);
 }
 
-/* карточка выбранного рисунка на десктопе — слева снизу, не во всю ширину */
+/* карточка выбранного рисунка на десктопе — слева снизу, не во всю ширину и над шкалой времени (даты видны) */
 .page[data-layout="desktop"] .card {
   right: auto;
+  bottom: calc(var(--time-scale-h, 28px) + 8px);
   max-width: min(720px, calc(100% - 16px));
 }

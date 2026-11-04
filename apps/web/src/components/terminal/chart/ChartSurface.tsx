@@ -69,6 +69,13 @@ type Props = {
    */
   corner?: ReactNode;
   /**
+   * Правый верхний угол основной панели, левее шкалы цены (десктоп): чип режима рисования. Не закрывает легенду
+   * (она слева) и уходит в uiObstacles — подписи разметки его обходят.
+   */
+  topRight?: ReactNode;
+  /** Высота шкалы времени (px) при изменении: карточки внизу колонки графика ставятся над ней. */
+  onAxisHeight?: (px: number) => void;
+  /**
    * Легенда в левом верхнем углу панели цены (десктоп, план 2B.9 §10): символ, «?», OHLC под перекрестием и строки
    * индикаторов. Её прямоугольник уходит в uiObstacles. Без неё — «?» и пометка ликвидаций B на своих местах.
    */
@@ -143,7 +150,7 @@ function indexOfTime(candles: readonly Candle[], time: number): number {
  * терминалом, темой, классом устройства, сценой разметки (один OverlayPrimitive), шкалой и наведением.
  * Здесь до PR D остаются эффекты данных, индикаторов, панелей производных и рисунков (через controller.terminal).
  */
-export function ChartSurface({ candles, current, tf, type, indicators, markup, authed, store, device = "auto", layers, patterns, figures, alerts, external = NONE, derivatives, panels, tick, dataKey = "", onNeedOlder, drawings, onReady, corner, legend, scale = "linear", overlay = null }: Props) {
+export function ChartSurface({ candles, current, tf, type, indicators, markup, authed, store, device = "auto", layers, patterns, figures, alerts, external = NONE, derivatives, panels, tick, dataKey = "", onNeedOlder, drawings, onReady, corner, topRight, onAxisHeight, legend, scale = "linear", overlay = null }: Props) {
   const t = useT();
   const ref = useRef<HTMLDivElement>(null);
   const ctrlRef = useRef<ChartController | null>(null);
@@ -163,6 +170,9 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
   /** Основная панель: ширина области свечей (без шкалы цены) и высота — для кнопок в углу. */
   const [mainBox, setMainBox] = useState<{ w: number; h: number } | null>(null);
   const cornerRef = useRef<HTMLDivElement>(null);
+  const topRightRef = useRef<HTMLDivElement>(null);
+  const onAxisHeightRef = useRef(onAxisHeight);
+  const axisHRef = useRef<number | null>(null);
   const legendRef = useRef<HTMLDivElement>(null);
   /** Прямоугольник легенды в координатах графика (CSS px) — препятствие для подписей разметки. */
   const [legendBox, setLegendBox] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
@@ -213,6 +223,11 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
       const w = Math.round(term.chart.timeScale().width());
       const h = Math.round(mainEl.getBoundingClientRect().height);
       setMainBox((prev) => (prev && prev.w === w && prev.h === h ? prev : { w, h }));
+      const axisH = Math.round(term.chart.timeScale().height());
+      if (axisH > 0 && axisH !== axisHRef.current) {
+        axisHRef.current = axisH;
+        onAxisHeightRef.current?.(axisH);
+      }
     }
   }, [paneEntries]);
 
@@ -261,7 +276,8 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     drawingsRef.current = drawings;
     tfRef.current = tf;
     onReadyRef.current = onReady;
-  }, [onNeedOlder, drawings, tf, onReady]);
+    onAxisHeightRef.current = onAxisHeight;
+  }, [onNeedOlder, drawings, tf, onReady, onAxisHeight]);
 
   // создание контроллера (терминал, разметка, тема, вид) и рисунков
   useEffect(() => {
@@ -663,21 +679,21 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     term.setTopMargin(legendBottom == null ? 0 : (legendBottom + LEGEND_GAP_PX) / mainBox.h);
   }, [legendBottom, mainBox]);
 
-  // угол графика и легенда — препятствия для подписей разметки (координаты основной панели, CSS px)
+  // угол графика, чип справа сверху и легенда — препятствия для подписей разметки (координаты основной панели, CSS px)
   const hasCorner = !!corner;
+  const hasTopRight = !!topRight;
   useLayoutEffect(() => {
     const ctrl = ctrlRef.current;
     const el = ref.current;
     if (!ctrl || !el) return;
     const rects: { x: number; y: number; w: number; h: number }[] = [];
-    const box = hasCorner ? cornerRef.current?.firstElementChild?.getBoundingClientRect() : null;
-    if (box) {
-      const r0 = el.getBoundingClientRect();
-      rects.push({ x: box.left - r0.left, y: box.top - r0.top, w: box.width, h: box.height });
+    const r0 = el.getBoundingClientRect();
+    for (const box of [hasCorner ? cornerRef.current?.firstElementChild?.getBoundingClientRect() : null, hasTopRight ? topRightRef.current?.firstElementChild?.getBoundingClientRect() : null]) {
+      if (box && box.width > 0) rects.push({ x: box.left - r0.left, y: box.top - r0.top, w: box.width, h: box.height });
     }
     if (legendBox) rects.push(legendBox);
     ctrl.set({ uiObstacles: rects.length ? rects : NONE });
-  }, [hasCorner, mainBox, legendBox]);
+  }, [hasCorner, hasTopRight, mainBox, legendBox]);
 
   return (
     <div className={s.chart}>
@@ -685,6 +701,11 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
       {corner && mainBox && (
         <div ref={cornerRef} className={s.cornerHost} style={{ width: mainBox.w, height: mainBox.h }}>
           {corner}
+        </div>
+      )}
+      {topRight && mainBox && (
+        <div ref={topRightRef} className={s.topRightHost} style={{ width: mainBox.w }}>
+          {topRight}
         </div>
       )}
       <ObjectTooltip store={store} coarse={coarse} />

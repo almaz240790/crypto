@@ -310,12 +310,8 @@
 
 /* ---------- режим рисования: чип сверху по центру графика ---------- */
 
+/* в правом верхнем углу основной панели (ChartSurface topRight), не поверх легенды */
 .drawChip {
-  position: absolute;
-  top: 40px;
-  left: 50%;
-  z-index: var(--z-chart-ui);
-  transform: translateX(-50%);
   display: inline-flex;
   gap: var(--gap-1);
   padding: 3px;

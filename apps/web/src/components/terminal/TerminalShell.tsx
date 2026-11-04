@@ -243,6 +243,8 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
     [symbol, tf, data.tick, lastClose, figures, data.figures?.stats, patterns, data.patterns?.stats, authed, askAccess, signalsLinkN, pickLevel, focusObject],
   );
   const sel = dr.selected;
+  /** Высота шкалы времени: карточка выбранного рисунка на десктопе — над ней, даты и метка перекрестия видны (D7). */
+  const [axisH, setAxisH] = useState<number | null>(null);
   const pos = useMemo(() => {
     if (!sel || !sel.type.startsWith("position") || sel.points.length < 3) return null;
     const risk = user?.risk;
@@ -354,10 +356,9 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
         {!desktop && <PhoneStrip {...facts} tf={tf} />}
         <div className={s.area} data-objects={panelShown ? "shown" : "hidden"} data-panel={panelOverlay ? "overlay" : "inline"} style={{ "--objects-w": objWidth } as React.CSSProperties}>
           <DrawToolbar tool={dr.tool} onTool={dr.setTool} magnet={dr.magnet} onMagnet={dr.setMagnet} hidden={dr.state.hidden} onHidden={dr.actions.hide} canUndo={dr.canUndo} canRedo={dr.canRedo} onUndo={dr.actions.undo} onRedo={dr.actions.redo} />
-          <div className={s.chartCol}>
+          <div className={s.chartCol} style={axisH ? ({ "--time-scale-h": `${axisH}px` } as React.CSSProperties) : undefined}>
             {/* карточка перекрестия телефона (вид прежний до C2); на десктопе — легенда в углу графика */}
             {!desktop && <CrosshairCard store={store} tick={data.tick} more={ohlcMore} onMore={setOhlcMore} onClose={clearCrosshair} />}
-            {desktop && dr.tool && <DrawModeChip tool={t(TOOL_TITLES[dr.tool])} onFinish={finishTool} />}
             {data.error && !intradayDenied ? (
               <div className={s.empty} role="alert">
                 {data.error}
@@ -391,6 +392,8 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
                 scale={st.scale}
                 overlay={overlayCandles}
                 corner={desktop && !sel ? <ChartCorner onZoom={zoom} onReset={reset} /> : null}
+                topRight={desktop && dr.tool ? <DrawModeChip tool={t(TOOL_TITLES[dr.tool])} onFinish={finishTool} /> : null}
+                onAxisHeight={setAxisH}
               />
             )}
             {sel && (

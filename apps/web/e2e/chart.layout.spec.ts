@@ -264,7 +264,7 @@ test("панели индикаторов: RSI с уровнями 30/70 пун�
   expect(share).toBeGreaterThanOrEqual(0.54);
 });
 
-test("«Найдено»: вкладка = Уровни + Фигуры + Паттерны, разделы, таблица уровней с «Текущая цена», вопрос — в конце", async ({ page }) => {
+test("«Найдено»: вкладка = Уровни + Фигуры + Паттерны, разделы, таблица уровней с «Закрытие свечи», вопрос — в конце", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await open(page, "/chart/BTCUSDT/4h", true);
   const aside = page.getByRole("complementary", { name: "панель объектов" });
@@ -279,7 +279,7 @@ test("«Найдено»: вкладка = Уровни + Фигуры + Пат�
     })
     .toBe(true);
   const levels = aside.getByRole("list", { name: "уровни поддержки и сопротивления" });
-  await expect(levels).toContainText("Текущая цена");
+  await expect(levels).toContainText("Закрытие свечи");
   // классы: num — только у цен, расстояние — pct
   for (const p of await levels.locator("span.num").allTextContents()) expect(p).toMatch(/^\d[\d\s]*\.\d$/);
   await expect(levels.locator("[class*=pct]").first()).toContainText("%");
@@ -522,4 +522,79 @@ test("заголовки панелей объёма и OBV — компактн
     return Math.abs(d.top + d.height / 2 - (i.top + i.height / 2));
   });
   expect(dot).toBeLessThanOrEqual(1.5);
+});
+
+test("режим рисования: чип справа сверху не закрывает строку OHLC легенды; карточка рисунка — над шкалой времени", async ({ page }) => {
+  for (const [w, h] of [[1440, 900], [1024, 768]] as const) {
+    await page.setViewportSize({ width: w, height: h });
+    await open(page);
+    const term = page.getByTestId("terminal");
+    const t = (await term.boundingBox())!;
+    await page.getByRole("toolbar", { name: "панель рисования" }).getByRole("button", { name: "Трендовая линия" }).click();
+    await page.mouse.move(t.x + t.width * 0.5, t.y + t.height * 0.5);
+    await expect(page.getByTestId("ohlc")).toContainText("Объём");
+    const chip = (await page.getByRole("button", { name: /Рисую: Трендовая линия/ }).locator("..").boundingBox())!;
+    const ohlc = (await page.getByTestId("ohlc").boundingBox())!;
+    const overlap = chip.x < ohlc.x + ohlc.width && ohlc.x < chip.x + chip.width && chip.y < ohlc.y + ohlc.height && ohlc.y < chip.y + chip.height;
+    expect(overlap, `${w}: чип ${JSON.stringify(chip)} легенда ${JSON.stringify(ohlc)}`).toBe(false);
+    // левее шкалы цены: правый край чипа — в области свечей
+    const plotW = await term.evaluate((el) => (el as HTMLElement & { __chart: { timeScale(): { width(): number } } }).__chart.timeScale().width());
+    expect(chip.x + chip.width).toBeLessThanOrEqual(t.x + plotW);
+    // рисунок → карточка выбранного рисунка: нижний край выше шкалы времени
+    await page.mouse.click(t.x + t.width * 0.3, t.y + t.height * 0.4);
+    await page.mouse.click(t.x + t.width * 0.6, t.y + t.height * 0.3);
+    const card = page.getByRole("region", { name: "выбранный рисунок" });
+    await expect(card).toBeVisible();
+    const axisH = await term.evaluate((el) => (el as HTMLElement & { __chart: { timeScale(): { height(): number } } }).__chart.timeScale().height());
+    const c = (await card.boundingBox())!;
+    expect(c.y + c.height).toBeLessThanOrEqual(t.y + t.height - axisH);
+    await page.keyboard.press("Escape");
+    await page.keyboard.press("Escape");
+  }
+});
+
+test("панель рисования на низком окне (1366×640): отменить и повторить видны, остальное — прокруткой и «ещё инструменты»", async ({ page }) => {
+  await page.setViewportSize({ width: 1366, height: 640 });
+  await open(page);
+  const tools = page.getByRole("toolbar", { name: "панель рисования" });
+  const vh = 640;
+  for (const name of ["отменить", "повторить"]) {
+    const b = (await tools.getByRole("button", { name }).boundingBox())!;
+    expect(b.y + b.height, name).toBeLessThanOrEqual(vh);
+  }
+  const more = tools.getByRole("button", { name: "ещё инструменты" });
+  await expect(more).toBeVisible();
+  const list = tools.locator("[class*=toolList]");
+  await more.click();
+  await expect.poll(() => list.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+  // долистали до конца — «ещё инструменты» пропадает, «скрыть все рисунки» в видимой части
+  await list.evaluate((el) => el.scrollTo({ top: el.scrollHeight }));
+  await expect(more).toHaveCount(0);
+  const hide = (await tools.getByRole("button", { name: "скрыть все рисунки" }).boundingBox())!;
+  const lb = (await list.boundingBox())!;
+  expect(hide.y + hide.height).toBeLessThanOrEqual(lb.y + lb.height + 1);
+  // на высоком окне прокрутки нет
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await expect(more).toHaveCount(0);
+});
+
+test.describe("палец на десктопной раскладке (iPad 1024 и 1366)", () => {
+  test.use({ hasTouch: true, isMobile: true });
+
+  test("кнопки панели рисования — 44 × 44, полоса разделителя панели объектов — 44 px", async ({ page }) => {
+    await page.setViewportSize({ width: 1024, height: 768 });
+    await open(page);
+    expect(await page.evaluate(() => matchMedia("(pointer: coarse)").matches)).toBe(true);
+    await expect(page.locator("[data-layout]").first()).toHaveAttribute("data-layout", "desktop");
+    const sizes = await page.getByRole("toolbar", { name: "панель рисования" }).getByRole("button").evaluateAll((els) => els.map((e) => [e.getAttribute("aria-label"), e.getBoundingClientRect().width, e.getBoundingClientRect().height] as const));
+    expect(sizes.length).toBeGreaterThanOrEqual(15);
+    for (const [name, w, h] of sizes) {
+      expect(w, String(name)).toBeGreaterThanOrEqual(44);
+      expect(h, String(name)).toBeGreaterThanOrEqual(44);
+    }
+    await page.setViewportSize({ width: 1366, height: 1024 });
+    const sep = page.getByRole("separator", { name: "ширина панели объектов" });
+    await expect(sep).toBeVisible();
+    expect((await sep.boundingBox())!.width).toBeGreaterThanOrEqual(44);
+  });
 });

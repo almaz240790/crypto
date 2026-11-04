@@ -1350,7 +1350,6 @@
   "Разметка всех графиков": "Markup for all charts",
   "Скрыть все рисунки": "Hide all drawings",
   "Слои на графике": "Layers on the chart",
-  "Текущая цена": "Current price",
   "Только значимые на графике": "Only significant on the chart",
   "Только на графике": "Only on the chart",
   "Уровней и зон рядом с ценой нет.": "No levels or zones near the price.",
@@ -1374,5 +1373,9 @@
   "снять выбор, закончить рисование": "clear selection, stop drawing",
   "свернуть": "show less",
   "ещё {n}": "{n} more",
-  "убрать наложение": "remove overlay"
+  "убрать наложение": "remove overlay",
+  "Закрытие свечи": "Candle close",
+  "Расстояния до уровней — от закрытия последней свечи": "Distances to levels are from the last candle close",
+  "Ещё инструменты (колесо мыши)": "More tools (mouse wheel)",
+  "ещё инструменты": "more tools"
 }
