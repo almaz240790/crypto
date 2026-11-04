@@ -89,11 +89,9 @@ test("рисование: трендовая линия двумя кликам�
   await expect(page.getByRole("region", { name: "выбранный рисунок" })).toBeVisible();
   await page.keyboard.press("Delete");
   await expect(count).toHaveText("рисунков: 0");
-  // позиция long: вход, стоп, цель → карточка с R:R и ссылкой в журнал
+  // позиция long одним нажатием (стоп по ATR, цель 1:2) → карточка с R:R и ссылкой в журнал
   await tools.getByRole("button", { name: "Позиция Long" }).click();
   await page.mouse.click(box.x + box.width * 0.5, box.y + box.height * 0.5);
-  await page.mouse.click(box.x + box.width * 0.5, box.y + box.height * 0.6);
-  await page.mouse.click(box.x + box.width * 0.5, box.y + box.height * 0.3);
   await expect(count).toHaveText("рисунков: 1");
   const card = page.getByRole("region", { name: "выбранный рисунок" });
   await expect(card).toContainText("R:R");

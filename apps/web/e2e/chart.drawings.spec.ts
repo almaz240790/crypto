@@ -1,5 +1,6 @@
 import { devices, expect, test, type Page } from "@playwright/test";
 import { mock } from "./helpers/chart";
+import { census, installCensus, intersects, violations } from "./helpers/census";
 
 /**
  * Рисование как в TradingView (ADR-0009, «Рисование»; замечание владельца: «Фибоначчи спамится, как только хочешь
@@ -519,5 +520,309 @@ test.describe("телефон, палец", () => {
     await expect.poll(async () => (await range(page))!.from).not.toBe(r.from);
     await expect(page.getByTestId("ohlc")).toHaveCount(0);
     await expect(count).toHaveText("рисунков: 1");
+  });
+});
+
+/**
+ * Позиция Long/Short как в TradingView (ADR-0009, «Рисование», дополнение «Позиция»; замечание владельца: «тоже
+ * работает криво-косо, как Фибоначчи»): одно нажатие — готовая позиция (стоп — ATR(14), цель 1:2, ~30 свечей),
+ * ручки стопа, цели, входа и правого края, поля карточки, отмена, подписи не на подписях разметки.
+ */
+type Stored = { type: string; points: Pt[] };
+const position = async (page: Page) => (await stored(page)).find((d) => d.type.startsWith("position")) as Stored;
+/**
+ * Ручки выбранной позиции на странице — из раскладки разметки (ручки там — занятые места, `#handle0…3`): вход —
+ * слева, стоп и цель — посередине, правый край — на линии входа справа (правый край может быть правее последней
+ * свечи — timeToCoordinate его не знает).
+ */
+async function knobs(page: Page) {
+  let out: Record<"entry" | "stop" | "target" | "end", { x: number; y: number }> | null = null;
+  await expect
+    .poll(async () => {
+      out = await page.evaluate(() => {
+        const el = document.querySelector('[data-testid="terminal"]') as HTMLElement & { __overlay: () => { drawingLabels: { id: string; rect: { x: number; y: number; w: number; h: number } }[] } };
+        const r = el.getBoundingClientRect();
+        const hs = el.__overlay().drawingLabels.filter((l) => /#handle\d$/.test(l.id));
+        if (hs.length !== 4) return null;
+        const at = (i: number) => {
+          const h = hs.find((x) => x.id.endsWith(`#handle${i}`))!;
+          return { x: r.left + h.rect.x + h.rect.w / 2, y: r.top + h.rect.y + h.rect.h / 2 };
+        };
+        return { entry: at(0), stop: at(1), target: at(2), end: at(3) };
+      });
+      return out !== null;
+    })
+    .toBe(true);
+  return out!;
+}
+/** ATR(14) по Уайлдеру на свече time — по данным основной серии графика. */
+const atrAt = (page: Page, time: number) =>
+  page.evaluate((time) => {
+    type Bar = { time: number; high: number; low: number; close: number };
+    const el = document.querySelector('[data-testid="terminal"]') as HTMLElement & { __chart: { panes(): { getSeries(): { data(): Bar[] }[] }[] } };
+    const data = el.__chart.panes()[0]!.getSeries()[0]!.data();
+    let prev: number | null = null;
+    let atr: number | null = null;
+    const seed: number[] = [];
+    for (const b of data) {
+      if (b.time > time) break;
+      const tr = prev === null ? b.high - b.low : Math.max(b.high - b.low, Math.abs(b.high - prev), Math.abs(b.low - prev));
+      prev = b.close;
+      if (atr === null) {
+        seed.push(tr);
+        if (seed.length === 14) atr = seed.reduce((a, x) => a + x, 0) / 14;
+      } else atr = (atr * 13 + tr) / 14;
+    }
+    return atr;
+  }, time);
+
+test.describe("позиция Long/Short, мышь", () => {
+  test("одним кликом: стоп на ATR(14) ниже входа, цель 1:2, ~30 свечей; затем курсор; плашки в панели; Ctrl+Z убирает", async ({ page }) => {
+    await installCensus(page);
+    const { X, Y } = await open(page);
+    const tools = page.getByRole("toolbar", { name: "панель рисования" });
+    const long = tools.getByRole("button", { name: "Позиция Long" });
+    const chip = page.getByTestId("draw-chip");
+    const count = page.getByTestId("drawings-count");
+    await long.click();
+    await expect(chip).toContainText("Нажмите цену входа");
+    await page.mouse.click(X(0.35), Y(0.45));
+    // раньше нужны были ещё два нажатия (стоп, цель), а инструмент оставался выбранным
+    await expect(count).toHaveText("рисунков: 1");
+    await expect(chip).toHaveCount(0);
+    await expect(long).toHaveAttribute("aria-pressed", "false");
+    const d = await position(page);
+    const [e, s, t] = d.points as [Pt, Pt, Pt];
+    expect(d.type).toBe("position-long");
+    expect(s.price).toBeLessThan(e.price);
+    expect(t.price).toBeGreaterThan(e.price);
+    const atr = (await atrAt(page, e.time))!;
+    expect(Math.abs(e.price - s.price - atr)).toBeLessThanOrEqual(0.051);
+    expect(Math.abs(t.price - e.price - 2 * (e.price - s.price))).toBeLessThanOrEqual(0.051);
+    expect((s.time - e.time) / 14400).toBe(30);
+    expect(t.time).toBe(s.time);
+    // карточка: поля с точностью инструмента
+    const card = page.getByRole("region", { name: "выбранный рисунок" });
+    await expect(card).toContainText("Позиция Long");
+    await expect(card.getByLabel("цена входа")).toHaveValue(e.price.toFixed(1));
+    await expect(card.getByLabel("цена стопа")).toHaveValue(s.price.toFixed(1));
+    await expect(card.getByLabel("отношение прибыли к риску")).toHaveValue("2");
+    // плашки на холсте: цель, стоп, вход — в панели
+    const c = await census(page);
+    const plaques = c.texts.filter((x) => x.canvas === "pane" && /^(Цель|Стоп|Вход) /.test(x.text));
+    expect(plaques.map((p) => p.text.split(" ")[0]).sort()).toEqual(["Вход", "Стоп", "Цель"]);
+    expect(plaques.find((p) => p.text.startsWith("Цель"))!.text).toMatch(/^Цель \d+\.\d · \+\d+\.\d\d% · 2R$/);
+    expect(plaques.find((p) => p.text.startsWith("Стоп"))!.text).toMatch(/^Стоп \d+\.\d · −\d+\.\d\d%$/);
+    expect(plaques.find((p) => p.text.startsWith("Вход"))!.text).toMatch(/^Вход \d+\.\d · R:R 1:2$/);
+    for (const p of plaques) {
+      expect(p.rect.x, p.text).toBeGreaterThanOrEqual(0);
+      expect(p.rect.x + p.rect.w, p.text).toBeLessThanOrEqual(c.plot.width);
+    }
+    await page.keyboard.press("Control+z");
+    await expect(count).toHaveText("рисунков: 0");
+  });
+
+  test("ручки: стоп и цель тянутся по вертикали, правый край — длительность, тело — вся позиция; график не едет; Ctrl+Z", async ({ page }) => {
+    const { X, Y } = await open(page);
+    await page.getByRole("toolbar", { name: "панель рисования" }).getByRole("button", { name: "Позиция Short" }).click();
+    await page.mouse.click(X(0.3), Y(0.4));
+    const d0 = await position(page);
+    expect(d0.type).toBe("position-short");
+    const r0 = await range(page);
+    let k = await knobs(page);
+    // стоп (у Short — выше входа) — выше на 40 px
+    await page.mouse.move(k.stop.x, k.stop.y);
+    await page.mouse.down();
+    await page.mouse.move(k.stop.x + 5, k.stop.y - 20, { steps: 4 });
+    await page.mouse.move(k.stop.x + 10, k.stop.y - 40, { steps: 4 });
+    await page.mouse.up();
+    await expect.poll(async () => (await position(page)).points[1]!.price).toBeGreaterThan(d0.points[1]!.price);
+    const d1 = await position(page);
+    expect(d1.points[0]).toEqual(d0.points[0]);
+    expect(d1.points[2]).toEqual(d0.points[2]);
+    expect(await range(page)).toEqual(r0);
+    // цель — ниже на 30 px
+    k = await knobs(page);
+    await page.mouse.move(k.target.x, k.target.y);
+    await page.mouse.down();
+    await page.mouse.move(k.target.x, k.target.y + 30, { steps: 6 });
+    await page.mouse.up();
+    await expect.poll(async () => (await position(page)).points[2]!.price).toBeLessThan(d1.points[2]!.price);
+    const d2 = await position(page);
+    // правый край — правее на 60 px: стоп и цель на новом времени, вход на месте
+    k = await knobs(page);
+    await page.mouse.move(k.end.x, k.end.y);
+    await page.mouse.down();
+    await page.mouse.move(k.end.x + 60, k.end.y, { steps: 6 });
+    await page.mouse.up();
+    await expect.poll(async () => (await position(page)).points[1]!.time).toBeGreaterThan(d2.points[1]!.time);
+    const d3 = await position(page);
+    expect(d3.points[0]).toEqual(d2.points[0]);
+    expect(d3.points[2]!.time).toBe(d3.points[1]!.time);
+    // тело — вся позиция: из середины зоны прибыли
+    const [e3, , t3] = await onScreen(page, d3.points);
+    const midY = (e3!.y + t3!.y) / 2;
+    await page.mouse.move(e3!.x + 25, midY);
+    await page.mouse.down();
+    await page.mouse.move(e3!.x + 25, midY + 25, { steps: 6 });
+    await page.mouse.up();
+    await expect.poll(async () => (await position(page)).points[0]!.price).toBeLessThan(d3.points[0]!.price);
+    const d4 = await position(page);
+    const dp = d4.points[0]!.price - d3.points[0]!.price;
+    for (let i = 0; i < 3; i++) expect(d4.points[i]!.price - d3.points[i]!.price).toBeCloseTo(dp, 6);
+    expect(await range(page)).toEqual(r0);
+    // отмена — по шагу на каждое перетаскивание
+    for (const want of [d3, d2, d1, d0]) {
+      await page.keyboard.press("Control+z");
+      await expect.poll(async () => (await position(page)).points).toEqual(want.points);
+    }
+  });
+
+  test("карточка: поля входа, стопа, цели, R:R и риска; неверный стоп — ошибка; перевернуть; правки отменяются", async ({ page }) => {
+    const { X, Y } = await open(page);
+    await page.getByRole("toolbar", { name: "панель рисования" }).getByRole("button", { name: "Позиция Long" }).click();
+    await page.mouse.click(X(0.4), Y(0.45));
+    const card = page.getByRole("region", { name: "выбранный рисунок" });
+    const d0 = await position(page);
+    const entry = d0.points[0]!.price;
+    const stop = card.getByLabel("цена стопа");
+    // стоп выше входа у Long — ошибка, позиция не меняется
+    await stop.fill((entry + 1).toFixed(1));
+    await expect(card.getByRole("alert")).toHaveText("у Long стоп ниже входа");
+    expect((await position(page)).points).toEqual(d0.points);
+    // верный стоп — сразу на графике; Enter — конец правки
+    await stop.fill((entry - 3).toFixed(1));
+    await expect(card.getByRole("alert")).toHaveCount(0);
+    await expect.poll(async () => (await position(page)).points[1]!.price).toBeCloseTo(entry - 3, 6);
+    await stop.press("Enter");
+    const d1 = await position(page);
+    // R:R 3 — цель на три риска выше входа
+    const rr = card.getByLabel("отношение прибыли к риску");
+    await rr.fill("3");
+    await rr.press("Enter");
+    await expect.poll(async () => (await position(page)).points[2]!.price).toBeCloseTo(entry + 9, 6);
+    const d2 = await position(page);
+    // риск 2 % — стоп на 2 % ниже входа, R:R тот же (цель сдвинулась)
+    const risk = card.getByLabel("риск, % от цены входа");
+    await risk.fill("2");
+    await risk.press("Enter");
+    await expect.poll(async () => (await position(page)).points[1]!.price).toBeCloseTo(Math.round(entry * 0.98 * 10) / 10, 6);
+    await expect(rr).toHaveValue("3");
+    // вход — поле, Esc возвращает значение до правки
+    const ent = card.getByLabel("цена входа");
+    await ent.fill((entry + 0.5).toFixed(1));
+    await expect.poll(async () => (await position(page)).points[0]!.price).toBeCloseTo(entry + 0.5, 6);
+    await ent.press("Escape");
+    await expect.poll(async () => (await position(page)).points[0]!.price).toBe(entry);
+    const d3 = await position(page);
+    // перевернуть в Short: стоп выше входа, цель ниже, R:R тот же
+    await card.getByRole("button", { name: "перевернуть в Short" }).click();
+    await expect(card).toContainText("Позиция Short");
+    const f = await position(page);
+    expect(f.type).toBe("position-short");
+    expect(f.points[1]!.price).toBeGreaterThan(entry);
+    expect(f.points[2]!.price).toBeLessThan(entry);
+    // отмена: переворот, риск, R:R, стоп — по шагу
+    const undo = page.getByRole("toolbar", { name: "панель рисования" }).getByRole("button", { name: "отменить", exact: true });
+    await undo.click();
+    await expect.poll(async () => (await position(page)).type).toBe("position-long");
+    expect((await position(page)).points).toEqual(d3.points);
+    await undo.click();
+    await expect.poll(async () => (await position(page)).points).toEqual(d2.points);
+    await undo.click();
+    await expect.poll(async () => (await position(page)).points).toEqual(d1.points);
+    await undo.click();
+    await expect.poll(async () => (await position(page)).points).toEqual(d0.points);
+  });
+
+  test("подписи позиции и Фибоначчи не ложатся на подписи разметки, друг на друга и на полосу цены (перепись холста)", async ({ page }) => {
+    await installCensus(page);
+    await page.addInitScript(() => localStorage.setItem("pl-markup-notice", "1"));
+    await mock(page, [], true, undefined, { fixture: "rich" });
+    await page.goto("/chart/BTCUSDT/4h");
+    const term = page.getByTestId("terminal");
+    await expect(term.locator("canvas").first()).toBeVisible();
+    // «Подробный» — все подписи разметки рядом с ценой
+    const panel = page.getByRole("complementary", { name: "панель объектов" });
+    await panel.getByRole("tab", { name: "Слои" }).click();
+    await panel.getByRole("radio", { name: "Подробный", exact: true }).check();
+    await expect.poll(async () => (await census(page)).overlay.labels.length).toBeGreaterThan(3);
+    const before = (await census(page)).overlay.labels.map((l) => l.id);
+    const b = (await term.boundingBox())!;
+    const { w, h } = await plot(page);
+    const tools = page.getByRole("toolbar", { name: "панель рисования" });
+    // позиция у последних свечей — там, где «Сопр.», «Подд.», зоны и структура
+    await tools.getByRole("button", { name: "Позиция Long" }).click();
+    await page.mouse.click(b.x + w * 0.62, b.y + h * 0.5);
+    await tools.getByRole("button", { name: "Фибоначчи" }).click();
+    await page.mouse.click(b.x + w * 0.45, b.y + h * 0.3);
+    await page.mouse.click(b.x + w * 0.75, b.y + h * 0.7);
+    await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 2");
+    await page.keyboard.press("Escape");
+    // курсор — за графиком: метка перекрестия на шкале цены не в переписи
+    await page.mouse.move(b.x + w / 2, b.y - 30);
+    const c = await census(page);
+    const drawn = c.overlay.drawingLabels.filter((l) => l.text !== "");
+    expect(drawn.filter((l) => l.objectId === drawn[0]!.objectId).length).toBeGreaterThanOrEqual(3);
+    for (const d of drawn) {
+      for (const l of c.overlay.labels) expect(intersects(d.rect, l.rect), `«${d.text}» на «${l.text}»`).toBe(false);
+      if (c.overlay.lastPrice) expect(intersects(d.rect, c.overlay.lastPrice), `«${d.text}» на полосе цены`).toBe(false);
+      expect(d.rect.x).toBeGreaterThanOrEqual(0);
+      expect(d.rect.y).toBeGreaterThanOrEqual(0);
+      expect(d.rect.x + d.rect.w).toBeLessThanOrEqual(c.plot.width);
+      expect(d.rect.y + d.rect.h).toBeLessThanOrEqual(c.plot.height);
+    }
+    for (let i = 0; i < drawn.length; i++) for (let j = i + 1; j < drawn.length; j++) expect(intersects(drawn[i]!.rect, drawn[j]!.rect), `«${drawn[i]!.text}» и «${drawn[j]!.text}»`).toBe(false);
+    // на холсте: ни один текст панели не лежит на другом (подписи рисунков и разметки), правила переписи
+    expect(violations(c)).toEqual([]);
+    // разметка уступила место: часть прежних подписей ушла или переместилась, но не пропала вся
+    expect(c.overlay.labels.length).toBeGreaterThan(0);
+    expect(before.length).toBeGreaterThan(0);
+  });
+});
+
+test.describe("позиция, палец", () => {
+  test.use(pixel5);
+
+  test("одно касание — готовая позиция; сдвиг до касания — графику; ручка цели пальцем, график стоит; отмена", async ({ page }) => {
+    const { X, Y } = await open(page);
+    const f = await finger(page);
+    const count = page.getByTestId("drawings-count");
+    const chip = page.getByTestId("draw-chip");
+    await page.getByRole("button", { name: "Рисовать" }).tap();
+    await page.getByRole("dialog", { name: "Рисование" }).getByRole("button", { name: "Позиция Long" }).tap();
+    await expect(chip).toContainText("Нажмите цену входа");
+    // жест графика до касания: график едет, позиции нет
+    const r0 = await range(page);
+    await f.drag(X(0.7), Y(0.3), X(0.4), Y(0.3));
+    await expect.poll(async () => (await range(page))!.from).not.toBe(r0!.from);
+    await expect(count).toHaveText("рисунков: 0");
+    await settle(page);
+    // касание — готовая позиция, инструмент снят
+    await f.tap(X(0.3), Y(0.3));
+    await expect(count).toHaveText("рисунков: 1");
+    await expect(chip).toHaveCount(0);
+    await expect(page.getByRole("region", { name: "выбранный рисунок" })).toContainText("Позиция Long");
+    const d0 = await position(page);
+    expect(d0.points[1]!.price).toBeLessThan(d0.points[0]!.price);
+    // ручка цели — пальцем в 10 px от неё (цель касания 44 px): цель выше, вход и стоп на месте, график стоит
+    const k = await knobs(page);
+    const r1 = await range(page);
+    await f.drag(k.target.x + 8, k.target.y + 6, k.target.x + 8, k.target.y - 34);
+    await expect.poll(async () => (await position(page)).points[2]!.price).toBeGreaterThan(d0.points[2]!.price);
+    const d1 = await position(page);
+    expect(d1.points[0]).toEqual(d0.points[0]);
+    expect(d1.points[1]).toEqual(d0.points[1]);
+    expect(await range(page)).toEqual(r1);
+    // плашки — в панели (не уходят под шкалу цены)
+    const { w } = await plot(page);
+    const labels = await page.evaluate(() => ((document.querySelector('[data-testid="terminal"]') as HTMLElement & { __overlay: () => { drawingLabels: { text: string; rect: { x: number; w: number } }[] } }).__overlay().drawingLabels).filter((l) => l.text));
+    expect(labels.length).toBeGreaterThanOrEqual(2);
+    for (const l of labels) expect(l.rect.x + l.rect.w, l.text).toBeLessThanOrEqual(w);
+    // отмена — цель на месте до перетаскивания. Пауза: быстрое протягивание через CDP Chromium считает броском
+    // (fling), и касание в первые ~0.3 с только гасит бросок — клика по кнопке нет (так ведёт себя и телефон)
+    await page.waitForTimeout(500);
+    await page.getByRole("button", { name: "отменить", exact: true }).tap();
+    await expect.poll(async () => (await position(page)).points).toEqual(d0.points);
   });
 });
