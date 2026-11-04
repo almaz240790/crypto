@@ -1,4 +1,4 @@
-import { expect, test, type Page, type Route, type WebSocketRoute } from "@playwright/test";
+import { expect, test, type Locator, type Page, type Route, type WebSocketRoute } from "@playwright/test";
 import { FIRST_PAGE, H4, T0, mock } from "./helpers/chart";
 
 /**
@@ -104,7 +104,11 @@ test("масштаб только по ценам: дальние наложен
   }
 });
 
-/** Сервер свечей 4h: закрытые 0…n−1 и текущая n (её недописанная версия отличается от окончательной). */
+/**
+ * Сервер свечей 4h: закрытые 0…n−1 и текущая n (её недописанная версия отличается от окончательной). Как API:
+ * время сервера — за 30 с до закрытия текущей, through — последняя закрытая минута (идущая минута в текущую не входит).
+ */
+const serverAt = (n: number) => T0 + (n + 1) * H4 - 30;
 function liveServer(page: Page, srv: { n: number; newest: number }) {
   const bar = (i: number) => {
     const o = 100 + Math.sin(i / 7) * 5;
@@ -120,7 +124,7 @@ function liveServer(page: Page, srv: { n: number; newest: number }) {
       if (u.searchParams.get("before")) return json(route, { symbol: "BTCUSDT", tf: "4h", candles: [], current: null, has_older: false, tick_size: "0.1", server_time: "" });
       srv.newest++;
       const from = Math.max(0, srv.n - 500);
-      return json(route, { symbol: "BTCUSDT", tf: "4h", candles: Array.from({ length: srv.n - from }, (_, k) => bar(from + k)), current: partial(srv.n), has_older: from > 0, tick_size: "0.1", server_time: iso(T0 + srv.n * H4 + 600) });
+      return json(route, { symbol: "BTCUSDT", tf: "4h", candles: Array.from({ length: srv.n - from }, (_, k) => bar(from + k)), current: partial(srv.n), has_older: from > 0, tick_size: "0.1", server_time: iso(serverAt(srv.n)), through: serverAt(srv.n) - 90 });
     }),
   };
 }
@@ -134,9 +138,20 @@ const setVisibility = (page: Page, state: "hidden" | "visible") =>
 
 const headerPrice = (page: Page) => page.getByLabel("состояние").locator("strong").first();
 
+/**
+ * Часы браузера — время ответа сервера (данные фикстуры — в будущем и в прошлом относительно настоящих часов):
+ * с настоящими часами после закрытия текущей свечи фикстуры срабатывал бы догон по просрочке, и счёт запросов
+ * зависел бы от скорости прогона. resume — время идёт само (переподключение WebSocket ждёт таймер).
+ */
+async function clockAt(page: Page, t: number) {
+  await page.clock.install({ time: new Date(t * 1000) });
+  await page.clock.resume();
+}
+
 test("фон и возврат: свежие свечи догружаются без повторов, хвост исправлен, вид у края едет за свечами, цена в шапке = последняя свеча", async ({ page }) => {
   const calls: string[] = [];
   const sockets: WebSocketRoute[] = [];
+  await clockAt(page, serverAt(FIRST_PAGE));
   await page.routeWebSocket(/\/v1\/ws/, (ws) => {
     sockets.push(ws);
     ws.onMessage(() => {});
@@ -149,11 +164,15 @@ test("фон и возврат: свежие свечи догружаются �
   await ready(page);
   await expect(page.getByLabel("состояние")).toContainText("онлайн");
   expect(srv.newest).toBe(1);
-  // поток: минута следующей свечи закрывает текущую (с недописанной ценой) и открывает новую; цена из потока новее истории
+  // поток: последняя минута текущей сворачивается в неё, минута следующей свечи закрывает текущую (недописанной) и
+  // открывает новую — минуты идут подряд за through, догона нет; цена из потока новее истории
+  const p = s.partial(FIRST_PAGE);
+  sockets[0]!.send(JSON.stringify({ t: "candle", s: "BTCUSDT", tf: "1m", c: { t: T0 + (FIRST_PAGE + 1) * H4 - 60, o: p.c, h: p.c, l: p.c, c: p.c, v: "1" } }));
   sockets[0]!.send(JSON.stringify({ t: "candle", s: "BTCUSDT", tf: "1m", c: { t: T0 + (FIRST_PAGE + 1) * H4, o: "150", h: "151", l: "149", c: "150.5", v: "5" } }));
   sockets[0]!.send(JSON.stringify({ t: "price", s: "BTCUSDT", p: "150.5", at: iso(T0 + (FIRST_PAGE + 1) * H4 + 60) }));
   await expect.poll(async () => (await mainBars(page)).length).toBe(FIRST_PAGE + 2);
   await expect(headerPrice(page)).toHaveText("150.5");
+  expect(srv.newest).toBe(1);
   const lastBefore = (await mainBars(page)).length - 1;
   const r0 = (await page.evaluate(() => (document.querySelector('[data-testid="terminal"]') as El).__chart.timeScale().getVisibleLogicalRange()))!;
   expect(r0.to).toBeGreaterThanOrEqual(lastBefore);
@@ -191,6 +210,7 @@ test("фон и возврат: свежие свечи догружаются �
 
 test("вид в истории при догоне остаётся на тех же свечах", async ({ page }) => {
   const calls: string[] = [];
+  await clockAt(page, serverAt(FIRST_PAGE));
   await mock(page, calls);
   const srv = { n: FIRST_PAGE, newest: 0 };
   await liveServer(page, srv).route;
@@ -319,10 +339,122 @@ test.describe("телефон: панели под графиком", () => {
     await expect(page.getByTestId("pane-oi").getByRole("button", { name: "свернуть панель Открытый интерес" })).toBeVisible();
     await page.waitForTimeout(300);
     noOverlaps(await heads(page));
-    // обратно вертикально — у каждой панели своя строка
+    // обратно вертикально — у каждой панели своя строка, и свёрнутые раскладкой панели снова раскрыты: боком их
+    // свернула нехватка строк, а не пользователь
     await page.setViewportSize({ width: 390, height: 844 });
     await expect(group).toHaveCount(0);
+    for (const k of ["cci", "obv", "volume", "macd", "rsi", "funding", "oi", "ls"]) await expect(page.getByTestId(`pane-${k}`).getByRole("button", { name: /свернуть панель/ }), k).toBeVisible();
+    for (const k of ["stoch", "atr", "liq"]) await expect(page.getByTestId(`pane-${k}`).getByRole("button", { name: /развернуть панель/ }), k).toBeVisible();
     await page.waitForTimeout(300);
     noOverlaps(await heads(page));
+  });
+
+  /** Что под пальцем в центре элемента: кнопка общей строки (её data-pane) или чужой элемент. */
+  const hitAt = async (page: Page, loc: Locator) => {
+    const b = (await loc.boundingBox())!;
+    const x = b.x + b.width / 2;
+    const y = b.y + b.height / 2;
+    const hit = await page.evaluate(({ x, y }) => {
+      const el = document.elementFromPoint(x, y);
+      return (el?.closest("button") as HTMLElement | null)?.dataset.pane ?? el?.outerHTML.slice(0, 120) ?? null;
+    }, { x, y });
+    return { x, y, hit };
+  };
+  const chip = (page: Page, key: string) => page.getByTestId("pane-group").locator(`button[data-pane="${key}"]`);
+  const expanded = (page: Page, key: string) => page.getByTestId(`pane-${key}`).getByRole("button", { name: /свернуть панель/ });
+  const ind7 = ["cci", "obv", "volume", "macd", "rsi", "stoch", "atr"].map((id) => ({ id, params: {} }));
+  const panels4 = { panels: ["funding", "oi", "liq", "ls"] };
+
+  test("общая строка: ровно 24 px, кнопки нажимаются пальцем (ручки высоты панелей их не перекрывают), над полосками свёрнутых — заслонка", async ({ page }) => {
+    const calls: string[] = [];
+    await mock(page, calls, true);
+    await page.addInitScript((s) => localStorage.setItem("pl-terminal", s), settings(ind7, panels4));
+    for (const [width, height, key] of [[844, 390, "cci"], [375, 667, "volume"]] as const) {
+      await page.setViewportSize({ width, height });
+      await page.goto("/chart/BTCUSDT/4h");
+      await ready(page);
+      const group = page.getByTestId("pane-group");
+      await expect(group).toBeVisible();
+      await page.waitForTimeout(300);
+      const box = (await group.boundingBox())!;
+      expect(box.height, `${width}x${height}: высота строки`).toBeLessThanOrEqual(25);
+      // в центре каждой видимой кнопки — она сама, а не ручка изменения высоты панели LWC
+      const keys = await group.locator("button[data-pane]").evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.pane!));
+      for (const k of keys) {
+        const c = chip(page, k);
+        const b = (await c.boundingBox())!;
+        if (b.x + b.width > box.x + box.width) continue; // за краем строки (прокрутка вбок)
+        expect((await hitAt(page, c)).hit, `${width}x${height}: кнопка ${k}`).toBe(k);
+      }
+      // полоски свёрнутых в общую строку панелей закрыты заслонкой во всю ширину (и шкалу цены)
+      const covers = await page.locator("[data-pane-cover]").evaluateAll((els) => els.map((e) => e.getBoundingClientRect().width));
+      expect(covers.length, `${width}x${height}: заслонки`).toBeGreaterThan(0);
+      const tw = (await page.getByTestId("terminal").boundingBox())!.width;
+      for (const w of covers) expect(w).toBeGreaterThanOrEqual(tw - 1);
+      // касание пальцем (без force): панель раскрывается
+      await chip(page, key).tap();
+      await expect(expanded(page, key), `${width}x${height}: ${key}`).toBeVisible();
+      await page.waitForTimeout(300);
+      noOverlaps(await heads(page));
+    }
+  });
+
+  test("кнопка общей строки раскрывает и верхнюю панель, когда раскрытые уже заняли все строки", async ({ page }) => {
+    const calls: string[] = [];
+    await mock(page, calls, true);
+    await page.addInitScript((s) => localStorage.setItem("pl-terminal", s), settings(ind7, panels4));
+    // телефон боком шире 900 px: как на десктопе, все панели раскрыты — верхние свёрнуты раскладкой в общую строку
+    await page.setViewportSize({ width: 932, height: 430 });
+    await page.goto("/chart/BTCUSDT/4h");
+    await ready(page);
+    const group = page.getByTestId("pane-group");
+    await expect(group).toBeVisible();
+    await expect(chip(page, "cci")).toBeVisible();
+    await page.waitForTimeout(300);
+    const before = await group.locator("button[data-pane]").count();
+    const { x, y, hit } = await hitAt(page, chip(page, "cci"));
+    expect(hit).toBe("cci");
+    await page.touchscreen.tap(x, y);
+    await expect(expanded(page, "cci")).toBeVisible();
+    // строк не прибавилось: свернулась раньше раскрытая панель, а не та, что нажата
+    await expect(group.locator("button[data-pane]")).toHaveCount(before);
+    await expect(chip(page, "cci")).toHaveCount(0);
+    await page.waitForTimeout(300);
+    noOverlaps(await heads(page));
+    // вертикально место есть — раскрыты все панели, раскладка ничего не свернула
+    await page.setViewportSize({ width: 430, height: 932 });
+    await expect(group).toHaveCount(0);
+    for (const k of ["cci", "obv", "volume", "macd", "rsi", "stoch", "atr", "funding", "oi", "liq", "ls"]) await expect(expanded(page, k), k).toBeVisible();
+    await page.waitForTimeout(300);
+    noOverlaps(await heads(page));
+  });
+
+  test("убрали панель, в которой лежала общая строка, — строка «ещё N панелей» на месте, свёрнутые не пропадают", async ({ page }) => {
+    const calls: string[] = [];
+    await mock(page, calls, true);
+    await page.addInitScript((s) => localStorage.setItem("pl-terminal", s), settings(ind7, panels4));
+    await page.setViewportSize({ width: 844, height: 390 });
+    await page.goto("/chart/BTCUSDT/4h");
+    await ready(page);
+    const group = page.getByTestId("pane-group");
+    await expect(chip(page, "liq")).toBeVisible();
+    const before = await group.locator("button[data-pane]").count();
+    // общая строка — у последней свёрнутой («Ликвидации»): убираем её
+    await page.getByRole("button", { name: /^Индикаторы \(/ }).tap();
+    const sheet = page.getByRole("dialog", { name: "Индикаторы" });
+    const box = sheet.locator("label", { hasText: "Ликвидации" }).locator("input");
+    await box.scrollIntoViewIfNeeded();
+    await box.tap();
+    await expect(box).not.toBeChecked();
+    await expect(chip(page, "liq")).toHaveCount(0);
+    await expect(group).toBeVisible();
+    await expect(group.locator("button[data-pane]")).toHaveCount(before - 1);
+    await expect(chip(page, "oi")).toBeVisible();
+    // ни одной панели-полоски без строки: каждая ниже 20 px — в общей строке
+    const slivers = await page.evaluate(() => {
+      const ch = (document.querySelector('[data-testid="terminal"]') as El).__chart;
+      return ch.panes().slice(1).filter((p) => p.getHeight() < 20).length;
+    });
+    expect(slivers).toBeLessThanOrEqual(before - 1);
   });
 });
