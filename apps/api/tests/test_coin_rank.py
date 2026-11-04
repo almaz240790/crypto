@@ -68,7 +68,15 @@ def _markets(n_filler: int = 120) -> list[dict[str, Any]]:
         _m("ghost", "ghst", "Ghost", None),
     ]
     out += [_m(f"coin-{i}", f"c{i}", f"Coin {i}", 1e6 - i) for i in range(n_filler)]
+    # остальные наши монеты — мелкие, в хвосте: без них обновление вернуло бы их из снимка
+    have = {m["id"] for m in out}
+    rest = [(b, cid) for b, cid in cr.COINGECKO_IDS.items() if cid not in have]
+    out += [_m(cid, b.lower(), b, 1e3 - i) for i, (b, cid) in enumerate(rest)]
     return out
+
+
+def _without(*ids: str) -> list[dict[str, Any]]:
+    return [m for m in _markets() if m["id"] not in ids]
 
 
 # --- сопоставление баз -------------------------------------------------------------------------
@@ -180,11 +188,22 @@ def _client(handler: Any) -> httpx.Client:
     return httpx.Client(transport=httpx.MockTransport(handler))
 
 
-def _ok_handler(calls: list[httpx.Request]) -> Any:
-    pages = {1: _markets()[:100], 2: _markets()[100:]}
+def _ok_handler(
+    calls: list[httpx.Request],
+    markets: list[dict[str, Any]] | None = None,
+    by_id: list[dict[str, Any]] | None = None,
+) -> Any:
+    """Страницы 1 и 2 — ``markets`` пополам; запрос ``ids=`` — те из ``by_id`` (или ``markets``),
+    чей id в списке."""
+    ms = _markets() if markets is None else markets
+    pages = {1: ms[:100], 2: ms[100:]}
+    pool = ms if by_id is None else by_id
 
     def handler(req: httpx.Request) -> httpx.Response:
         calls.append(req)
+        if "ids" in req.url.params:
+            ids = set(req.url.params["ids"].split(","))
+            return httpx.Response(200, json=[m for m in pool if m["id"] in ids])
         return httpx.Response(200, json=pages[int(req.url.params["page"])])
 
     return handler
@@ -193,13 +212,88 @@ def _ok_handler(calls: list[httpx.Request]) -> Any:
 def test_refresh_success_saves_order_with_ttl() -> None:
     r, calls = FakeRedis(), []
     assert cr.refresh_if_due(r, _client(_ok_handler(calls)), NOW) == "updated"
-    assert [c.url.params["page"] for c in calls] == ["1", "2"]
+    assert [c.url.params.get("page") for c in calls] == ["1", "2", "1"]
+    assert "ids" not in calls[0].url.params and "ids" not in calls[1].url.params
+    assert set(calls[2].url.params["ids"].split(",")) == set(cr.COINGECKO_IDS.values())
     assert calls[0].url.params["order"] == "market_cap_desc"
     assert calls[0].url.params["per_page"] == "250"
     assert r.ex[cr.REDIS_KEY] == cr.REDIS_TTL == 36 * 3600
     cached = cr.load_cached(r)
     assert cached and cached["order"][:4] == ["BTC", "ETH", "BNB", "SOL"]
     assert cached["fetched_at"] == NOW
+    ranked = set(cr.rank_table(cached["order"]))
+    assert set(cr.COINGECKO_IDS) - ranked == {"MKR"}
+
+
+def test_refresh_coin_outside_pages_ranked_by_its_cap() -> None:
+    """Монета перешла стык страниц между запросами (IMX — #256 у CoinGecko) или ушла за
+    пятисотку: место ей даёт запрос по id, по её капитализации."""
+    imx = _m("immutable-x", "imx", "Immutable", 5e8)
+    r, calls = FakeRedis(), []
+    markets = _without("immutable-x")
+    handler = _ok_handler(calls, markets=markets, by_id=[*markets, imx])
+    assert cr.refresh_if_due(r, _client(handler), NOW) == "updated"
+    cached = cr.load_cached(r)
+    assert cached
+    # между PEPE (2,2 млрд) и EOS (140 млн)
+    assert cached["order"][5:9] == ["TON", "PEPE", "IMX", "EOS"]
+    # наша монета, пришедшая и в страницах, и по id, — одна
+    assert cached["order"].count("BTC") == 1 and cached["order"].count("TON") == 1
+
+
+def test_refresh_keeps_our_missing_coin_on_previous_place(caplog: pytest.LogCaptureFixture) -> None:
+    """CoinGecko сменил id нашей монеты: её нет ни в страницах, ни в запросе по id. Она остаётся
+    на прежнем месте с предупреждением, а не уходит в конец всех списков с rank null."""
+    r = FakeRedis()
+    previous = ["BTC", "ETH", "BNB", "IMX", "SOL", "FOO", "XRP", "MKR"]
+    cr.save_cached(r, previous, NOW - timedelta(days=2))
+    handler = _ok_handler([], markets=_without("immutable-x", "ripple"))
+    with caplog.at_level("WARNING", logger="coin_rank"):
+        assert cr.refresh_if_due(r, _client(handler), NOW) == "updated"
+    cached = cr.load_cached(r)
+    assert cached
+    order = cached["order"]
+    table = cr.rank_table(order)
+    # IMX и XRP — наши, их нет в ответе: те же места, что были (4 и 7)
+    assert table["IMX"] == 4 and table["XRP"] == 7
+    assert order[:8] == ["BTC", "ETH", "BNB", "IMX", "SOL", "HYPE", "XRP", "TON"]
+    # чужая монета (FOO) и MKR без капитализации не возвращаются
+    assert "FOO" not in table and "MKR" not in table
+    assert len(order) == len(set(order))
+    warned = [x.getMessage() for x in caplog.records if x.levelname == "WARNING"]
+    assert any("IMX, XRP" in m for m in warned), warned
+
+
+def test_refresh_without_cache_keeps_missing_coin_on_static_place(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Сохранённого порядка нет (TTL истёк) — прежние места берутся из статического снимка."""
+    r = FakeRedis()
+    big = [_m(f"coin-{i}", f"c{i}", f"Coin {i}", 1e9 - i) for i in range(400)]
+    markets = [
+        _m("bitcoin", "btc", "Bitcoin", 1.6e12),
+        _m("ethereum", "eth", "Ethereum", 3e11),
+        *big,
+    ]
+    with caplog.at_level("WARNING", logger="coin_rank"):
+        assert cr.refresh_if_due(r, _client(_ok_handler([], markets=markets)), NOW) == "updated"
+    cached = cr.load_cached(r)
+    assert cached
+    table = cr.rank_table(cached["order"])
+    for base in ("SOL", "DOGE", "IMX", "ORDI", "1000PEPE"):
+        b = cr.normalize_base(base)
+        assert table[b] == cr.STATIC_TABLE[b], b
+    assert "MKR" not in table
+    assert any("IMX" in x.getMessage() for x in caplog.records if x.levelname == "WARNING")
+
+
+def test_keep_ours() -> None:
+    order, restored = cr.keep_ours(["BTC", "SOL"], ["BTC", "ETH", "XYZ", "SOL", "IMX", "MKR"])
+    assert order == ["BTC", "ETH", "SOL", "IMX"] and restored == ["ETH", "IMX"]
+    # прежнее место дальше конца нового порядка — в конец
+    assert cr.keep_ours(["BTC"], ["A", "B", "C", "ETH"]) == (["BTC", "ETH"], ["ETH"])
+    # ничего не пропало — порядок тот же
+    assert cr.keep_ours(["ETH", "BTC"], ["BTC", "ETH"]) == (["ETH", "BTC"], [])
 
 
 def test_refresh_skips_while_fresh_and_runs_after_a_day() -> None:
@@ -208,7 +302,7 @@ def test_refresh_skips_while_fresh_and_runs_after_a_day() -> None:
     assert cr.refresh_if_due(r, _client(_ok_handler(calls)), NOW) == "fresh"
     assert calls == []
     assert cr.refresh_if_due(r, _client(_ok_handler(calls)), NOW + timedelta(hours=2)) == "updated"
-    assert len(calls) == 2
+    assert len(calls) == 3
 
 
 @pytest.mark.parametrize(
@@ -381,9 +475,9 @@ def test_notifier_ranks_once(monkeypatch: pytest.MonkeyPatch) -> None:
         notifier.httpx, "Client", lambda: real_client(transport=httpx.MockTransport(handler))
     )
     assert notifier.ranks_once() == "updated"
-    assert r.closed and len(calls) == 2
+    assert r.closed and len(calls) == 3
     assert notifier.ranks_once() == "fresh"
-    assert len(calls) == 2
+    assert len(calls) == 3
 
 
 def test_current_ranks_default_redis_closed(monkeypatch: pytest.MonkeyPatch) -> None:

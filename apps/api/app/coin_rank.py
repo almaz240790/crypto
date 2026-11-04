@@ -10,6 +10,13 @@
 (``current_ranks``) с кэшем в памяти процесса, а без Redis или при пустом ключе берёт
 ``STATIC_ORDER`` — снимок CoinGecko на 2026-11-04 (обновить: ``scripts/coin_order.py``).
 Сбой CoinGecko не трогает последний сохранённый порядок.
+
+Наши монеты не пропадают из порядка: кроме первых 500 запрашиваются отдельно по id (монета на стыке
+страниц или за пятисоткой всё равно получает место по своей капитализации), а наша монета, которой
+нет и там (CoinGecko сменил id), остаётся на прежнем месте с предупреждением в логе.
+
+``rank`` — ключ сортировки, а не публичное место CoinGecko: в нумерации пропуски на месте монет,
+которых у нас нет (HYPE, XMR…). Скринер показывает своё место 1…N среди строк (план 6.4).
 """
 
 from __future__ import annotations
@@ -114,6 +121,8 @@ COINGECKO_IDS: dict[str, str] = {
     "MKR": "maker",
 }
 BASE_BY_ID: dict[str, str] = {v: k for k, v in COINGECKO_IDS.items()}
+UNRANKED: frozenset[str] = frozenset({"MKR"})
+"""Наши монеты без капитализации в CoinGecko: места у них нет, и обновление их не возвращает."""
 
 # Не монеты в смысле рейтинга: стейблкоины, обёртки и стейкинг, токенизированные акции, фонды,
 # металлы, долговые бумаги. Сито грубое: ошибка сдвигает только места чужих монет — наши
@@ -259,27 +268,53 @@ def rank_sort_key(rank: int | None, symbol: str) -> tuple[int, int, str]:
     return (0, rank, symbol) if rank is not None else (1, 0, symbol)
 
 
+def _get_markets(client: httpx.Client, params: Mapping[str, str | int]) -> list[dict[str, Any]]:
+    r = client.get(
+        COINGECKO_MARKETS,
+        params={"vs_currency": "usd", "order": "market_cap_desc", **params},
+        headers={"accept": "application/json"},
+        timeout=HTTP_TIMEOUT,
+    )
+    r.raise_for_status()
+    data = r.json()
+    if not isinstance(data, list):
+        raise ValueError(f"CoinGecko: ожидался список, пришло {type(data).__name__}")
+    return [m for m in data if isinstance(m, dict)]
+
+
 def fetch_markets(client: httpx.Client, pages: int = PAGES) -> list[dict[str, Any]]:
-    """Первые ``pages`` × 250 монет по капитализации. Ошибка сети или ответа — исключение."""
+    """Первые ``pages`` × 250 монет по капитализации и отдельно — наши по id, где бы они ни были.
+
+    Третий запрос (``ids=`` всех ``COINGECKO_IDS``) нужен, чтобы наша монета не выпала из порядка,
+    если между запросами страниц она перешла через стык или опустилась за пятисотку. Ошибка сети
+    или ответа — исключение.
+    """
     out: list[dict[str, Any]] = []
     for page in range(1, pages + 1):
-        r = client.get(
-            COINGECKO_MARKETS,
-            params={
-                "vs_currency": "usd",
-                "order": "market_cap_desc",
-                "per_page": PER_PAGE,
-                "page": page,
-            },
-            headers={"accept": "application/json"},
-            timeout=HTTP_TIMEOUT,
-        )
-        r.raise_for_status()
-        data = r.json()
-        if not isinstance(data, list):
-            raise ValueError(f"CoinGecko: ожидался список, пришло {type(data).__name__}")
-        out.extend(m for m in data if isinstance(m, dict))
+        out.extend(_get_markets(client, {"per_page": PER_PAGE, "page": page}))
+    seen = {m.get("id") for m in out}
+    ids = ",".join(sorted(set(COINGECKO_IDS.values())))
+    ours = _get_markets(client, {"ids": ids, "per_page": PER_PAGE, "page": 1})
+    out.extend(m for m in ours if m.get("id") not in seen)
     return out
+
+
+def keep_ours(order: Sequence[str], previous: Sequence[str]) -> tuple[list[str], list[str]]:
+    """Наши монеты, которые были в ``previous``, а в ``order`` пропали, — на прежние места.
+
+    Так бывает, если CoinGecko сменил id монеты (EOS → vaulta, TON → GRAM): без этого она получила
+    бы ``rank: null`` и ушла в конец всех списков до правки кода. Возвращает порядок и
+    возвращённые базы. Вставки по возрастанию прежнего места: у каждой монеты — то же место.
+    """
+    out = list(order)
+    present = set(out)
+    restored: list[str] = []
+    for i, base in enumerate(previous):
+        if base in COINGECKO_IDS and base not in UNRANKED and base not in present:
+            out.insert(min(i, len(out)), base)
+            present.add(base)
+            restored.append(base)
+    return out, restored
 
 
 class RedisLike(Protocol):
@@ -315,7 +350,9 @@ def refresh_if_due(r: RedisLike, client: httpx.Client, now: datetime | None = No
 
     ``fresh`` — обновлять рано; ``updated`` — сохранён новый; ``failed`` — CoinGecko не ответил
     или ответ не похож на рейтинг: в Redis остаётся прежний порядок (а без него API берёт
-    статический). Исключений не бросает — цикл воркера не должен из-за этого падать.
+    статический). Наша монета, пропавшая из ответа, остаётся на месте из прежнего порядка
+    (сохранённого или статического) — ``keep_ours``. Исключений не бросает — цикл воркера не
+    должен из-за этого падать.
     """
     now = now or datetime.now(tz=UTC)
     try:
@@ -333,6 +370,13 @@ def refresh_if_due(r: RedisLike, client: httpx.Client, now: datetime | None = No
     if len(order) < MIN_COINS or "BTC" not in order[:3]:
         log.warning("порядок монет: ответ не похож на рейтинг (%d), остаётся прежний", len(order))
         return "failed"
+    order, restored = keep_ours(order, cached["order"] if cached else STATIC_ORDER)
+    if restored:
+        log.warning(
+            "порядок монет: у CoinGecko нет наших %s (сменился id в COINGECKO_IDS?) — "
+            "оставлены на прежних местах",
+            ", ".join(restored),
+        )
     try:
         save_cached(r, order, now)
     except Exception:

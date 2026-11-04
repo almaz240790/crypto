@@ -19,10 +19,9 @@ import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "apps" / "api"))
 
-from app.coin_rank import base_of, fetch_markets, order_from_markets
+from app.coin_rank import UNRANKED, base_of, fetch_markets, order_from_markets
 
 ROOT = Path(__file__).resolve().parents[1]
-UNRANKED = {"MKR"}
 
 
 def _lines(items: list[str], indent: str, per_line: int = 10) -> str:
