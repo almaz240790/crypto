@@ -7,13 +7,14 @@ import c from "./chrome.module.css";
 
 /**
  * Угол графика (план 2B.9, §3.4, только десктоп): «отдалить», «приблизить», «показать последние свечи» —
- * внизу по центру основной панели, полупрозрачно до наведения. ChartSurface ставит его над шкалой времени
+ * внизу по центру основной панели, полупрозрачно, пока курсор не над колонкой графика (terminal.module.css
+ * `.chartCol:hover [data-corner]`) и под пальцем — непрозрачно. ChartSurface ставит его над шкалой времени
  * и передаёт прямоугольник в uiObstacles: подписи разметки его обходят.
  */
 export function ChartCorner({ onZoom, onReset }: { onZoom: (factor: number) => void; onReset: () => void }) {
   const t = useT();
   return (
-    <div className={c.corner}>
+    <div className={c.corner} data-corner>
       <IconButton size="sm" label={t("отдалить")} title={t("Отдалить (клавиша −)")} onClick={() => onZoom(0.8)}>
         <IconMinus />
       </IconButton>

@@ -177,10 +177,8 @@ export function MultiChart() {
           onSelect={(v) => setSaved({ ...saved, count: v === "4" ? 4 : 2 })}
         />
         <CellsMarkupMenu value={saved.markup} onSelect={(id) => setSaved({ ...saved, markup: id })} />
-        <Tooltip text={t("Инструмент и таймфрейм у каждого графика свои; разметка — одна на все графики. Рисунки и индикаторы — в терминале.")}>
-          <span className={s.multiInfo}>
-            <IconInfo />
-          </span>
+        <Tooltip label={t("Пояснение")} text={t("Инструмент и таймфрейм у каждого графика свои; разметка — одна на все графики. Рисунки и индикаторы — в терминале.")}>
+          <IconInfo />
         </Tooltip>
       </div>
       <div className={s.multiGrid} data-count={saved.count}>

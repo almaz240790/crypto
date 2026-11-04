@@ -5,6 +5,30 @@
   cursor: help;
 }
 
+/* триггер-иконка: без подчёркивания (оно было шире иконки и ниже её), своя цель касания */
+.host[data-icon] {
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  min-height: 28px;
+  border-bottom: 0;
+  border-radius: var(--radius);
+  color: var(--text-2);
+}
+
+.host[data-icon]:hover,
+.host[data-icon]:focus-visible {
+  background: var(--row-hover);
+  color: var(--text);
+}
+
+@media (pointer: coarse) {
+  .host[data-icon] {
+    min-width: var(--touch-min);
+    min-height: var(--touch-min);
+  }
+}
+
 .tip {
   position: absolute;
   left: 0;

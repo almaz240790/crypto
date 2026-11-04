@@ -25,6 +25,12 @@
   }
 }
 
+/* каркас на время загрузки модуля терминала (TerminalClient): строки шапки и тулбара без содержимого */
+.skelRow {
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
 .top {
   display: flex;
   align-items: center;
@@ -282,17 +288,18 @@
   color: var(--text);
 }
 
-/* нажатый инструмент: фон --row-hover и рамка --accent (в светлой теме --surface-raised = --surface) */
+/* нажатый инструмент — как всё активное в терминале: фон --row-hover и полоса --accent 2 px снизу
+   (в светлой теме --surface-raised = --surface, поэтому не он) */
 .tool[aria-pressed="true"] {
   background: var(--row-hover);
-  border-color: var(--accent);
+  box-shadow: inset 0 -2px 0 var(--accent);
   color: var(--text);
 }
 
-/* переключатели (магнит, скрыть рисунки): без рамки акцента — точка в правом верхнем углу */
+/* переключатели (магнит, скрыть рисунки): без полосы акцента — точка в правом верхнем углу */
 .toolSwitch[aria-pressed="true"] {
-  border-color: transparent;
   background: transparent;
+  box-shadow: none;
 }
 
 .toolSwitch[aria-pressed="true"]::after {
@@ -354,6 +361,11 @@
   position: relative;
   min-width: 0;
   min-height: 0;
+}
+
+/* угол «− + →|» (ChartCorner) — непрозрачный, пока курсор над колонкой графика (§3.4) */
+.chartCol:hover [data-corner] {
+  opacity: 1;
 }
 
 .chart {
@@ -833,14 +845,6 @@
 .multiLabel {
   color: var(--text-2);
   font-size: 13px;
-}
-
-.multiInfo {
-  display: inline-grid;
-  place-items: center;
-  width: 28px;
-  height: 28px;
-  color: var(--text-2);
 }
 
 .multiGrid {

@@ -171,6 +171,13 @@
   white-space: nowrap;
 }
 
+/* чипы тренда — без заливки: --up на --row-hover в светлой теме — 4.41:1 (ниже AA); на фоне шапки с рамкой --border
+   — 5.0:1 (светлая) и выше 8:1 (тёмная) */
+.trend .chip {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
 .chip[data-dir="up"] {
   color: var(--up);
 }
@@ -303,9 +310,17 @@
   transition: opacity 0.15s;
 }
 
+/* непрозрачен при наведении на колонку графика (terminal.module.css: .chartCol:hover [data-corner]) и на сам угол;
+   под пальцем наведения нет — непрозрачен всегда */
 .corner:hover,
 .corner:focus-within {
   opacity: 1;
+}
+
+@media (pointer: coarse) {
+  .corner {
+    opacity: 1;
+  }
 }
 
 /* ---------- режим рисования: чип сверху по центру графика ---------- */
