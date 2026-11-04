@@ -1,6 +1,6 @@
 "use client";
 
-import { applyMinute, firstChange, liveDueAt, mergeLive, restThrough, type Candle, type LiveBars, type Timeframe } from "@platform/charts";
+import { applyMinute, catchUpLive, firstChange, liveDueAt, minuteNeedsHistory, restThrough, type Candle, type LiveBars, type Timeframe } from "@platform/charts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { FIGURE_TFS, getCandles, getDerivatives, getFigures, getLayers, getPatterns, toCandle, type CandlesResponse, type Derivatives, type FiguresResponse, type LayersResponse, type PatternsResponse } from "@/lib/chart";
 import { useLive, type LiveCandle } from "@/lib/useLive";
@@ -18,6 +18,12 @@ function serverTime(r: CandlesResponse): number {
   const t = Date.parse(r.server_time) / 1000;
   return Number.isFinite(t) ? t : Date.now() / 1000;
 }
+
+/**
+ * Последняя минута, учтённая ответом целиком: поле through (последняя закрытая минута в БД — текущая свеча
+ * свёрнута только из закрытых), у старого API — оценка по времени сервера.
+ */
+const pageThrough = (r: CandlesResponse, at: number): number => r.through ?? restThrough(at);
 
 /** Закрытые свечи и текущая из ответа истории (у 1m текущая — недописанная минута с флагом open). */
 function splitPage(r: CandlesResponse): { closed: Candle[]; current: Candle | null } {
@@ -107,7 +113,7 @@ export function useTerminalData(symbol: string, tf: Timeframe, token: string | n
         setTick(r.tick_size);
         setRestAt(st);
         sinceRef.current = closed[0]?.time;
-        commit({ closed, current: cur, through: restThrough(st) });
+        commit({ closed, current: cur, through: pageThrough(r, st) });
         getPatterns(symbol, tf, closed[0]?.time)
           .then((pr) => !dead && setPatterns(pr))
           .catch(() => {});
@@ -130,8 +136,9 @@ export function useTerminalData(symbol: string, tf: Timeframe, token: string | n
 
   /**
    * Догон: свежая порция истории (последние свечи) сливается с концом — хвост заменяется окончательными свечами,
-   * пропущенные дописываются, времена не повторяются (mergeLive). Разрыв длиннее порции — история заменяется
-   * целиком. Новая закрытая свеча — слои, производные, паттерны и фигуры заново.
+   * пропущенные дописываются, времена не повторяются (mergeLive). Порция не стыкуется с историей (разрыв длиннее
+   * порции) — история заменяется порцией, свечи потока новее неё остаются (catchUpLive). Новая закрытая свеча —
+   * слои, производные, паттерны и фигуры заново.
    */
   const catchUp = useCallback(
     async (overdue = false) => {
@@ -147,9 +154,8 @@ export function useTerminalData(symbol: string, tf: Timeframe, token: string | n
         if (gen !== genRef.current || !base) return;
         const { closed, current: cur } = splitPage(r);
         const at = serverTime(r);
-        const merged = mergeLive(base, closed, cur, restThrough(at));
-        const next = merged ?? { closed, current: cur, through: restThrough(at) };
-        if (!merged) {
+        const { bars: next, replaced } = catchUpLive(base, closed, cur, pageThrough(r, at), tf);
+        if (replaced) {
           setHasOlder(r.has_older);
           sinceRef.current = closed[0]?.time;
         }
@@ -159,7 +165,7 @@ export function useTerminalData(symbol: string, tf: Timeframe, token: string | n
         if (!unchanged) commit({ ...next, closed: next.closed === base.closed ? next.closed.slice() : next.closed });
         else liveRef.current = { ...base, through: next.through };
         setRestAt(at);
-        if (next.closed[next.closed.length - 1]?.time !== base.closed[base.closed.length - 1]?.time) refreshDerived(gen, !merged);
+        if (next.closed[next.closed.length - 1]?.time !== base.closed[base.closed.length - 1]?.time) refreshDerived(gen, replaced);
         // сервер и сам ещё без новой свечи — следующая попытка позже, вплоть до LIVE_BACKOFF_MAX_MS
         const due = liveDueAt(next, tf, LIVE_GRACE_S);
         st.backoff = due !== null && due * 1000 <= Date.now() ? Math.min(st.backoff * 2, LIVE_BACKOFF_MAX_MS) : LIVE_RETRY_MS;
@@ -198,10 +204,13 @@ export function useTerminalData(symbol: string, tf: Timeframe, token: string | n
       const s = liveRef.current;
       // до первой порции минута не нужна: история её уже содержит
       if (!s) return;
-      const next = applyMinute(s, toCandle({ ...m.c, open: false }), tf);
+      const m1 = toCandle({ ...m.c, open: false });
+      const next = applyMinute(s, m1, tf);
       if (next) commit(next);
+      // пропуск минут (приложение спало, догон не удался) или минута уже закрытой свечи, которой нет в истории
+      if (minuteNeedsHistory(s, m1, tf)) void catchUp(true);
     },
-    [symbol, tf, commit],
+    [symbol, tf, commit, catchUp],
   );
 
   const { prices, connected } = useLive([symbol], token, undefined, onCandle);

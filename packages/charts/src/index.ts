@@ -18,7 +18,7 @@ export type { CanvasType, ChartAlphas, ChartPalette, ChartTheme } from "./theme"
 export { CHART_TYPES, LAYER_KEYS, TF_SECONDS, TONES } from "./types";
 export type { Candle, ChartType, Device, LayerKey, PanelKey, SceneLayer, ThemeTokens, Timeframe, Tone } from "./types";
 export * from "./indicators";
-export { applyMinute, bucketStart, countdownSeconds, foldMinute, isClosed, liveDueAt, mergeLive, restThrough, secondsToClose } from "./live";
+export { applyMinute, bucketStart, catchUpLive, countdownSeconds, foldMinute, isClosed, liveDueAt, mergeLive, minuteNeedsHistory, restThrough, secondsToClose } from "./live";
 export type { LiveBars } from "./live";
 export * from "./drawings";
 // Разметка (PR B, план 2B.2): пресеты, сцена, раскладка подписей и шкалы — чистые модули.
