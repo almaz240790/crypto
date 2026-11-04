@@ -1,6 +1,7 @@
 import { pointsNeeded, type DrawingType } from "@platform/charts";
 
-const POSITION_STEPS = ["Нажмите цену входа", "Нажмите стоп", "Нажмите цель"] as const;
+/** Позиция — одним нажатием на цену входа: стоп (ATR) и цель (1:2) встают сами (ADR-0009, «Позиция»). */
+const POSITION_STEPS = ["Нажмите цену входа"] as const;
 const POINT_STEPS = ["Нажмите первую точку", "Нажмите вторую точку", "Нажмите третью точку"] as const;
 
 /**

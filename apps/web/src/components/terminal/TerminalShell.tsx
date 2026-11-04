@@ -258,12 +258,14 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
   const sel = dr.selected;
   /** Высота шкалы времени: карточка выбранного рисунка на десктопе — над ней, даты и метка перекрестия видны (D7). */
   const [axisH, setAxisH] = useState<number | null>(null);
+  /** Депозит и доля риска из настроек: риск в $ и объём позиции — в карточке и на плашке входа на графике. */
+  const riskDeposit = user?.risk?.deposit ?? null;
+  const riskPct = user?.risk?.risk_pct ?? null;
+  const riskProfile = useMemo(() => (riskDeposit && Number(riskDeposit) > 0 ? { deposit: Number(riskDeposit), riskPct: Number(riskPct) } : null), [riskDeposit, riskPct]);
   const pos = useMemo(() => {
     if (!sel || !sel.type.startsWith("position") || sel.points.length < 3) return null;
-    const risk = user?.risk;
-    const profile = risk?.deposit ? { deposit: Number(risk.deposit), riskPct: Number(risk.risk_pct) } : null;
-    return positionStats(sel.type === "position-long" ? "long" : "short", sel.points[0]!.price, sel.points[1]!.price, sel.points[2]!.price, profile);
-  }, [sel, user]);
+    return positionStats(sel.type === "position-long" ? "long" : "short", sel.points[0]!.price, sel.points[1]!.price, sel.points[2]!.price, riskProfile);
+  }, [sel, riskProfile]);
   const setDrawTool = dr.setTool;
   const drawingsProps = useMemo(
     () => ({
@@ -281,8 +283,9 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
       onToolDone: (ended: boolean) => {
         if (ended) setDrawTool(null);
       },
+      profile: riskProfile,
     }),
-    [dr.state, dr.tool, dr.magnet, dr.series, dr.draft, dr.actions, dr.setDraft, dr.setStep, setDrawTool],
+    [dr.state, dr.tool, dr.magnet, dr.series, dr.draft, dr.actions, dr.setDraft, dr.setStep, setDrawTool, riskProfile],
   );
   const fundingRate = data.derivatives?.funding_current ?? null;
   const fundingNext = data.derivatives?.next_funding_t ?? null;
@@ -426,7 +429,7 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
             {(sel || dr.limitHit) && (
               <div className={s.cards}>
                 {dr.limitHit && <DrawingLimitCard limit={dr.limit} guest={!user} onDismiss={dr.dismissLimit} />}
-                {sel && <SelectedDrawingCard drawing={sel} symbol={symbol} tf={tf} instruments={instruments} pos={pos} onPatch={dr.actions.patch} onLock={dr.actions.lock} onRemove={dr.actions.remove} onDeselect={deselectDrawing} onAlert={alertOnLevel} onCopy={copyDrawing} />}
+                {sel && <SelectedDrawingCard drawing={sel} symbol={symbol} tf={tf} instruments={instruments} pos={pos} tick={data.tick} onPatch={dr.actions.patch} onEdit={dr.actions.move} onLock={dr.actions.lock} onRemove={dr.actions.remove} onDeselect={deselectDrawing} onAlert={alertOnLevel} onCopy={copyDrawing} />}
               </div>
             )}
             {/* тост: единственный role=status на странице; поверх колонки графика, раскладку не сдвигает */}

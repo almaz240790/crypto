@@ -1,9 +1,9 @@
 "use client";
 
 import { COMPACT_FORMAT, ChartController, EMPTY_PANE_LAYOUT, FALLBACK_COLOR, INDICATOR_COLOR, INTERACTION, NONE, PERCENT_FORMAT, VIEW, alpha, commitPaneHeights, dragSeparator, instanceColors, instanceTitle, mainMinShareFor, movePaneKey, orderPaneKeys, paneLevels, planMaximized, planPanes, resolvePreset, VALUE_FORMAT, alignToCandles, tickPrecision, tokensFromElement, type AlertLine, type Candle, type ChartHandle, type ChartStore, type ChartType, type CrosshairSnapshot, type Device, type ExternalObject, type IndColor, type IndicatorInstance, type IndicatorValue, type MarkupSettings, type PaneLayout, type PanePlan, type PanelKey, type ScaleMode, type SepLimits, type Terminal, type Timeframe } from "@platform/charts";
-import { DrawingController, DrawingsPrimitive, INDICATORS, defaultParams, indicatorById, visibleOn, type Drawing, type DrawingType, type DrawingsState, type IndicatorSpec, type Layer, type LayerContext, type Point, TF_SECONDS } from "@platform/charts";
+import { DrawingController, DrawingsPrimitive, INDICATORS, defaultParams, indicatorById, visibleOn, type Drawing, type DrawingText, type DrawingType, type DrawingsState, type IndicatorSpec, type Layer, type LayerContext, type Point, type RiskProfile, TF_SECONDS } from "@platform/charts";
 import { LineStyle, TrackingModeExitMode, type IPriceLine, type ISeriesApi, type PriceFormat, type UTCTimestamp } from "lightweight-charts";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Derivatives, FigureOnChart, LayersResponse, PatternOnChart } from "@/lib/chart";
 import type { LiveSource } from "@/lib/liveBar";
 import s from "../terminal.module.css";
@@ -118,6 +118,8 @@ type Props = {
     onStep: (placed: number) => void;
     /** Рисунок завершён; ended — контроллер снял инструмент (без «серии»). */
     onToolDone: (ended: boolean) => void;
+    /** Депозит и доля риска из настроек: у позиции на графике — риск в $ и объём. */
+    profile?: RiskProfile | null;
   };
 };
 
@@ -193,6 +195,8 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
   const cryptoRef = useRef<Map<PanelKey, { paneIndex: number; series: ISeriesApi<"Line" | "Histogram">[] }>>(new Map());
   const drawPrimRef = useRef<DrawingsPrimitive | null>(null);
   const drawCtrlRef = useRef<DrawingController | null>(null);
+  /** Шаг цены инструмента: стоп и цель новой позиции — по нему. */
+  const tickRef = useRef<number | null>(null);
   const drawingsRef = useRef(drawings);
   const needOlderRef = useRef(onNeedOlder);
   const onReadyRef = useRef(onReady);
@@ -607,6 +611,8 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
         },
         getCandles: () => term.candles,
         tfSeconds: TF_SECONDS[tfRef.current],
+        getTfSeconds: () => TF_SECONDS[tfRef.current],
+        getTick: () => tickRef.current,
         timeframe: null,
         touch: prim.touch,
         magnet: true,
@@ -623,6 +629,9 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
       },
     );
     drawCtrlRef.current = dctrl;
+    // подписи рисунков — в общей раскладке с подписями разметки: разметка их обходит, они не ложатся на неё
+    ctrl.setDrawingLabels((measure) => prim.labelCandidates(measure));
+    prim.linked = () => ctrl.drawingLabels();
     // рисунки пользователя важнее разметки: с инструментом или над рисунком наведения и выбора объектов нет
     ctrl.setHitGate((x, y) => !drawingsRef.current?.tool && dctrl.hitAt(x, y) === null);
     // перекрестие → свеча и значения индикаторов; на телефоне long-press (300 мс) включает «липкий» режим
@@ -824,7 +833,16 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
   useEffect(() => {
     ctrlRef.current?.set({ tick });
     drawPrimRef.current?.update({ precision: tickPrecision(tick) });
+    const n = tick === null ? NaN : Number(tick);
+    tickRef.current = n > 0 ? n : null;
   }, [tick]);
+
+  // тексты плашек позиции на холсте — на языке интерфейса
+  const drawText: DrawingText = useMemo(() => ({ entry: t("Вход"), stop: t("Стоп"), target: t("Цель"), risk: t("риск"), size: t("объём") }), [t]);
+  const drawProfile = drawings?.profile ?? null;
+  useEffect(() => {
+    drawPrimRef.current?.update({ text: drawText, profile: drawProfile });
+  }, [drawText, drawProfile]);
 
   // вход сцены разметки: пресет, слои с сервера, паттерны, фигуры, алерты, производные (OI), тексты
   useEffect(() => {
