@@ -78,6 +78,33 @@ export function replaceNewest(state: BufferState, newest: Candle[]): BufferState
   return { candles: over ? merged.slice(over) : merged, hasOlder: state.hasOlder || over > 0, trimmedRight: 0 };
 }
 
+/**
+ * Догон правого края (план 2A.7): все свечи с временем ≥ from заменяются свечами bars (свежая порция с сервера
+ * и текущая), свечи раньше from остаются — вместе с подгруженной слева историей. Времена не повторяются:
+ * из bars берутся только свечи не раньше from, по одной на время (последняя). Лишнее слева выгружается.
+ */
+export function replaceTail(state: BufferState, from: number, bars: readonly Candle[]): BufferState {
+  const kept = state.candles.filter((c) => c.time < from);
+  const add = sortUnique(bars.filter((c) => c.time >= from));
+  const merged = [...kept, ...add];
+  const over = Math.max(0, merged.length - MAX_CANDLES);
+  return { candles: over ? merged.slice(over) : merged, hasOlder: state.hasOlder || over > 0, trimmedRight: 0 };
+}
+
+/**
+ * Индекс первой свечи next, которая отличается от prev (время, цены, объём, флаг открытости); совпал весь общий
+ * участок — его длина. Поверхность графика так отличает дописывание (≥ prev.length) от догона хвоста.
+ */
+export function firstChange(prev: readonly Candle[], next: readonly Candle[]): number {
+  const n = Math.min(prev.length, next.length);
+  for (let i = 0; i < n; i++) {
+    const a = prev[i]!;
+    const b = next[i]!;
+    if (a !== b && (a.time !== b.time || a.open !== b.open || a.high !== b.high || a.low !== b.low || a.close !== b.close || a.volume !== b.volume || !!a.open_ !== !!b.open_)) return i;
+  }
+  return n;
+}
+
 /** Нужна ли порция слева для видимого диапазона (индексы логической шкалы); в полный буфер не грузим. */
 export function needsOlder(state: BufferState, visibleFrom: number): boolean {
   return state.hasOlder && state.candles.length < MAX_CANDLES && visibleFrom < EDGE;

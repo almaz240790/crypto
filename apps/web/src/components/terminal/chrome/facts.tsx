@@ -1,6 +1,6 @@
 "use client";
 
-import { formatCountdown, secondsToClose, type Timeframe } from "@platform/charts";
+import { countdownSeconds, formatCountdown, type Timeframe } from "@platform/charts";
 import { useEffect, useState } from "react";
 import { useT } from "@/i18n/client";
 import type { Trend, TrendDir } from "../state/useTrend";
@@ -34,11 +34,14 @@ function useSecond(): number {
   return now;
 }
 
-/** До закрытия свечи (в «Сводке»; на графике отсчёт под ценой рисует контроллер, PR B). */
+/**
+ * До закрытия свечи (в «Сводке»; на графике отсчёт под ценой рисует контроллер, PR B): идущего интервала — на 1m
+ * последняя свеча уже закрыта, и отсчёт от неё был бы «0:00» (countdownSeconds).
+ */
 export function Countdown({ tf, lastTime }: { tf: Timeframe; lastTime: number | null }) {
   const t = useT();
   const now = useSecond();
-  const left = lastTime == null ? null : secondsToClose(tf, lastTime, now);
+  const left = lastTime == null ? null : countdownSeconds(tf, lastTime, now);
   return <span className={c.num}>{left == null ? "—" : formatCountdown(left, t("{d}д {hm}"))}</span>;
 }
 

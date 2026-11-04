@@ -5,7 +5,8 @@ import type { Candle, FigureOnChart, PatternOnChart, SignalOnChart, Structure, T
 import { api } from "./auth-client";
 
 export type CandleOut = { t: number; o: string; h: string; l: string; c: string; v: string; open: boolean };
-export type CandlesResponse = { symbol: string; tf: Timeframe; candles: CandleOut[]; current: CandleOut | null; has_older: boolean; tick_size: string | null; server_time: string };
+/** through — последняя закрытая минута, учтённая ответом (unix с; текущая свёрнута только из закрытых минут); null или нет поля — неизвестно. */
+export type CandlesResponse = { symbol: string; tf: Timeframe; candles: CandleOut[]; current: CandleOut | null; has_older: boolean; tick_size: string | null; server_time: string; through?: number | null };
 
 /** Типы ответов слоёв живут в пакете графика (scene/wire.ts) — сцена читает их без копий. */
 export type { FigureOnChart, PatternOnChart, SignalOnChart, Structure } from "@platform/charts";

@@ -13,9 +13,11 @@ from sqlalchemy.orm import Session
 
 from app import auth
 from app.chart_data import (
+    AGGREGATED,
     LAYER_TFS,
     PAGE,
     _dec,
+    bucket_start,
     candle_dict,
     current_candle,
     layers_cached,
@@ -56,7 +58,12 @@ def candles(
     user: User | None = Depends(optional_user),
     db: Session = Depends(auth.get_db),
 ) -> dict[str, Any]:
-    """Закрытые свечи порцией (по умолчанию последние 500) и текущая незакрытая свеча."""
+    """Закрытые свечи порцией (по умолчанию последние 500) и текущая незакрытая свеча.
+
+    Идущий интервал (tf ≥ 5m) — свёртка только закрытых минут; ``through`` — последняя закрытая
+    минута в БД на момент ответа (unix-время; null — неизвестно, клиент оценивает по
+    ``server_time``): минуты WebSocket не позже неё уже учтены, более поздние клиент сворачивает
+    сам."""
     timeframe = _tf(tf)
     ent = entitlements_for(db, user)
     if timeframe in INTRADAY and not ent.intraday:
@@ -65,19 +72,32 @@ def candles(
     now = datetime.now(tz=UTC)
     b = datetime.fromtimestamp(before, tz=UTC) if before else None
     rows, has_older = load_candles(db, inst.id, timeframe, b, limit)
+    cur = None
+    through: datetime | None = None
+    if b is None and timeframe is not Timeframe.M1:
+        live = current_candle(db, inst.id, timeframe, now)
+        if live is not None:
+            through = live.through
+            start = bucket_start(timeframe, now)
+            if rows and rows[-1].open_time >= start:
+                # идущий интервал уже в порции (агрегат из 1m с идущей минутой или хранимая свеча
+                # Binance): заменяем свёрткой закрытых минут — клиент досворачивает минуты потока
+                # после through, ни одна не учтётся дважды и не потеряется
+                if live.candle is not None and (timeframe in AGGREGATED or live.first == start):
+                    rows = [*rows[:-1], live.candle]
+                elif live.candle is not None:
+                    # хранимая свеча, а минут с начала интервала нет: что в ней учтено — неизвестно
+                    through = None
+            elif live.candle is not None:
+                cur = candle_dict(live.candle, open_=True)
     # последняя хранимая свеча tf может быть ещё не закрыта — помечаем
     out = [candle_dict(c, open_=c.open_time + timeframe.delta > now) for c in rows]
-    cur = None
-    if b is None and timeframe is not Timeframe.M1:
-        last_open = rows[-1].open_time if rows else None
-        c = current_candle(db, inst.id, timeframe, now)
-        if c is not None and (last_open is None or c.open_time > last_open):
-            cur = candle_dict(c, open_=True)
     return {
         "symbol": inst.symbol,
         "tf": timeframe.value,
         "candles": out,
         "current": cur,
+        "through": int(through.timestamp()) if through is not None else None,
         "has_older": has_older,
         # фиксированная запись: str(Decimal) даёт '1.000E-7', и клиент считал 6 знаков вместо 7
         "tick_size": _dec(inst.tick_size),

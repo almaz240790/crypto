@@ -137,9 +137,108 @@ def test_load_candles_with_and_without_before() -> None:
             assert [r.open_time.hour for r in rows] == [0, 1, 2]
             assert rows[0].volume == 60 and rows[2].volume == 10
             cur = current_candle(s, inst.id, Timeframe.H4, start + timedelta(hours=2, minutes=15))
-            assert cur is not None and cur.open_time == start and cur.volume == 130
+            assert cur is not None and cur.candle is not None
+            assert cur.candle.open_time == start and cur.candle.volume == 130
+            assert cur.first == start and cur.through == start + timedelta(minutes=129)
+            # идущая минута (market-data переписывает её с is_closed=false) в текущую не входит:
+            # она придёт по WebSocket закрытой, иначе её объём считался бы дважды
+            s.add(
+                CandleRow(
+                    instrument_id=inst.id,
+                    timeframe="1m",
+                    open_time=start + timedelta(minutes=130),
+                    open=Decimal(500),
+                    high=Decimal(900),
+                    low=Decimal(1),
+                    close=Decimal(500),
+                    volume=Decimal(50),
+                    is_closed=False,
+                )
+            )
+            s.flush()
+            now = start + timedelta(hours=2, minutes=10, seconds=30)
+            cur = current_candle(s, inst.id, Timeframe.H4, now)
+            assert cur is not None and cur.candle is not None
+            assert cur.candle.volume == 130 and cur.candle.high == 231
+            assert cur.through == start + timedelta(minutes=129)
+            # в новом интервале закрытых минут ещё нет — through: последняя закрытая перед ним
+            cur = current_candle(s, inst.id, Timeframe.H1, now)
+            assert cur is not None and cur.candle is not None and cur.candle.volume == 10
+            at = start + timedelta(hours=2, minutes=10, seconds=5)
+            nxt = current_candle(s, inst.id, Timeframe.M5, at)
+            assert nxt is not None and nxt.candle is None
+            assert nxt.through == start + timedelta(minutes=129)
+            assert current_candle(s, inst.id, Timeframe.M1, now) is None
         finally:
             s.rollback()
+
+
+def test_candles_current_from_closed_minutes_and_through(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Идущий интервал в ответе — свёртка закрытых минут (агрегат из 1m с идущей минутой и хранимая
+    свеча Binance заменяются), through — последняя закрытая минута; без минут с начала интервала у
+    хранимой свечи through неизвестен (null)."""
+    from types import SimpleNamespace
+
+    from fastapi.testclient import TestClient
+
+    from app import auth
+    from app.chart_data import LiveBucket
+    from app.main import app
+    from app.routers import chart
+
+    d = Decimal
+    now = datetime.now(tz=UTC)
+    inst = SimpleNamespace(id=1, symbol="BTCUSDT", tick_size=d("0.1"))
+    monkeypatch.setattr(chart, "_instrument", lambda db, symbol: inst)
+    app.dependency_overrides[auth.get_db] = lambda: object()
+
+    def get(tf: str, rows: list[Candle], live: LiveBucket | None) -> dict:
+        monkeypatch.setattr(chart, "load_candles", lambda *a, **k: (rows, False))
+        monkeypatch.setattr(chart, "current_candle", lambda *a, **k: live)
+        ent = SimpleNamespace(intraday=True)
+        monkeypatch.setattr(chart, "entitlements_for", lambda *a, **k: ent)
+        r = TestClient(app).get(f"/v1/chart/candles?symbol=BTCUSDT&tf={tf}")
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    try:
+        for tf in (Timeframe.H1, Timeframe.H4):
+            start = bucket_start(tf, now)
+            prev = Candle(start - tf.delta, d(1), d(2), d(1), d(2), d(10))
+            # в порции — идущий интервал с недописанной идущей минутой (объём 999)
+            partial = Candle(start, d(1), d(9), d(1), d(5), d(999))
+            folded = Candle(start, d(1), d(3), d(1), d(2), d(7))
+            last = start + timedelta(minutes=4)
+            body = get(tf.value, [prev, partial], LiveBucket(folded, start, last))
+            assert body["candles"][-1]["v"] == "7" and body["candles"][-1]["open"] is True
+            assert body["candles"][0]["v"] == "10" and body["current"] is None
+            assert body["through"] == int(last.timestamp())
+        # хранимая 4h, а минутная история начинается позже начала интервала — свеча как есть,
+        # through неизвестен
+        start = bucket_start(Timeframe.H4, now)
+        stored = Candle(start, d(1), d(9), d(1), d(5), d(999))
+        late_fold = Candle(start, d(1), d(3), d(1), d(2), d(7))
+        late = LiveBucket(late_fold, start + timedelta(minutes=30), start)
+        body = get("4h", [stored], late)
+        assert body["candles"][-1]["v"] == "999" and body["through"] is None
+        # 1h: закрытых минут в интервале нет — недописанная остаётся, through — последняя закрытая
+        # перед интервалом
+        h1 = bucket_start(Timeframe.H1, now)
+        before = h1 - timedelta(minutes=1)
+        body = get("1h", [Candle(h1, d(1), d(1), d(1), d(1), d(1))], LiveBucket(None, None, before))
+        assert body["candles"][-1]["v"] == "1" and body["through"] == int(before.timestamp())
+        # хранимой текущей ещё нет — текущая отдельно
+        prev4 = Candle(start - Timeframe.H4.delta, d(1), d(2), d(1), d(2), d(10))
+        fold4 = Candle(start, d(1), d(3), d(1), d(2), d(7))
+        body = get("4h", [prev4], LiveBucket(fold4, start, start + timedelta(minutes=2)))
+        assert body["current"]["v"] == "7" and body["current"]["open"] is True
+        assert body["through"] == int((start + timedelta(minutes=2)).timestamp())
+        # 1m: текущей нет, through не нужен
+        minute = now.replace(second=0, microsecond=0)
+        body = get("1m", [Candle(minute, d(1), d(1), d(1), d(1), d(1))], None)
+        assert body["through"] is None
+    finally:
+        app.dependency_overrides.pop(auth.get_db, None)
 
 
 def test_bucket_last_and_sum() -> None:

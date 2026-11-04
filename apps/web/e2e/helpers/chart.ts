@@ -1,4 +1,4 @@
-import type { Page } from "@playwright/test";
+import { test, type Page } from "@playwright/test";
 
 /** Заглушки API терминала для e2e (план 3.17). */
 export const T0 = 1_792_000_000 - (1_792_000_000 % 14400);
@@ -97,7 +97,8 @@ export async function mock(page: Page, calls: string[], authed = false, server: 
   const rich = opts.fixture === "rich";
   server.layouts ??= {};
   server.alerts ??= rich ? RICH_ALERTS.map((a) => ({ ...a })) : [];
-  if (authed) await page.context().addCookies([{ name: "pl_auth", value: "1", url: "http://localhost:3101" }]);
+  // адрес сайта — из baseURL проекта (CI: :3101), чтобы спеки можно было прогнать и против другой сборки
+  if (authed) await page.context().addCookies([{ name: "pl_auth", value: "1", url: test.info().project.use.baseURL ?? "http://localhost:3101" }]);
   await page.route("**/v1/**", (route) => {
     const u = new URL(route.request().url());
     const p = u.pathname;

@@ -2,8 +2,9 @@ import { describe, expect, it } from "vitest";
 import { channelOffset, distToSegment, extend, fibLevels, hitTest, lineAt, magnetSnap, positionStats, rulerInfo, type Projector } from "../drawings/geometry";
 import { addDrawing, alive, canRedo, canUndo, clearDrawings, createState, mergeRemote, redo, removeDrawing, resolve, toggleLock, undo, updateDrawing, visibleOn } from "../drawings/store";
 import { HANDLE_TOUCH_PX, UNDO_STEPS, pointsNeeded, type Drawing } from "../drawings/types";
-import { formatDrawingPrice } from "../drawings/primitive";
+import { DrawingsPrimitive, formatDrawingPrice } from "../drawings/primitive";
 import type { Candle } from "../types";
+import { TOKENS } from "./fakes/lwc";
 
 const d = (id: string, type: Drawing["type"] = "trend", points = [{ time: 0, price: 100 }, { time: 60, price: 110 }]): Drawing => ({ id, type, points, style: { color: "accent", width: 1, dashed: false }, locked: false, timeframe: null, updated_at: 0 });
 
@@ -128,5 +129,12 @@ describe("цены в подписях рисунков", () => {
   it("шаг цены ещё неизвестен — прежняя запись", () => {
     expect(formatDrawingPrice(80432.61, null)).toBe("80432.6");
     expect(formatDrawingPrice(0.0046999, null)).toBe("0.004700");
+  });
+});
+
+describe("автомасштаб цены", () => {
+  it("рисунки пользователя не растягивают шкалу цены: у примитива нет autoscaleInfo (масштаб только по ценам)", () => {
+    const prim = new DrawingsPrimitive(TOKENS) as DrawingsPrimitive & { autoscaleInfo?: unknown };
+    expect(prim.autoscaleInfo).toBeUndefined();
   });
 });

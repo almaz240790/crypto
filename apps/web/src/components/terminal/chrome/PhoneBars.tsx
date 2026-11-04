@@ -1,6 +1,6 @@
 "use client";
 
-import { CHART_TYPES, formatCountdown, secondsToClose, type ChartType, type ScaleMode, type Timeframe } from "@platform/charts";
+import { CHART_TYPES, countdownSeconds, formatCountdown, type ChartType, type ScaleMode, type Timeframe } from "@platform/charts";
 import Link from "next/link";
 import { useEffect, useState, type ReactNode } from "react";
 import { useT } from "@/i18n/client";
@@ -92,7 +92,8 @@ export function PhoneStrip(p: HeaderFacts & { tf: Timeframe }) {
     const id = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 1000);
     return () => clearInterval(id);
   }, []);
-  const countdown = p.lastTime == null ? null : secondsToClose(p.tf, p.lastTime, now);
+  // до закрытия идущего интервала: на 1m последняя свеча уже закрыта, и отсчёт от неё был бы «0:00»
+  const countdown = p.lastTime == null ? null : countdownSeconds(p.tf, p.lastTime, now);
   const trend = p.trend;
   return (
     <div className={s.strip} aria-label={t("состояние")}>
