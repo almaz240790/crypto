@@ -1,5 +1,5 @@
 import type { HoverInfo, LegendEntry, SceneIndex } from "../scene/types";
-import type { Device, Tone } from "../types";
+import type { Candle, Device, Tone } from "../types";
 
 /**
  * Состояние графика для React (план 2B.2, architecture §11): неизменяемые срезы, сравнение по Object.is,
@@ -23,6 +23,30 @@ export interface HoverSnapshot {
   plot: { width: number; height: number };
   /** Касание закрепило подсказку до следующего касания в другом месте (палец: карточка внизу графика). */
   pinned: boolean;
+}
+
+/**
+ * Значение линии индикатора (план 2B.9): key — `${uid}.${серия}`, label — «EMA 50» или «MACD 12 26 9 Сигнальная»;
+ * price — значение в ценах инструмента (наложения), форматируется по шагу цены.
+ */
+export interface IndicatorValue {
+  key: string;
+  uid: string;
+  label: string;
+  value: number | null;
+  color: string;
+  price: boolean;
+}
+
+/** Перекрестие (план 2A.7, C): свеча под курсором или пальцем и значения индикаторов на ней. */
+export interface CrosshairSnapshot {
+  time: number;
+  /** Индекс свечи в буфере терминала. */
+  index: number;
+  candle: Candle;
+  values: readonly IndicatorValue[];
+  /** Телефон: «липкое» перекрестие после долгого нажатия. */
+  sticky: boolean;
 }
 
 export interface VisibleSnapshot {
@@ -49,6 +73,10 @@ export interface ChartState {
   selection: string | null;
   sceneIndex: SceneIndex | null;
   legend: readonly LegendEntry[];
+  /** Перекрестие: пишет ChartSurface не чаще раза за кадр; читают только листы (легенда, значения панелей). */
+  crosshair: CrosshairSnapshot | null;
+  /** Последние значения индикаторов (легенда без перекрестия); пишется при пересчёте индикаторов. */
+  values: readonly IndicatorValue[];
   visible: VisibleSnapshot;
   status: ChartStatus;
 }
@@ -63,12 +91,15 @@ export interface ChartStore {
 }
 
 const NO_LEGEND: readonly LegendEntry[] = [];
+const NO_VALUES: readonly IndicatorValue[] = [];
 
 export const INITIAL_STATE: ChartState = {
   hover: null,
   selection: null,
   sceneIndex: null,
   legend: NO_LEGEND,
+  crosshair: null,
+  values: NO_VALUES,
   visible: { fromTime: null, toTime: null, atRightEdge: true, bars: 0 },
   status: { ready: false, device: "desktop", theme: "light", themeVersion: 0, historyRev: 0 },
 };

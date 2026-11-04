@@ -227,130 +227,59 @@
 }
 
 .tool {
+  position: relative;
   width: 32px;
-  height: 30px;
+  height: 32px;
+  flex: none;
   border: 1px solid transparent;
   border-radius: 6px;
   background: transparent;
   color: var(--text-2);
   font: inherit;
-  font-family: var(--font-mono);
   font-size: 12px;
   display: grid;
   place-items: center;
+  cursor: pointer;
 }
 
-.tool:hover {
-  border-color: var(--border);
+.tool:hover:not(:disabled) {
+  background: var(--row-hover);
   color: var(--text);
 }
 
+/* нажатый инструмент: фон --row-hover и рамка --accent (в светлой теме --surface-raised = --surface) */
 .tool[aria-pressed="true"] {
-  background: var(--bg);
+  background: var(--row-hover);
   border-color: var(--accent);
   color: var(--text);
 }
 
+/* переключатели (магнит, скрыть рисунки): без рамки акцента — точка в правом верхнем углу */
+.toolSwitch[aria-pressed="true"] {
+  border-color: transparent;
+  background: transparent;
+}
+
+.toolSwitch[aria-pressed="true"]::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
 .tool:disabled {
-  opacity: 0.4;
+  color: var(--text-3);
+  cursor: default;
 }
 
 .toolSep {
   height: 1px;
   background: var(--border);
   margin: 4px 2px;
-}
-
-.objTabs {
-  display: flex;
-  align-items: center;
-  border-bottom: 1px solid var(--border);
-}
-
-.objClose {
-  flex: none;
-  padding: 0 4px;
-}
-
-.objActions {
-  display: flex;
-  justify-content: flex-end;
-}
-
-.objSignals {
-  display: block;
-  padding: 8px;
-}
-
-.objTab {
-  flex: 1 1 auto;
-  height: 34px;
-  padding: 0 4px;
-  white-space: nowrap;
-  border: 0;
-  border-bottom: 2px solid transparent;
-  background: transparent;
-  color: var(--text-2);
-  font: inherit;
-  font-size: 12px;
-}
-
-.objTab[aria-selected="true"] {
-  color: var(--text);
-  border-bottom-color: var(--accent);
-}
-
-.objList {
-  list-style: none;
-  margin: 0;
-  padding: 8px;
-  display: grid;
-  /* одна колонка по ширине панели: иначе строки растягиваются по самому длинному заголовку и текст режется */
-  grid-template-columns: minmax(0, 1fr);
-  gap: 4px;
-  overflow: auto;
-  align-content: start;
-}
-
-.objList label {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  min-height: 28px;
-}
-
-.objRow {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  border-radius: 6px;
-  padding: 2px;
-}
-
-.objRow[data-selected] {
-  background: var(--bg);
-  box-shadow: inset 0 0 0 1px var(--accent);
-}
-
-.objName {
-  flex: 1;
-  min-width: 0;
-  text-align: left;
-  border: 0;
-  background: transparent;
-  color: var(--text);
-  font: inherit;
-  font-size: 13px;
-  padding: 4px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.objRow input {
-  flex: 1;
-  min-width: 0;
-  height: 30px;
 }
 
 .chartCol {
@@ -595,16 +524,12 @@
   }
 }
 
-
 .indDot {
   display: inline-block;
   width: 10px;
   height: 10px;
   border-radius: 50%;
 }
-
-
-
 
 .ohlc strong {
   color: var(--text);
@@ -706,61 +631,6 @@
   gap: 6px;
 }
 
-.desktopOnly {
-  display: none;
-}
-
-@media (min-width: 900px) {
-  .desktopOnly {
-    display: inline-flex;
-  }
-}
-
-@media (min-width: 900px) {
-  .mobileOnly {
-    display: none;
-  }
-}
-
-.found {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 4px 0;
-  border-bottom: 1px solid var(--border);
-  min-width: 0;
-}
-
-.found[data-selected] {
-  background: var(--row-hover);
-}
-
-.foundDetails {
-  padding: 4px 8px 6px;
-  font-size: 12px;
-  color: var(--text-2);
-  display: grid;
-  gap: 2px;
-  overflow-wrap: anywhere;
-}
-
-.explain {
-  margin-top: 4px;
-  display: grid;
-  gap: 4px;
-}
-
-.explain p {
-  margin: 0;
-}
-
-.objHead {
-  display: block;
-  padding: 6px 8px 2px;
-  font-size: 12px;
-  color: var(--text-2);
-}
-
 .ask {
   display: grid;
   gap: 6px;
@@ -778,13 +648,6 @@
   background: var(--bg);
   color: var(--text);
   resize: vertical;
-}
-
-.askRow {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
 }
 
 .ask p {
@@ -875,10 +738,25 @@
 .multiBar {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
+  gap: var(--gap-2);
+  min-height: 44px;
+  padding: 0 12px;
   border-bottom: 1px solid var(--border);
+  background: var(--surface);
   flex-wrap: wrap;
+}
+
+.multiLabel {
+  color: var(--text-2);
+  font-size: 13px;
+}
+
+.multiInfo {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  color: var(--text-2);
 }
 
 .multiGrid {
@@ -900,20 +778,48 @@
 .multiHead {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 4px 8px;
+  gap: var(--gap-2);
+  min-height: 36px;
+  padding: 0 8px;
   border-bottom: 1px solid var(--border);
+  background: var(--surface);
   font-size: 13px;
 }
 
-.multiHead select {
+.multiSymbol,
+.multiTf {
+  height: 28px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
   font: inherit;
   font-size: 13px;
+}
+
+.multiSymbol {
+  font-weight: 600;
+}
+
+.multiPrice {
+  color: var(--text);
+  font-size: 13px;
+  white-space: nowrap;
 }
 
 .multiOpen {
   margin-left: auto;
   font-size: 12px;
+  white-space: nowrap;
+}
+
+@media (pointer: coarse) {
+  .multiSymbol,
+  .multiTf,
+  .multiOpen {
+    min-height: var(--touch-min);
+  }
 }
 
 .multiChart {
@@ -924,109 +830,6 @@
 .multiChart > div {
   height: 100%;
   min-height: 0;
-}
-
-/* Ссылка-кнопка под списками «Найдено»: показать всё / только значимые */
-.linkBtn {
-  margin: 6px 8px 2px;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--accent);
-  font: inherit;
-  font-size: 13px;
-  cursor: pointer;
-  text-align: left;
-}
-
-.linkBtn:hover {
-  text-decoration: underline;
-}
-
-/* в строке состояния скрытые на телефоне пункты остаются строчными, чтобы не терять пробелы */
-.strip .desktopOnly {
-  display: none;
-}
-
-@media (min-width: 900px) {
-  .strip .desktopOnly {
-    display: inline;
-  }
-}
-
-/* список уровней в «Найдено»: от верхних к нижним, как на шкале */
-.levelList {
-  display: grid;
-  gap: 2px;
-  margin: 0;
-  padding: 0 8px 4px;
-  list-style: none;
-  font-size: 13px;
-}
-
-.levelList li {
-  border-bottom: 1px solid var(--border);
-}
-
-/* строка уровня — кнопка: выбор объекта на графике (план 2B.2, §10.4) */
-.levelBtn {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  align-items: baseline;
-  width: 100%;
-  padding: 3px 4px;
-  border: 0;
-  border-radius: 4px;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.levelBtn:hover:not(:disabled) {
-  background: var(--row-hover);
-}
-
-.levelBtn:disabled {
-  cursor: default;
-}
-
-.levelList li[data-selected] .levelBtn {
-  box-shadow: inset 2px 0 0 var(--accent);
-  background: var(--row-hover);
-}
-
-@media (pointer: coarse) {
-  .levelBtn {
-    min-height: 44px;
-    align-items: center;
-  }
-}
-
-.levelLiq {
-  color: var(--warn);
-}
-
-/* диапазон зоны переносится после тире, а не обрезается краем панели */
-.levelList .levelRange {
-  white-space: normal;
-}
-
-.levelNote {
-  margin: 4px 8px 8px;
-}
-
-/* вкладка «Найдено» прокручивается целиком: вопрос, уровни, фигуры и паттерны не сжимают друг друга */
-.objScroll {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow-y: auto;
-}
-
-.objScroll .objList {
-  overflow: visible;
 }
 
 /* выбор разметки графика (план 2B.2): пресеты сверху вкладки «Слои», пояснение — одной строкой под названием */

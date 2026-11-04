@@ -1,8 +1,8 @@
 "use client";
 
-import { COMPACT_FORMAT, ChartController, INTERACTION, NONE, PERCENT_FORMAT, alpha, resolvePreset, VALUE_FORMAT, alignToCandles, tickPrecision, tokensFromElement, type AlertLine, type Candle, type ChartHandle, type ChartStore, type ChartType, type Device, type ExternalObject, type MarkupSettings, type PanelKey, type ScaleMode, type Terminal, type Timeframe } from "@platform/charts";
+import { COMPACT_FORMAT, ChartController, FALLBACK_COLOR, INDICATOR_COLOR, INTERACTION, NONE, PERCENT_FORMAT, alpha, instanceColors, instanceTitle, mainMinShareFor, paneLevels, resolvePreset, VALUE_FORMAT, alignToCandles, tickPrecision, tokensFromElement, type AlertLine, type Candle, type ChartHandle, type ChartStore, type ChartType, type CrosshairSnapshot, type Device, type ExternalObject, type IndColor, type IndicatorInstance, type IndicatorValue, type MarkupSettings, type PanelKey, type ScaleMode, type Terminal, type Timeframe } from "@platform/charts";
 import { DrawingController, DrawingsPrimitive, INDICATORS, defaultParams, indicatorById, visibleOn, type Drawing, type DrawingType, type DrawingsState, type IndicatorSpec, type Layer, type LayerContext, type Point, TF_SECONDS } from "@platform/charts";
-import type { ISeriesApi, PriceFormat, UTCTimestamp } from "lightweight-charts";
+import { LineStyle, type IPriceLine, type ISeriesApi, type PriceFormat, type UTCTimestamp } from "lightweight-charts";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { Derivatives, FigureOnChart, LayersResponse, PatternOnChart } from "@/lib/chart";
 import s from "../terminal.module.css";
@@ -11,25 +11,18 @@ import { chartText } from "./chartText";
 import { useChartStore } from "./useChartStore";
 import { LegendChip, LiqUnavailableNote } from "./LegendChip";
 import { ObjectTooltip } from "./ObjectTooltip";
+import { PaneValue } from "./PaneValue";
 import { MQ } from "@/lib/breakpoints";
+import c from "./chart.module.css";
 
-/** Цвет индикатора — токен дизайн-системы (план 5.3): палитра --ind-1…6 и смысловые цвета. */
-export type IndColor = "ind1" | "ind2" | "ind3" | "ind4" | "ind5" | "ind6" | "accent" | "up" | "down" | "warn";
-export const IND_COLOR_VAR: Record<IndColor, string> = { ind1: "--ind-1", ind2: "--ind-2", ind3: "--ind-3", ind4: "--ind-4", ind5: "--ind-5", ind6: "--ind-6", accent: "--accent", up: "--up", down: "--down", warn: "--warn" };
 /**
- * Постоянный цвет каждого индикатора (решение владельца: цвета не настраиваются). Индикаторы на графике цены
- * не повторяют друг друга; у индикаторов на отдельных панелях цвет может совпасть с наложением — они не пересекаются.
- * Keltner (--warn) и OBV (--accent) — записанное исключение из семантики цветов графика, пересматривается в C (M19).
+ * Цвет индикатора — один из шести токенов --ind-1…6 (план 2A.9, M19): экземпляры получают цвета по instanceColors
+ * пакета (первые — постоянные, следующие и Keltner — первый свободный на графике, OBV — ind-6).
  */
-export const INDICATOR_COLOR: Record<string, IndColor> = {
-  ema: "ind1", sma: "ind2", vwap: "ind3", bb: "ind4", supertrend: "ind5", ichimoku: "ind6", keltner: "warn",
-  rsi: "ind1", macd: "ind2", stoch: "ind3", atr: "ind4", volume: "ind5", cci: "ind6", obv: "accent",
-};
-export const indicatorColor = (id: string): IndColor => INDICATOR_COLOR[id] ?? "accent";
-export type ActiveIndicator = { id: string; params: Record<string, number> };
+export const IND_COLOR_VAR: Record<IndColor, string> = { ind1: "--ind-1", ind2: "--ind-2", ind3: "--ind-3", ind4: "--ind-4", ind5: "--ind-5", ind6: "--ind-6" };
+/** Цвет индикатора без экземпляров (точка в списке): постоянный, у Keltner и неизвестных — ind-1. */
+export const indicatorColor = (id: string): IndColor => INDICATOR_COLOR[id] ?? FALLBACK_COLOR;
 export type { LayerKey, PanelKey } from "@platform/charts";
-/** price — значение в ценах инструмента (наложенные индикаторы): форматируется по шагу цены. */
-export type CrosshairInfo = { candle: Candle; values: { label: string; value: number | null; color: string; price: boolean }[] };
 /** Управление видом снаружи (кнопки «+/−», горячие клавиши, «Найдено»). */
 export type TerminalControls = Pick<ChartHandle, "zoom" | "reset" | "clearCrosshair" | "focus" | "snapshot">;
 /** Панели производных под графиком: заголовки по-русски через t() (M11). */
@@ -45,7 +38,8 @@ type Props = {
   current: Candle | null;
   tf: Timeframe;
   type: ChartType;
-  indicators: ActiveIndicator[];
+  /** Экземпляры индикаторов (uid «ema#2»): серии и панели ключуются по uid. */
+  indicators: readonly IndicatorInstance[];
   /** Разметка: пресет и поправки поверх него (план 2B.2). */
   markup: MarkupSettings;
   /** Вошёл ли пользователь: гостю слой «Сигналы» не показывается (M24). */
@@ -67,8 +61,6 @@ type Props = {
   /** Инструмент: при его смене (как и таймфрейма) свечи заменяются и вид сбрасывается; иначе новые свечи дописываются. */
   dataKey?: string;
   onNeedOlder: (before: number) => Promise<{ candles: Candle[]; hasOlder: boolean } | null>;
-  /** Перекрестие: свеча под курсором/пальцем и значения индикаторов (план 2A.7). */
-  onCrosshair?: (info: CrosshairInfo | null) => void;
   /** Вызывается с управлением видом после создания графика и с null при размонтировании. */
   onReady?: (controls: TerminalControls | null) => void;
   /**
@@ -76,6 +68,11 @@ type Props = {
    * их прямоугольник уходит в uiObstacles — подписи разметки его обходят.
    */
   corner?: ReactNode;
+  /**
+   * Легенда в левом верхнем углу панели цены (десктоп, план 2B.9 §10): символ, «?», OHLC под перекрестием и строки
+   * индикаторов. Её прямоугольник уходит в uiObstacles. Без неё — «?» и пометка ликвидаций B на своих местах.
+   */
+  legend?: ReactNode;
   /** Режим ценовой шкалы и наложенный инструмент (план 2A.3). */
   scale?: ScaleMode;
   overlay?: Candle[] | null;
@@ -107,14 +104,13 @@ class PrimitiveLayer implements Layer {
   setVisible(): void {}
 }
 
-type Pane = { spec: IndicatorSpec; paneIndex: number | null; series: Record<string, ISeriesApi<"Line" | "Histogram">>; colorKey: string; base?: string };
+/** Экземпляр индикатора на графике: серии, заголовок «RSI 14», уровни-ориентиры панели (пунктир --text-3). */
+type Pane = { spec: IndicatorSpec; paneIndex: number | null; series: Record<string, ISeriesApi<"Line" | "Histogram">>; colorKey: string; base?: string; title: string; levels: IPriceLine[]; hidden: boolean };
 const OVERLAY_SECONDARY_ALPHA = 0.55;
 /** Заголовок панели под графиком (план 2A.7): панели сворачиваются до 24 px, на телефоне раскрыто не больше одной. */
-type PaneHead = { key: string; title: string; top: number; collapsed: boolean; color?: string };
+type PaneHead = { key: string; title: string; top: number; collapsed: boolean; color?: string; testId: string; values: boolean };
 const PANE_COLLAPSED_PX = 24;
 const PANE_INDICATOR_PX = 90;
-/** Короткие имена в карточке значений: «BB Верхняя» вместо «Bollinger Bands Верхняя». */
-const SHORT_TITLE: Record<string, string> = { bb: "BB", keltner: "KC", vwap: "VWAP", stoch: "Stoch", supertrend: "Supertrend", ichimoku: "Ichimoku" };
 const PANE_CRYPTO_PX = 80;
 /** На телефоне раскрыта одна панель индикатора (последняя добавленная), остальные свёрнуты до заголовка. */
 const MAX_EXPANDED_MOBILE = 1;
@@ -145,7 +141,7 @@ function indexOfTime(candles: readonly Candle[], time: number): number {
  * терминалом, темой, классом устройства, сценой разметки (один OverlayPrimitive), шкалой и наведением.
  * Здесь до PR D остаются эффекты данных, индикаторов, панелей производных и рисунков (через controller.terminal).
  */
-export function ChartSurface({ candles, current, tf, type, indicators, markup, authed, store, device = "auto", layers, patterns, figures, alerts, external = NONE, derivatives, panels, tick, dataKey = "", onNeedOlder, drawings, onCrosshair, onReady, corner, scale = "linear", overlay = null }: Props) {
+export function ChartSurface({ candles, current, tf, type, indicators, markup, authed, store, device = "auto", layers, patterns, figures, alerts, external = NONE, derivatives, panels, tick, dataKey = "", onNeedOlder, drawings, onReady, corner, legend, scale = "linear", overlay = null }: Props) {
   const t = useT();
   const ref = useRef<HTMLDivElement>(null);
   const ctrlRef = useRef<ChartController | null>(null);
@@ -157,14 +153,17 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
   const drawCtrlRef = useRef<DrawingController | null>(null);
   const drawingsRef = useRef(drawings);
   const needOlderRef = useRef(onNeedOlder);
-  const onCrosshairRef = useRef(onCrosshair);
   const onReadyRef = useRef(onReady);
-  const valuesRef = useRef<Map<string, { label: string; values: (number | null)[]; color: string; price: boolean }>>(new Map());
+  /** Линии индикаторов по ключу `${uid}.${серия}`: значения на всех свечах буфера — для перекрестия и легенды. */
+  const valuesRef = useRef<Map<string, { uid: string; label: string; values: (number | null)[]; color: string; price: boolean }>>(new Map());
   const stickyRef = useRef(false);
   const [heads, setHeads] = useState<PaneHead[]>([]);
   /** Основная панель: ширина области свечей (без шкалы цены) и высота — для кнопок в углу. */
   const [mainBox, setMainBox] = useState<{ w: number; h: number } | null>(null);
   const cornerRef = useRef<HTMLDivElement>(null);
+  const legendRef = useRef<HTMLDivElement>(null);
+  /** Прямоугольник легенды в координатах графика (CSS px) — препятствие для подписей разметки. */
+  const [legendBox, setLegendBox] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   const collapsedRef = useRef<Set<string>>(new Set());
   const paneObsRef = useRef<ResizeObserver | null>(null);
   const swipeRef = useRef<{ key: string; y: number } | null>(null);
@@ -186,11 +185,12 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
 
   // панели под графиком в порядке сверху вниз: индикаторы в отдельных панелях и крипто-панели
   const paneEntries = useCallback(() => {
-    const out: { key: string; title: string; series: ISeriesApi<"Line" | "Histogram">[]; height: number; color?: string }[] = [];
-    for (const [id, p] of panesRef.current) {
-      if (p.paneIndex !== null) out.push({ key: id, title: p.spec.title, series: Object.values(p.series), height: PANE_INDICATOR_PX, color: p.base });
+    const out: { key: string; title: string; series: ISeriesApi<"Line" | "Histogram">[]; height: number; color?: string; testId: string; values: boolean }[] = [];
+    // у отдельной панели один экземпляр: testid по id индикатора (pane-rsi), как до экземпляров
+    for (const [uid, p] of panesRef.current) {
+      if (p.paneIndex !== null) out.push({ key: uid, title: p.title, series: Object.values(p.series), height: PANE_INDICATOR_PX, color: p.base, testId: p.spec.id, values: true });
     }
-    for (const [k, p] of cryptoRef.current) out.push({ key: k, title: t(PANELS.find((x) => x.id === k)?.title ?? k), series: p.series, height: PANE_CRYPTO_PX });
+    for (const [k, p] of cryptoRef.current) out.push({ key: k, title: t(PANELS.find((x) => x.id === k)?.title ?? k), series: p.series, height: PANE_CRYPTO_PX, testId: k, values: false });
     return out.filter((e) => e.series.length > 0).sort((a, b) => a.series[0]!.getPane().paneIndex() - b.series[0]!.getPane().paneIndex());
   }, [t]);
 
@@ -200,7 +200,7 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     const r0 = el.getBoundingClientRect();
     const next = paneEntries().map((e) => {
       const r = e.series[0]!.getPane().getHTMLElement()?.getBoundingClientRect();
-      return { key: e.key, title: e.title, top: r ? Math.round(r.top - r0.top) : 0, collapsed: collapsedRef.current.has(e.key), color: e.color };
+      return { key: e.key, title: e.title, top: r ? Math.round(r.top - r0.top) : 0, collapsed: collapsedRef.current.has(e.key), color: e.color, testId: e.testId, values: e.values };
     });
     setHeads((prev) => (prev.length === next.length && prev.every((h, i) => h.key === next[i]!.key && h.title === next[i]!.title && h.top === next[i]!.top && h.collapsed === next[i]!.collapsed && h.color === next[i]!.color) ? prev : next));
     const term = termRef.current;
@@ -212,13 +212,14 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     }
   }, [paneEntries]);
 
-  // все панели раскладываются разом: свёрнутые — 24 px, раскрытые — своя высота, свечам — остаток (не меньше половины)
+  // все панели раскладываются разом: свёрнутые — 24 px, раскрытые — своя высота, свечам — остаток, но не меньше
+  // доли устройства (PaneManager: десктоп 55 %, телефон 60 %)
   const layoutAll = useCallback(() => {
     const term = termRef.current;
     if (!term) return;
     const want = new Map(paneEntries().map((e) => [e.series[0]!.getPane(), collapsedRef.current.has(e.key) ? PANE_COLLAPSED_PX : e.height] as const));
-    term.layoutPanes(want);
-  }, [paneEntries]);
+    term.layoutPanes(want, mainMinShareFor(store.getState().status.device));
+  }, [paneEntries, store]);
 
   const applyCollapsed = useCallback(
     (key: string, collapsed: boolean) => {
@@ -227,7 +228,8 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
       if (collapsed) collapsedRef.current.add(key);
       else collapsedRef.current.delete(key);
       // в свёрнутой панели прячем и метки последнего значения на шкале (иначе «0.0» и огромные числа OI)
-      e.series.forEach((sr) => sr.applyOptions({ visible: !collapsed, lastValueVisible: !collapsed && sr.seriesType() === "Line" }));
+      const hidden = panesRef.current.get(key)?.hidden ?? false;
+      e.series.forEach((sr) => sr.applyOptions({ visible: !collapsed && !hidden, lastValueVisible: !collapsed && sr.seriesType() === "Line" }));
       layoutAll();
       requestAnimationFrame(relayout);
     },
@@ -254,9 +256,8 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     needOlderRef.current = onNeedOlder;
     drawingsRef.current = drawings;
     tfRef.current = tf;
-    onCrosshairRef.current = onCrosshair;
     onReadyRef.current = onReady;
-  }, [onNeedOlder, drawings, tf, onCrosshair, onReady]);
+  }, [onNeedOlder, drawings, tf, onReady]);
 
   // создание контроллера (терминал, разметка, тема, вид) и рисунков
   useEffect(() => {
@@ -270,11 +271,24 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     term.chart.applyOptions({ handleScroll: { vertTouchDrag: true } });
     // новый график пуст: следующие данные — замена, а не дописывание (и после повторного монтирования в StrictMode)
     loadedRef.current = null;
+    // перекрестие → хранилище графика не чаще раза за кадр: читают только листы (легенда, значения панелей)
+    let crossRaf = 0;
+    let crossNext: CrosshairSnapshot | null = null;
+    const publish = (snap: CrosshairSnapshot | null) => {
+      crossNext = snap;
+      if (crossRaf) return;
+      crossRaf = requestAnimationFrame(() => {
+        crossRaf = 0;
+        store.patch({ crosshair: crossNext });
+      });
+    };
     const clearCrosshair = () => {
       stickyRef.current = false;
       delete el.dataset.sticky;
       ctrl.handle.clearCrosshair();
-      onCrosshairRef.current?.(null);
+      cancelAnimationFrame(crossRaf);
+      crossRaf = 0;
+      store.patch({ crosshair: null });
     };
     onReadyRef.current?.({ zoom: ctrl.handle.zoom, reset: ctrl.handle.reset, clearCrosshair, focus: ctrl.handle.focus, snapshot: ctrl.handle.snapshot });
     const prim = new DrawingsPrimitive(tokensFromElement(el));
@@ -310,14 +324,14 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     // перекрестие → свеча и значения индикаторов; на телефоне long-press (300 мс) включает «липкий» режим
     const emit = (time: number | null) => {
       if (time === null) {
-        if (!stickyRef.current) onCrosshairRef.current?.(null);
+        if (!stickyRef.current) publish(null);
         return;
       }
       const all = term.candles;
       const i = indexOfTime(all, time);
       if (i < 0) return;
-      const values = [...valuesRef.current.values()].map((v) => ({ label: v.label, value: v.values[i] ?? null, color: v.color, price: v.price }));
-      onCrosshairRef.current?.({ candle: all[i]!, values });
+      const values: IndicatorValue[] = [...valuesRef.current].map(([key, v]) => ({ key, uid: v.uid, label: v.label, value: v.values[i] ?? null, color: v.color, price: v.price }));
+      publish({ time, index: i, candle: all[i]!, values, sticky: stickyRef.current });
     };
     const onMove = (p: { time?: unknown }) => emit(typeof p.time === "number" ? p.time : null);
     term.chart.subscribeCrosshairMove(onMove);
@@ -348,7 +362,7 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
           // короткий тап в липком режиме — выход
           stickyRef.current = false;
           delete el.dataset.sticky;
-          onCrosshairRef.current?.(null);
+          publish(null);
         }
         delete el.dataset.stickyArmed;
       }
@@ -371,6 +385,8 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
       el.removeEventListener("pointerup", onPUp);
       el.removeEventListener("pointercancel", onPUp);
       clearTimeout(pressTimer);
+      cancelAnimationFrame(crossRaf);
+      store.patch({ crosshair: null, values: NO_VALUES });
       panes.clear();
       crypto.clear();
       dctrl.destroy();
@@ -465,11 +481,11 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     termRef.current?.setScaleMode(scale);
   }, [scale]);
 
-  // наложенный инструмент: цвет — токен --warn (исключение до C, M19), перечитывается при смене темы
+  // наложенный инструмент: нейтральная линия --text-2 (охра — только ликвидации, M19), перечитывается при смене темы
   useEffect(() => {
     const term = termRef.current;
     if (!term || !ref.current) return;
-    term.setOverlay(overlay, tokensFromElement(ref.current).warn);
+    term.setOverlay(overlay, tokensFromElement(ref.current).text2);
   }, [overlay, themeVersion]);
 
   useEffect(() => {
@@ -478,34 +494,37 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     syncModel();
   }, [type, syncModel]);
 
-  // индикаторы: по активному списку создаём панели/серии, считаем на всех свечах буфера (и подгруженных слева)
+  // индикаторы: по списку экземпляров создаём панели/серии (ключ — uid), считаем на всех свечах буфера (и подгруженных
+  // слева); у отдельной панели — пунктирные уровни-ориентиры (RSI 30/70, Stochastic 20/80, MACD 0, CCI ±100)
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
     const tokens = tokensFromElement(ref.current!);
-    const color = (k: string) => (({ accent: tokens.accent, up: tokens.up, down: tokens.down, warn: tokens.warn, text2: tokens.text2, text3: tokens.text3 }) as Record<string, string>)[k] ?? tokens.accent;
-    const indColor = (c: IndColor) => (c.startsWith("ind") ? (tokens.ind[Number(c.slice(3)) - 1] ?? tokens.accent) : color(c));
-    // первая линия — цвет индикатора; остальные линии наложения — тот же цвет бледнее, у панелей — свои смысловые
+    const color = (k: string) => (({ accent: tokens.accent, up: tokens.up, down: tokens.down, warn: tokens.warn, text2: tokens.text2, text3: tokens.text3 }) as Record<string, string>)[k] ?? tokens.text2;
+    const indColor = (c: IndColor) => tokens.ind[Number(c.slice(3)) - 1] ?? tokens.text2;
+    // первая линия — цвет экземпляра; остальные линии наложения — тот же цвет бледнее, у панелей — свои смысловые
     const seriesColor = (spec: IndicatorSpec, i: number, base: string) => {
       if (i === 0) return base;
       if (spec.pane === "overlay") return alpha(base, OVERLAY_SECONDARY_ALPHA);
       // на панели вторая линия нейтральная, чтобы не сливаться с цветом индикатора; гистограмма — свои цвета
       return spec.series[i]!.kind === "histogram" ? color(spec.series[i]!.color) : tokens.text2;
     };
-    const want = new Map(indicators.map((i) => [i.id, i]));
-    for (const [id, pane] of panesRef.current) {
-      if (!want.has(id)) {
+    const colors = instanceColors(indicators);
+    const want = new Map(indicators.map((i) => [i.uid, i]));
+    for (const [uid, pane] of panesRef.current) {
+      const next = want.get(uid);
+      if (!next || next.id !== pane.spec.id) {
         Object.values(pane.series).forEach((sr) => term.removeSeries(sr));
-        panesRef.current.delete(id);
-        collapsedRef.current.delete(id);
-        for (const k of [...valuesRef.current.keys()]) if (k.startsWith(`${id}.`)) valuesRef.current.delete(k);
+        panesRef.current.delete(uid);
+        collapsedRef.current.delete(uid);
       }
     }
+    for (const k of [...valuesRef.current.keys()]) if (!want.has(k.slice(0, k.lastIndexOf(".")))) valuesRef.current.delete(k);
     const all = term.candles;
     for (const ind of indicators) {
       const spec = indicatorById(ind.id);
       if (!spec) continue;
-      let pane = panesRef.current.get(ind.id);
+      let pane = panesRef.current.get(ind.uid);
       if (!pane) {
         const paneIndex = spec.pane === "separate" ? term.addPane(PANE_INDICATOR_PX) : null;
         const series: Pane["series"] = {};
@@ -513,34 +532,51 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
           // наложенные линии — в ценах инструмента (формат шкалы цены), на отдельной панели — свой формат
           const fmt = paneIndex === null ? undefined : indicatorFormat(spec.id);
           series[sp.key] = sp.kind === "histogram" ? term.addHistogram(paneIndex ?? 0, color(sp.color), fmt) : term.addLine(paneIndex ?? 0, color(sp.color), sp.width ?? 1, fmt);
-          // у линий на графике цены метки на шкале не нужны: их значения есть в карточке, а шкала остаётся читаемой
+          // у линий на графике цены метки на шкале не нужны: их значения есть в легенде, а шкала остаётся читаемой
           if (spec.pane === "overlay") series[sp.key]!.applyOptions({ lastValueVisible: false });
         }
-        pane = { spec, paneIndex, series, colorKey: "" };
-        panesRef.current.set(ind.id, pane);
         const first = Object.values(series)[0];
-        if (paneIndex !== null && first) paneAdded(ind.id, first);
+        const levels = paneIndex !== null && first ? paneLevels(spec).map((price) => first.createPriceLine({ price, color: tokens.text3, lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false, title: "" })) : [];
+        pane = { spec, paneIndex, series, colorKey: "", title: "", levels, hidden: false };
+        panesRef.current.set(ind.uid, pane);
+        if (paneIndex !== null && first) paneAdded(ind.uid, first);
       }
-      const ck = indicatorColor(ind.id);
+      pane.title = instanceTitle(spec, ind.params, t);
+      const ck = colors.get(ind.uid) ?? FALLBACK_COLOR;
       const base = indColor(ck);
-      // цвет перечитывается и при смене темы: у светлой и тёмной темы свои оттенки --ind-*
+      // цвет перечитывается и при смене темы: у светлой и тёмной темы свои оттенки --ind-* и --text-3 уровней
       const colorKey = `${ck}|${themeVersion}`;
       if (pane.colorKey !== colorKey) {
         spec.series.forEach((sp, i) => pane!.series[sp.key]?.applyOptions({ color: seriesColor(spec, i, base) }));
+        pane.levels.forEach((l) => l.applyOptions({ color: tokens.text3 }));
         pane.colorKey = colorKey;
         pane.base = base;
       }
+      const hidden = ind.hidden === true;
+      if (pane.hidden !== hidden) {
+        pane.hidden = hidden;
+        const collapsed = collapsedRef.current.has(ind.uid);
+        Object.values(pane.series).forEach((sr) => sr.applyOptions({ visible: !hidden && !collapsed }));
+      }
       const out = spec.compute(all, { ...defaultParams(spec), ...ind.params });
-      const short = SHORT_TITLE[spec.id] ?? spec.title;
-      spec.series.forEach((sp, i) => valuesRef.current.set(`${ind.id}.${sp.key}`, { label: spec.series.length === 1 || sp.label === spec.title || sp.label === short ? short : `${short} ${sp.label}`, values: out[sp.key] ?? [], color: seriesColor(spec, i, base), price: spec.pane === "overlay" }));
+      spec.series.forEach((sp, i) => {
+        const key = `${ind.uid}.${sp.key}`;
+        // скрытый экземпляр: значений нет ни в легенде, ни в карточке перекрестия
+        if (hidden) valuesRef.current.delete(key);
+        else valuesRef.current.set(key, { uid: ind.uid, label: spec.series.length === 1 ? pane!.title : `${pane!.title} ${t(sp.label)}`, values: out[sp.key] ?? [], color: seriesColor(spec, i, base), price: spec.pane === "overlay" });
+      });
       for (const sp of spec.series) {
         const values = out[sp.key] ?? [];
         const data = all.map((c, i) => ({ time: c.time as UTCTimestamp, value: values[i] })).filter((d) => d.value != null) as { time: UTCTimestamp; value: number }[];
         pane.series[sp.key]!.setData(data as never);
       }
     }
+    // последние значения — легенде без перекрестия (лист читает их из хранилища)
+    const n = all.length - 1;
+    const last: IndicatorValue[] = n < 0 ? [] : [...valuesRef.current].map(([key, v]) => ({ key, uid: v.uid, label: v.label, value: v.values[n] ?? null, color: v.color, price: v.price }));
+    if (!sameValues(store.getState().values, last)) store.patch({ values: last });
     requestAnimationFrame(relayout);
-  }, [indicators, candles, current, historyRev, themeVersion, paneAdded, relayout]);
+  }, [indicators, candles, current, historyRev, themeVersion, paneAdded, relayout, store, t]);
 
   // крипто-панели (план 2A.4): funding, OI, ликвидации — данные с сервера. Ставятся только после свечей и
   // только на время свечей (alignToCandles): точка левее первой свечи или между свечами меняла шкалу времени,
@@ -592,20 +628,42 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     requestAnimationFrame(relayout);
   }, [derivatives, panels, candles, historyRev, themeVersion, tf, paneAdded, relayout]);
 
-  // угол графика — препятствие для подписей разметки (координаты основной панели, CSS px)
+  // легенда: её прямоугольник (меняется с перекрестием и списком индикаторов) — через ResizeObserver
+  const hasLegend = !!legend;
+  useLayoutEffect(() => {
+    const host = legendRef.current;
+    const el = ref.current;
+    if (!hasLegend || !host || !el) {
+      setLegendBox(null);
+      return;
+    }
+    const measure = () => {
+      const r = host.getBoundingClientRect();
+      const r0 = el.getBoundingClientRect();
+      const next = r.width > 0 && r.height > 0 ? { x: Math.round(r.left - r0.left), y: Math.round(r.top - r0.top), w: Math.round(r.width), h: Math.round(r.height) } : null;
+      setLegendBox((prev) => (prev === next || (prev && next && prev.x === next.x && prev.y === next.y && prev.w === next.w && prev.h === next.h) ? prev : next));
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(host);
+    return () => ro.disconnect();
+  }, [hasLegend]);
+
+  // угол графика и легенда — препятствия для подписей разметки (координаты основной панели, CSS px)
   const hasCorner = !!corner;
   useLayoutEffect(() => {
     const ctrl = ctrlRef.current;
     const el = ref.current;
     if (!ctrl || !el) return;
+    const rects: { x: number; y: number; w: number; h: number }[] = [];
     const box = hasCorner ? cornerRef.current?.firstElementChild?.getBoundingClientRect() : null;
-    if (!box) {
-      ctrl.set({ uiObstacles: NONE });
-      return;
+    if (box) {
+      const r0 = el.getBoundingClientRect();
+      rects.push({ x: box.left - r0.left, y: box.top - r0.top, w: box.width, h: box.height });
     }
-    const r0 = el.getBoundingClientRect();
-    ctrl.set({ uiObstacles: [{ x: box.left - r0.left, y: box.top - r0.top, w: box.width, h: box.height }] });
-  }, [hasCorner, mainBox]);
+    if (legendBox) rects.push(legendBox);
+    ctrl.set({ uiObstacles: rects.length ? rects : NONE });
+  }, [hasCorner, mainBox, legendBox]);
 
   return (
     <div className={s.chart}>
@@ -616,14 +674,24 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
         </div>
       )}
       <ObjectTooltip store={store} coarse={coarse} />
-      {device !== "cell" && <LegendChip store={store} />}
-      {device !== "cell" && <LiqUnavailableNote store={store} on={resolvePreset(markup, "desktop", { authed }).layers.liq_map} />}
+      {legend ? (
+        <div ref={legendRef} className={c.legendHost}>
+          {legend}
+        </div>
+      ) : (
+        device !== "cell" && (
+          <>
+            <LegendChip store={store} />
+            <LiqUnavailableNote store={store} on={resolvePreset(markup, "desktop", { authed }).layers.liq_map} />
+          </>
+        )
+      )}
       {heads.map((h) => (
         <div
           key={h.key}
           className={s.paneHead}
           data-collapsed={h.collapsed || undefined}
-          data-testid={`pane-${h.key}`}
+          data-testid={`pane-${h.testId}`}
           style={{ top: h.top }}
           onTouchStart={(e) => {
             swipeRef.current = { key: h.key, y: e.touches[0]?.clientY ?? 0 };
@@ -640,6 +708,7 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
           <span className={s.paneTitle} style={h.color ? { color: h.color } : undefined}>
             {h.title}
           </span>
+          {h.values && !h.collapsed && <PaneValue store={store} uid={h.key} />}
           <button type="button" className={s.paneToggle} aria-expanded={!h.collapsed} aria-label={t(h.collapsed ? "развернуть панель {name}" : "свернуть панель {name}", { name: h.title })} onClick={() => togglePane(h.key)}>
             {h.collapsed ? "▴" : "▾"}
           </button>
@@ -649,5 +718,11 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     </div>
   );
 }
+
+/** Значения те же (ключ, подпись, число, цвет): хранилище не трогаем — легенда не перерисовывается. */
+function sameValues(a: readonly IndicatorValue[], b: readonly IndicatorValue[]): boolean {
+  return a.length === b.length && a.every((x, i) => x.key === b[i]!.key && x.value === b[i]!.value && x.label === b[i]!.label && x.color === b[i]!.color);
+}
+const NO_VALUES: readonly IndicatorValue[] = [];
 
 export { INDICATORS };

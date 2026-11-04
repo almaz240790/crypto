@@ -11,6 +11,7 @@ import { createBuffer, EDGE, needsNewer, needsOlder, prependOlder, pushLatest, r
 import { heikinAshi } from "./heikin";
 import { LayerManager } from "./layers";
 import { INTERACTION, VIEW } from "./presets";
+import { planPanes } from "./controller/paneManager";
 import { chartOptions, seriesColors } from "./theme";
 import type { Candle, ChartType, ThemeTokens } from "./types";
 
@@ -245,22 +246,21 @@ export class Terminal {
 
   /**
    * Раскладка всех панелей сразу (план 2A.7): желаемые высоты дополнительных панелей в пикселях,
-   * главная получает остаток, но не меньше VIEW.mainMinShare высоты. Высоты задаются stretch-факторами
-   * в пикселях — так панели не «плывут» после сворачивания и добавления.
+   * главная получает остаток, но не меньше mainMinShare высоты (VIEW устройства: десктоп 0.55, телефон 0.6;
+   * planPanes). Высоты задаются stretch-факторами в пикселях — так панели не «плывут» после сворачивания и добавления.
    */
-  layoutPanes(heights: Map<IPaneApi<Time>, number>): void {
+  layoutPanes(heights: Map<IPaneApi<Time>, number>, mainMinShare: number = VIEW.desktop.mainMinShare): void {
     const panes = this.chart.panes();
     if (panes.length < 2) return;
     const total = panes.reduce((acc, p) => acc + p.getHeight(), 0);
     if (total <= 0) return;
-    const want = panes.slice(1).map((p) => Math.max(1, heights.get(p) ?? p.getHeight()));
-    const sum = want.reduce((a, b) => a + b, 0);
-    const room = total * (1 - VIEW.desktop.mainMinShare);
-    const k = sum > room ? room / sum : 1;
-    const others = want.map((h) => h * k);
-    const main = total - others.reduce((a, b) => a + b, 0);
-    panes[0]!.setStretchFactor(main);
-    panes.slice(1).forEach((p, i) => p.setStretchFactor(others[i]!));
+    const plan = planPanes(
+      total,
+      panes.slice(1).map((p) => heights.get(p) ?? p.getHeight()),
+      mainMinShare,
+    );
+    panes[0]!.setStretchFactor(plan.main);
+    panes.slice(1).forEach((p, i) => p.setStretchFactor(plan.others[i]!));
   }
 
   /**

@@ -1,4 +1,4 @@
-import { CHART_TYPES, INDICATORS, LAYERS_VERSION, defaultParams, normalizeMarkup, resolvePreset, selectPreset, setLayerOverride, type ChartType, type LayerKey, type MarkupSettings, type PanelKey, type PresetId, type ScaleMode } from "@platform/charts";
+import { CHART_TYPES, LAYERS_VERSION, canAdd, clampParams, indicatorById, nextUid, normalizeInstances, normalizeMarkup, resolvePreset, selectPreset, setLayerOverride, suggestParams, type ChartType, type IndicatorInstance, type LayerKey, type MarkupSettings, type PanelKey, type PresetId, type ScaleMode } from "@platform/charts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getLayout, putLayout } from "@/lib/drawings";
 import { TEMPLATES } from "../templates";
@@ -9,13 +9,11 @@ import { TEMPLATES } from "../templates";
  * синхронизация с сервером, переключатели индикаторов, панелей, слоёв и пресета.
  */
 
-/** Индикатор в сохранении: id из реестра и параметры. */
-export type SavedIndicator = { id: string; params: Record<string, number> };
-
 export interface SavedV5 {
   layers_v: typeof LAYERS_VERSION;
   type: ChartType;
-  indicators: SavedIndicator[];
+  /** Экземпляры индикаторов (план 2B.9): uid «ema#2», до 3 EMA и SMA; старые {id, params} мигрируют (normalizeInstances). */
+  indicators: IndicatorInstance[];
   markup: MarkupSettings;
   panels: PanelKey[];
   scale: ScaleMode;
@@ -24,24 +22,12 @@ export interface SavedV5 {
 }
 
 /** Новый профиль: одна EMA 50, панелей нет, разметка «Чистый». */
-export const DEFAULT_INDICATORS: SavedIndicator[] = [{ id: "ema", params: { period: 50 } }];
+export const DEFAULT_INDICATORS: IndicatorInstance[] = [{ uid: "ema#1", id: "ema", params: { period: 50 } }];
 export const DEFAULT_SAVED: SavedV5 = { layers_v: LAYERS_VERSION, type: "candles", indicators: DEFAULT_INDICATORS, markup: { preset: "clean", overrides: {} }, panels: [], scale: "linear", overlay: null };
 
 const PANEL_KEYS: readonly PanelKey[] = ["funding", "oi", "liq", "ls"];
 const SCALES: readonly ScaleMode[] = ["linear", "log", "percent"];
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
-
-function indicators(v: unknown): SavedIndicator[] | null {
-  if (!Array.isArray(v)) return null;
-  const out: SavedIndicator[] = [];
-  for (const x of v) {
-    if (!isObj(x) || typeof x.id !== "string") continue;
-    const params: Record<string, number> = {};
-    if (isObj(x.params)) for (const [k, n] of Object.entries(x.params)) if (typeof n === "number" && Number.isFinite(n)) params[k] = n;
-    out.push({ id: x.id, params });
-  }
-  return out;
-}
 
 /** Сохранение старше v5 (набор слоёв `layers` или без версии): разметка сбрасывается на «Чистый». */
 export function isLegacySave(raw: unknown): boolean {
@@ -60,7 +46,8 @@ export function migrateSaved(raw: unknown): SavedV5 {
   const out: SavedV5 = {
     layers_v: LAYERS_VERSION,
     type: CHART_TYPES.includes(raw.type as ChartType) ? (raw.type as ChartType) : DEFAULT_SAVED.type,
-    indicators: indicators(raw.indicators) ?? DEFAULT_SAVED.indicators,
+    // {id, params} до C → экземпляры {uid, id, params} (повтор id — «#2»), лишние сверх лимита отбрасываются
+    indicators: normalizeInstances(raw.indicators) ?? DEFAULT_SAVED.indicators,
     markup: legacy ? { preset: "clean", overrides: {} } : normalizeMarkup(raw.markup),
     // порядок панелей — порядок добавления (панели создаются по нему): сохраняется, отбрасываются только
     // неизвестные ключи и повторы
@@ -87,6 +74,13 @@ export function migrateLayout(raw: unknown, base: SavedV5): SavedV5 {
 /** Что пишет saveLayout: разметка и версия 5 вместо набора слоёв. */
 export function layoutData(s: SavedV5, symbol: string, tf: string): Record<string, unknown> {
   return { layers_v: LAYERS_VERSION, type: s.type, indicators: s.indicators, markup: s.markup, panels: s.panels, symbol, tf };
+}
+
+/** Новый экземпляр индикатора в конце списка (если лимит позволяет): uid — минимальный свободный номер. */
+export function addInstance(list: readonly IndicatorInstance[], id: string): IndicatorInstance[] {
+  const spec = indicatorById(id);
+  if (!spec || !canAdd(list, id)) return [...list];
+  return [...list, { uid: nextUid(list, id), id, params: suggestParams(list, spec) }];
 }
 
 /** Ключ настроек терминала в localStorage. */
@@ -160,13 +154,44 @@ export function useTerminalSettings(authed: boolean) {
   /** Изменение настроек с отметкой времени (по ней сервер и локальная копия решают, что новее). */
   const update = useCallback((fn: (cur: SavedV5) => SavedV5) => setSaved((p) => ({ ...fn(p ?? load()), updated_at: Date.now() })), []);
   const patch = useCallback((p: Partial<Omit<SavedV5, "layers_v" | "updated_at">>) => update((cur) => ({ ...cur, ...p })), [update]);
+  /** Флажок в «Индикаторах»: есть экземпляры — убрать все, нет — добавить один с параметрами по умолчанию. */
   const toggleIndicator = useCallback(
     (id: string) =>
       update((cur) => {
-        const has = cur.indicators.some((i) => i.id === id);
-        const spec = INDICATORS.find((i) => i.id === id)!;
-        return { ...cur, indicators: has ? cur.indicators.filter((i) => i.id !== id) : [...cur.indicators, { id, params: defaultParams(spec) }] };
+        if (cur.indicators.some((i) => i.id === id)) return { ...cur, indicators: cur.indicators.filter((i) => i.id !== id) };
+        return { ...cur, indicators: addInstance(cur.indicators, id) };
       }),
+    [update],
+  );
+  /** «+ ещё EMA»: ещё один экземпляр (до MAX_INSTANCES) со свободным периодом. */
+  const addIndicator = useCallback((id: string) => update((cur) => ({ ...cur, indicators: addInstance(cur.indicators, id) })), [update]);
+  const removeInstance = useCallback((uid: string) => update((cur) => ({ ...cur, indicators: cur.indicators.filter((i) => i.uid !== uid) })), [update]);
+  const setInstanceParams = useCallback(
+    (uid: string, params: Record<string, number>) =>
+      update((cur) => ({
+        ...cur,
+        indicators: cur.indicators.map((i) => {
+          const spec = indicatorById(i.id);
+          return i.uid === uid && spec ? { ...i, params: clampParams(spec, { ...i.params, ...params }) } : i;
+        }),
+      })),
+    [update],
+  );
+  /** «скрыть / показать» в легенде графика: экземпляр остаётся в списке, линии не рисуются. */
+  const toggleInstanceHidden = useCallback(
+    (uid: string) =>
+      update((cur) => ({
+        ...cur,
+        indicators: cur.indicators.map((i) => {
+          if (i.uid !== uid) return i;
+          if (i.hidden) {
+            const { hidden: _h, ...rest } = i;
+            void _h;
+            return rest;
+          }
+          return { ...i, hidden: true };
+        }),
+      })),
     [update],
   );
   const togglePanel = useCallback(
@@ -191,14 +216,14 @@ export function useTerminalSettings(authed: boolean) {
   const applyTemplate = useCallback(
     (id: string) => {
       const t = TEMPLATES.find((x) => x.id === id);
-      if (t) update((cur) => ({ ...cur, indicators: t.indicators, panels: t.panels }));
+      if (t) update((cur) => ({ ...cur, indicators: normalizeInstances(t.indicators) ?? [], panels: [...t.panels] }));
     },
     [update],
   );
   /** Именованная раскладка поверх текущих настроек — через ту же миграцию: v4 применяется как «Чистый». */
   const applyLayout = useCallback((raw: unknown) => update((cur) => migrateLayout(raw, cur)), [update]);
 
-  return { st, resolved, legacyFound, patch, toggleIndicator, togglePanel, toggleLayer, selectMarkup, applyTemplate, applyLayout };
+  return { st, resolved, legacyFound, patch, toggleIndicator, addIndicator, removeInstance, setInstanceParams, toggleInstanceHidden, togglePanel, toggleLayer, selectMarkup, applyTemplate, applyLayout };
 }
 
 export type TerminalSettings = ReturnType<typeof useTerminalSettings>;

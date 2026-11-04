@@ -191,3 +191,142 @@
   font-size: 12px;
   color: var(--text-2);
 }
+
+/* ── легенда графика (план 2B.9 §10, C): левый верхний угол панели цены, без рамки ── */
+.legendHost {
+  position: absolute;
+  left: 8px;
+  top: 6px;
+  z-index: var(--z-chart-ui);
+  max-width: 60%;
+  /* график под легендой продолжает получать курсор; кнопки и строки индикаторов — нет */
+  pointer-events: none;
+}
+
+.legend {
+  display: grid;
+  justify-items: start;
+  gap: 2px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--text-2);
+}
+
+.legendLine,
+.legendRow,
+.liqNoteInline {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--legend-bg);
+}
+
+.legendLine {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 8px;
+}
+
+.legendSymbol {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.legendOhlc {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0 8px;
+}
+
+.fact {
+  white-space: nowrap;
+}
+
+.factLabel,
+.legendNote {
+  color: var(--text-3);
+}
+
+.legendOhlc :global(.num) {
+  color: var(--text);
+}
+
+.legendOhlc :global(.num.up) {
+  color: var(--up);
+}
+
+.legendOhlc :global(.num.down) {
+  color: var(--down);
+}
+
+.legendRow {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 22px;
+  pointer-events: auto;
+}
+
+.legendDot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.legendName {
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.legendRow[data-hidden] .legendName,
+.legendRow[data-hidden] .legendDot {
+  opacity: 0.5;
+}
+
+/* кнопки строки — при наведении и фокусе; место под них всегда занято, чтобы легенда не прыгала */
+.legendActions {
+  display: inline-flex;
+  gap: 2px;
+  opacity: 0;
+}
+
+.legendRow:hover .legendActions,
+.legendRow:focus-within .legendActions,
+.legendActions[data-open] {
+  opacity: 1;
+}
+
+.paramsPop {
+  display: grid;
+  gap: var(--gap-2);
+  font-size: 13px;
+}
+
+/* «?» и пометка ликвидаций внутри легенды — на своих местах в строке, не поверх графика */
+.legendBoxInline {
+  position: relative;
+  pointer-events: auto;
+}
+
+.liqNoteInline {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+/* значения индикатора в заголовке панели */
+.paneValues {
+  display: inline-flex;
+  gap: 6px;
+  margin-left: 4px;
+}
+
+@media (pointer: coarse) {
+  .legendActions {
+    opacity: 1;
+  }
+}

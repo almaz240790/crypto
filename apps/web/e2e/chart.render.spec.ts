@@ -333,7 +333,7 @@ test.describe("перепись подписей: десктоп 1440×900", () 
     await page.mouse.click(off.x, off.y);
     await expect(levels.locator("li[data-selected]")).toHaveCount(0);
     // строка списка выбирает объект на графике; Esc снимает
-    await levels.getByRole("button").filter({ hasText: "сопротивление" }).first().click();
+    await levels.getByRole("button").filter({ hasText: "Сопротивление" }).first().click();
     await expect(levels.locator("li[data-selected]")).toHaveCount(1);
     await expect.poll(async () => (await overlayOf(page))!.objects.some((o) => o.emphasis === "selected" && o.layer === "sr")).toBe(true);
     await page.keyboard.press("Escape");

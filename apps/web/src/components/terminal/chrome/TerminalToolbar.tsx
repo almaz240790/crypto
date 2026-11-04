@@ -1,12 +1,14 @@
 "use client";
 
-import type { ChartType, MarkupSettings, PanelKey, PresetId, ScaleMode, Timeframe } from "@platform/charts";
+import type { ChartStore, ChartType, IndicatorInstance, MarkupSettings, PanelKey, PresetId, ScaleMode, Timeframe } from "@platform/charts";
 import { useRouter } from "next/navigation";
 import { memo, type Ref } from "react";
 import { Button, IconButton, Menu, Popover, usePopover, type MenuItemSpec } from "@/components/ui";
 import { IconBell, IconCamera, IconExpand, IconGrid, IconIndicators, IconMore, IconPanel } from "@/components/ui/icons";
 import { useT } from "@/i18n/client";
+import type { FigureOnChart, PatternOnChart } from "@/lib/chart";
 import type { Instrument } from "@/lib/user";
+import { FoundCounter } from "../chart/FoundCounter";
 import { presetTitle } from "../MarkupPicker";
 import { AlertForm } from "../sheets/AlertForm";
 import { IndicatorsPicker } from "../sheets/IndicatorsPicker";
@@ -49,9 +51,13 @@ type Props = {
   onType: (t: ChartType) => void;
   onScale: (s: ScaleMode) => void;
   onOverlay: (symbol: string | null) => void;
-  indicatorIds: ReadonlySet<string>;
+  /** Экземпляры индикаторов: «Индикаторы (n)» считает экземпляры и панели производных. */
+  instances: readonly IndicatorInstance[];
   panels: readonly PanelKey[];
   onIndicator: (id: string) => void;
+  onAddIndicator: (id: string) => void;
+  onRemoveInstance: (uid: string) => void;
+  onInstanceParams: (uid: string, params: Record<string, number>) => void;
   onPanel: (k: PanelKey) => void;
   markup: MarkupSettings;
   custom: boolean;
@@ -68,8 +74,10 @@ type Props = {
   onSnapshot: () => void;
   objectsShown: boolean;
   onObjects: () => void;
-  /** Найдено на видимом участке: бейдж на «Объектах». */
-  foundCount: number;
+  /** Бейдж «Объектов» — лист-счётчик «Найдено» (FoundCounter): тулбар не перерисовывается при сдвиге графика. */
+  store: ChartStore;
+  figures: readonly FigureOnChart[];
+  patterns: readonly PatternOnChart[];
 };
 
 /** Полный экран — на странице терминала (data-fullscreen-root): попапы рендерятся внутри неё и остаются видны. */
@@ -87,9 +95,9 @@ export const TerminalToolbar = memo(function TerminalToolbar(p: Props) {
   const t = useT();
   const router = useRouter();
   const ind = usePopover();
-  const n = p.indicatorIds.size + p.panels.length;
+  const n = p.instances.length + p.panels.length;
   const markupName = p.custom ? t("Свой") : presetTitle(p.markup.preset, t);
-  const key = [p.tf, p.intradayLocked, p.guest, n, p.alertsCount, markupName, p.foundCount].join("|");
+  const key = [p.tf, p.intradayLocked, p.guest, n, p.alertsCount, markupName].join("|");
   const { ref: rowRef, fit } = useOverflow<HTMLDivElement>(TOOLBAR_SHED, key);
   const more: MenuItemSpec[] = [
     ...(fit.hidden.has("snap") ? [{ id: "snap", label: t("Снимок"), icon: <IconCamera />, onSelect: p.onSnapshot }] : []),
@@ -113,7 +121,7 @@ export const TerminalToolbar = memo(function TerminalToolbar(p: Props) {
           {t("Индикаторы ({n})", { n })}
         </Button>
         <Popover open={ind.open} onClose={ind.close} anchor={ind.anchor} label={t("Индикаторы")} id={ind.id} width="min(560px, calc(100vw - 16px))">
-          <IndicatorsPicker active={p.indicatorIds} panels={p.panels} onIndicator={p.onIndicator} onPanel={p.onPanel} onDone={ind.close} />
+          <IndicatorsPicker instances={p.instances} panels={p.panels} onIndicator={p.onIndicator} onAdd={p.onAddIndicator} onRemove={p.onRemoveInstance} onParams={p.onInstanceParams} onPanel={p.onPanel} onDone={ind.close} />
         </Popover>
       </div>
       <div {...overflowItem("markup", fit)}>
@@ -165,11 +173,15 @@ export const TerminalToolbar = memo(function TerminalToolbar(p: Props) {
         <Button variant="ghost" aria-label={t("Объекты")} aria-pressed={p.objectsShown} title={t("Панель объектов: найденное, рисунки, слои, раскладки")} onClick={p.onObjects}>
           <IconPanel />
           <span data-ov-extra>{t("Объекты")}</span>
-          {p.foundCount > 0 && (
-            <span className={c.badge} data-ov-extra aria-hidden="true">
-              {p.foundCount}
-            </span>
-          )}
+          <FoundCounter store={p.store} figures={p.figures} patterns={p.patterns}>
+            {(found) =>
+              found > 0 && (
+                <span className={c.badge} data-ov-extra aria-hidden="true">
+                  {found}
+                </span>
+              )
+            }
+          </FoundCounter>
         </Button>
       </span>
     </div>

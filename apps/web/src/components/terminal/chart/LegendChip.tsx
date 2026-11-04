@@ -14,23 +14,24 @@ const selectLiqUnavailable = (s: ChartState) => s.sceneIndex?.liqUnavailable ?? 
  * с «?» — иначе пресет «Карта ликвидаций» выглядит как пустой (план 2B.2, M05). Причину называют «Найдено» и
  * строка пресета в «Слоях»; пометка короткая, чтобы на телефоне не заходить на шкалу цены.
  */
-export function LiqUnavailableNote({ store, on }: { store: ChartStore; on: boolean }) {
+export function LiqUnavailableNote({ store, on, inline = false }: { store: ChartStore; on: boolean; inline?: boolean }) {
   const unavailable = useChartStore(selectLiqUnavailable, store);
   const t = useT();
   if (!on || !unavailable) return null;
   return (
-    <p className={c.liqNote} data-testid="chart-liq-unavailable">
+    <p className={inline ? c.liqNoteInline : c.liqNote} data-testid="chart-liq-unavailable">
       {t("Карты ликвидаций на этом таймфрейме нет")}
     </p>
   );
 }
 
 /**
- * Легенда «?» (план 2B.2, §9): кнопка в левом верхнем углу панели цены и окно «Что на графике» — по строке
+ * Легенда «?» (план 2B.2, §9): кнопка в левом верхнем углу панели цены (на десктопе — в строке легенды графика,
+ * inline) и окно «Что на графике» — по строке
  * на каждый вид разметки, который сейчас на графике (scene.legend), и две постоянные: «Цена» и «Выделение».
  * Слово и пояснение — из chartText (t()), образец — цветом тона (--chart-*). Закрывается по Esc и клику снаружи.
  */
-export function LegendChip({ store }: { store: ChartStore }) {
+export function LegendChip({ store, inline = false }: { store: ChartStore; inline?: boolean }) {
   const legend = useChartStore(selectLegend, store);
   const t = useT();
   const [open, setOpen] = useState(false);
@@ -54,7 +55,7 @@ export function LegendChip({ store }: { store: ChartStore }) {
   }, [open]);
 
   return (
-    <div ref={box} className={c.legendBox}>
+    <div ref={box} className={inline ? c.legendBoxInline : c.legendBox}>
       <button type="button" className={c.legendChip} aria-label={t("что на графике")} aria-haspopup="dialog" aria-expanded={open} aria-controls={open ? id : undefined} onClick={() => setOpen(!open)}>
         ?
       </button>

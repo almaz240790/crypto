@@ -23,7 +23,7 @@ export const INDICATOR_LIST: { name: string; pane: Pane }[] = [
   { name: "Volume", pane: "separate" },
 ];
 
-/** Панели данных деривативов (TerminalView: funding, oi, liq, ls). */
+/** Панели данных деривативов (ChartSurface: funding, oi, liq, ls). */
 export const DERIVATIVE_PANELS = ["Funding", "Open interest", "Ликвидации", "Long / Short"];
 
 /** Инструменты рисования, сгруппированные для витрины; всего — TOOL_TITLES в packages/charts/src/drawings/types.ts. */

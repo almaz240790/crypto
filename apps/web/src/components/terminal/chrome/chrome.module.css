@@ -385,6 +385,66 @@
   accent-color: var(--accent);
 }
 
+/* экземпляры включённого индикатора: под его строкой, по строке на экземпляр */
+.pickerItem {
+  display: grid;
+  min-width: 0;
+}
+
+.instances {
+  display: grid;
+  gap: 2px;
+  margin: 0 0 4px 28px;
+}
+
+.instance {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-2);
+  min-height: 32px;
+}
+
+.addInstance {
+  justify-self: start;
+}
+
+.params {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px var(--gap-2);
+}
+
+.param {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.paramLabel {
+  white-space: nowrap;
+}
+
+.paramInput {
+  width: 64px;
+  height: 28px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-mono), monospace;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.paramInput:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 .dot {
   display: inline-block;
   flex: none;
@@ -421,7 +481,9 @@
   .alertForm select,
   .viewBody select,
   .pickerHead input,
-  .pickerHead button {
+  .pickerHead button,
+  .paramInput,
+  .instance button {
     min-height: var(--touch-min);
   }
 

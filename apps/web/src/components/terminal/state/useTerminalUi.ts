@@ -1,8 +1,8 @@
 "use client";
 
 import type React from "react";
-import { useCallback, useEffect, useRef, useState } from "react";
-import type { ObjectsTab } from "../DesktopPanels";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { SideTabId } from "../panels/sideTabs";
 
 /**
  * Состояние интерфейса терминала (план 2B.9): открытый лист, панели, ширина панели объектов, тост.
@@ -45,7 +45,7 @@ export function useTerminalUi(wide: boolean) {
   const [bars, setBars] = useState<"shown" | "hidden">("shown");
   const [objectsPref, setObjectsPref] = useState<Shown>("shown");
   const [overlayOpen, setOverlayOpen] = useState(false);
-  const [panelTab, setPanelTab] = useState<ObjectsTab>("found");
+  const [panelTab, setPanelTab] = useState<SideTabId>("found");
   useEffect(() => {
     try {
       if (localStorage.getItem(OBJECTS_KEY) === "hidden") queueMicrotask(() => setObjectsPref("hidden"));
@@ -77,7 +77,7 @@ export function useTerminalUi(wide: boolean) {
   );
   /** Открыть панель на вкладке (например, «Слои» из «Разметки»). */
   const showPanel = useCallback(
-    (tab: ObjectsTab) => {
+    (tab: SideTabId) => {
       setPanelTab(tab);
       setObjects("shown");
     },
@@ -104,24 +104,28 @@ export function useTerminalUi(wide: boolean) {
       /* приватный режим */
     }
   }, []);
-  const objResize: ObjectsResize = {
-    active: objDrag,
-    step: (delta: number) => setObjWidth(objW + delta),
-    start: (e: React.PointerEvent<HTMLElement>) => {
-      e.preventDefault();
-      const startX = e.clientX;
-      const startW = objW;
-      setObjDrag(true);
-      const move = (ev: PointerEvent) => setObjWidth(startW + (startX - ev.clientX));
-      const up = () => {
-        setObjDrag(false);
-        window.removeEventListener("pointermove", move);
-        window.removeEventListener("pointerup", up);
-      };
-      window.addEventListener("pointermove", move);
-      window.addEventListener("pointerup", up);
-    },
-  };
+  // стабильный объект (memo): правая панель не перерисовывается из-за нового обработчика на каждом рендере
+  const objResize: ObjectsResize = useMemo(
+    () => ({
+      active: objDrag,
+      step: (delta: number) => setObjWidth(objW + delta),
+      start: (e: React.PointerEvent<HTMLElement>) => {
+        e.preventDefault();
+        const startX = e.clientX;
+        const startW = objW;
+        setObjDrag(true);
+        const move = (ev: PointerEvent) => setObjWidth(startW + (startX - ev.clientX));
+        const up = () => {
+          setObjDrag(false);
+          window.removeEventListener("pointermove", move);
+          window.removeEventListener("pointerup", up);
+        };
+        window.addEventListener("pointermove", move);
+        window.addEventListener("pointerup", up);
+      },
+    }),
+    [objDrag, objW, setObjWidth],
+  );
 
   // тост: одна строка role=status, новая фраза заменяет прежнюю
   const [toast, setToast] = useState<string | null>(null);

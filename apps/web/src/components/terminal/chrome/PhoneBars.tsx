@@ -2,7 +2,7 @@
 
 import { CHART_TYPES, formatCountdown, secondsToClose, type ChartType, type ScaleMode, type Timeframe } from "@platform/charts";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useT } from "@/i18n/client";
 import { formatPct, formatPrice } from "@/lib/format";
 import { INTRADAY, TF_LABEL, TIMEFRAMES } from "@/lib/timeframes";
@@ -121,7 +121,8 @@ type BottomProps = {
   onSheet: (id: "indicators" | "layers" | "ask" | "found" | "draw" | null) => void;
   onAlert: () => void;
   indicatorsCount: number;
-  foundCount: number;
+  /** «Найдено (n)»: лист-счётчик (FoundCounter) — оболочка не перерисовывается при сдвиге графика. */
+  found: ReactNode;
   alertsCount: number;
   tool: string | null;
   onFinishTool: () => void;
@@ -149,7 +150,7 @@ export function PhoneBottom(p: BottomProps) {
         {t("Спросить")}
       </button>
       <button type="button" className={s.chip} aria-pressed={p.sheet === "found"} onClick={() => toggle("found")}>
-        {t("Найдено ({n})", { n: p.foundCount })}
+        {p.found}
       </button>
       <button type="button" className={s.chip} aria-pressed={p.sheet === "alert"} onClick={() => (p.sheet === "alert" ? p.onSheet(null) : p.onAlert())}>
         {t("Алерт")}

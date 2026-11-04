@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_SAVED, isLegacySave, layoutData, migrateLayout, migrateSaved } from "./useTerminalSettings";
+import { addInstance, DEFAULT_SAVED, isLegacySave, layoutData, migrateLayout, migrateSaved } from "./useTerminalSettings";
 
 /** Миграция сохранений на версию слоёв 5 (план 2B.2, ADR-0008). */
 const V4 = { type: "bars", indicators: [{ id: "rsi", params: { period: 14 } }], layers: { structure: true, zones: true, levels: false, signals: false, patterns: false, figures: true, volume_profile: false, sr: true, liq_map: true }, layers_v: 4, panels: ["oi", "bad"], scale: "log", overlay: "ETHUSDT", updated_at: 5 };
@@ -7,7 +7,7 @@ const V4 = { type: "bars", indicators: [{ id: "rsi", params: { period: 14 } }], 
 describe("migrateSaved", () => {
   it("v4 → «Чистый» без поля layers, остальное переносится", () => {
     const s = migrateSaved(V4);
-    expect(s).toEqual({ layers_v: 5, type: "bars", indicators: [{ id: "rsi", params: { period: 14 } }], markup: { preset: "clean", overrides: {} }, panels: ["oi"], scale: "log", overlay: "ETHUSDT", updated_at: 5 });
+    expect(s).toEqual({ layers_v: 5, type: "bars", indicators: [{ uid: "rsi#1", id: "rsi", params: { period: 14 } }], markup: { preset: "clean", overrides: {} }, panels: ["oi"], scale: "log", overlay: "ETHUSDT", updated_at: 5 });
     expect("layers" in s).toBe(false);
     expect(isLegacySave(V4)).toBe(true);
     // без версии (самые старые сохранения) — тоже старые
@@ -55,5 +55,33 @@ describe("migrateSaved", () => {
     const d = layoutData({ ...DEFAULT_SAVED, markup: { preset: "levels", overrides: { figures: true } } }, "BTCUSDT", "4h");
     expect(d).toEqual({ layers_v: 5, type: "candles", indicators: DEFAULT_SAVED.indicators, markup: { preset: "levels", overrides: { figures: true } }, panels: [], symbol: "BTCUSDT", tf: "4h" });
     expect("layers" in d).toBe(false);
+  });
+
+  it("индикаторы → экземпляры (план 2B.9): {id} → ema#1, повтор → #2, не больше 3, идемпотентно", () => {
+    const raw = { layers_v: 5, indicators: [{ id: "ema", params: { period: 50 } }, { id: "ema", params: { period: 200 } }, { id: "ema", params: { period: 20 } }, { id: "ema", params: { period: 9 } }, { id: "rsi", params: {} }] };
+    const s = migrateSaved(raw);
+    expect(s.indicators.map((i) => i.uid)).toEqual(["ema#1", "ema#2", "ema#3", "rsi#1"]);
+    expect(s.indicators.map((i) => i.params.period)).toEqual([50, 200, 20, 14]);
+    expect(migrateSaved(s).indicators).toEqual(s.indicators);
+    // v4 с повтором тоже: разметка «Чистый», экземпляры — по порядку
+    expect(migrateSaved({ ...V4, indicators: [{ id: "sma", params: { period: 20 } }, { id: "sma", params: { period: 50 } }] }).indicators.map((i) => i.uid)).toEqual(["sma#1", "sma#2"]);
+  });
+
+  it("именованная раскладка и раскладка с сервера мигрируют индикаторы так же", () => {
+    const named = { type: "candles", indicators: [{ id: "ema", params: { period: 21 } }, { id: "ema", params: { period: 55 } }], panels: [], layers_v: 5, markup: { preset: "clean", overrides: {} } };
+    expect(migrateLayout(named, DEFAULT_SAVED).indicators).toEqual([
+      { uid: "ema#1", id: "ema", params: { period: 21 } },
+      { uid: "ema#2", id: "ema", params: { period: 55 } },
+    ]);
+  });
+
+  it("addInstance: следующий uid и свободный период, не больше 3 EMA, отдельная панель — одна", () => {
+    let list = addInstance(DEFAULT_SAVED.indicators, "ema");
+    expect(list.map((i) => `${i.uid}:${i.params.period}`)).toEqual(["ema#1:50", "ema#2:20"]);
+    list = addInstance(list, "ema");
+    expect(list.at(-1)).toEqual({ uid: "ema#3", id: "ema", params: { period: 200 } });
+    expect(addInstance(list, "ema")).toHaveLength(3);
+    expect(addInstance(addInstance([], "rsi"), "rsi")).toHaveLength(1);
+    expect(addInstance([], "nope")).toEqual([]);
   });
 });

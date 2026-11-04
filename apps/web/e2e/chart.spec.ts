@@ -140,8 +140,9 @@ test("перекрестие: наведение показывает OHLCV и �
   await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.4);
   const ohlc = page.getByTestId("ohlc");
   await expect(ohlc).toBeVisible();
-  await expect(ohlc).toContainText("O ");
-  await expect(ohlc).toContainText("EMA");
+  // легенда графика (план 2B.9 §10): под перекрестием «Откр Макс Мин Закр Объём» и строка «EMA 50»
+  await expect(ohlc).toContainText("Откр ");
+  await expect(ohlc).toContainText("EMA 50");
   await page.mouse.move(box.x - 50, box.y - 50);
   await expect(ohlc).toBeHidden();
 });
@@ -175,9 +176,10 @@ test("десктоп: тулбар и горячие клавиши, панел�
   await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 0");
   await toolbar.getByRole("button", { name: "отменить" }).click();
   await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 1");
-  // слои из панели
-  await objects.getByRole("tab", { name: "Слои" }).click();
-  await objects.getByLabel("Ликвидации").check();
+  // панель производных — в «Индикаторах» («Данные фьючерсов»); из «Слоёв» дубль убран (план 2B.9 §8.2)
+  await page.getByRole("button", { name: /Индикаторы/ }).click();
+  await page.getByRole("dialog", { name: "Индикаторы" }).getByLabel("Ликвидации", { exact: true }).check();
+  await page.getByRole("button", { name: "Готово" }).click();
   await expect(page.getByRole("button", { name: "Индикаторы (2)" })).toBeVisible();
   // шаблон «Осцилляторы» → три индикатора, панели сброшены
   await objects.getByRole("tab", { name: "Раскладки" }).click();
@@ -213,11 +215,16 @@ test("паттерны: вкладка «Найдено», подробност�
   await expect(page.getByTestId("terminal").locator("canvas").first()).toBeVisible();
   await expect.poll(() => calls.some((c) => c.startsWith("/v1/chart/patterns?symbol=BTCUSDT&tf=4h"))).toBe(true);
   const objects = page.getByRole("complementary", { name: "панель объектов" });
-  await expect(objects.getByRole("tab", { name: "Найдено (3)" })).toHaveAttribute("aria-selected", "true");
+  // «Найдено (n)» = Уровни + Фигуры + Паттерны (план 2B.9 §8.1); по умолчанию открыт раздел «Уровни»
+  await expect(objects.getByRole("tab", { name: /^Найдено \(\d+\)$/ })).toHaveAttribute("aria-selected", "true");
+  await expect(objects.getByRole("tab", { name: /^Уровни/ })).toHaveAttribute("aria-selected", "true");
   // фигуры (4B.6): подтверждённая с целью и отработкой, формирующаяся без цели
+  await objects.getByRole("tab", { name: /^Фигуры/ }).click();
   const figs = objects.getByRole("list", { name: "найденные фигуры" });
   await expect(figs).toContainText("Восходящий канал");
   await expect(figs).toContainText("формируется");
+  // в списке — фигуры на видимом участке (как в счётчике); двойная вершина левее кадра — по «Показать все»
+  await objects.getByRole("button", { name: "Показать все (2)" }).click();
   await figs.getByRole("button", { name: /Двойная вершина/ }).click();
   await expect(figs).toContainText("подтверждена закрытием свечи за линией");
   // цены — по шагу BTCUSDT 0.1: один знак, как на шкале
@@ -226,9 +233,10 @@ test("паттерны: вкладка «Найдено», подробност�
   await figs.getByRole("button", { name: /Восходящий канал/ }).click();
   await expect(figs).toContainText("геометрия без подтверждения");
   expect(calls.some((c) => c.startsWith("/v1/chart/figures?symbol=BTCUSDT&tf=4h"))).toBe(true);
+  await objects.getByRole("tab", { name: /^Паттерны/ }).click();
   const list = objects.getByRole("list", { name: "найденные паттерны" });
-  // по умолчанию только значимые; незначимый доджи — по кнопке «Показать все»
-  await expect(list).not.toContainText("Доджи");
+  // по умолчанию только значимые на видимом участке; незначимый доджи — по кнопке «Показать все»
+  await expect(objects.getByText("Доджи")).toHaveCount(0);
   await objects.getByRole("button", { name: "Показать все (2)" }).click();
   await expect(list).toContainText("Доджи");
   await expect(list).toContainText("Бычье поглощение");
@@ -258,11 +266,11 @@ test("паттерны: вкладка «Найдено», подробност�
   // слой «Паттерны» в списке слоёв
   await objects.getByRole("tab", { name: "Слои" }).click();
   // чистый график: слой паттернов выключен по умолчанию, включение запоминается
-  await expect(objects.getByLabel("Паттерны")).not.toBeChecked();
-  await objects.getByLabel("Паттерны").check();
+  await expect(objects.getByLabel("Паттерны", { exact: true })).not.toBeChecked();
+  await objects.getByLabel("Паттерны", { exact: true }).check();
   await page.reload();
   await page.getByRole("complementary", { name: "панель объектов" }).getByRole("tab", { name: "Слои" }).click();
-  await expect(page.getByRole("complementary", { name: "панель объектов" }).getByLabel("Паттерны")).toBeChecked();
+  await expect(page.getByRole("complementary", { name: "панель объектов" }).getByLabel("Паттерны", { exact: true })).toBeChecked();
 });
 
 test("алерты на графике: из горизонтальной линии и из листа «Алерт», линия алерта на графике", async ({ page }) => {
@@ -459,9 +467,11 @@ test("уровни: поддержка, сопротивление и карта
   await expect(page.getByTestId("terminal").locator("canvas").first()).toBeVisible();
   const objects = page.getByRole("complementary", { name: "панель объектов" });
   const levels = objects.getByRole("list", { name: "уровни поддержки и сопротивления" });
-  await expect(levels).toContainText("S поддержка");
-  await expect(levels).toContainText("R сопротивление");
-  await expect(levels).toContainText("OB");
+  // таблица уровней (план 2B.9 §8.1): слово типа, цена, расстояние, подробности словами
+  await expect(levels).toContainText("Поддержка");
+  await expect(levels).toContainText("Сопротивление");
+  await expect(levels).toContainText("ордер-блок");
+  await expect(levels).toContainText("Текущая цена");
   await expect(levels).toContainText("касаний:");
   await expect(levels).toContainText("Ликвидации");
   await expect(objects).toContainText("расчётная оценка");

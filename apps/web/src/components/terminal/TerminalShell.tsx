@@ -9,17 +9,22 @@ import { usePopover } from "@/components/ui";
 import { getAccessToken } from "@/lib/auth-client";
 import { MQ, useLayout, useMediaQuery } from "@/lib/breakpoints";
 import { TF_LABEL, TIMEFRAMES, INTRADAY } from "@/lib/timeframes";
-import { formatPrice } from "@/lib/format";
 import s from "./terminal.module.css";
 import { BottomSheet } from "./BottomSheet";
-import { DrawToolbar, ObjectsPanel } from "./DesktopPanels";
-import { AskBox, FiguresList, FoundList, LevelsList } from "./FoundPanel";
+import { DrawToolbar } from "./DrawToolbar";
 import { download } from "./snapshot";
-import { ChartSurface, IND_COLOR_VAR, PANELS, indicatorColor, type CrosshairInfo, type TerminalControls } from "./chart/ChartSurface";
+import { ChartSurface, IND_COLOR_VAR, PANELS, indicatorColor, type TerminalControls } from "./chart/ChartSurface";
 import { ChartStoreContext, useChartStore } from "./chart/useChartStore";
+import { CrosshairCard } from "./chart/CrosshairCard";
+import { FoundCounter } from "./chart/FoundCounter";
+import { OhlcLegend } from "./chart/OhlcLegend";
 import { MarkupPicker } from "./MarkupPicker";
-import { LAYER_LABEL, layerKeysFor } from "./DesktopPanels";
+import { SidePanel } from "./panels/SidePanel";
+import { LAYER_LABEL, layerKeysFor } from "./panels/LayersTab";
+import { AskBox } from "./panels/found/AskBox";
+import { FoundTab, type FoundData } from "./panels/found/FoundTab";
 import { useTerminalSettings } from "./state/useTerminalSettings";
+import { useTopdown } from "./state/useTopdown";
 import { useChartAlerts } from "./state/useChartAlerts";
 import { useLayouts } from "./state/useLayouts";
 import { useTerminalUi } from "./state/useTerminalUi";
@@ -27,15 +32,18 @@ import { useInstruments } from "./state/useInstruments";
 import { usePlan } from "./state/usePlan";
 import { useTrend } from "./state/useTrend";
 import { useDrawings } from "./useDrawings";
-import { getCandles, toCandle } from "@/lib/chart";
+import { getCandles, toCandle, type FigureOnChart, type PatternOnChart } from "@/lib/chart";
 import { useTerminalData } from "./useTerminalData";
 import { useT } from "@/i18n/client";
-import { formatCompactValue, formatIndicatorValue } from "@platform/charts";
 import { TerminalHeader, type HeaderFacts } from "./chrome/TerminalHeader";
 import { TerminalToolbar } from "./chrome/TerminalToolbar";
 import type { TimeframeBarHandle } from "./chrome/TimeframeBar";
 import { ChartCorner, DrawModeChip } from "./chrome/ChartCorner";
 import { PhoneBottom, PhoneStrip, PhoneTop } from "./chrome/PhoneBars";
+
+const NO_FIGURES: readonly FigureOnChart[] = [];
+const NO_PATTERNS: readonly PatternOnChart[] = [];
+const NO_STATS = {};
 
 const TOOLS: DrawingType[] = ["hline", "hray", "vline", "trend", "ray", "extended", "channel", "rect", "fib", "position-long", "position-short", "note", "ruler"];
 
@@ -66,7 +74,9 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
   const { sheet, setSheet, closeSheet, ohlcMore, setOhlcMore, bars, setBars, objects, setObjects, panelOverlay, panelTab, setPanelTab, showPanel, objW, objResize, toast, say, notifyOnce } = useTerminalUi(wide);
   // вопросы о графике — Premium (админы и владелец — всегда); минутные ТФ закрыты гостю и на Free
   const { askAccess, intradayLocked } = usePlan();
-  const { st, resolved, legacyFound, patch, toggleIndicator, togglePanel, toggleLayer, selectMarkup, applyTemplate, applyLayout } = useTerminalSettings(authed);
+  const { st, resolved, legacyFound, patch, toggleIndicator, addIndicator, removeInstance, setInstanceParams, toggleInstanceHidden, togglePanel, toggleLayer, selectMarkup, applyTemplate, applyLayout } = useTerminalSettings(authed);
+  // «Разбор» (резерв): вкладка появляется, только если ресурс topdown ответил 200
+  const topdown = useTopdown(symbol, tf, authed);
   const alertPop = usePopover();
   const closeAlertPop = alertPop.close;
   const onAlertCreated = useCallback(() => {
@@ -75,13 +85,6 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
   }, [closeSheet, closeAlertPop]);
   const { alerts, alertLines, draft: alertDraft, setDraft: setAlertDraft, resetDraft, addPriceAlert } = useChartAlerts({ symbol, authed, say, onCreated: onAlertCreated });
   const { layouts, saveLayout, loadLayout, removeLayout } = useLayouts({ authed, symbol, tf, current: st, applyLayout, say });
-  // выбор паттерна и фигуры — общий с графиком: id объекта сцены в хранилище («pat:<id>», «fig:<id>»)
-  const selection = useChartStore((x) => x.selection, store);
-  const foundSel = selection?.startsWith("pat:") ? Number(selection.slice(4)) : null;
-  const figureSel = selection?.startsWith("fig:") ? Number(selection.slice(4)) : null;
-  const setFoundSel = useCallback((id: number | null) => store.select(id === null ? null : `pat:${id}`), [store]);
-  const setFigureSel = useCallback((id: number | null) => store.select(id === null ? null : `fig:${id}`), [store]);
-  const [cross, setCross] = useState<CrosshairInfo | null>(null);
   const controls = useRef<TerminalControls | null>(null);
   const tfBar = useRef<TimeframeBarHandle>(null);
   const onReady = useCallback((c: TerminalControls | null) => {
@@ -95,14 +98,22 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
     },
     [store],
   );
-  const visibleFrom = useChartStore((x) => x.visible.fromTime, store);
-  // каталог сцены: «Найдено → Уровни» и пояснение «нет данных OI» — независимо от слоёв
-  const sceneIndex = useChartStore((x) => x.sceneIndex, store);
+  // фигура или паттерн в «Найдено»: выбрать и прокрутить к его времени, если он за кадром
+  const focusObject = useCallback(
+    (objectId: string | null, time?: number) => {
+      if (objectId === null) store.select(null);
+      else if (controls.current) controls.current.focus(time === undefined ? { objectId } : { objectId, time });
+      else store.select(objectId);
+    },
+    [store],
+  );
+  // пояснение «нет данных OI» у слоя и пресета — флаг каталога сцены (лист «Найдено» читает каталог сам)
+  const liqUnavailable = useChartStore((x) => x.sceneIndex?.liqUnavailable ?? false, store);
   const dr = useDrawings(symbol, authed);
   const data = useTerminalData(symbol, tf, user ? getAccessToken() : null);
   const trend = useTrend(data.layers);
-  // «Найдено»: значимые паттерны и неотменённые фигуры на видимом участке
-  const foundCount = (data.patterns?.items ?? []).filter((p) => p.significant && (visibleFrom === null || p.t >= visibleFrom)).length + (data.figures?.items ?? []).filter((f) => f.status !== "invalidated" && (visibleFrom === null || f.end_t >= visibleFrom)).length;
+  const figures = data.figures?.items ?? NO_FIGURES;
+  const patterns = data.patterns?.items ?? NO_PATTERNS;
   const panelShown = desktop && objects === "shown";
   const overlayPanelOpen = panelShown && panelOverlay;
 
@@ -206,6 +217,26 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
   }, [dr]);
 
   const indicatorIds = useMemo(() => new Set(st.indicators.map((i) => i.id)), [st.indicators]);
+  const lastClose = data.candles?.length ? data.candles[data.candles.length - 1]!.close : null;
+  const signalsLinkN = authed ? (data.layers?.signals.length ?? 0) : 0;
+  const foundData: FoundData = useMemo(
+    () => ({
+      symbol,
+      tf,
+      tick: data.tick,
+      lastClose,
+      figures,
+      figureStats: data.figures?.stats ?? NO_STATS,
+      patterns,
+      patternStats: data.patterns?.stats ?? NO_STATS,
+      canExplain: authed,
+      askAccess,
+      signals: signalsLinkN > 0 ? { symbol, n: signalsLinkN } : null,
+      onLevel: pickLevel,
+      onFocus: focusObject,
+    }),
+    [symbol, tf, data.tick, lastClose, figures, data.figures?.stats, patterns, data.patterns?.stats, authed, askAccess, signalsLinkN, pickLevel, focusObject],
+  );
   const sel = dr.selected;
   const pos = useMemo(() => {
     if (!sel || !sel.type.startsWith("position") || sel.points.length < 3) return null;
@@ -237,10 +268,22 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
   const reset = useCallback(() => controls.current?.reset(), []);
   const syncText = user && dr.sync !== "off" ? (dr.sync === "ok" ? t("синхронизировано") : dr.sync === "queued" ? t("в очереди") : t("ошибка синхронизации")) : null;
   const signalsLink = data.layers?.signals.length ? { symbol, n: data.layers.signals.length } : null;
-
-  // карточка перекрестия: цены — по шагу цены инструмента (как шкала), объём — компактно, индикаторы панелей — значениями
-  const fmtP = (v: number | null) => (v == null ? "—" : formatPrice(v, data.tick));
-  const fmtV = (v: { value: number | null; price: boolean }) => (v.value == null ? "—" : v.price ? formatPrice(v.value, data.tick) : formatIndicatorValue(v.value));
+  const clearCrosshair = useCallback(() => controls.current?.clearCrosshair(), []);
+  const liqLayerOn = resolved.layers.liq_map;
+  const legend = useMemo(
+    () => (desktop ? <OhlcLegend store={store} symbol={symbol} tfLabel={t(TF_LABEL[tf])} exchange="Binance" tick={data.tick} instances={st.indicators} liqLayerOn={liqLayerOn} onHide={toggleInstanceHidden} onRemove={removeInstance} onParams={setInstanceParams} /> : null),
+    [desktop, store, symbol, t, tf, data.tick, st.indicators, liqLayerOn, toggleInstanceHidden, removeInstance, setInstanceParams],
+  );
+  // правая панель: стабильные пропсы (memo), «Найдено» и счётчики читают хранилище графика сами
+  const panelDrawings = useMemo(
+    () => ({ items: dr.items, selectedId: dr.state.selectedId, sync: syncText, onSelect: dr.actions.select, onLock: dr.actions.lock, onRemove: dr.actions.remove, onClearAll: clearDrawings }),
+    // clearDrawings читает dr.items через замыкание: пересоздаётся вместе со списком
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [dr.items, dr.state.selectedId, syncText, dr.actions],
+  );
+  const panelLayers = useMemo(() => ({ markup: st.markup, custom: resolved.custom, onMarkup: selectMarkup, layers: resolved.layers, onLayer: toggleLayer, authed, liqUnavailable }), [st.markup, resolved, selectMarkup, toggleLayer, authed, liqUnavailable]);
+  const panelLayouts = useMemo(() => ({ layouts, onTemplate: applyTemplate, onSave: saveLayout, onLoad: loadLayout, onDelete: removeLayout, authed, limit: user ? null : 0 }), [layouts, applyTemplate, saveLayout, loadLayout, removeLayout, authed, user]);
+  const closePanel = useCallback(() => setObjects("hidden"), [setObjects]);
   return (
     <ChartStoreContext.Provider value={store}>
       <div className={s.page} data-layout={desktop ? "desktop" : "phone"} data-bars={bars} data-fullscreen-root>
@@ -264,9 +307,12 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
             onType={(type) => patch({ type })}
             onScale={(scale) => patch({ scale })}
             onOverlay={(overlay) => patch({ overlay, scale: overlay && st.scale === "linear" ? "percent" : st.scale })}
-            indicatorIds={indicatorIds}
+            instances={st.indicators}
             panels={st.panels}
             onIndicator={toggleIndicator}
+            onAddIndicator={addIndicator}
+            onRemoveInstance={removeInstance}
+            onInstanceParams={setInstanceParams}
             onPanel={togglePanel}
             markup={st.markup}
             custom={resolved.custom}
@@ -282,56 +328,18 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
             onSnapshot={snapshot}
             objectsShown={objects === "shown"}
             onObjects={() => setObjects(objects === "shown" ? "hidden" : "shown")}
-            foundCount={foundCount}
+            store={store}
+            figures={figures}
+            patterns={patterns}
           />
         )}
         {!desktop && <PhoneTop symbol={symbol} tf={tf} instruments={instruments} onSymbol={goSymbol} guest={!authed} type={st.type} scale={st.scale} onType={(type) => patch({ type })} onScale={(scale) => patch({ scale })} onZoom={zoom} onReset={reset} onSnapshot={snapshot} />}
         {!desktop && <PhoneStrip {...facts} tf={tf} />}
         <div className={s.area} data-objects={panelShown ? "shown" : "hidden"} data-panel={panelOverlay ? "overlay" : "inline"} style={{ "--objects-w": `${objW}px` } as React.CSSProperties}>
-          <DrawToolbar tool={dr.tool} onTool={(t) => dr.setTool(t)} magnet={dr.magnet} onMagnet={dr.setMagnet} canUndo={dr.canUndo} canRedo={dr.canRedo} onUndo={dr.actions.undo} onRedo={dr.actions.redo} />
+          <DrawToolbar tool={dr.tool} onTool={dr.setTool} magnet={dr.magnet} onMagnet={dr.setMagnet} hidden={dr.state.hidden} onHidden={dr.actions.hide} canUndo={dr.canUndo} canRedo={dr.canRedo} onUndo={dr.actions.undo} onRedo={dr.actions.redo} />
           <div className={s.chartCol}>
-            {cross && (
-              <div className={s.ohlc} data-testid="ohlc" aria-live="polite" data-more={ohlcMore || undefined}>
-                <button
-                  type="button"
-                  className={s.ohlcClose}
-                  aria-label={t("закрыть карточку")}
-                  onClick={() => {
-                    controls.current?.clearCrosshair();
-                    setCross(null);
-                  }}
-                >
-                  ×
-                </button>
-                <span>{new Date(cross.candle.time * 1000).toLocaleString("ru-RU", { timeZone: "UTC", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })} UTC</span>
-                <span>
-                  O <strong>{fmtP(cross.candle.open)}</strong>
-                </span>
-                <span>
-                  H <strong>{fmtP(cross.candle.high)}</strong>
-                </span>
-                <span>
-                  L <strong>{fmtP(cross.candle.low)}</strong>
-                </span>
-                <span className={cross.candle.close >= cross.candle.open ? "up" : "down"}>
-                  C <strong>{fmtP(cross.candle.close)}</strong> {(((cross.candle.close - cross.candle.open) / cross.candle.open) * 100).toFixed(2)} %
-                </span>
-                <span>
-                  V <strong>{formatCompactValue(cross.candle.volume)}</strong>
-                </span>
-                {cross.values.length > 0 && (
-                  <button type="button" className={`${s.ohlcMore} ${s.mobileOnly}`} aria-expanded={ohlcMore} onClick={() => setOhlcMore(!ohlcMore)}>
-                    {ohlcMore ? t("скрыть индикаторы") : t("индикаторы ({n})", { n: cross.values.length })}
-                  </button>
-                )}
-                {cross.values.map((v) => (
-                  <span key={v.label} className={s.ohlcVal}>
-                    <span style={{ color: v.color }}>{v.label}</span> <strong>{fmtV(v)}</strong>
-                  </span>
-                ))}
-                {cross.candle.open_ && <span className="caption">{t("свеча не закрыта")}</span>}
-              </div>
-            )}
+            {/* карточка перекрестия телефона (вид прежний до C2); на десктопе — легенда в углу графика */}
+            {!desktop && <CrosshairCard store={store} tick={data.tick} more={ohlcMore} onMore={setOhlcMore} onClose={clearCrosshair} />}
             {desktop && dr.tool && <DrawModeChip tool={t(TOOL_TITLES[dr.tool])} onFinish={finishTool} />}
             {data.error && !intradayDenied ? (
               <div className={s.empty} role="alert">
@@ -361,8 +369,8 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
                 dataKey={symbol}
                 onNeedOlder={data.loadOlder}
                 drawings={drawingsProps}
-                onCrosshair={setCross}
                 onReady={onReady}
+                legend={legend}
                 scale={st.scale}
                 overlay={overlayCandles}
                 corner={desktop && !sel ? <ChartCorner onZoom={zoom} onReset={reset} /> : null}
@@ -492,15 +500,7 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
                   </form>
                 )}
                 {sheet === "ask" && <AskBox symbol={symbol} tf={tf} access={askAccess} heading={false} />}
-                {sheet === "found" && (
-                  <>
-                    <LevelsList index={sceneIndex} tick={data.tick} selected={selection} onPick={pickLevel} />
-                    <strong className={s.objHead}>{t("Фигуры")}</strong>
-                    <FiguresList items={data.figures?.items ?? []} stats={data.figures?.stats ?? {}} selected={figureSel} onSelect={setFigureSel} tick={data.tick} />
-                    <strong className={s.objHead}>{t("Свечные паттерны")}</strong>
-                    <FoundList items={data.patterns?.items ?? []} stats={data.patterns?.stats ?? {}} selected={foundSel} onSelect={setFoundSel} tf={tf} symbol={symbol} canExplain={!!user} />
-                  </>
-                )}
+                {sheet === "found" && <FoundTab store={store} data={foundData} ask={false} />}
                 {sheet === "draw" &&
                   TOOLS.map((tool) => (
                     <button
@@ -556,11 +556,11 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
                       ]
                     : sheet === "layers"
                       ? [
-                          <MarkupPicker key="markup" markup={st.markup} custom={resolved.custom} onSelect={selectMarkup} liqUnavailable={sceneIndex?.liqUnavailable ?? false} />,
+                          <MarkupPicker key="markup" markup={st.markup} custom={resolved.custom} onSelect={selectMarkup} liqUnavailable={liqUnavailable} />,
                           ...layerKeysFor(authed).map((k) => (
                             <label key={k}>
                               <input type="checkbox" checked={resolved.layers[k]} onChange={() => toggleLayer(k)} /> {t(LAYER_LABEL[k])}
-                              {k === "liq_map" && sceneIndex?.liqUnavailable && <span className="caption">{t("нет данных открытого интереса на этом таймфрейме")}</span>}
+                              {k === "liq_map" && liqUnavailable && <span className="caption">{t("нет данных открытого интереса на этом таймфрейме")}</span>}
                             </label>
                           )),
                         ]
@@ -568,34 +568,7 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
               </BottomSheet>
             )}
           </div>
-          <ObjectsPanel
-            tab={panelTab}
-            onTab={setPanelTab}
-            onClose={() => setObjects("hidden")}
-            signals={authed ? signalsLink : null}
-            onResize={objResize}
-            drawings={dr.items}
-            selectedId={dr.state.selectedId}
-            onSelect={dr.actions.select}
-            onLock={dr.actions.lock}
-            onRemove={dr.actions.remove}
-            onClearAll={clearDrawings}
-            markup={st.markup}
-            custom={resolved.custom}
-            onMarkup={selectMarkup}
-            layers={resolved.layers}
-            onLayer={toggleLayer}
-            panels={st.panels}
-            onPanel={togglePanel}
-            onTemplate={applyTemplate}
-            layouts={layouts}
-            onSaveLayout={saveLayout}
-            onLoadLayout={loadLayout}
-            onDeleteLayout={removeLayout}
-            authed={authed}
-            layoutsLimit={user ? null : 0}
-            found={{ count: foundCount, items: data.patterns?.items ?? [], stats: data.patterns?.stats ?? {}, selected: foundSel, onSelect: setFoundSel, tf, symbol, canExplain: !!user, askAccess, index: sceneIndex, tick: data.tick, levelSelected: selection, onLevel: pickLevel, figures: data.figures?.items ?? [], figureStats: data.figures?.stats ?? {}, selectedFigure: figureSel, onSelectFigure: setFigureSel }}
-          />
+          {desktop && <SidePanel store={store} tab={panelTab} onTab={setPanelTab} onClose={closePanel} overlay={panelOverlay} resize={objResize} topdown={topdown} found={foundData} drawings={panelDrawings} layers={panelLayers} layouts={panelLayouts} />}
         </div>
         {!desktop && (
           <PhoneBottom
@@ -603,7 +576,11 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
             onSheet={setSheet}
             onAlert={openAlertSheet}
             indicatorsCount={st.indicators.length + st.panels.length}
-            foundCount={foundCount}
+            found={
+              <FoundCounter store={store} figures={figures} patterns={patterns}>
+                {(n) => t("Найдено ({n})", { n })}
+              </FoundCounter>
+            }
             alertsCount={alerts.length}
             tool={dr.tool ? t(TOOL_TITLES[dr.tool]) : null}
             onFinishTool={finishTool}

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useRef, type KeyboardEvent, type ReactNode } from "react";
+import { useRef, type KeyboardEvent, type ReactNode, type Ref } from "react";
 import { navKey, rovingIndex } from "./keyboard";
 import s from "./SegmentedControl.module.css";
 
@@ -42,6 +42,8 @@ export type SegmentedControlProps<V extends string> = {
   idBase?: string;
   panelId?: (value: V) => string;
   className?: string;
+  /** Корневой элемент группы (замер ширины сегментов — вкладки правой панели сворачиваются в иконки). */
+  rootRef?: Ref<HTMLDivElement>;
 };
 
 /**
@@ -50,7 +52,7 @@ export type SegmentedControlProps<V extends string> = {
  * --surface-raised совпадает с --surface, поэтому он для выделения не годится).
  */
 export function SegmentedControl<V extends string>(props: SegmentedControlProps<V>) {
-  const { mode, items, value, onSelect, label, size = "md", variant = "boxed", stretch, idBase, panelId, className } = props;
+  const { mode, items, value, onSelect, label, size = "md", variant = "boxed", stretch, idBase, panelId, className, rootRef } = props;
   const refs = useRef<(HTMLElement | null)[]>([]);
   const cls = [s.group, size !== "md" ? s[size] : "", variant === "underline" ? s.underline : "", stretch ? s.stretch : "", className ?? ""].filter(Boolean).join(" ");
   const activeIndex = items.findIndex((x) => x.value === value);
@@ -122,13 +124,13 @@ export function SegmentedControl<V extends string>(props: SegmentedControlProps<
   }
   if (mode === "tabs") {
     return (
-      <div role="tablist" aria-label={label} aria-orientation="horizontal" className={cls}>
+      <div ref={rootRef} role="tablist" aria-label={label} aria-orientation="horizontal" className={cls}>
         {body}
       </div>
     );
   }
   return (
-    <div role="group" aria-label={label} className={cls}>
+    <div ref={rootRef} role="group" aria-label={label} className={cls}>
       {body}
     </div>
   );

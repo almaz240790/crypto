@@ -95,14 +95,14 @@ test("монета дешевле цента (шаг 1e-7): деления шк�
   expect(await formatWith(page, 0, 0, 0.004928)).toBe("0.0049280");
   // уровни в «Найдено» — с точностью инструмента
   const levels = page.getByRole("complementary", { name: "панель объектов" }).getByRole("list", { name: "уровни поддержки и сопротивления" });
-  await expect(levels).toContainText("сопротивление");
+  await expect(levels).toContainText("Сопротивление");
   const prices = await levels.locator("span.num").allTextContents();
   expect(prices.length).toBeGreaterThan(0);
   for (const p of prices) expect(p).toMatch(/^0\.00\d{5}(–0\.00\d{5})?$/);
   // карточка перекрестия
   const box = (await page.getByTestId("terminal").boundingBox())!;
   await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.4);
-  await expect(page.getByTestId("ohlc")).toContainText(/O\s0\.00\d{5}/);
+  await expect(page.getByTestId("ohlc")).toContainText(/Откр\s0\.00\d{5}/);
 });
 
 test("панели: фандинг в процентах с 4 знаками, OI компактно; общий для графика priceFormatter не задан", async ({ page }) => {
@@ -299,22 +299,24 @@ test("светлая тема: индикаторы и разметка пере
   expect((await overlay()).sceneVersion).toBe(version);
 });
 
-test("светлая тема: линия наложенного инструмента перекрашивается сразу, тёмной охры на белом нет", async ({ page }) => {
+test("светлая тема: линия наложенного инструмента (--text-2) перекрашивается сразу, тёмного оттенка на белом нет", async ({ page }) => {
   const calls: string[] = [];
   await mock(page, calls);
   await page.goto("/chart/BTCUSDT/4h");
   await ready(page);
   await overlayTo(page, "ETHUSDT");
-  const darkWarn = await token(page, "--warn");
+  // цвет наложения — нейтральный --text-2 (замечание критика, M19): охра — только ликвидации
+  const dark = await token(page, "--text-2");
   const lineColors = async () => (await seriesOf(page)).filter((s) => s.type === "Line" && s.len > 0).map((s) => (s.color ?? "").toLowerCase());
-  await expect.poll(lineColors).toContain(darkWarn);
+  await expect.poll(lineColors).toContain(dark);
+  expect(await lineColors()).not.toContain(await token(page, "--warn"));
   await page.evaluate(() => {
     document.documentElement.dataset.theme = "light";
   });
-  const lightWarn = await token(page, "--warn");
-  expect(lightWarn).not.toBe(darkWarn);
-  await expect.poll(lineColors).toContain(lightWarn);
-  expect(await lineColors()).not.toContain(darkWarn);
+  const light = await token(page, "--text-2");
+  expect(light).not.toBe(dark);
+  await expect.poll(lineColors).toContain(light);
+  expect(await lineColors()).not.toContain(dark);
 });
 
 test("наложение с более длинной историей: точки только на свечах монеты, сброс вида — на её последних свечах", async ({ page }) => {
@@ -324,8 +326,8 @@ test("наложение с более длинной историей: точк
   await page.goto(`/chart/${NEW_COIN}/4h`);
   await ready(page);
   await overlayTo(page, "ETHUSDT");
-  const warn = await token(page, "--warn");
-  const overlay = async () => (await seriesOf(page)).find((s) => s.type === "Line" && (s.color ?? "").toLowerCase() === warn && s.len > 0) ?? null;
+  const neutral = await token(page, "--text-2");
+  const overlay = async () => (await seriesOf(page)).find((s) => s.type === "Line" && (s.color ?? "").toLowerCase() === neutral && s.len > 0) ?? null;
   await expect.poll(async () => (await overlay())?.len ?? 0).toBeGreaterThan(0);
   // у ETHUSDT в заглушке 300 закрытых свечей, у монеты — 100: левее её первой свечи точек наложения нет
   expect((await overlay())!.first).toBe(T0 + NEW_FIRST * H4);

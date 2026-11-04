@@ -197,3 +197,131 @@ test("мультичарт: рейка и заливка высоты без п�
   const cell = (await page.getByRole("region", { name: /^график / }).first().boundingBox())!;
   expect(cell.y + cell.height).toBeGreaterThan(880);
 });
+
+/** Серии графика: тип, цвет, число точек, панель (через __chart, как в correctness-спеке). */
+const seriesOf = (page: Page) =>
+  page.evaluate(() => {
+    const chart = (document.querySelector('[data-testid="terminal"]') as HTMLElement & { __chart: { panes(): { getSeries(): { seriesType(): string; options(): { color?: string; visible?: boolean }; data(): unknown[]; priceLines(): { options(): { price: number } }[] }[] }[] } }).__chart;
+    return chart.panes().map((p, pane) => p.getSeries().map((s) => ({ pane, type: s.seriesType(), color: s.options().color ?? null, len: s.data().length, levels: s.priceLines().map((l) => l.options().price) })));
+  });
+
+test("экземпляры индикаторов: EMA 50, 21 и 200 через «Индикаторы», три линии разного цвета, после перезагрузки те же, четвёртой нет", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await open(page);
+  await page.getByRole("button", { name: /Индикаторы/ }).click();
+  const dlg = page.getByRole("dialog", { name: "Индикаторы" });
+  // по умолчанию — EMA 50; «+ ещё EMA» добавляет экземпляр со свободным периодом (20), период правится полем
+  await expect(dlg.getByLabel("Период EMA 50")).toHaveValue("50");
+  await dlg.getByRole("button", { name: "+ ещё EMA" }).click();
+  await dlg.getByLabel("Период EMA 20").fill("21");
+  await dlg.getByLabel("Период EMA 20").press("Enter");
+  await expect(dlg.getByLabel("Период EMA 21")).toHaveValue("21");
+  // третий — снова первый свободный из 20, 50, 200 (20: занят 21, а не 20); ставим 200
+  await dlg.getByRole("button", { name: "+ ещё EMA" }).click();
+  await dlg.getByLabel("Период EMA 20", { exact: true }).fill("200");
+  await dlg.getByLabel("Период EMA 20", { exact: true }).press("Enter");
+  await expect(dlg.getByLabel("Период EMA 200")).toHaveValue("200");
+  await expect(dlg.getByRole("button", { name: "+ ещё EMA" })).toBeDisabled();
+  await dlg.getByRole("button", { name: "Готово" }).click();
+  await expect(page.getByRole("button", { name: "Индикаторы (3)" })).toBeVisible();
+  const emaLines = async () => (await seriesOf(page)).flat().filter((s) => s.pane === 0 && s.type === "Line" && s.len > 0);
+  await expect.poll(async () => (await emaLines()).length).toBe(3);
+  expect(new Set((await emaLines()).map((s) => s.color)).size).toBe(3);
+  // легенда графика: строка на каждый экземпляр
+  const legend = page.getByTestId("legend");
+  for (const name of ["EMA 50", "EMA 21", "EMA 200"]) await expect(legend).toContainText(name);
+  // сохраняются экземплярами ema#1…ema#3
+  const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("pl-terminal") ?? "{}").indicators as { uid: string; params: { period: number } }[]);
+  expect(saved.map((i) => `${i.uid}:${i.params.period}`)).toEqual(["ema#1:50", "ema#2:21", "ema#3:200"]);
+  await page.reload();
+  await expect(page.getByTestId("terminal").locator("canvas").first()).toBeVisible();
+  await expect.poll(async () => (await emaLines()).length).toBe(3);
+  await expect(page.getByTestId("legend")).toContainText("EMA 21");
+  // «убрать EMA 21» в легенде
+  await page.getByTestId("legend").getByText("EMA 21").hover();
+  await page.getByRole("button", { name: "убрать EMA 21" }).click();
+  await expect.poll(async () => (await emaLines()).length).toBe(2);
+});
+
+test("панели индикаторов: RSI с уровнями 30/70 пунктиром, MACD — 0; заголовок «RSI 14»; основная панель не меньше 55 %", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.addInitScript(() => localStorage.setItem("pl-terminal", JSON.stringify({ layers_v: 5, type: "candles", indicators: [{ id: "rsi", params: { period: 14 } }, { id: "macd", params: {} }, { id: "stoch", params: {} }, { id: "cci", params: {} }], markup: { preset: "clean", overrides: {} }, panels: ["oi", "funding"], scale: "linear", overlay: null })));
+  await open(page);
+  await expect(page.getByTestId("pane-rsi")).toContainText("RSI 14");
+  await expect(page.getByTestId("pane-macd")).toContainText("MACD 12 26 9");
+  const panes = async () => (await seriesOf(page)).map((p) => p[0]?.levels ?? []);
+  await expect.poll(async () => (await panes())[1]).toEqual([30, 70]);
+  const all = await panes();
+  expect(all[2]).toEqual([0]);
+  expect(all[3]).toEqual([20, 80]);
+  expect(all[4]).toEqual([-100, 100]);
+  // шесть панелей под графиком не сжимают свечи меньше 55 % (VIEW.desktop.mainMinShare, PaneManager)
+  const share = await page.evaluate(() => {
+    const chart = (document.querySelector('[data-testid="terminal"]') as HTMLElement & { __chart: { panes(): { getHeight(): number }[] } }).__chart;
+    const h = chart.panes().map((p) => p.getHeight());
+    return h[0]! / h.reduce((a, b) => a + b, 0);
+  });
+  expect(share).toBeGreaterThanOrEqual(0.54);
+});
+
+test("«Найдено»: вкладка = Уровни + Фигуры + Паттерны, разделы, таблица уровней с «Текущая цена», вопрос — в конце", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await open(page, "/chart/BTCUSDT/4h", true);
+  const aside = page.getByRole("complementary", { name: "панель объектов" });
+  const n = (s: string) => Number(/\((\d+)\)/.exec(s)?.[1] ?? NaN);
+  const sections = aside.getByRole("tablist", { name: "разделы найденного" });
+  await expect(sections.getByRole("tab", { name: /^Уровни/ })).toHaveAttribute("aria-selected", "true");
+  await expect
+    .poll(async () => {
+      const total = n((await aside.getByRole("tab", { name: /^Найдено/ }).textContent()) ?? "");
+      const parts = await sections.getByRole("tab").allTextContents();
+      return total === parts.map(n).reduce((a, b) => a + b, 0);
+    })
+    .toBe(true);
+  const levels = aside.getByRole("list", { name: "уровни поддержки и сопротивления" });
+  await expect(levels).toContainText("Текущая цена");
+  // классы: num — только у цен, расстояние — pct
+  for (const p of await levels.locator("span.num").allTextContents()) expect(p).toMatch(/^\d[\d\s]*\.\d$/);
+  await expect(levels.locator("[class*=pct]").first()).toContainText("%");
+  // фигуры и паттерны — без многоточия
+  await sections.getByRole("tab", { name: /^Фигуры/ }).click();
+  const ellipsis = await aside.locator("li *").evaluateAll((els) => els.filter((e) => getComputedStyle(e).textOverflow === "ellipsis").length);
+  expect(ellipsis).toBe(0);
+  // вопрос о графике — последним в прокрутке панели
+  const ask = aside.getByRole("form", { name: "вопрос о графике" });
+  await expect(ask).toBeVisible();
+  const askBox = (await ask.boundingBox())!;
+  const listBox = (await aside.getByRole("list", { name: "найденные фигуры" }).boundingBox())!;
+  expect(askBox.y).toBeGreaterThan(listBox.y);
+  // гостю — одна строка со ссылкой «Войдите»
+});
+
+test("легенда графика: без рамки, «ohlc» только под перекрестием; гостю «Найдено» предлагает войти одной строкой", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await open(page);
+  const legend = page.getByTestId("legend");
+  await expect(legend).toContainText("BTCUSDT · 4ч · Binance");
+  await expect(page.getByTestId("ohlc")).toHaveCount(0);
+  expect(await legend.evaluate((el) => getComputedStyle(el).borderTopWidth)).toBe("0px");
+  const t = (await box(page, "[data-testid=terminal]"))!;
+  await page.mouse.move(t.x + t.width * 0.5, t.y + t.height * 0.4);
+  await expect(page.getByTestId("ohlc")).toContainText("Закр");
+  await page.mouse.move(t.x - 40, t.y + 10);
+  await expect(page.getByTestId("ohlc")).toHaveCount(0);
+  const aside = page.getByRole("complementary", { name: "панель объектов" });
+  await expect(aside.getByRole("link", { name: "Войдите" })).toBeVisible();
+  await expect(aside.getByLabel("текст вопроса")).toHaveCount(0);
+});
+
+for (const width of [1280, 1024]) {
+  test(`${width} px: вкладки правой панели в одну строку, ни одна не обрезана`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 800 });
+    await open(page);
+    if (width < 1280) await page.getByRole("button", { name: "Объекты" }).click();
+    const aside = page.getByRole("complementary", { name: "панель объектов" });
+    const row = aside.getByRole("tablist", { name: "вкладки панели объектов" });
+    await expect(row).toBeVisible();
+    expect(await row.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+    for (const name of [/^Найдено/, /^Рисунки/, "Слои", "Раскладки"]) await expect(row.getByRole("tab", { name })).toBeVisible();
+  });
+}
