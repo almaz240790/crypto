@@ -56,6 +56,21 @@ export function pushLatest(state: BufferState, c: Candle): BufferState {
   return { ...state, candles: over ? candles.slice(over) : candles, hasOlder: state.hasOlder || over > 0 };
 }
 
+/**
+ * Уточнение уже закрытой свечи с тем же временем (запоздавшая минута после первого тика следующего
+ * интервала, ADR-0010). Нет такой свечи — состояние то же; порядок и длина не меняются.
+ */
+export function replaceAt(state: BufferState, c: Candle): BufferState {
+  const candles = state.candles;
+  for (let i = candles.length - 1; i >= 0 && candles[i]!.time >= c.time; i--) {
+    if (candles[i]!.time !== c.time) continue;
+    const next = candles.slice();
+    next[i] = c;
+    return { ...state, candles: next };
+  }
+  return state;
+}
+
 /** Пользователь вернулся к правому краю: подменяем правую часть свежей историей. */
 export function replaceNewest(state: BufferState, newest: Candle[]): BufferState {
   const merged = sortUnique([...state.candles, ...newest]);

@@ -7,7 +7,7 @@ const SCALE_MODES: Record<ScaleMode, PriceScaleMode> = { linear: PriceScaleMode.
 /** Деление процентной шкалы так же, как PercentageFormatter LWC: знак «−» (U+2212), два знака, «%». */
 export const formatPercentTick = (p: number): string => `${p < 0 ? "−" : ""}${Math.abs(p).toFixed(2)}%`;
 const OVERLAY_SCALE = "overlay";
-import { createBuffer, EDGE, needsNewer, needsOlder, prependOlder, pushLatest, replaceNewest, type BufferState } from "./buffer";
+import { createBuffer, EDGE, needsNewer, needsOlder, prependOlder, pushLatest, replaceAt, replaceNewest, type BufferState } from "./buffer";
 import { heikinAshi } from "./heikin";
 import { LayerManager } from "./layers";
 import { INTERACTION, VIEW } from "./presets";
@@ -233,6 +233,23 @@ export class Terminal {
     }
     // наложенный инструмент — на новом наборе времён свечей (новая справа, выпавшие слева)
     if (appended || dropped) this.applyOverlay();
+  }
+
+  /**
+   * Уточнение уже закрытой свечи (то же время, не последняя) — запоздавшая закрытая минута после первого
+   * тика следующего интервала (ADR-0010). Точечно, без setData: LWC обновляет исторический бар
+   * (historicalUpdate); у Heikin Ashi пересчитываются и бары правее — они зависят от предыдущих.
+   */
+  amend(c: Candle): void {
+    const before = this.buffer;
+    this.buffer = replaceAt(before, c);
+    if (this.buffer === before) return;
+    const data = this.seriesData();
+    const vol = this.volumeData();
+    const i = data.findIndex((d) => d.time === c.time);
+    const last = data.length - 1;
+    for (let j = i; j <= (this.type === "heikin" ? last : i); j++) this.main.update(data[j] as never, j < last);
+    this.volume.update(vol[i]!, i < last);
   }
 
   /** Отдельная панель под индикатор: возвращает индекс панели. */
