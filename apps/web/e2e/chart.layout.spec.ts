@@ -795,6 +795,59 @@ test.describe("ландшафт телефона шире 900 px (932×430, па
   });
 });
 
+test.describe("ландшафт телефона 932×430, палец: легенда и окно «?» в пределах графика и экрана", () => {
+  test.use({ hasTouch: true, isMobile: true, viewport: { width: 932, height: 430 } });
+
+  const ALL = ["ema", "sma", "vwap", "supertrend", "bb", "ichimoku", "keltner", "rsi", "macd", "stoch", "atr", "volume", "cci", "obv"];
+  /** Основная панель, низ легенды и поля шкалы цены (относительно графика). */
+  const fit = (page: Page) =>
+    page.evaluate(() => {
+      const host = document.querySelector("[data-testid=terminal]") as HTMLElement & { __chart: { priceScale(id: string): { options(): { scaleMargins: { top: number; bottom: number } } }; panes(): { getHTMLElement(): HTMLElement }[] } };
+      const r0 = host.getBoundingClientRect();
+      const main = host.__chart.panes()[0]!.getHTMLElement().getBoundingClientRect();
+      const lg = document.querySelector("[data-testid=legend]")!.getBoundingClientRect();
+      return { mainBottom: main.bottom - r0.top, legendBottom: lg.bottom - r0.top, margins: host.__chart.priceScale("right").options().scaleMargins };
+    });
+
+  test("легенда не ниже основной панели: «ещё N» — в строке символа и нажимается, раскрытая прокручивается; свечам с объёмом — не меньше 60 % высоты", async ({ page }) => {
+    await page.addInitScript((v) => localStorage.setItem("pl-terminal", JSON.stringify(v)), { ...MANY_INDICATORS, indicators: ALL.map((id) => ({ id, params: {} })) });
+    await open(page);
+    const legend = page.getByTestId("legend");
+    const more = legend.getByRole("button", { name: /^ещё \d+$/ });
+    await expect(more).toBeVisible();
+    await expect(legend.locator("[class*=legendRow]")).toHaveCount(0);
+    await expect.poll(async () => (await fit(page)).margins.top).toBeGreaterThan(0.08);
+    let f = await fit(page);
+    expect(f.legendBottom).toBeLessThanOrEqual(f.mainBottom);
+    expect(1 - f.margins.top - f.margins.bottom).toBeGreaterThanOrEqual(0.6 - 1e-6);
+    // в центре «ещё N» — она сама (не строка панелей под легендой); касание раскрывает список
+    const b = (await more.boundingBox())!;
+    expect(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.closest("button")?.textContent?.trim(), { x: b.x + b.width / 2, y: b.y + b.height / 2 })).toMatch(/^ещё \d+$/);
+    await page.touchscreen.tap(b.x + b.width / 2, b.y + b.height / 2);
+    await expect(legend.getByRole("button", { name: "свернуть" })).toHaveAttribute("aria-expanded", "true");
+    expect(await legend.locator("[class*=legendRow]").count()).toBeGreaterThan(3);
+    await page.waitForTimeout(300);
+    f = await fit(page);
+    expect(f.legendBottom).toBeLessThanOrEqual(f.mainBottom);
+    // раскрытая легенда поле не растит: ложится на старые свечи, свечам — те же 60 %
+    expect(1 - f.margins.top - f.margins.bottom).toBeGreaterThanOrEqual(0.6 - 1e-6);
+  });
+
+  test("окно «?» не ниже экрана: последняя строка «Как управлять графиком» видна после прокрутки окна", async ({ page }) => {
+    await open(page);
+    await page.getByRole("button", { name: "что на графике" }).first().tap();
+    const dlg = page.getByRole("dialog", { name: "Что на графике" });
+    await expect(dlg).toBeVisible();
+    const r = await dlg.evaluate((d) => {
+      d.scrollTop = d.scrollHeight;
+      const last = d.querySelector("section[aria-label='Как управлять графиком']")!.lastElementChild!.getBoundingClientRect();
+      return { bottom: d.getBoundingClientRect().bottom, last: last.bottom, h: innerHeight };
+    });
+    expect(r.bottom).toBeLessThanOrEqual(r.h);
+    expect(r.last).toBeLessThanOrEqual(r.bottom);
+  });
+});
+
 test.describe("iPhone с сайтом на главном экране: отступ под статус-бар (--safe-top = 59 px)", () => {
   test.use({ hasTouch: true, isMobile: true });
 

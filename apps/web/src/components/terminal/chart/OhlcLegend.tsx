@@ -1,7 +1,7 @@
 "use client";
 
 import { formatCompactValue, formatSignedPercent, indicatorById, instanceColors, instanceTitle, type Candle, type ChartState, type ChartStore, type IndicatorInstance, type IndicatorValue } from "@platform/charts";
-import { memo, useMemo, useState } from "react";
+import { memo, useContext, useMemo, useState } from "react";
 import { IconButton, Popover, usePopover } from "@/components/ui";
 import { IconClose } from "@/components/ui/icons";
 import { useT } from "@/i18n/client";
@@ -10,6 +10,8 @@ import { IndicatorParams } from "../sheets/IndicatorParams";
 import { IND_COLOR_VAR } from "./ChartSurface";
 import { LegendChip, LiqUnavailableNote } from "./LegendChip";
 import { indicatorText } from "./indicatorText";
+import { legendListMax, legendRows } from "./legendFit";
+import { LegendFitContext } from "./legendFitContext";
 import { useChartStore } from "./useChartStore";
 import c from "./chart.module.css";
 
@@ -36,10 +38,11 @@ type Props = {
 export type LegendOverlay = { symbol: string; candles: readonly Candle[]; tick: string | null };
 
 /**
- * Строк индикаторов в легенде без раскрытия: остальные — за «ещё N» (как сворачивает легенду TradingView), чтобы
- * легенда не росла на пол-панели и не закрывала свечи (её высота уходит в верхнее поле шкалы цены).
+ * Строк индикаторов в легенде без раскрытия — не больше LEGEND_ROWS и сколько помещается в основную панель
+ * (legendFit): остальные — за «ещё N» (как сворачивает легенду TradingView), чтобы легенда не росла на пол-панели и не
+ * закрывала свечи (её высота уходит в верхнее поле шкалы цены). Не помещается ни одна строка — «ещё N» в строке символа.
  */
-export const LEGEND_ROWS = 3;
+export { LEGEND_ROWS } from "./legendFit";
 
 const selectCross = (s: ChartState) => s.crosshair;
 const selectValues = (s: ChartState) => s.values;
@@ -49,7 +52,8 @@ const selectValues = (s: ChartState) => s.values;
  * Строка 1 — «BTCUSDT · 4ч · Binance», «?» (что на графике) и под перекрестием «Откр Макс Мин Закр изм. Объём».
  * Ниже — экземпляры индикаторов на графике: точка цвета, «EMA 50», значение под курсором или последнее; при наведении —
  * «скрыть», «настроить» (окно «Параметры EMA 50») и «убрать». Цены — formatPrice по шагу инструмента, как в шапке.
- * data-testid — «ohlc» под перекрестием (контракт e2e: только при активном перекрестии), иначе «legend».
+ * data-testid — «ohlc» под перекрестием (контракт e2e: только при активном перекрестии), иначе «legend». Легенда не
+ * выше основной панели: строк без раскрытия — сколько помещается, раскрытый список прокручивается в её пределах.
  * Лист: читает перекрестие и значения из хранилища графика сам — TerminalShell при движении курсора не перерисовывается.
  */
 export const OhlcLegend = memo(function OhlcLegend({ store, symbol, tfLabel, exchange, tick, instances, liqLayerOn, onHide, onRemove, onParams, overlay = null, onOverlayRemove }: Props) {
@@ -57,11 +61,21 @@ export const OhlcLegend = memo(function OhlcLegend({ store, symbol, tfLabel, exc
   const cross = useChartStore(selectCross, store);
   const last = useChartStore(selectValues, store);
   const [expanded, setExpanded] = useState(false);
+  const fit = useContext(LegendFitContext);
   const values = cross?.values ?? last;
   const colors = useMemo(() => instanceColors(instances), [instances]);
   const overlays = instances.filter((i) => indicatorById(i.id)?.pane === "overlay");
-  const more = overlays.length - LEGEND_ROWS;
-  const shown = more > 0 && !expanded ? overlays.slice(0, LEGEND_ROWS) : overlays;
+  const extra = overlay ? 1 : 0;
+  const plan = legendRows(fit, overlays.length, extra);
+  const more = plan.more ? overlays.length - plan.rows : 0;
+  const shown = more > 0 && !expanded ? overlays.slice(0, plan.rows) : overlays;
+  const moreButton = more > 0 && (
+    <button type="button" className={plan.inline ? `${c.legendMore} ${c.legendMoreInline}` : c.legendMore} aria-expanded={expanded} onClick={() => setExpanded((x) => !x)}>
+      {expanded ? t("свернуть") : t("ещё {n}", { n: more })}
+    </button>
+  );
+  // раскрытый список — прокрутка в пределах основной панели (не уходит под строки панелей ниже)
+  const listStyle = expanded && more > 0 && fit ? { maxHeight: legendListMax(fit, extra, plan.inline) } : undefined;
   const k = cross?.candle;
   const px = (v: number) => formatPrice(v, tick);
   const change = k && k.open ? ((k.close - k.open) / k.open) * 100 : null;
@@ -72,6 +86,7 @@ export const OhlcLegend = memo(function OhlcLegend({ store, symbol, tfLabel, exc
           {symbol} · {tfLabel} · {exchange}
         </span>
         <LegendChip store={store} inline />
+        {plan.inline && moreButton}
         {k && (
           <span className={c.legendOhlc}>
             <Fact label={t("Откр")} value={px(k.open)} />
@@ -86,14 +101,14 @@ export const OhlcLegend = memo(function OhlcLegend({ store, symbol, tfLabel, exc
       </div>
       <LiqUnavailableNote store={store} on={liqLayerOn} inline />
       {overlay && <OverlayRow overlay={overlay} time={cross?.time ?? null} onRemove={onOverlayRemove} />}
-      {shown.map((inst) => (
-        <IndicatorRow key={inst.uid} inst={inst} color={`var(${IND_COLOR_VAR[colors.get(inst.uid) ?? "ind1"]})`} values={values} tick={tick} onHide={onHide} onRemove={onRemove} onParams={onParams} />
-      ))}
-      {more > 0 && (
-        <button type="button" className={c.legendMore} aria-expanded={expanded} onClick={() => setExpanded((x) => !x)}>
-          {expanded ? t("свернуть") : t("ещё {n}", { n: more })}
-        </button>
+      {shown.length > 0 && (
+        <div className={listStyle ? `${c.legendStack} ${c.legendStackScroll}` : c.legendStack} style={listStyle}>
+          {shown.map((inst) => (
+            <IndicatorRow key={inst.uid} inst={inst} color={`var(${IND_COLOR_VAR[colors.get(inst.uid) ?? "ind1"]})`} values={values} tick={tick} onHide={onHide} onRemove={onRemove} onParams={onParams} />
+          ))}
+        </div>
       )}
+      {!plan.inline && moreButton}
     </div>
   );
 });

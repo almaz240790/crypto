@@ -148,8 +148,9 @@
   left: 0;
   top: 30px;
   width: min(320px, calc(100vw - 32px));
-  /* с разделом «Как управлять графиком» — выше; на низком окне — прокрутка */
-  max-height: min(600px, 75vh);
+  /* с разделом «Как управлять графиком» — выше; на низком окне — прокрутка в пределах места под кнопкой «?»
+     (--dialog-room ставит LegendChip при открытии: от верха окна до низа экрана) */
+  max-height: min(600px, var(--dialog-room, 75vh));
   overflow-y: auto;
   padding: 10px 12px;
   border: 1px solid var(--border);
@@ -311,7 +312,22 @@
   opacity: 1;
 }
 
-/* «ещё N» / «свернуть»: строки индикаторов сверх LEGEND_ROWS */
+/* строки индикаторов легенды; раскрытый список длиннее панели — прокрутка в её пределах (legendFit) */
+.legendStack {
+  display: grid;
+  /* строки — своей высоты и в прокрутке (иначе ограниченная высота сжимала их, кнопки 44 px налезали на соседние) */
+  grid-auto-rows: max-content;
+  justify-items: start;
+  gap: 2px;
+}
+
+.legendStackScroll {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  pointer-events: auto;
+}
+
+/* «ещё N» / «свернуть»: строки индикаторов сверх LEGEND_ROWS и места в панели (legendFit) */
 .legendMore {
   padding: 1px 6px;
   border: 0;
@@ -366,6 +382,20 @@
 
   .legendMore {
     min-height: var(--touch-min);
+  }
+
+  /* «ещё N» в строке символа (ни одна строка индикатора не поместилась): строка не растёт до 44 px, область
+     нажатия — 44 px по высоте, как у «?» */
+  .legendMoreInline {
+    position: relative;
+    min-height: 0;
+    min-width: var(--touch-min);
+  }
+
+  .legendMoreInline::before {
+    content: "";
+    position: absolute;
+    inset: -10px 0;
   }
 }
 

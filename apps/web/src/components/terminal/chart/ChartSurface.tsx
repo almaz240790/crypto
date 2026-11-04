@@ -3,7 +3,7 @@
 import { COMPACT_FORMAT, ChartController, EMPTY_PANE_LAYOUT, FALLBACK_COLOR, INDICATOR_COLOR, INTERACTION, NONE, PERCENT_FORMAT, VIEW, alpha, commitPaneHeights, dragSeparator, instanceColors, instanceTitle, mainMinShareFor, movePaneKey, orderPaneKeys, paneLevels, planMaximized, planPanes, resolvePreset, VALUE_FORMAT, alignToCandles, tickPrecision, tokensFromElement, type AlertLine, type Candle, type ChartHandle, type ChartStore, type ChartType, type CrosshairSnapshot, type Device, type ExternalObject, type IndColor, type IndicatorInstance, type IndicatorValue, type MarkupSettings, type PaneLayout, type PanePlan, type PanelKey, type ScaleMode, type SepLimits, type Terminal, type Timeframe } from "@platform/charts";
 import { DrawingController, DrawingsPrimitive, INDICATORS, defaultParams, indicatorById, visibleOn, type Drawing, type DrawingType, type DrawingsState, type IndicatorSpec, type Layer, type LayerContext, type Point, TF_SECONDS } from "@platform/charts";
 import { LineStyle, type IPriceLine, type ISeriesApi, type PriceFormat, type UTCTimestamp } from "lightweight-charts";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Derivatives, FigureOnChart, LayersResponse, PatternOnChart } from "@/lib/chart";
 import type { LiveSource } from "@/lib/liveBar";
 import s from "../terminal.module.css";
@@ -14,6 +14,8 @@ import { LegendChip, LiqUnavailableNote } from "./LegendChip";
 import { ObjectTooltip } from "./ObjectTooltip";
 import { PaneChrome, type ChartGeo, type PaneGeo, type PaneSep, type ResizePhase } from "./PaneChrome";
 import { autoBox } from "./paneGeo";
+import { legendFit, legendTopMargin } from "./legendFit";
+import { LegendFitContext } from "./legendFitContext";
 import { MQ } from "@/lib/breakpoints";
 import c from "./chart.module.css";
 
@@ -153,8 +155,6 @@ const MOBILE_QUERY = MQ.mobile;
 /** Формат шкалы индикатора на отдельной панели: объём и OBV — компактно, остальное — значения. */
 const COMPACT_INDICATORS = new Set(["volume", "obv"]);
 const indicatorFormat = (id: string): PriceFormat => (COMPACT_INDICATORS.has(id) ? COMPACT_FORMAT : VALUE_FORMAT);
-/** Зазор между низом легенды и верхом свечей, px (верхнее поле шкалы цены — Terminal.setTopMargin). */
-const LEGEND_GAP_PX = 6;
 const NO_PATTERNS: readonly PatternOnChart[] = [];
 const NO_FIGURES: readonly FigureOnChart[] = [];
 
@@ -1046,12 +1046,15 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     return () => ro.disconnect();
   }, [hasLegend, store]);
 
-  // верхнее поле шкалы цены — под легенду (план 2B.9 §10, не больше 35 % панели): свечи не рисуются под строками
+  // верхнее поле шкалы цены — под легенду (план 2B.9 §10): не больше 35 % панели, под пальцем — 20 % (legendFit); свечи
+  // не рисуются под строками легенды без раскрытия, раскрытая ложится поверх самых старых свечей
   useLayoutEffect(() => {
     const term = termRef.current;
     if (!term || !mainBox || mainBox.h <= 0) return;
-    term.setTopMargin(legendBottom == null ? 0 : (legendBottom + LEGEND_GAP_PX) / mainBox.h);
-  }, [legendBottom, mainBox]);
+    term.setTopMargin(legendTopMargin(legendBottom, mainBox.h, coarse));
+  }, [legendBottom, mainBox, coarse]);
+  const mainH = mainBox?.h ?? 0;
+  const fit = useMemo(() => (mainH > 0 ? legendFit(mainH, coarse) : null), [mainH, coarse]);
 
   // угол графика, чип справа сверху, легенда и «A» — препятствия для подписей разметки (координаты основной панели, CSS px)
   const mainGeo = geo.panes[0];
@@ -1091,7 +1094,7 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
       {legend ? (
         // «развернуть» другую панель: основная — заголовок, легенда скрыта (иначе она легла бы на развёрнутую панель)
         <div ref={legendRef} className={c.legendHost} hidden={maximized !== null}>
-          {legend}
+          <LegendFitContext.Provider value={fit}>{legend}</LegendFitContext.Provider>
         </div>
       ) : (
         device !== "cell" && (

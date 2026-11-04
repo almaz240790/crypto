@@ -1,7 +1,7 @@
 "use client";
 
 import type { ChartState, ChartStore, LegendEntry } from "@platform/charts";
-import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useT } from "@/i18n/client";
 import { MQ, useMediaQuery } from "@/lib/breakpoints";
 import { useChartStore } from "./useChartStore";
@@ -10,6 +10,8 @@ import c from "./chart.module.css";
 const selectLegend = (s: ChartState) => s.legend;
 const selectLiqUnavailable = (s: ChartState) => s.sceneIndex?.liqUnavailable ?? false;
 const selectDevice = (s: ChartState) => s.status.device;
+/** Зазор от низа окна «?» до края экрана, px. */
+const DIALOG_EDGE_PX = 8;
 
 /**
  * Слой карты ликвидаций включён, а на этом таймфрейме её нет (покрытие OI ниже порога): короткая пометка рядом
@@ -39,7 +41,24 @@ export function LegendChip({ store, inline = false }: { store: ChartStore; inlin
   const t = useT();
   const [open, setOpen] = useState(false);
   const box = useRef<HTMLDivElement>(null);
+  const dialog = useRef<HTMLDivElement>(null);
   const id = useId();
+  const [room, setRoom] = useState<number | null>(null);
+
+  // окно «?» — не ниже экрана: высота — до низа окна браузера от его верха (на 932×430 последняя строка «Как управлять
+  // графиком» уходила за край и не прокручивалась), дальше — прокрутка внутри окна
+  useLayoutEffect(() => {
+    if (!open) return;
+    const measure = () => {
+      const el = dialog.current;
+      if (!el) return;
+      const h = window.visualViewport?.height ?? window.innerHeight;
+      setRoom(Math.max(120, Math.floor(h - el.getBoundingClientRect().top - DIALOG_EDGE_PX)));
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -63,7 +82,7 @@ export function LegendChip({ store, inline = false }: { store: ChartStore; inlin
         ?
       </button>
       {open && (
-        <div id={id} role="dialog" aria-label={t("Что на графике")} className={c.legendDialog}>
+        <div ref={dialog} id={id} role="dialog" aria-label={t("Что на графике")} className={c.legendDialog} style={room === null ? undefined : ({ "--dialog-room": `${room}px` } as CSSProperties)}>
           <strong className={c.legendHead}>{t("Что на графике")}</strong>
           <ul className={c.legendList}>
             {legend.map((e) => (
