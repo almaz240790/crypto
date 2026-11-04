@@ -67,6 +67,19 @@ describe("пачка тиков", () => {
   });
 });
 
+describe("цены у получателя (терминал, ADR-0010 — дополнение «цена с биржи»)", () => {
+  it("без пачки React: тики — в onTick, цена закрытой минуты — в onPrice; выбор источника и шапку решает терминал", () => {
+    const ticks: LiveTick[] = [];
+    const closes: [string, string][] = [];
+    const h = { onTick: (t: LiveTick) => ticks.push(t), onPrice: (s: string, p: LivePrice) => closes.push([s, p.p]) };
+    dispatchLive({ t: "tick", s: "BTCUSDT", p: "1", at: at(1) }, h, null);
+    dispatchLive({ t: "ticks", at: at(2), p: { BTCUSDT: "2" } }, h, null);
+    dispatchLive({ t: "price", s: "BTCUSDT", p: "3", at: at(3) }, h, null);
+    expect(ticks.map((t) => t.p)).toEqual(["1", "2"]);
+    expect(closes).toEqual([["BTCUSDT", "3"]]);
+  });
+});
+
 /** WebSocket браузера: close() не доставляет onclose сам (полуоткрытое соединение) — только finishClose(). */
 class FakeWS {
   static all: FakeWS[] = [];

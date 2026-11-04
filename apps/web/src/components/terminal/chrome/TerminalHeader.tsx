@@ -10,7 +10,8 @@ import { formatPct, formatPrice } from "@/lib/format";
 import { TF_LABEL } from "@/lib/timeframes";
 import type { Instrument } from "@/lib/user";
 import type { Trend } from "../state/useTrend";
-import { Countdown, FundingChip, LiveDot, TrendSlot } from "./facts";
+import type { HeaderPrice, PriceSource } from "@/lib/liveSource";
+import { Countdown, FundingChip, LiveDot, liveTitle, TrendSlot, useLivePrice } from "./facts";
 import { overflowItem, useOverflow } from "./useOverflow";
 import type { ShedStep } from "./fitByPriority";
 import c from "./chrome.module.css";
@@ -28,18 +29,23 @@ const HEADER_SHED: readonly ShedStep[] = [
 const SUMMARY_W = 400;
 
 export type HeaderFacts = {
-  price: number | null;
+  /** Живая цена (ADR-0010): шапка подписана на неё сама — терминал на тиках не перерисовывается. */
+  prices: HeaderPrice | null;
+  /** Цена без живой — закрытие последней свечи (текущей, а без неё — закрытой). */
+  fallback: number | null;
+  /** Закрытие свечи перед текущей — основа изменения, %. */
+  prevClose: number | null;
   tick: string | null;
-  /** Изменение от закрытия последней закрытой свечи, %. */
-  change: number | null;
   /** Закрытие последней закрытой свечи — то же число, что разделитель «Найдено → Уровни» (в «Сводке»). */
   lastClose: number | null;
   trend: Trend | null;
   atr: string | null;
   funding: { rate: string; next: number | null } | null;
   heikin: boolean;
-  /** «Онлайн»: тик цены за последние 5 с (ADR-0010), а не просто открытый сокет. */
+  /** «Онлайн»: цена с биржи или тик сервера за последние 5 с (ADR-0010), а не просто открытый сокет. */
   online: boolean;
+  /** Откуда цена: биржа напрямую или сервер (подсказка «онлайн»). */
+  source: PriceSource;
   /** Время открытия последней свечи (отсчёт до закрытия в «Сводке»). */
   lastTime: number | null;
 };
@@ -94,7 +100,7 @@ function useTickDirection(price: number | null): "up" | "down" | undefined {
 }
 
 /** «Сводка»: все факты шапки, в том числе спрятанные по ширине, и отсчёт до закрытия свечи. */
-function Summary(p: HeaderFacts & { tf: Timeframe }) {
+function Summary(p: Omit<HeaderFacts, "prices" | "fallback" | "prevClose"> & { tf: Timeframe; price: number | null; change: number | null }) {
   const t = useT();
   const tfLabel = t(TF_LABEL[p.tf]);
   return (
@@ -134,7 +140,7 @@ function Summary(p: HeaderFacts & { tf: Timeframe }) {
         </>
       )}
       <dt>{t("Связь")}</dt>
-      <dd title={p.online ? t("цена обновляется раз в секунду") : undefined}>{p.online ? t("онлайн") : t("без связи")}</dd>
+      <dd title={liveTitle(t, p.online, p.source)}>{p.online ? t("онлайн") : t("без связи")}</dd>
       {p.heikin && <p className={c.summaryNote}>{t("Heikin Ashi: паттерны и сигналы считаются по обычным свечам")}</p>}
     </dl>
   );
@@ -150,16 +156,17 @@ export const TerminalHeader = memo(function TerminalHeader(p: Props) {
   const t = useT();
   const path = usePathname();
   const summary = usePopover();
-  const dir = useTickDirection(p.price);
-  const priceText = formatPrice(p.price, p.tick);
+  const { price, change } = useLivePrice(p.prices, p.fallback, p.prevClose);
+  const dir = useTickDirection(price);
+  const priceText = formatPrice(price, p.tick);
   const tfLabel = t(TF_LABEL[p.tf]);
-  const changeText = formatPct(p.change);
+  const changeText = formatPct(change);
   const fundingText = p.funding ? (Number(p.funding.rate) * 100).toFixed(4) : "";
   const key = [p.symbol, p.tf, priceText.length, changeText.length, p.trend ? `${p.trend.day}${p.trend.week}` : "-", p.atr ?? "-", fundingText, p.funding?.next != null, p.heikin].join("|");
   const { ref: rowRef, fit } = useOverflow<HTMLDivElement>(HEADER_SHED, key);
-  const facts = useMemo<HeaderFacts>(
-    () => ({ price: p.price, tick: p.tick, change: p.change, lastClose: p.lastClose, trend: p.trend, atr: p.atr, funding: p.funding, heikin: p.heikin, online: p.online, lastTime: p.lastTime }),
-    [p.price, p.tick, p.change, p.lastClose, p.trend, p.atr, p.funding, p.heikin, p.online, p.lastTime],
+  const facts = useMemo(
+    () => ({ price, tick: p.tick, change, lastClose: p.lastClose, trend: p.trend, atr: p.atr, funding: p.funding, heikin: p.heikin, online: p.online, source: p.source, lastTime: p.lastTime }),
+    [price, p.tick, change, p.lastClose, p.trend, p.atr, p.funding, p.heikin, p.online, p.source, p.lastTime],
   );
   return (
     <header className={c.header} data-testid="terminal-header">
@@ -171,7 +178,7 @@ export const TerminalHeader = memo(function TerminalHeader(p: Props) {
           {priceText}
         </button>
         <span className={c.fact} title={t("Изменение от закрытия последней свечи {tf}", { tf: tfLabel })} {...overflowItem("change", fit)}>
-          <span className={c.num} data-dir={p.change == null ? undefined : p.change >= 0 ? "up" : "down"}>
+          <span className={c.num} data-dir={change == null ? undefined : change >= 0 ? "up" : "down"}>
             {changeText}
           </span>
           <span className={c.basis} data-ov-extra>
@@ -199,7 +206,7 @@ export const TerminalHeader = memo(function TerminalHeader(p: Props) {
           </span>
         )}
         <span {...overflowItem("live", fit)}>
-          <LiveDot on={p.online} />
+          <LiveDot on={p.online} source={p.source} />
         </span>
       </div>
       {p.guest && (

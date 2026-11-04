@@ -3,6 +3,7 @@
 import { countdownSeconds, formatCountdown, type Timeframe } from "@platform/charts";
 import { useEffect, useState } from "react";
 import { useT } from "@/i18n/client";
+import { useHeaderPrice, type HeaderPrice, type PriceSource } from "@/lib/liveSource";
 import type { Trend, TrendDir } from "../state/useTrend";
 import c from "./chrome.module.css";
 
@@ -63,15 +64,37 @@ export function FundingChip({ rate, next, label = true }: { rate: string; next: 
   );
 }
 
+/** Подсказка «онлайн»: откуда цена (ADR-0010, дополнение «цена с биржи»). */
+const SOURCE_TITLE: Record<PriceSource, string> = {
+  binance: "цена с биржи в реальном времени",
+  server: "цена с сервера, раз в секунду",
+};
+
+/** Подсказка состояния связи: онлайн — источник цены, без связи — undefined (текст говорит сам). */
+export function liveTitle(t: (s: string) => string, online: boolean, source: PriceSource): string | undefined {
+  return online ? t(SOURCE_TITLE[source]) : undefined;
+}
+
 /**
- * Живая цена (ADR-0010): точка (--up — онлайн: тик за последние 5 с), текст — для чтения с экрана; в подсказке —
- * что значит «онлайн».
+ * Цена шапки и изменение за свечу: живая цена (HeaderPrice — компонент подписан сам, ≤ 4 раз в секунду), без неё —
+ * закрытие последней свечи (fallback); изменение — от закрытия предыдущей свечи (prevClose).
  */
-export function LiveDot({ on }: { on: boolean }) {
+export function useLivePrice(store: HeaderPrice | null, fallback: number | null, prevClose: number | null): { price: number | null; change: number | null } {
+  const live = useHeaderPrice(store);
+  const price = live != null ? Number(live) : fallback;
+  const change = price != null && prevClose ? ((price - prevClose) / prevClose) * 100 : null;
+  return { price, change };
+}
+
+/**
+ * Живая цена (ADR-0010): точка (--up — онлайн: цена с биржи или тик сервера за последние 5 с), текст — для чтения с
+ * экрана; в подсказке — откуда цена.
+ */
+export function LiveDot({ on, source }: { on: boolean; source: PriceSource }) {
   const t = useT();
   const text = on ? t("онлайн") : t("без связи");
   return (
-    <span className={c.live} data-on={on || undefined} title={on ? t("цена обновляется раз в секунду") : text}>
+    <span className={c.live} data-on={on || undefined} data-source={on ? source : undefined} title={liveTitle(t, on, source) ?? text}>
       {/* e2e ищут «онлайн» в группе «состояние»: текст для чтения с экрана, не удалять */}
       <span className="sr-only">{text}</span>
     </span>

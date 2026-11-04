@@ -8,6 +8,7 @@ import { formatPct, formatPrice } from "@/lib/format";
 import { INTRADAY, TF_LABEL, TIMEFRAMES } from "@/lib/timeframes";
 import type { Instrument } from "@/lib/user";
 import type { HeaderFacts } from "./TerminalHeader";
+import { liveTitle, useLivePrice } from "./facts";
 import { SCALE_LABEL, TYPE_LABEL } from "./labels";
 import s from "../terminal.module.css";
 
@@ -94,13 +95,14 @@ export function PhoneStrip(p: HeaderFacts & { tf: Timeframe }) {
   }, []);
   // до закрытия идущего интервала: на 1m последняя свеча уже закрыта, и отсчёт от неё был бы «0:00»
   const countdown = p.lastTime == null ? null : countdownSeconds(p.tf, p.lastTime, now);
+  const { price, change } = useLivePrice(p.prices, p.fallback, p.prevClose);
   const trend = p.trend;
   return (
     <div className={s.strip} aria-label={t("состояние")}>
       <span>
-        {t("цена")} <strong>{formatPrice(p.price == null ? null : String(p.price), p.tick)}</strong>
+        {t("цена")} <strong>{formatPrice(price == null ? null : String(price), p.tick)}</strong>
       </span>
-      <span className={p.change == null ? "" : p.change >= 0 ? "up" : "down"}>{formatPct(p.change)}</span>
+      <span className={change == null ? "" : change >= 0 ? "up" : "down"}>{formatPct(change)}</span>
       <span>
         {t("до закрытия")} <strong>{countdown == null ? "—" : formatCountdown(countdown, t("{d}д {hm}"))}</strong>
       </span>
@@ -109,7 +111,7 @@ export function PhoneStrip(p: HeaderFacts & { tf: Timeframe }) {
           {t("Тренд")}: {t("день")} <strong className={TREND_TONE[trend.day] ?? ""}>{t(TREND_WORD[trend.day] ?? trend.day)}</strong> · {t("неделя")} <strong className={TREND_TONE[trend.week] ?? ""}>{t(TREND_WORD[trend.week] ?? trend.week)}</strong>
         </span>
       )}
-      <span className={`caption ${s.live}`} data-on={p.online || undefined} title={p.online ? t("цена обновляется раз в секунду") : undefined}>
+      <span className={`caption ${s.live}`} data-on={p.online || undefined} data-source={p.online ? p.source : undefined} title={liveTitle(t, p.online, p.source)}>
         {p.online ? t("онлайн") : t("без связи")}
       </span>
       {p.heikin && <span className="caption">{t("Heikin Ashi: паттерны и сигналы считаются по обычным свечам")}</span>}

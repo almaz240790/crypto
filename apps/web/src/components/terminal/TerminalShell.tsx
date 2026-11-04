@@ -181,15 +181,21 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
   }, [overlaySymbol, tf]);
   const last = data.current ?? data.candles?.[data.candles.length - 1] ?? null;
   const prevClose = data.candles && data.candles.length > 1 ? data.candles[data.candles.length - (data.current ? 1 : 2)]!.close : null;
-  const price = data.price ? Number(data.price) : last?.close ?? null;
-  const change = price != null && prevClose ? ((price - prevClose) / prevClose) * 100 : null;
-  // черновик алерта — с ценой на момент открытия; обработчик стабилен (тулбар в memo не перерисовывается на тиках)
-  const priceRef = useRef(price);
+  // цена шапки — живая (data.prices: шапка подписана сама, терминал на тиках не перерисовывается), без неё — закрытие
+  // последней свечи; обработчики берут самую свежую на момент действия
+  const fallback = last?.close ?? null;
+  const fallbackRef = useRef(fallback);
   useLayoutEffect(() => {
-    priceRef.current = price;
+    fallbackRef.current = fallback;
   });
+  const livePrices = data.prices;
+  const priceNow = useCallback(() => {
+    const p = livePrices.now();
+    return p != null ? Number(p) : fallbackRef.current;
+  }, [livePrices]);
   const tick = data.tick;
-  const openAlert = useCallback(() => resetDraft(priceRef.current, tick), [resetDraft, tick]);
+  // черновик алерта — с ценой на момент открытия; обработчик стабилен (тулбар в memo не перерисовывается на тиках)
+  const openAlert = useCallback(() => resetDraft(priceNow(), tick), [resetDraft, priceNow, tick]);
   const openAlertSheet = () => {
     openAlert();
     setSheet("alert");
@@ -205,11 +211,13 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
   // алерт на цене уровня: направление — от текущей цены к уровню, цена — по шагу инструмента
   const alertOnLevel = (d: Drawing) => {
     const p = d.points[0]!.price;
+    const price = priceNow();
     addPriceAlert(alertPriceText(p, data.tick), price != null && price < p ? "cross_up" : "cross_down", undefined, d.id);
   };
   // копия рисунка на другой инструмент (план 2A.5): цены пропорционально последней цене цели
   const copyDrawing = async (id: string, target: string) => {
     let ratio = 1;
+    const price = priceNow();
     try {
       const r = await getCandles(target, tf);
       const lastClose = Number((r.current ?? r.candles[r.candles.length - 1])?.c);
@@ -281,7 +289,7 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
   const fundingRate = data.derivatives?.funding_current ?? null;
   const fundingNext = data.derivatives?.next_funding_t ?? null;
   const funding = useMemo(() => (fundingRate ? { rate: fundingRate, next: fundingNext } : null), [fundingRate, fundingNext]);
-  const facts: HeaderFacts = { price, tick: data.tick, change, lastClose, trend, atr: data.layers?.structure?.atr ?? null, funding, heikin: st.type === "heikin", online: data.online, lastTime: last?.time ?? null };
+  const facts: HeaderFacts = { prices: data.prices, fallback, prevClose, tick: data.tick, lastClose, trend, atr: data.layers?.structure?.atr ?? null, funding, heikin: st.type === "heikin", online: data.online, source: data.source, lastTime: last?.time ?? null };
   const zoom = useCallback((f: number) => controls.current?.zoom(f), []);
   const reset = useCallback(() => controls.current?.reset(), []);
   const syncText = user && dr.sync !== "off" ? (dr.sync === "ok" ? t("синхронизировано") : dr.sync === "queued" ? t("в очереди") : t("ошибка синхронизации")) : null;

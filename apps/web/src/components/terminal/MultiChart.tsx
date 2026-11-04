@@ -9,6 +9,7 @@ import { Button, EmptyState, Menu, SegmentedControl, Select, Tooltip, type MenuI
 import { IconChevronDown, IconInfo, IconLayers } from "@/components/ui/icons";
 import { getAccessToken } from "@/lib/auth-client";
 import { formatPrice } from "@/lib/format";
+import type { HeaderPrice } from "@/lib/liveSource";
 import { INTRADAY, TF_LABEL, TIMEFRAMES } from "@/lib/timeframes";
 import { getInstruments, type Instrument } from "@/lib/user";
 import s from "./terminal.module.css";
@@ -17,6 +18,7 @@ import { useChartStore } from "./chart/useChartStore";
 import { presetNote, presetTitle } from "./MarkupPicker";
 import { MARKUP_MENU_MAX } from "./chrome/MarkupMenu";
 import { SymbolPicker } from "./chrome/TerminalHeader";
+import { useLivePrice } from "./chrome/facts";
 import { useTerminalData } from "./useTerminalData";
 import { useT } from "@/i18n/client";
 import { MQ } from "@/lib/breakpoints";
@@ -56,10 +58,11 @@ function load(): Saved {
 
 const selectCross = (st: ChartState) => st.crosshair;
 
-/** Цена ячейки (лист): под перекрестием — открытие и закрытие свечи, иначе последняя цена. */
-function CellPrice({ store, price, tick, error }: { store: ChartStore; price: number | null; tick: string | null; error: boolean }) {
+/** Цена ячейки (лист): под перекрестием — открытие и закрытие свечи, иначе последняя цена (живая — подписка ячейки сама). */
+function CellPrice({ store, prices, fallback, tick, error }: { store: ChartStore; prices: HeaderPrice; fallback: number | null; tick: string | null; error: boolean }) {
   const t = useT();
   const cross = useChartStore(selectCross, store);
+  const { price } = useLivePrice(prices, fallback, null);
   const text = cross ? `${t("Откр")} ${formatPrice(cross.candle.open, tick)} ${t("Закр")} ${formatPrice(cross.candle.close, tick)}` : price != null ? formatPrice(price, tick) : error ? t("нет данных") : "…";
   return <span className={`num ${s.multiPrice}`}>{text}</span>;
 }
@@ -69,7 +72,6 @@ function ChartCell({ cell, instruments, authed, markup, onChange }: { cell: Cell
   const data = useTerminalData(cell.symbol, cell.tf, authed ? getAccessToken() : null);
   const [store] = useState(createChartStore);
   const last = data.current ?? data.candles?.[data.candles.length - 1] ?? null;
-  const price = data.price ? Number(data.price) : last?.close ?? null;
   const tfs = TIMEFRAMES.filter((x) => authed || !INTRADAY.includes(x));
   return (
     <section className={s.multiCell} aria-label={t("график {symbol} {tf}", { symbol: cell.symbol, tf: cell.tf })}>
@@ -84,7 +86,7 @@ function ChartCell({ cell, instruments, authed, markup, onChange }: { cell: Cell
             ))}
           </Select>
         </span>
-        <CellPrice store={store} price={price} tick={data.tick} error={!!data.error} />
+        <CellPrice store={store} prices={data.prices} fallback={last?.close ?? null} tick={data.tick} error={!!data.error} />
         <Link href={`/chart/${cell.symbol}/${cell.tf}`} prefetch={false} className={s.multiOpen}>
           {t("открыть в терминале")}
         </Link>

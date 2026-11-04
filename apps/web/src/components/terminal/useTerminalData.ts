@@ -3,8 +3,10 @@
 import type { Candle, LiveStep, Timeframe } from "@platform/charts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FIGURE_TFS, getCandles, getDerivatives, getFigures, getLayers, getPatterns, toCandle, type CandlesResponse, type Derivatives, type FiguresResponse, type LayersResponse, type PatternsResponse } from "@/lib/chart";
+import { binanceFeed } from "@/lib/binanceFeed";
 import { CatchUpGate, LiveBar, type CatchUpResult } from "@/lib/liveBar";
-import { useLive, type LiveCandle, type LiveTick, type ResyncReason } from "@/lib/useLive";
+import { HeaderPrice, LiveMux, type PriceSource } from "@/lib/liveSource";
+import { useLive, type ResyncReason } from "@/lib/useLive";
 
 /**
  * Текущая свеча в состоянии React (индикаторы, отсчёт) — не чаще этого; график получает каждое событие
@@ -31,8 +33,9 @@ const mergePatterns = (prev: PatternsResponse | null, next: PatternsResponse): P
 
 /**
  * Свечи инструмента/таймфрейма: первая порция, подгрузка влево и живая свеча (план 2A.3, 2A.7; ADR-0003, ADR-0010).
- * Единственный источник правды — LiveBar: тики раз в секунду, формирующаяся и закрытые минуты сворачиваются его
- * автоматом и сразу уходят графику; история React — его закрытые свечи. Догон правого края — одна очередь
+ * Единственный источник правды — LiveBar: сделки и минуты с биржи напрямую (BinanceFeed) или, пока биржа недоступна
+ * или молчит, тики раз в секунду и минуты сервера (выбор — LiveMux) сворачиваются его автоматом и сразу уходят графику;
+ * история React — его закрытые свечи, цена шапки — HeaderPrice (шапка подписана сама). Догон правого края — одна очередь
  * (CatchUpGate) на все поводы: сокет открыт заново, вкладка видна при неоткрытом сокете (useLive), пропуск в
  * событиях (gap автомата), просрочка (новой свечи нет дольше закрытия + LIVE_GRACE_S — продовый баг: после фона на
  * iPhone график стоял на свече получасовой давности при «онлайн»). Новая закрытая свеча после догона — слои,
@@ -48,11 +51,16 @@ export function useTerminalData(symbol: string, tf: Timeframe, token: string | n
   const [figures, setFigures] = useState<FiguresResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tick, setTick] = useState<string | null>(null);
-  /** Время сервера последней порции истории, unix с (0 — неизвестно): цена из WebSocket не новее её — в шапке цена свечи. */
-  const [restAt, setRestAt] = useState(0);
+  /** Биржа — основной источник цены символа (данные за последние 5 с). */
+  const [binanceOn, setBinanceOn] = useState(false);
   const loadingOlder = useRef(false);
   // живая свеча — своя на инструмент и таймфрейм; события до загрузки свечей копятся в ней
   const live = useMemo(() => new LiveBar(symbol, tf), [symbol, tf]);
+  // цена шапки — своя у каждой живой свечи; время сервера последней порции истории (restAt) — цена не новее его в шапке
+  // не показывается
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- новая цена вместе с live
+  const prices = useMemo(() => new HeaderPrice(), [live]);
+  useEffect(() => () => prices.dispose(), [prices]);
   /** Поколение загрузки: ответ для прошлого инструмента или таймфрейма отбрасывается. */
   const genRef = useRef(0);
   /** since первой порции — для паттернов и фигур при догоне. */
@@ -94,7 +102,7 @@ export function useTerminalData(symbol: string, tf: Timeframe, token: string | n
     const at = serverTime(r);
     const lastBefore = live.closed.at(-1)?.time;
     const ev = live.catchUp(closed, cur, r.through, at, r.has_older);
-    setRestAt(at ?? 0);
+    prices.setRestAt(at ?? 0);
     if (ev) {
       setCandles(live.closed);
       setCurrent(live.bar);
@@ -107,7 +115,7 @@ export function useTerminalData(symbol: string, tf: Timeframe, token: string | n
     const due = live.dueAt(LIVE_GRACE_S);
     // ответ старее потока с дырами — ещё один догон (CatchUpGate: ровно один повтор)
     return { late: due !== null && due * 1000 <= Date.now(), again: live.takeResync() };
-  }, [live, symbol, tf, refreshDerived]);
+  }, [live, symbol, tf, refreshDerived, prices]);
   // очередь догона — своя у каждой живой свечи (инструмент, таймфрейм)
   // eslint-disable-next-line react-hooks/exhaustive-deps -- новая очередь вместе с live
   const gate = useMemo(() => new CatchUpGate(), [live]);
@@ -135,7 +143,7 @@ export function useTerminalData(symbol: string, tf: Timeframe, token: string | n
         setCandles(history);
         setHasOlder(r.has_older);
         setTick(r.tick_size);
-        setRestAt(at ?? 0);
+        prices.setRestAt(at ?? 0);
         sinceRef.current = closed[0]?.time;
         setCurrent(live.bar);
         getPatterns(symbol, tf, closed[0]?.time)
@@ -160,7 +168,7 @@ export function useTerminalData(symbol: string, tf: Timeframe, token: string | n
       if (currentTimer.current) clearTimeout(currentTimer.current);
       currentTimer.current = null;
     };
-  }, [symbol, tf, live, gate, catchUp]);
+  }, [symbol, tf, live, gate, catchUp, prices]);
 
   const loadOlder = useCallback(
     async (before: number) => {
@@ -203,9 +211,14 @@ export function useTerminalData(symbol: string, tf: Timeframe, token: string | n
     [live, gate, catchUp],
   );
 
-  const onTick = useCallback((m: LiveTick) => onStep(live.tick(m)), [live, onStep]);
-  const onForming = useCallback((m: LiveCandle) => onStep(live.forming(m)), [live, onStep]);
-  const onCandle = useCallback((m: LiveCandle) => onStep(live.candle(m)), [live, onStep]);
+  // источник событий символа: биржа, пока свежа, иначе сервер — в тот же LiveBar (ADR-0010, дополнение)
+  const mux = useMemo(() => new LiveMux(symbol, live, () => binanceFeed()?.isFresh(symbol) ?? false), [symbol, live]);
+  useEffect(() => {
+    mux.attach({ step: onStep, price: (p) => prices.push(p), source: (s) => setBinanceOn(s === "binance") });
+    return () => mux.attach(null);
+  }, [mux, onStep, prices]);
+  // одно соединение с биржей на страницу: символ терминала и ячеек мультичарта; смена символа — SUBSCRIBE/UNSUBSCRIBE
+  useEffect(() => binanceFeed()?.subscribe(symbol, mux.binance), [symbol, mux]);
   // сокет открыт заново или вкладка видна при неоткрытом сокете (решает LiveSocket.wake) — догон; до загрузки свечей —
   // сразу после неё (ответ мог быть прочитан до обрыва)
   const onResync = useCallback(
@@ -216,7 +229,8 @@ export function useTerminalData(symbol: string, tf: Timeframe, token: string | n
     [live, gate, catchUp],
   );
 
-  const { prices, connected, online, resyncPending } = useLive([symbol], token, { onTick, onForming, onCandle, onResync });
+  // сокет сервера — всегда: сигналы, статусы и запасной источник цены; цены в состояние React не копит (шапка — prices)
+  const { connected, online: serverOnline, resyncPending } = useLive([symbol], token, { onTick: mux.serverTick, onForming: mux.serverForming, onCandle: mux.serverCandle, onPrice: mux.serverPrice, onResync }, { prices: false });
 
   // просрочка: новой свечи нет дольше закрытия текущей (или следующей минуты на 1m) — догон, пока вкладка видна; пока
   // открывается сокет, сменивший прежний (возврат с полуоткрытым сокетом), — ждём: его открытие и есть догон
@@ -229,9 +243,8 @@ export function useTerminalData(symbol: string, tf: Timeframe, token: string | n
     return () => clearInterval(timer);
   }, [live, gate, catchUp, resyncPending]);
 
-  // цена из WebSocket — если она новее последней порции истории; иначе шапка берёт закрытие последней свечи
-  const lp = prices[symbol];
-  const liveAt = lp ? Date.parse(lp.at) / 1000 : Number.NaN;
-  const price = lp && !(liveAt <= restAt) ? lp.p : null;
-  return { candles, current, hasOlder, layers, derivatives, patterns, figures, error, tick, loadOlder, price, connected, online, live };
+  // «онлайн» — цена живая из любого источника; подсказка говорит, из какого
+  const online = serverOnline || binanceOn;
+  const source: PriceSource = binanceOn ? "binance" : "server";
+  return { candles, current, hasOlder, layers, derivatives, patterns, figures, error, tick, loadOlder, prices, connected, online, source, live };
 }

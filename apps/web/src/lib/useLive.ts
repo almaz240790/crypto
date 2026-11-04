@@ -38,6 +38,8 @@ export type LiveHandlers = {
   onCandle?: (c: LiveCandle) => void;
   onForming?: (c: LiveCandle) => void;
   onTick?: (t: LiveTick) => void;
+  /** Цена закрытой минуты (`price`). */
+  onPrice?: (s: string, p: LivePrice) => void;
   onResync?: (reason: ResyncReason) => void;
 };
 
@@ -124,18 +126,23 @@ export class PriceBatch {
   }
 }
 
-/** Сообщение сервера — в цены (пачкой для React) и колбэки; пачка тиков раскладывается по символам. */
-export function dispatchLive(m: LiveMsg, h: LiveHandlers, prices: PriceBatch): void {
+/**
+ * Сообщение сервера — в цены (пачкой для React; null — цены держит сам получатель, терминал) и колбэки; пачка тиков
+ * раскладывается по символам.
+ */
+export function dispatchLive(m: LiveMsg, h: LiveHandlers, prices: PriceBatch | null): void {
   if (m.t === "tick") {
-    prices.push(m.s, { p: m.p, at: m.at });
+    prices?.push(m.s, { p: m.p, at: m.at });
     h.onTick?.(m);
   } else if (m.t === "ticks") {
     for (const [s, p] of Object.entries(m.p ?? {})) {
-      prices.push(s, { p, at: m.at });
+      prices?.push(s, { p, at: m.at });
       h.onTick?.({ s, p, at: m.at });
     }
-  } else if (m.t === "price") prices.push(m.s, { p: m.p, at: m.at });
-  else if (m.t === "signal") h.onSignal?.(m);
+  } else if (m.t === "price") {
+    prices?.push(m.s, { p: m.p, at: m.at });
+    h.onPrice?.(m.s, { p: m.p, at: m.at });
+  } else if (m.t === "signal") h.onSignal?.(m);
   else if (m.t === "candle") h.onCandle?.(m);
   else if (m.t === "forming") h.onForming?.(m);
 }
@@ -353,7 +360,11 @@ async function wsBase(): Promise<string> {
   }
 }
 
-export function useLive(symbols: string[], token: string | null, handlers: LiveHandlers = {}) {
+/**
+ * opts.prices = false — цены в состояние React не копятся (терминал держит цену шапки сам — HeaderPrice, источник —
+ * биржа или сервер, liveSource.ts): тики только в колбэки, и сервер не перерисовывает терминал раз в секунду.
+ */
+export function useLive(symbols: string[], token: string | null, handlers: LiveHandlers = {}, opts: { prices?: boolean } = {}) {
   const [prices, setPrices] = useState<Record<string, LivePrice>>({});
   const [connected, setConnected] = useState(false);
   const [online, setOnline] = useState(false);
@@ -364,9 +375,10 @@ export function useLive(symbols: string[], token: string | null, handlers: LiveH
     handlersRef.current = handlers;
   });
   const key = symbols.slice().sort().join(",");
+  const keepPrices = opts.prices !== false;
 
   useEffect(() => {
-    const batch = new PriceBatch((b) => setPrices((prev) => mergePrices(prev, b)));
+    const batch = keepPrices ? new PriceBatch((b) => setPrices((prev) => mergePrices(prev, b))) : null;
     let base: Promise<string> | null = null;
     const sock = new LiveSocket({
       url: async () => {
@@ -385,10 +397,10 @@ export function useLive(symbols: string[], token: string | null, handlers: LiveH
     sock.start();
     return () => {
       sock.stop();
-      batch.dispose();
+      batch?.dispose();
       if (sockRef.current === sock) sockRef.current = null;
     };
-  }, [token]);
+  }, [token, keepPrices]);
 
   useEffect(() => {
     symsRef.current = key ? key.split(",") : [];
