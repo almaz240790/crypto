@@ -87,6 +87,11 @@
   z-index: 3;
 }
 
+/* телефон: открытое окно «?» — поверх заголовков панелей */
+.legendBox:has([aria-expanded="true"]) {
+  z-index: 9;
+}
+
 /* пометка «карты ликвидаций нет на этом таймфрейме» — справа от «?», в верхнем отступе панели цены */
 .liqNote {
   position: absolute;
@@ -143,7 +148,8 @@
   left: 0;
   top: 30px;
   width: min(320px, calc(100vw - 32px));
-  max-height: min(420px, 70vh);
+  /* с разделом «Как управлять графиком» — выше; на низком окне — прокрутка */
+  max-height: min(600px, 75vh);
   overflow-y: auto;
   padding: 10px 12px;
   border: 1px solid var(--border);
@@ -167,7 +173,8 @@
   list-style: none;
 }
 
-.legendRow {
+/* строка окна «?» (своё имя: .legendRow ниже — строка легенды графика, flex — ломала сетку окна) */
+.legendItem {
   display: grid;
   grid-template-columns: 24px 1fr;
   column-gap: 8px;
@@ -201,6 +208,11 @@
   max-width: 60%;
   /* график под легендой продолжает получать курсор; кнопки и строки индикаторов — нет */
   pointer-events: none;
+}
+
+/* открытое окно «?» — поверх заголовков и границ панелей под графиком */
+.legendHost:has([aria-expanded="true"]) {
+  z-index: 9;
 }
 
 .legend {

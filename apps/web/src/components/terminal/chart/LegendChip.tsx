@@ -66,7 +66,7 @@ export function LegendChip({ store, inline = false }: { store: ChartStore; inlin
           <strong className={c.legendHead}>{t("Что на графике")}</strong>
           <ul className={c.legendList}>
             {legend.map((e) => (
-              <li key={e.key} className={c.legendRow} data-key={e.key}>
+              <li key={e.key} className={c.legendItem} data-key={e.key}>
                 <Sample entry={e} />
                 <span className={c.legendWord}>{e.text}</span>
                 <span className={c.legendExplain}>{e.explain}</span>
