@@ -74,6 +74,9 @@ type Ctx = CanvasRenderingContext2D;
 /** Плашка под подписью уровня: высота строки 11 px моноширинным и непрозрачность фона. */
 const LABEL_PLAQUE_H = 14;
 const LABEL_PLAQUE_ALPHA = 0.85;
+/** Подпись от x: плашка — с x + 2 до конца текста + 2, текст — с x + 4 (label). */
+const LABEL_TEXT_DX = 4;
+const LABEL_PLAQUE_DX = 2;
 
 class Renderer implements IPrimitivePaneRenderer {
   constructor(
@@ -107,16 +110,35 @@ class Renderer implements IPrimitivePaneRenderer {
     ctx.setLineDash(d.style.dashed ? [6, 4] : []);
   }
 
+  private font(strong = false): string {
+    return `${strong ? "600 " : ""}11px ${this.tokens.fontMono}`;
+  }
+
   private label(ctx: Ctx, text: string, x: number, y: number, color: string, opts: { plaque?: boolean; strong?: boolean } = {}): void {
-    ctx.font = `${opts.strong ? "600 " : ""}11px ${this.tokens.fontMono}`;
+    ctx.font = this.font(opts.strong);
     ctx.textBaseline = "bottom";
     if (opts.plaque) {
       // плашка цвета фона под подписью: читается поверх свечей в обеих темах
       ctx.fillStyle = alpha(this.tokens.surface, LABEL_PLAQUE_ALPHA);
-      ctx.fillRect(x + 2, y - 3 - LABEL_PLAQUE_H, ctx.measureText(text).width + 4, LABEL_PLAQUE_H);
+      ctx.fillRect(x + LABEL_PLAQUE_DX, y - 3 - LABEL_PLAQUE_H, ctx.measureText(text).width + 2 * LABEL_PLAQUE_DX, LABEL_PLAQUE_H);
     }
     ctx.fillStyle = color;
-    ctx.fillText(text, x + 4, y - 3);
+    ctx.fillText(text, x + LABEL_TEXT_DX, y - 3);
+  }
+
+  /**
+   * Где начать подпись уровня Фибоначчи (x для label): справа от рисунка; не помещается до края панели (правый
+   * конец — у последней свечи, подпись ушла бы под шкалу цены) — внутри рисунка у правого края, а если рисунок уже
+   * подписи — слева от него; в крайнем случае — у края панели.
+   */
+  private fibLabelX(ctx: Ctx, text: string, strong: boolean, left: number, right: number, width: number): number {
+    ctx.font = this.font(strong);
+    // от x до конца плашки: отступ текста, текст, поле плашки справа
+    const span = LABEL_TEXT_DX + ctx.measureText(text).width + LABEL_PLAQUE_DX;
+    if (right + span <= width) return right;
+    if (right - left >= span + LABEL_TEXT_DX) return right - span - LABEL_TEXT_DX + LABEL_PLAQUE_DX;
+    if (left - span - LABEL_PLAQUE_DX >= 0) return left - span - LABEL_PLAQUE_DX;
+    return Math.max(0, width - span);
   }
 
   private pts(d: Drawing): { x: number; y: number }[] | null {
@@ -209,7 +231,8 @@ class Renderer implements IPrimitivePaneRenderer {
           ctx.setLineDash(solid ? [] : [4, 3]);
           line(ctx, left, y, right, y);
           ctx.globalAlpha = 1;
-          this.label(ctx, `${level} · ${formatDrawingPrice(price, this.precision)}`, right, y, color, { plaque: true, strong: key });
+          const text = `${level} · ${formatDrawingPrice(price, this.precision)}`;
+          this.label(ctx, text, this.fibLabelX(ctx, text, key, left, right, width), y, color, { plaque: true, strong: key });
         }
         break;
       }

@@ -160,8 +160,9 @@ describe("автомасштаб цены", () => {
 /** Холст-подделка: записывает линии (цвет, прозрачность, толщина, пунктир), подписи и плашки. */
 function canvas() {
   const strokes: { style: string; alpha: number; width: number; dash: number[]; y0: number; y1: number }[] = [];
-  const texts: { text: string; fill: string; font: string }[] = [];
+  const texts: { text: string; fill: string; font: string; x: number; w: number }[] = [];
   const rects: string[] = [];
+  const boxes: { fill: string; x: number; w: number }[] = [];
   let path: { x: number; y: number }[] = [];
   let dash: number[] = [];
   const st = { strokeStyle: "", fillStyle: "", lineWidth: 1, globalAlpha: 1, font: "", textBaseline: "" };
@@ -178,16 +179,21 @@ function canvas() {
     moveTo: (x: number, y: number) => path.push({ x, y }),
     lineTo: (x: number, y: number) => path.push({ x, y }),
     stroke: () => strokes.push({ style: st.strokeStyle, alpha: st.globalAlpha, width: st.lineWidth, dash: [...dash], y0: path[0]?.y ?? NaN, y1: path[1]?.y ?? NaN }),
-    fillText: (text: string) => texts.push({ text, fill: st.fillStyle, font: st.font }),
-    fillRect: () => rects.push(st.fillStyle),
+    fillText: (text: string, x: number) => texts.push({ text, fill: st.fillStyle, font: st.font, x, w: text.length * 6 }),
+    fillRect: (x: number, _y: number, w: number) => {
+      rects.push(st.fillStyle);
+      boxes.push({ fill: st.fillStyle, x, w });
+    },
     strokeRect: () => undefined,
     measureText: (t: string) => ({ width: t.length * 6 }),
     arc: () => undefined,
     fill: () => undefined,
     closePath: () => undefined,
   });
-  return { ctx, strokes, texts, rects };
+  return { ctx, strokes, texts, rects, boxes };
 }
+
+const PANE_W = 800;
 
 function render(drawings: Drawing[]) {
   const candles = bars(60);
@@ -197,7 +203,7 @@ function render(drawings: Drawing[]) {
   prim.projector!.setBars(candles.map((c) => c.time), H);
   prim.update({ drawings });
   const c = canvas();
-  prim.paneViews()[0]!.renderer()!.draw({ useMediaCoordinateSpace: (cb: (s: unknown) => void) => cb({ context: c.ctx, mediaSize: { width: 800, height: 400 } }) } as never);
+  prim.paneViews()[0]!.renderer()!.draw({ useMediaCoordinateSpace: (cb: (s: unknown) => void) => cb({ context: c.ctx, mediaSize: { width: PANE_W, height: 400 } }) } as never);
   return c;
 }
 
@@ -227,6 +233,33 @@ describe("Фибоначчи и цвет рисунков по умолчани�
     expect(labels.find((t) => t.text.startsWith("0.618 · "))!.font).toMatch(/^600 /);
     expect(labels.find((t) => t.text.startsWith("0.236 · "))!.font).not.toMatch(/^600 /);
     expect(new Set(c.rects)).toEqual(new Set([alpha(TOKENS.surface, 0.85)]));
+  });
+
+  it("подписи уровней не уходят под шкалу цены: правый конец у края панели — подпись внутри рисунка, узкий — слева", () => {
+    // шкала времени подделки: 0…110 логических на 800 px — свеча 108 у самого правого края
+    const at = (i: number) => T0 + i * H;
+    const inside = (c: ReturnType<typeof canvas>) => {
+      const labels = c.texts.filter((t) => / · /.test(t.text));
+      expect(labels).toHaveLength(10);
+      for (const t of labels) {
+        expect(t.x, t.text).toBeGreaterThanOrEqual(0);
+        expect(t.x + t.w, t.text).toBeLessThanOrEqual(PANE_W);
+      }
+      for (const b of c.boxes) expect(b.x + b.w).toBeLessThanOrEqual(PANE_W);
+      return labels;
+    };
+    const wide = inside(render([{ ...fib("text2"), points: [{ time: at(60), price: 120 }, { time: at(108), price: 80 }] }]));
+    // внутри рисунка: конец подписи — левее правого конца
+    const series = makeEnv(() => bars(60)).chart.timeScale();
+    const right = series.logicalToCoordinate(108);
+    for (const t of wide) expect(t.x + t.w).toBeLessThanOrEqual(right);
+    // узкий у края: подписи слева от левого конца
+    const narrow = inside(render([{ ...fib("text2"), points: [{ time: at(104), price: 120 }, { time: at(108), price: 80 }] }]));
+    const left = series.logicalToCoordinate(104);
+    for (const t of narrow) expect(t.x + t.w).toBeLessThanOrEqual(left);
+    // место справа есть — подписи справа, как раньше
+    const free = render([fib("text2")]).texts.filter((t) => / · /.test(t.text));
+    for (const t of free) expect(t.x).toBeGreaterThan(series.logicalToCoordinate(40));
   });
 
   it("прежний цвет по умолчанию (accent) рисуется нейтральным; выбранный цвет — как есть", () => {
