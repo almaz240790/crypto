@@ -92,7 +92,8 @@ export class DrawingController {
   private lastPlace: { at: number; x: number; y: number } | null = null;
   private gesture: Gesture | null = null;
   private readonly pointers = new Set<number>();
-  private drag: { hit: Hit; type: DrawingType; start: Xy; origin: Point[] } | null = null;
+  /** Перетаскивание: last — последнее положение, отданное onMove (хозяин мог ещё не перерисоваться). */
+  private drag: { hit: Hit; type: DrawingType; start: Xy; origin: Point[]; last: Point[] | null } | null = null;
   /** ATR по свечам графика — кэш на тот же буфер (позиция одним нажатием). */
   private atrCache: { candles: readonly Candle[]; n: number; last: number; time: number; atr: number | null } | null = null;
   /** Касания (touch*) не доходят до LWC: палец двигает точку или рисунок, а не график. */
@@ -313,7 +314,7 @@ export class DrawingController {
     this.blockTouch = touch;
     DrawingController.consume(e);
     const d = this.opts.getDrawings().find((q) => q.id === hit.id)!;
-    this.drag = { hit, type: d.type, start, origin: d.points.map((p) => ({ ...p })) };
+    this.drag = { hit, type: d.type, start, origin: d.points.map((p) => ({ ...p })), last: null };
     this.ev.onSelect(hit.id);
     this.capture(e);
   }
@@ -433,6 +434,7 @@ export class DrawingController {
         }
       }
     }
+    this.drag!.last = pts;
     this.ev.onMove(hit.id, pts, false);
   }
 
@@ -440,8 +442,10 @@ export class DrawingController {
     const drag = this.drag;
     this.drag = null;
     if (!drag) return;
+    // конец — последнее показанное положение (рисунки хозяина могли ещё не обновиться после последнего сдвига)
     const d = this.opts.getDrawings().find((q) => q.id === drag.hit.id);
-    if (g.moved && d) this.ev.onMove(drag.hit.id, d.points, true, drag.origin);
+    const points = drag.last ?? d?.points;
+    if (g.moved && d && points) this.ev.onMove(drag.hit.id, points, true, drag.origin);
     else if (!g.moved) this.ev.onSelect(drag.hit.id);
   }
 

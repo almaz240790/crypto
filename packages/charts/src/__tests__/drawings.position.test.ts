@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { hitTest, positionHit, positionKnobs, positionScreen, type Projector } from "../drawings/geometry";
-import { DRAWING_LABEL_PRIORITY, DRAWING_TEXT, drawingLabels, positionLabelTexts, toCandidate, type DrawingLabel } from "../drawings/labels";
+import { DRAWING_LABEL_PRIORITY, DRAWING_TEXT, drawingLabels, handleCandidate, handleRects, positionLabelTexts, toCandidate, type DrawingLabel } from "../drawings/labels";
 import { atrAt, flipPosition, formatRR, positionError, positionFieldError, positionFromEntry, positionParts, roundToTick, setPositionEnd, setPositionPrice, withRiskPct, withRiskReward } from "../drawings/position";
 import { DrawingsPrimitive } from "../drawings/primitive";
 import { DEFAULT_STYLE, POSITION_FILL_ALPHA, type Drawing } from "../drawings/types";
@@ -61,7 +61,8 @@ describe("геометрия позиции", () => {
     expect(roundToTick(81234.567, 0.1)).toBe(81234.6);
     expect(roundToTick(0.000012345, 0.00000001)).toBe(0.00001235);
     expect(roundToTick(5, null)).toBe(5);
-    const p = positionFromEntry("long", { time: T0, price: 81234.5 }, { atr: 512.345, end: T0, tick: 0.1 });
+    // вход — тоже по шагу (нажатие без магнита даёт цену с хвостом)
+    const p = positionFromEntry("long", { time: T0, price: 81234.537 }, { atr: 512.345, end: T0, tick: 0.1 });
     expect(p.map((q) => q.price)).toEqual([81234.5, 80722.2, 82259.1]);
     // ATR меньше шага: стоп — на шаг от входа, а не на входе
     const tiny = positionFromEntry("short", { time: T0, price: 100 }, { atr: 0.01, end: T0, tick: 0.5 });
@@ -276,6 +277,20 @@ describe("подписи рисунков и разметки в одной ра
     // всё место занято препятствием — soft не кладёт подпись на него
     const blocked = layoutLabels([c], obstacles([{ rect: { x: 0, y: 0, w: 1000, h: 800 }, kind: "ui" }]), VP, BUDGET);
     expect(blocked.external).toEqual([]);
+  });
+
+  it("ручки выбранной позиции (палец — 20 px) заняты: плашки цели, стопа и входа под ними не прячутся", () => {
+    const d = pos("position-long", 100, 96, 108, 20, 32);
+    const handles = handleRects({ drawings: [d], draft: null, selectedId: "P", proj: PROJ }, true);
+    expect(handles).toHaveLength(4);
+    expect(handles[0]!.rect.w).toBe(20);
+    expect(handleRects({ drawings: [d], draft: null, selectedId: null, proj: PROJ }, true)).toEqual([]);
+    const fib: Drawing = { ...d, id: "F", type: "fib", points: [{ time: T0 + 10 * H, price: 120 }, { time: T0 + 40 * H, price: 80 }] };
+    expect(handleRects({ drawings: [fib], draft: null, selectedId: "F", proj: PROJ }, false).map((h) => h.rect.w)).toEqual([8, 8]);
+    const res = layoutLabels([...handles.map(handleCandidate), ...labelsOf([d], { selectedId: "P" }).map(toCandidate)], obstacles(), VP, BUDGET);
+    const labels = res.external!.filter((p) => p.text !== "");
+    expect(labels).toHaveLength(3);
+    for (const l of labels) for (const h of handles) expect(overlaps(l.rect, h.rect), `${l.id} / ${h.id}`).toBe(false);
   });
 
   it("подписи рисунков не ложатся друг на друга: две позиции рядом, подписи сдвинуты", () => {

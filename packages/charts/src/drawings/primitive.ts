@@ -5,7 +5,7 @@ import type { LabelCandidate, PlacedLabel, Rect } from "../layout/types";
 import { alpha } from "../theme";
 import type { ThemeTokens } from "../types";
 import { channelOffset, extend, fibLevels, lineAt, positionKnobs, positionScreen, type Projector } from "./geometry";
-import { DRAWING_TEXT, drawingColor, drawingLabels, formatDrawingPrice, toCandidate, type DrawingLabel, type DrawingText, type MeasureText, type RiskProfile } from "./labels";
+import { DRAWING_TEXT, drawingColor, drawingLabels, formatDrawingPrice, handleCandidate, handleRects, toCandidate, type DrawingLabel, type DrawingText, type MeasureText, type RiskProfile } from "./labels";
 import { FIB_KEY_LEVELS, FIB_MINOR_ALPHA, HANDLE_PX, POSITION_FILL_ALPHA, POSITION_KNOB_R, POSITION_KNOB_TOUCH_R, isPosition, type Drawing, type Point } from "./types";
 
 /**
@@ -388,9 +388,15 @@ export class DrawingsPrimitive implements ISeriesPrimitive<Time> {
    */
   labelCandidates(measure: TextMeasurer): LabelCandidate[] {
     if (!this.projector) return [];
-    const labels = this.labels(this.projector.projector(), (t, f, px, w) => measure.measure(t, f, px, w).w);
+    const proj = this.projector.projector();
+    const labels = this.labels(proj, (t, f, px, w) => measure.measure(t, f, px, w).w);
     this.sent = { rev: this.rev, labels };
-    return labels.map(toCandidate);
+    return [...this.handles(proj), ...labels.map(toCandidate)];
+  }
+
+  /** Ручки выбранного и начатого рисунка — занятые места раскладки (подписи под ними не прячутся). */
+  private handles(proj: Projector): LabelCandidate[] {
+    return handleRects({ drawings: this.drawings, draft: this.draft, selectedId: this.selectedId, proj }, this.touch).map(handleCandidate);
   }
 
   /** Подписи кадра и их места: из общей раскладки, если она посчитана для этого состояния, иначе — своя раскладка. */
@@ -403,7 +409,7 @@ export class DrawingsPrimitive implements ISeriesPrimitive<Time> {
       return ctx.measureText(text).width;
     });
     const vp = { width: proj.width, height: proj.height, insetTop: 0, volumeTopY: proj.height, free: null, gutter: null };
-    const res = layoutLabels(labels.map(toCandidate), { candles: NO_CANDLES, rects: [] }, vp, NO_BUDGET);
+    const res = layoutLabels([...this.handles(proj), ...labels.map(toCandidate)], { candles: NO_CANDLES, rects: [] }, vp, NO_BUDGET);
     return { labels, placed: new Map((res.external ?? []).map((p) => [p.id, p.rect])) };
   }
 

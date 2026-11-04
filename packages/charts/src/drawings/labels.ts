@@ -1,9 +1,9 @@
 import { formatPriceLabel } from "../format";
 import type { LabelCandidate, Slot } from "../layout/types";
 import type { ThemeTokens } from "../types";
-import { fibLevels, positionScreen, type Projector } from "./geometry";
+import { fibLevels, positionKnobs, positionScreen, type Projector } from "./geometry";
 import { formatRR, positionParts, type PositionParts } from "./position";
-import { FIB_KEY_LEVELS, isPosition, type Drawing, type StyleColor } from "./types";
+import { FIB_KEY_LEVELS, HANDLE_PX, POSITION_KNOB_R, POSITION_KNOB_TOUCH_R, isPosition, type Drawing, type StyleColor } from "./types";
 
 /**
  * Подписи рисунков как кандидаты общей раскладки подписей (план 2B.2; ADR-0009, «Рисование»): уровни Фибоначчи,
@@ -266,6 +266,42 @@ function positionLabels(d: Drawing, base: number, o: DrawingLabelInput, out: Dra
   // вход — на своей линии (плашка поперёк линии), иначе над ней или под ней
   const yE = s.yE;
   if (visible(s.yS, s.yT)) plaque("entry", t.entry, [(h) => yE - h / 2, (h) => yE - h - POS_GAP, (h) => yE + POS_GAP, (h) => yE - 2 * (h + POS_GAP), (h) => yE + h + 2 * POS_GAP], 0);
+}
+
+/** Ручки выбранного рисунка — выше всех подписей: ни подпись рисунка, ни подпись разметки на них не ложится. */
+export const HANDLE_PRIORITY = 100;
+/** Видимый радиус ручки точки: мышь, палец (как у DrawingsPrimitive). */
+const HANDLE_R = HANDLE_PX / 2;
+const HANDLE_TOUCH_R = 10;
+
+/**
+ * Ручки выбранного и начатого рисунка на экране (их рисует примитив поверх подписей): места, занятые для раскладки —
+ * подпись не прячется под ручкой (у позиции на телефоне ручка цели посередине линии, плашка цели — над ней).
+ */
+export function handleRects(o: Pick<DrawingLabelInput, "drawings" | "draft" | "selectedId" | "proj">, touch: boolean): { id: string; rect: { x: number; y: number; w: number; h: number } }[] {
+  const out: { id: string; rect: { x: number; y: number; w: number; h: number } }[] = [];
+  const list = [...o.drawings.filter((d) => d.id === o.selectedId && !d.locked), ...(o.draft ? [o.draft] : [])];
+  for (const d of list) {
+    const pts: { x: number; y: number }[] = [];
+    let r = touch ? HANDLE_TOUCH_R : HANDLE_R;
+    if (isPosition(d.type)) {
+      const s = positionScreen(d, o.proj);
+      if (s) pts.push(...Object.values(positionKnobs(s)));
+      r = touch ? POSITION_KNOB_TOUCH_R : POSITION_KNOB_R;
+    } else {
+      for (const p of d.points) {
+        const x = o.proj.x(p.time), y = o.proj.y(p.price);
+        if (x !== null && y !== null) pts.push({ x, y });
+      }
+    }
+    pts.forEach((p, i) => out.push({ id: `${d.id}#handle${i}`, rect: { x: p.x - r, y: p.y - r, w: 2 * r, h: 2 * r } }));
+  }
+  return out;
+}
+
+/** Ручка как кандидат раскладки: на своём месте всегда (fixed), раньше всех подписей, сама не рисуется раскладкой. */
+export function handleCandidate(h: { id: string; rect: { x: number; y: number; w: number; h: number } }): LabelCandidate {
+  return { id: h.id, objectId: h.id, layer: DRAWING_LAYER, text: "", font: "mono", px: LABEL_PX, w: h.rect.w, h: h.rect.h, priority: HANDLE_PRIORITY, tone: "muted", slots: [{ key: "free-above", x: h.rect.x, y: h.rect.y, clampX: false }], bypassBudget: true, external: true, overCandles: true, area: "pane", force: "fixed" };
 }
 
 /** Кандидат общей раскладки: тот же прямоугольник, приоритет рисунка, без бюджета; свечи не обходит. */

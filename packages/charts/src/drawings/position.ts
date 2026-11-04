@@ -78,6 +78,8 @@ export function atrAt(candles: readonly Candle[], time: number, period = POSITIO
  * без ATR — POSITION_FALLBACK_PCT % цены), цель — POSITION_RR риска за входом; цены — по шагу инструмента.
  */
 export function positionFromEntry(dir: PositionDir, entry: Point, o: { atr: number | null; end: number; tick?: number | null }): Point[] {
+  // вход — тоже по шагу цены: в карточке и на плашках те же цифры, что на шкале
+  entry = { time: entry.time, price: roundToTick(entry.price, o.tick) };
   const fallback = (Math.abs(entry.price) * POSITION_FALLBACK_PCT) / 100;
   let risk = o.atr !== null && o.atr > 0 ? o.atr * POSITION_STOP_ATR : fallback;
   // у Long стоп ниже нуля — бессмысленно: тогда — доля цены

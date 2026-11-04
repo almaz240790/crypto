@@ -59,7 +59,7 @@ const projOf = (pxBar: number): DrawProjector => ({
 });
 const CANDLES = bars(100);
 
-function setup(o: { magnet?: boolean; items?: Drawing[]; coarse?: boolean; pxBar?: number; candles?: Candle[]; tick?: number | null; tf?: () => number } = {}) {
+function setup(o: { magnet?: boolean; items?: Drawing[]; coarse?: boolean; pxBar?: number; candles?: Candle[]; tick?: number | null; tf?: () => number; stale?: boolean } = {}) {
   const doc = new FakeTarget();
   const el = Object.assign(new FakeTarget(), { ownerDocument: doc, getBoundingClientRect: () => ({ left: 0, top: 0 }), setPointerCapture: () => undefined });
   let items: Drawing[] = o.items ?? [];
@@ -80,7 +80,8 @@ function setup(o: { magnet?: boolean; items?: Drawing[]; coarse?: boolean; pxBar
       },
       onMove: (id, points, final, origin) => {
         log.moves.push({ id, final, points, origin });
-        items = items.map((d) => (d.id === id ? { ...d, points } : d));
+        // stale — хозяин (React) ещё не перерисовался: промежуточные положения до getDrawings не доходят
+        if (final || !o.stale) items = items.map((d) => (d.id === id ? { ...d, points } : d));
       },
       onSelect: (id) => {
         log.selected.push(id);
@@ -826,6 +827,15 @@ const POS: Drawing = {
 
 describe("позиция: ручки и тело", () => {
   const last = (s: ReturnType<typeof setup>) => s.log.moves.at(-1)!;
+
+  it("конец перетаскивания — последнее показанное положение, даже если хозяин ещё не перерисовался", () => {
+    const s = setup({ items: [POS], stale: true });
+    s.mouse.drag(350, 368, 350, 340);
+    const moves = s.log.moves;
+    expect(moves.at(-1)!.final).toBe(true);
+    expect(moves.at(-1)!.points).toEqual(moves.at(-2)!.points);
+    expect(moves.at(-1)!.points[2]!.price).toBe(115);
+  });
 
   it("ручка стопа двигает только стоп (по вертикали); конец — шаг отмены от положения до перетаскивания", () => {
     const s = setup({ items: [POS] });
