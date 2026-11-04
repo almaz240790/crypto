@@ -25,10 +25,28 @@
   }
 }
 
-/* каркас на время загрузки модуля терминала (TerminalClient): строки шапки и тулбара без содержимого */
+/* каркас на время загрузки модуля терминала (TerminalClient): строки шапки и тулбара без содержимого; раскладка —
+   медиазапросами (каркас приходит с сервера), правила для ширины ≥ 1280 — в конце файла */
 .skelRow {
+  display: none;
   border-bottom: 1px solid var(--border);
   background: var(--surface);
+}
+
+@media (min-width: 900px) {
+  .page.skeleton {
+    grid-template-rows: 44px 40px minmax(0, 1fr);
+  }
+
+  .skeleton .skelRow {
+    display: block;
+  }
+}
+
+@media (min-width: 900px) and (pointer: coarse) {
+  .page.skeleton {
+    grid-template-rows: 52px 52px minmax(0, 1fr);
+  }
 }
 
 .top {
@@ -689,11 +707,24 @@
   }
 }
 
-.card {
+/* карточки снизу колонки графика (выбранный рисунок, лимит рисунков) — одной стопкой: вместе не перекрываются */
+.cards {
   position: absolute;
   left: 8px;
   right: 8px;
   bottom: 8px;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.cards > * {
+  pointer-events: auto;
+}
+
+.card {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -703,7 +734,6 @@
   border-radius: 10px;
   background: var(--surface);
   font-size: 13px;
-  z-index: 10;
 }
 
 /* карточка выбранного рисунка (SelectedDrawingCard): поля и кнопки ui в одну строку с переносом */
@@ -985,17 +1015,29 @@
   color: var(--warn);
 }
 
-/* карточка выбранного рисунка на десктопе — слева снизу, не во всю ширину и над шкалой времени (даты видны) */
-.page[data-layout="desktop"] .card {
-  right: auto;
+/* на десктопе стопка — над шкалой времени (даты видны); карточка рисунка — слева, не шире 720 px */
+.page[data-layout="desktop"] .cards {
   bottom: calc(var(--time-scale-h, 28px) + 8px);
-  max-width: min(720px, calc(100% - 16px));
+  align-items: flex-start;
 }
 
-/* карточка лимита рисунков — по центру снизу, на месте угла «− + →|» (он на это время скрыт) */
+.page[data-layout="desktop"] .card {
+  max-width: min(720px, 100%);
+}
+
+/* карточка лимита рисунков — по центру, на месте угла «− + →|» (он на это время скрыт), над карточкой рисунка */
 .page[data-layout="desktop"] .limitCard {
-  left: 50%;
-  transform: translateX(-50%);
-  width: max-content;
-  max-width: min(560px, calc(100% - 16px));
+  align-self: center;
+  max-width: min(560px, 100%);
+}
+
+/* каркас загрузки от 1280 px: правая панель встроена, как у терминала по умолчанию */
+@media (min-width: 1280px) {
+  .skeleton .area {
+    grid-template-columns: var(--draw-col) minmax(0, 1fr) var(--objects-w, 300px);
+  }
+
+  .skeleton .area .objects {
+    display: flex;
+  }
 }

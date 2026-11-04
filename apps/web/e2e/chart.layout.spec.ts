@@ -247,6 +247,12 @@ test("алерт: цена в форме — по шагу инструмент�
   await page.getByTestId("terminal-header").getByRole("button", { name: /^цена / }).click();
   const summary = page.getByRole("dialog", { name: "Сводка" });
   await expect(summary).toContainText("Закрытие последней свечи 4ч");
+  // ни подпись, ни значение не обрезаются краем окна (фандинг с отсчётом и чипы тренда — самые широкие)
+  const clipped = await summary.evaluate((dlg) => {
+    const r = dlg.getBoundingClientRect();
+    return [...dlg.querySelectorAll("dt, dd")].filter((el) => el.getBoundingClientRect().right > r.right - 1 || el.scrollWidth > el.clientWidth + 1).map((el) => el.textContent);
+  });
+  expect(clipped).toEqual([]);
 });
 
 test("«Разбор» (резерв): гость и обычный пользователь не проверяют ресурс; владельцу после сбоя — повтор, вкладка и пункт тулбара", async ({ page }) => {
@@ -269,6 +275,21 @@ test("«Разбор» (резерв): гость и обычный пользо
   await page.getByTestId("terminal-toolbar").getByRole("button", { name: "Разбор" }).click();
   await expect(aside.getByRole("tab", { name: "Разбор" })).toHaveAttribute("aria-selected", "true");
   await expect(aside).toContainText("Разбор появится позже");
+});
+
+test("каркас загрузки (HTML сервера, до модуля терминала): строки 44 и 40, колонка рисования; панель — только от 1280 px", async ({ browser }) => {
+  for (const [w, h, panel] of [[1440, 900, true], [1100, 760, false]] as const) {
+    const ctx = await browser.newContext({ viewport: { width: w, height: h }, locale: "ru-RU", javaScriptEnabled: false });
+    const page = await ctx.newPage();
+    await page.goto("/chart/BTCUSDT/4h");
+    const sk = page.getByTestId("terminal-skeleton");
+    await expect(sk).toContainText("Загрузка графика…");
+    const rows = await sk.evaluate((el) => [...el.children].slice(0, 2).map((c) => Math.round(c.getBoundingClientRect().height)));
+    expect(rows).toEqual([44, 40]);
+    const cols = await sk.locator("[data-objects]").evaluate((el) => getComputedStyle(el).gridTemplateColumns.split(" ").length);
+    expect(cols, `${w}: колонки`).toBe(panel ? 3 : 2);
+    await ctx.close();
+  }
 });
 
 test("рейка: «развернуть меню» открывает весь сайдбар; Esc закрывает и возвращает фокус", async ({ page }) => {
@@ -688,6 +709,9 @@ test("карточка выбранного рисунка — из компон
   await expect(page.locator("[data-corner]")).toHaveCount(0);
   const l = (await limit.boundingBox())!;
   expect(Math.abs(l.x + l.width / 2 - (t.x + t.width / 2))).toBeLessThanOrEqual(t.width * 0.15);
+  // вместе с карточкой рисунка — стопкой, не поверх неё
+  const c2 = (await card.boundingBox())!;
+  expect(l.y + l.height).toBeLessThanOrEqual(c2.y + 0.5);
   await limit.getByRole("button", { name: "понятно" }).click();
   await expect(limit).toHaveCount(0);
   await page.keyboard.press("Escape");

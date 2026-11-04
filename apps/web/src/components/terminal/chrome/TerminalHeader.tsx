@@ -24,6 +24,9 @@ const HEADER_SHED: readonly ShedStep[] = [
   { id: "change", action: "compact" },
 ];
 
+/** Ширина «Сводки»: подпись «Закрытие последней свечи 4ч» и фандинг с отсчётом в одну строку. */
+const SUMMARY_W = 400;
+
 export type HeaderFacts = {
   price: number | null;
   tick: string | null;
@@ -203,7 +206,7 @@ export const TerminalHeader = memo(function TerminalHeader(p: Props) {
           {t("Войти")}
         </Button>
       )}
-      <Popover open={summary.open} onClose={summary.close} anchor={summary.anchor} label={t("Сводка")} id={summary.id} width={340}>
+      <Popover open={summary.open} onClose={summary.close} anchor={summary.anchor} label={t("Сводка")} id={summary.id} width={SUMMARY_W}>
         <Summary {...facts} tf={p.tf} />
       </Popover>
     </header>

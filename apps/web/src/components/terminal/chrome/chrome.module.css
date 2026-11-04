@@ -217,9 +217,10 @@
 }
 
 /* «Сводка»: все факты шапки, в том числе спрятанные */
+/* значения — по своей ширине (фандинг с отсчётом, чипы тренда), подписи переносятся: ничего не обрезается окном */
 .summary {
   display: grid;
-  grid-template-columns: max-content 1fr;
+  grid-template-columns: minmax(0, 1fr) max-content;
   gap: 6px var(--gap-3);
   margin: 0;
   font-size: 13px;

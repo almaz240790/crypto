@@ -201,13 +201,13 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
     const url = c.snapshot(`${symbol} · ${t(TF_LABEL[tf])} · ${new Date().toISOString().slice(0, 16).replace("T", " ")} UTC`, `PlatformSol · ${window.location.href} · ${t("не является инвестиционной рекомендацией")}`);
     if (url) download(url, `platform-${symbol}-${tf}-${Date.now()}.png`);
   }, [say, symbol, t, tf]);
-  // копия рисунка на другой инструмент (план 2A.5): цены пропорционально последней цене цели
   const deselectDrawing = () => dr.actions.select(null);
-  // алерт на цене уровня: направление — от текущей цены к уровню
+  // алерт на цене уровня: направление — от текущей цены к уровню, цена — по шагу инструмента
   const alertOnLevel = (d: Drawing) => {
     const p = d.points[0]!.price;
     addPriceAlert(alertPriceText(p, data.tick), price != null && price < p ? "cross_up" : "cross_down", undefined, d.id);
   };
+  // копия рисунка на другой инструмент (план 2A.5): цены пропорционально последней цене цели
   const copyDrawing = async (id: string, target: string) => {
     let ratio = 1;
     try {
@@ -410,8 +410,12 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
                 onAxisHeight={setAxisH}
               />
             )}
-            {sel && <SelectedDrawingCard drawing={sel} symbol={symbol} tf={tf} instruments={instruments} pos={pos} onPatch={dr.actions.patch} onLock={dr.actions.lock} onRemove={dr.actions.remove} onDeselect={deselectDrawing} onAlert={alertOnLevel} onCopy={copyDrawing} />}
-            {dr.limitHit && <DrawingLimitCard limit={dr.limit} guest={!user} onDismiss={dr.dismissLimit} />}
+            {(sel || dr.limitHit) && (
+              <div className={s.cards}>
+                {dr.limitHit && <DrawingLimitCard limit={dr.limit} guest={!user} onDismiss={dr.dismissLimit} />}
+                {sel && <SelectedDrawingCard drawing={sel} symbol={symbol} tf={tf} instruments={instruments} pos={pos} onPatch={dr.actions.patch} onLock={dr.actions.lock} onRemove={dr.actions.remove} onDeselect={deselectDrawing} onAlert={alertOnLevel} onCopy={copyDrawing} />}
+              </div>
+            )}
             {/* тост: единственный role=status на странице; поверх колонки графика, раскладку не сдвигает */}
             {toast && (
               <p role="status" className={s.toast}>
