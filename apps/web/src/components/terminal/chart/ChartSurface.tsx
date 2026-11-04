@@ -2,7 +2,7 @@
 
 import { COMPACT_FORMAT, ChartController, EMPTY_PANE_LAYOUT, FALLBACK_COLOR, INDICATOR_COLOR, INTERACTION, NONE, PERCENT_FORMAT, VIEW, alpha, commitPaneHeights, dragSeparator, instanceColors, instanceTitle, mainMinShareFor, movePaneKey, orderPaneKeys, paneLevels, planMaximized, planPanes, resolvePreset, VALUE_FORMAT, alignToCandles, tickPrecision, tokensFromElement, type AlertLine, type Candle, type ChartHandle, type ChartStore, type ChartType, type CrosshairSnapshot, type Device, type ExternalObject, type IndColor, type IndicatorInstance, type IndicatorValue, type MarkupSettings, type PaneLayout, type PanePlan, type PanelKey, type ScaleMode, type SepLimits, type Terminal, type Timeframe } from "@platform/charts";
 import { DrawingController, DrawingsPrimitive, INDICATORS, defaultParams, indicatorById, visibleOn, type Drawing, type DrawingType, type DrawingsState, type IndicatorSpec, type Layer, type LayerContext, type Point, TF_SECONDS } from "@platform/charts";
-import { LineStyle, type IPriceLine, type ISeriesApi, type PriceFormat, type UTCTimestamp } from "lightweight-charts";
+import { LineStyle, TrackingModeExitMode, type IPriceLine, type ISeriesApi, type PriceFormat, type UTCTimestamp } from "lightweight-charts";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { Derivatives, FigureOnChart, LayersResponse, PatternOnChart } from "@/lib/chart";
 import type { LiveSource } from "@/lib/liveBar";
@@ -199,6 +199,8 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
   /** Линии индикаторов по ключу `${uid}.${серия}`: значения на всех свечах буфера — для перекрестия и легенды. */
   const valuesRef = useRef<Map<string, SeriesValues>>(new Map());
   const stickyRef = useRef(false);
+  /** Снять перекрестие (и липкий режим) — из эффектов вне создания графика. */
+  const clearCrossRef = useRef<(() => void) | null>(null);
   /** Панели на экране (заголовки, границы, «A» у шкалы) — геометрия для PaneChrome. */
   const [geo, setGeo] = useState<ChartGeo>(NO_GEO);
   /** Колонка графика (.chart): PaneChrome следит по ней за курсором. */
@@ -589,6 +591,7 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
       crossRaf = 0;
       store.patch({ crosshair: null });
     };
+    clearCrossRef.current = clearCrosshair;
     onReadyRef.current?.({ zoom: ctrl.handle.zoom, reset: ctrl.handle.reset, clearCrosshair, focus: ctrl.handle.focus, snapshot: ctrl.handle.snapshot });
     const prim = new DrawingsPrimitive(tokensFromElement(el));
     prim.touch = typeof window !== "undefined" && window.matchMedia(MQ.coarse).matches;
@@ -720,6 +723,7 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
       groupRef.current = { grouped: new Set(), host: null };
       dctrl.destroy();
       drawCtrlRef.current = null;
+      clearCrossRef.current = null;
       drawPrimRef.current = null;
       ctrl.destroy();
       ctrlRef.current = null;
@@ -853,6 +857,25 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     dctrl.setMagnet(drawings?.magnet ?? true);
     dctrl.setSeries(drawings?.series ?? false);
   }, [drawings, tf]);
+
+  // инструмент рисования выбран (ADR-0009, «Рисование»): долгое касание, которым ставят точку, включает у LWC режим
+  // перекрестия, а выходит он по умолчанию следующим касанием — оно уже уходит рисунку и до LWC не доходит, и сдвиги
+  // «застревали» в перекрестии. С инструментом режим кончается с отпусканием пальца; липкое перекрестие и карточка
+  // свечи при выборе инструмента убираются
+  const drawTool = drawings?.tool ?? null;
+  useEffect(() => {
+    const chart = termRef.current?.chart;
+    if (!chart) return;
+    if (drawTool) {
+      clearCrossRef.current?.();
+      chart.applyOptions({ trackingMode: { exitMode: TrackingModeExitMode.OnTouchEnd } });
+      return;
+    }
+    // инструмент снят отпусканием, которое поставило последнюю точку: touchend этого касания идёт следом в той же
+    // задаче, что pointerup, — прежний выход (следующим касанием) возвращается после него
+    const id = setTimeout(() => chart.applyOptions({ trackingMode: { exitMode: TrackingModeExitMode.OnNextTap } }), 0);
+    return () => clearTimeout(id);
+  }, [drawTool]);
 
   useEffect(() => {
     if (themeVersion > 1 && ref.current) drawPrimRef.current?.update({ tokens: tokensFromElement(ref.current) });

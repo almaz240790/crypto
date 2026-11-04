@@ -377,8 +377,9 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
         <div className={s.area} data-objects={panelShown ? "shown" : "hidden"} data-panel={panelOverlay ? "overlay" : "inline"} style={{ "--objects-w": objWidth } as React.CSSProperties}>
           <DrawToolbar tool={dr.tool} onTool={dr.setTool} magnet={dr.magnet} onMagnet={dr.setMagnet} series={dr.series} onSeries={dr.setSeries} hidden={dr.state.hidden} onHidden={dr.actions.hide} canUndo={dr.canUndo} canRedo={dr.canRedo} onUndo={dr.actions.undo} onRedo={dr.actions.redo} />
           <div className={s.chartCol} style={axisH ? ({ "--time-scale-h": `${axisH}px` } as React.CSSProperties) : undefined}>
-            {/* карточка перекрестия телефона (вид прежний до C2); на десктопе — легенда в углу графика */}
-            {!desktop && <CrosshairCard store={store} tick={data.tick} more={ohlcMore} onMore={setOhlcMore} onClose={clearCrosshair} />}
+            {/* карточка перекрестия телефона (вид прежний до C2); на десктопе — легенда в углу графика. С инструментом
+                рисования её нет: на её месте чип шага с «Отменить» (ADR-0009, «Рисование») */}
+            {!desktop && !dr.tool && <CrosshairCard store={store} tick={data.tick} more={ohlcMore} onMore={setOhlcMore} onClose={clearCrosshair} />}
             {data.error && !intradayDenied ? (
               <div className={s.empty} role="alert">
                 {data.error}
