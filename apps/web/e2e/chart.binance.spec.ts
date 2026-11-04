@@ -118,7 +118,6 @@ test("1m: закрытая минута с биржи (x = true) — закры�
     await expect.poll(async () => (await lastBar(page)).close).toBe(100.7);
     expect(await mainBars(page)).toHaveLength(FIRST_PAGE + 1);
     // минута закрылась на бирже — окончательная; следующая — новая свеча
-    await page.clock.fastForward(40_000);
     bn.kline("BTCUSDT", { t: cur, o: "100.0", h: "101.2", l: "99.6", c: "101.1", v: "9", x: true }, cur + 60);
     bn.kline("BTCUSDT", { t: cur + M, o: "101.1", h: "101.3", l: "101.0", c: "101.2", v: "1" }, cur + 60.3);
     await expect.poll(async () => (await mainBars(page)).length).toBe(FIRST_PAGE + 2);
