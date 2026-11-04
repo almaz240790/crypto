@@ -384,3 +384,27 @@ def test_notifier_ranks_once(monkeypatch: pytest.MonkeyPatch) -> None:
     assert r.closed and len(calls) == 2
     assert notifier.ranks_once() == "fresh"
     assert len(calls) == 2
+
+
+def test_current_ranks_default_redis_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Без явного клиента — свой Redis на одно чтение и закрывается; недоступен — снимок."""
+    import redis
+
+    class ClosingRedis(FakeRedis):
+        closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    r = ClosingRedis()
+    cr.save_cached(r, ["SOL", "BTC"], NOW)
+    monkeypatch.setattr(redis, "from_url", lambda *a, **k: r)
+    cr.reset_memo()
+    try:
+        assert dict(cr.current_ranks(clock=0.0)) == {"SOL": 1, "BTC": 2}
+        assert r.closed
+        monkeypatch.setattr(redis, "from_url", lambda *a, **k: BrokenRedis())
+        cr.reset_memo()
+        assert cr.current_ranks(clock=0.0) is cr.STATIC_TABLE
+    finally:
+        cr.reset_memo()

@@ -347,12 +347,16 @@ _memo_lock = threading.Lock()
 STATIC_TABLE = rank_table(STATIC_ORDER)
 
 
-def _redis() -> RedisLike:
+def _load_from_redis() -> dict[str, Any] | None:
     import redis
 
     from app.config import settings
 
-    return redis.from_url(settings.redis_url, socket_timeout=1, socket_connect_timeout=1)
+    r = redis.from_url(settings.redis_url, socket_timeout=1, socket_connect_timeout=1)
+    try:
+        return load_cached(r)
+    finally:
+        r.close()
 
 
 def current_ranks(r: RedisLike | None = None, clock: float | None = None) -> Mapping[str, int]:
@@ -366,7 +370,7 @@ def current_ranks(r: RedisLike | None = None, clock: float | None = None) -> Map
             return _memo["table"]  # type: ignore[no-any-return]
         table: dict[str, int] | None = None
         try:
-            cached = load_cached(r if r is not None else _redis())
+            cached = load_cached(r) if r is not None else _load_from_redis()
             if cached:
                 table = rank_table(cached["order"])
         except Exception:
