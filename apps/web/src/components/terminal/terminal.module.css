@@ -908,20 +908,10 @@
   font-size: 13px;
 }
 
-.multiSymbol,
+/* таймфрейм ячейки — ui Select small: ширина по подписи */
 .multiTf {
-  height: 28px;
-  padding: 0 6px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg);
-  color: var(--text);
-  font: inherit;
-  font-size: 13px;
-}
-
-.multiSymbol {
-  font-weight: 600;
+  flex: none;
+  width: 72px;
 }
 
 .multiPrice {
@@ -931,14 +921,14 @@
 }
 
 .multiOpen {
+  display: inline-flex;
+  align-items: center;
   margin-left: auto;
   font-size: 12px;
   white-space: nowrap;
 }
 
 @media (pointer: coarse) {
-  .multiSymbol,
-  .multiTf,
   .multiOpen {
     min-height: var(--touch-min);
   }

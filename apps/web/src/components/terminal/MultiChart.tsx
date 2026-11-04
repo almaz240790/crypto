@@ -5,7 +5,7 @@ import { createChartStore, NONE, PRESETS, SELECTABLE_PRESETS, type ChartState, t
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/components/auth/AuthProvider";
-import { Button, EmptyState, Menu, SegmentedControl, Tooltip, type MenuItemSpec } from "@/components/ui";
+import { Button, EmptyState, Menu, SegmentedControl, Select, Tooltip, type MenuItemSpec } from "@/components/ui";
 import { IconChevronDown, IconInfo, IconLayers } from "@/components/ui/icons";
 import { getAccessToken } from "@/lib/auth-client";
 import { formatPrice } from "@/lib/format";
@@ -16,6 +16,7 @@ import { ChartSurface } from "./chart/ChartSurface";
 import { useChartStore } from "./chart/useChartStore";
 import { presetNote, presetTitle } from "./MarkupPicker";
 import { MARKUP_MENU_MAX } from "./chrome/MarkupMenu";
+import { SymbolPicker } from "./chrome/TerminalHeader";
 import { useTerminalData } from "./useTerminalData";
 import { useT } from "@/i18n/client";
 import { MQ } from "@/lib/breakpoints";
@@ -59,7 +60,7 @@ const selectCross = (st: ChartState) => st.crosshair;
 function CellPrice({ store, price, tick, error }: { store: ChartStore; price: number | null; tick: string | null; error: boolean }) {
   const t = useT();
   const cross = useChartStore(selectCross, store);
-  const text = cross ? `O ${formatPrice(cross.candle.open, tick)} C ${formatPrice(cross.candle.close, tick)}` : price != null ? formatPrice(price, tick) : error ? t("нет данных") : "…";
+  const text = cross ? `${t("Откр")} ${formatPrice(cross.candle.open, tick)} ${t("Закр")} ${formatPrice(cross.candle.close, tick)}` : price != null ? formatPrice(price, tick) : error ? t("нет данных") : "…";
   return <span className={`num ${s.multiPrice}`}>{text}</span>;
 }
 
@@ -73,20 +74,16 @@ function ChartCell({ cell, instruments, authed, markup, onChange }: { cell: Cell
   return (
     <section className={s.multiCell} aria-label={t("график {symbol} {tf}", { symbol: cell.symbol, tf: cell.tf })}>
       <div className={s.multiHead}>
-        <select className={s.multiSymbol} aria-label={t("инструмент")} value={cell.symbol} onChange={(e) => onChange({ ...cell, symbol: e.target.value })}>
-          {(instruments.length ? instruments : [{ symbol: cell.symbol } as Instrument]).map((i) => (
-            <option key={i.symbol} value={i.symbol}>
-              {i.symbol}
-            </option>
-          ))}
-        </select>
-        <select className={s.multiTf} aria-label={t("таймфрейм")} value={cell.tf} onChange={(e) => onChange({ ...cell, tf: e.target.value as Timeframe })}>
-          {tfs.map((x) => (
-            <option key={x} value={x}>
-              {t(TF_LABEL[x])}
-            </option>
-          ))}
-        </select>
+        <SymbolPicker compact symbol={cell.symbol} instruments={instruments} onSymbol={(symbol) => onChange({ ...cell, symbol })} />
+        <span className={s.multiTf}>
+          <Select small aria-label={t("таймфрейм")} value={cell.tf} onChange={(e) => onChange({ ...cell, tf: e.target.value as Timeframe })}>
+            {tfs.map((x) => (
+              <option key={x} value={x}>
+                {t(TF_LABEL[x])}
+              </option>
+            ))}
+          </Select>
+        </span>
         <CellPrice store={store} price={price} tick={data.tick} error={!!data.error} />
         <Link href={`/chart/${cell.symbol}/${cell.tf}`} prefetch={false} className={s.multiOpen}>
           {t("открыть в терминале")}

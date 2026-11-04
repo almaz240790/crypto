@@ -63,6 +63,17 @@
   font-weight: 600;
 }
 
+/* шапка ячейки мультичарта: 13/600, высота 28 */
+.symbol[data-compact] {
+  height: 28px;
+  line-height: 28px;
+  padding: 0 6px;
+}
+
+.symbol[data-compact] .symbolName {
+  font-size: 13px;
+}
+
 .symbolTag {
   color: var(--text-3);
   font-size: 11px;

@@ -50,19 +50,22 @@ type Props = HeaderFacts & {
 
 /**
  * Инструмент: «BTCUSDT» 16/600 и тег биржи; поверх — прозрачный нативный select (выбор с клавиатуры,
- * поиск по буквам и selectOption в e2e). Не сжимается: имя всегда целиком.
+ * поиск по буквам и selectOption в e2e). Не сжимается: имя всегда целиком. compact — шапка ячейки мультичарта:
+ * 13/600, высота 28 (под пальцем 44), без тега биржи.
  */
-export function SymbolPicker({ symbol, instruments, onSymbol }: { symbol: string; instruments: readonly Instrument[]; onSymbol: (s: string) => void }) {
+export function SymbolPicker({ symbol, instruments, onSymbol, compact = false }: { symbol: string; instruments: readonly Instrument[]; onSymbol: (s: string) => void; compact?: boolean }) {
   const t = useT();
   const list = instruments.length ? instruments : [{ symbol } as Instrument];
   return (
-    <div className={c.symbol} data-overflow-item="symbol">
+    <div className={c.symbol} data-overflow-item={compact ? undefined : "symbol"} data-compact={compact || undefined}>
       <span className={c.symbolName} aria-hidden="true">
         {symbol}
       </span>
-      <span className={c.symbolTag} aria-hidden="true">
-        Binance
-      </span>
+      {!compact && (
+        <span className={c.symbolTag} aria-hidden="true">
+          Binance
+        </span>
+      )}
       <IconChevronDown />
       <select aria-label={t("инструмент")} value={symbol} onChange={(e) => onSymbol(e.target.value)}>
         {list.map((i) => (

@@ -272,6 +272,20 @@ test("мультичарт: рейка и заливка высоты без п�
   expect(await page.evaluate(() => document.scrollingElement!.scrollHeight)).toBe(900);
   const cell = (await page.getByRole("region", { name: /^график / }).first().boundingBox())!;
   expect(cell.y + cell.height).toBeGreaterThan(880);
+  // шапка ячейки: выбор инструмента — как в терминале (имя 13/600, select поверх), таймфрейм — ui Select с TF_LABEL
+  const head = page.getByRole("region", { name: /^график / }).first();
+  const name = head.locator("[data-compact] span").first();
+  await expect(name).toHaveText("BTCUSDT");
+  expect(await name.evaluate((el) => [getComputedStyle(el).fontSize, getComputedStyle(el).fontWeight])).toEqual(["13px", "600"]);
+  await expect(head.getByLabel("таймфрейм").locator("option:checked")).toHaveText("4ч");
+  // под перекрестием — «Откр … Закр …», как в легенде терминала
+  await page.mouse.move(cell.x + cell.width * 0.5, cell.y + cell.height * 0.5);
+  await expect(head).toContainText(/Откр [\d\s]+(\.\d+)? Закр [\d\s]+/);
+  // «ⓘ» в шапке мультичарта: иконка-пояснение без пунктира под ней (D16)
+  const info = page.getByLabel("Пояснение");
+  expect(await info.evaluate((el) => getComputedStyle(el).borderBottomWidth)).toBe("0px");
+  const ib = (await info.boundingBox())!;
+  expect(ib.width).toBeGreaterThanOrEqual(28);
 });
 
 /** Серии графика: тип, цвет, число точек, панель (через __chart, как в correctness-спеке). */
