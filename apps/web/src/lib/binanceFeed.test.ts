@@ -7,6 +7,7 @@ import {
   FIRST_DATA_MS,
   FRESH_MS,
   LINGER_MS,
+  NO_DATA_MS,
   parseAggTrade,
   parseKline,
   PROBE_TIMEOUT_MS,
@@ -189,6 +190,7 @@ describe("подписка: одно соединение, SUBSCRIBE/UNSUBSCRIBE
     await vi.advanceTimersByTimeAsync(BATCH_MS);
     const ws = last();
     ws.open();
+    ws.kline("BTCUSDT");
     const at: number[] = [];
     const send = ws.send.bind(ws);
     ws.send = (m: string) => {
@@ -202,7 +204,10 @@ describe("подписка: одно соединение, SUBSCRIBE/UNSUBSCRIBE
       off = f.subscribe(`C${i}USDT`, listener());
       await vi.advanceTimersByTimeAsync(50);
     }
-    await vi.advanceTimersByTimeAsync(5000);
+    for (let i = 0; i < 5; i++) {
+      ws.kline("C19USDT");
+      await vi.advanceTimersByTimeAsync(1000);
+    }
     expect(at.length).toBeGreaterThan(4);
     for (let i = 1; i < at.length; i++) expect(at[i]! - at[i - 1]!).toBeGreaterThanOrEqual(CONTROL_GAP_MS);
     for (const t of at) expect(at.filter((x) => x >= t && x < t + 1000).length).toBeLessThanOrEqual(10);
@@ -377,19 +382,55 @@ describe("свежесть, отказ, тишина, паузы", () => {
     f.dispose();
   });
 
-  it("нет данных за FIRST_DATA_MS после открытия — проверка сразу; рукопожатие дольше CONNECT_TIMEOUT_MS — новая попытка", async () => {
+  it("рукопожатие дольше CONNECT_TIMEOUT_MS — новая попытка; открылось, но данных нет FIRST_DATA_MS (биржа отвечает, а рынка не шлёт) — отказ и пауза", async () => {
     const f = feed();
-    f.subscribe("BTCUSDT", listener());
+    const l = listener();
+    f.subscribe("BTCUSDT", l);
     await vi.advanceTimersByTimeAsync(BATCH_MS);
     // рукопожатие висит
     await vi.advanceTimersByTimeAsync(CONNECT_TIMEOUT_MS + 1000);
     expect(FakeWS.all[0]!.closed).toBe(true);
     await vi.advanceTimersByTimeAsync(RETRY_MIN_MS);
     expect(FakeWS.all).toHaveLength(2);
+    // открылось, на управляющие отвечает, данных нет — так ведёт себя Binance из контейнера
     const ws = last();
     ws.open();
+    ws.raw({ result: [], id: 1 });
     await vi.advanceTimersByTimeAsync(FIRST_DATA_MS + 1000);
-    expect(ws.control.map((c) => c.method)).toEqual(["LIST_SUBSCRIPTIONS"]);
+    expect(ws.closed).toBe(true);
+    expect(l.log.fresh).toEqual([false]);
+    // пауза удвоилась: 10 с
+    await vi.advanceTimersByTimeAsync(9000);
+    expect(FakeWS.all).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(FakeWS.all).toHaveLength(3);
+    f.dispose();
+  });
+
+  it("данные были, потом только ответы на проверки дольше NO_DATA_MS — отказ и новое соединение после паузы", async () => {
+    const f = feed();
+    const l = listener();
+    f.subscribe("BTCUSDT", l);
+    await vi.advanceTimersByTimeAsync(BATCH_MS);
+    const ws = last();
+    ws.open();
+    ws.kline("BTCUSDT");
+    // соединение отвечает на каждую проверку, но рыночных данных больше нет
+    const answered = new Set<number>();
+    for (let t = 0; t < NO_DATA_MS && !ws.closed; t += 1000) {
+      await vi.advanceTimersByTimeAsync(1000);
+      const probe = ws.control.at(-1);
+      if (probe && !answered.has(probe.id)) {
+        answered.add(probe.id);
+        ws.raw({ result: streamsOf("BTCUSDT"), id: probe.id });
+      }
+    }
+    expect(answered.size).toBeGreaterThanOrEqual(2);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(ws.closed).toBe(true);
+    expect(l.log.fresh).toEqual([false, true, false]);
+    await vi.advanceTimersByTimeAsync(RETRY_MIN_MS);
+    expect(FakeWS.all).toHaveLength(2);
     f.dispose();
   });
 

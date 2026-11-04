@@ -12,8 +12,10 @@
  * входящих сообщений в секунду на соединение). Ping/pong протокола отвечает сам браузер.
  *
  * Свежесть — по символу: данные символа за последние FRESH_MS — биржа основной источник (fresh(true)); иначе — сервер
- * (fresh(false)). Соединение следит за собой: тишина дольше SILENCE_MS (до первых данных — FIRST_DATA_MS) — проверочный
- * LIST_SUBSCRIPTIONS; без ответа PROBE_TIMEOUT_MS — соединение мёртво. Ошибка, закрытие (геоблок 451, обрыв), мёртвое
+ * (fresh(false)). Соединение следит за собой: нет данных за FIRST_DATA_MS после открытия — биржа их не даёт (так бывает
+ * и при открытом соединении: из контейнера Binance отвечает на управляющие сообщения, но рыночных данных не шлёт);
+ * тишина дольше SILENCE_MS — проверочный LIST_SUBSCRIPTIONS, без ответа PROBE_TIMEOUT_MS — соединение мёртво (полуоткрыто);
+ * ответы есть, а данных нет дольше NO_DATA_MS — тоже отказ. Ошибка, закрытие (геоблок 451, обрыв), мёртвое или пустое
  * соединение — все символы сразу несвежие и новая попытка через RETRY_MIN_MS…RETRY_MAX_MS (пауза удваивается, первые
  * данные её сбрасывают). Binance закрывает соединение через 24 ч — за час до этого открывается новое с теми же потоками,
  * старое закрывается, когда новое принесло данные (без паузы в ценах).
@@ -27,8 +29,10 @@ import type { LiveCandle, LiveTick } from "./useLive";
 export const BINANCE_WS = "wss://fstream.binance.com/stream";
 /** Данные символа не старше — биржа основной источник цены и свечи. */
 export const FRESH_MS = 5000;
-/** Новое соединение без данных дольше — проверка (первые данные приходят за доли секунды). */
+/** Новое соединение без данных дольше — биржа не даёт данных: отказ и пауза (первые данные приходят за доли секунды). */
 export const FIRST_DATA_MS = 3000;
+/** Соединение отвечает, но данных нет дольше — отказ и пауза (символы на экране торгуются каждую секунду). */
+export const NO_DATA_MS = 15_000;
 /** Открытое соединение молчит дольше — проверка LIST_SUBSCRIPTIONS. */
 export const SILENCE_MS = 5000;
 /** Проверка без ответа дольше — соединение мёртво (полуоткрыто после сна телефона, сеть сменилась). */
@@ -123,6 +127,8 @@ export class BinanceFeed {
   private dialAt = 0;
   private bornAt = 0;
   private lastMsg = 0;
+  /** Последние рыночные данные соединения (любой символ); при SUBSCRIBE — отсчёт заново. */
+  private lastDataAt = 0;
   private gotData = false;
   private probeAt: number | null = null;
   private backoff = RETRY_MIN_MS;
@@ -253,7 +259,10 @@ export class BinanceFeed {
     const del = [...this.active].filter((s) => !want.has(s));
     const add = [...want].filter((s) => !this.active.has(s));
     if (del.length) this.send("UNSUBSCRIBE", del);
-    if (add.length) this.send("SUBSCRIBE", add);
+    if (add.length) {
+      this.send("SUBSCRIBE", add);
+      this.lastDataAt = Math.max(this.lastDataAt, Date.now());
+    }
     for (const s of del) this.active.delete(s);
     for (const s of add) this.active.add(s);
   }
@@ -400,6 +409,7 @@ export class BinanceFeed {
     this.lastMsg = now;
     this.probeAt = null;
     if (!data) return; // ответ на SUBSCRIBE / UNSUBSCRIBE / проверку
+    this.lastDataAt = now;
     if (!this.gotData) {
       this.gotData = true;
       this.backoff = RETRY_MIN_MS;
@@ -481,11 +491,20 @@ export class BinanceFeed {
       return;
     }
     if (!this.active.size) return;
+    // открылось, но данных нет: биржа их не даёт (геоблок без отказа в соединении) — пауза и новая попытка
+    if (!this.gotData) {
+      if (now - this.openedAt > FIRST_DATA_MS) this.fail(false);
+      return;
+    }
+    if (now - this.lastDataAt > NO_DATA_MS) {
+      this.fail(false);
+      return;
+    }
     if (this.probeAt !== null) {
       if (now - this.probeAt > PROBE_TIMEOUT_MS) this.fail(false);
       return;
     }
-    if (now - this.lastMsg > (this.gotData ? SILENCE_MS : FIRST_DATA_MS)) {
+    if (now - this.lastMsg > SILENCE_MS) {
       this.probeAt = now;
       this.send("LIST_SUBSCRIPTIONS");
       return;
