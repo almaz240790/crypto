@@ -411,17 +411,24 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     syncModel();
   }, [current, syncModel, live]);
 
-  // живая свеча: закрытые — дописать, уточнённую — заменить, текущую — обновить; вид не трогается
+  // живая свеча: закрытые — дописать, уточнённую — заменить, текущую — обновить, свежую историю после
+  // переподключения или пропуска — влить (недостающие свечи вставить); вид не трогается
   useEffect(() => {
     if (!live) return;
     return live.subscribe((step) => {
       const term = termRef.current;
       const ctrl = ctrlRef.current;
       if (!term || !ctrl) return;
+      if (step.merge) {
+        term.merge(step.bar ? [...step.merge, step.bar] : step.merge);
+        ctrl.notifyCandles("append");
+        syncModel();
+        return;
+      }
       for (const c of step.closed) term.update(c);
       if (step.amended) term.amend(step.amended);
       if (step.bar) term.update(step.bar);
-      ctrl.notifyCandles(step.closed.length ? "append" : "tick");
+      ctrl.notifyCandles(step.closed.length || step.amended ? "append" : "tick");
       if (step.closed.length) syncModel();
     });
   }, [live, syncModel]);

@@ -4,8 +4,10 @@ import { FIRST_PAGE, H4, RICH_C0, T0, mock } from "./helpers/chart";
 /**
  * Живая цена (план 2A.3, ADR-0010): сервер шлёт тики раз в секунду на символ; здесь заглушка WebSocket
  * шлёт их каждые 250 мс. Цена в шапке и close текущей свечи меняются в пределах секунды, high/low
- * расширяются, нового бара внутри интервала нет, вид пользователя не сбрасывается; «онлайн» — пока идут
- * тики, без тиков дольше 5 с — «без связи». Ячейки мультичарта получают тики своих символов.
+ * расширяются (и тиками, пришедшими раньше свечей), нового бара внутри интервала нет, вид пользователя
+ * не сбрасывается; «онлайн» — пока идут тики, без тиков дольше 5 с — «без связи». Сервер закрыл сокет —
+ * клиент подключается снова и перечитывает свежую историю, вид тот же. Ячейки мультичарта получают тики
+ * своих символов.
  */
 
 /** Начало текущей (незакрытой) свечи заглушки: время тиков — внутри неё. */
@@ -18,25 +20,33 @@ const priceAt = (k: number) => (k === 1 ? LOW : RICH_C0 + 20 + k * 0.1);
 type Range = { from: number; to: number };
 type Bar = { time: number; open: number; high: number; low: number; close: number };
 
-/** Заглушка /v1/ws: на подписку — тики каждые 250 мс по подписанным символам. */
+/**
+ * Заглушка /v1/ws: на подписку — тики каждые 250 мс по подписанным символам. Номер тика общий для всех
+ * соединений (время тика не идёт назад после переподключения, как у сервера); `close()` — сервер
+ * закрыл текущее соединение.
+ */
 async function liveSocket(page: Page) {
   const timers: ReturnType<typeof setInterval>[] = [];
-  const state = { on: true, sent: 0, last: new Map<string, number>() };
+  const sockets: { close(): Promise<void> }[] = [];
+  const subs: string[][] = [];
+  const state = { on: true, sent: 0, k: 0, last: new Map<string, number>() };
   await page.routeWebSocket(/\/v1\/ws/, (ws) => {
-    let subs: string[] = [];
-    let k = 0;
+    let mine: string[] = [];
+    let open = true;
+    sockets.push({ close: () => ((open = false), ws.close()) });
     ws.onMessage((raw) => {
       const m = JSON.parse(String(raw)) as { sub?: string[]; ping?: number };
       if (Array.isArray(m.sub)) {
-        subs = m.sub;
-        ws.send(JSON.stringify({ t: "subscribed", n: subs.length }));
+        mine = m.sub;
+        subs.push(m.sub);
+        ws.send(JSON.stringify({ t: "subscribed", n: mine.length }));
       } else if (m.ping) ws.send('{"t":"pong"}');
     });
     timers.push(
       setInterval(() => {
-        if (!state.on || !subs.length) return;
-        k++;
-        for (const s of subs) {
+        if (!state.on || !open || !mine.length) return;
+        const k = ++state.k;
+        for (const s of mine) {
           const p = priceAt(k);
           state.last.set(s, p);
           state.sent++;
@@ -45,7 +55,7 @@ async function liveSocket(page: Page) {
       }, 250),
     );
   });
-  return { state, dispose: () => timers.forEach(clearInterval) };
+  return { state, sockets, subs, dispose: () => timers.forEach(clearInterval) };
 }
 
 /** Главная серия графика (LWC через __chart): число баров и последний бар. */
@@ -67,9 +77,16 @@ async function headerPrice(page: Page): Promise<number> {
   return m ? Number(m[1]!.replace(/[   ,]/g, "")) : Number.NaN;
 }
 
+/** Ответ /v1/chart/candles задерживается: первые тики (и провал цены) приходят раньше свечей (W5). */
+async function slowCandles(page: Page, ms: number) {
+  await page.route("**/v1/chart/candles**", (route) => new Promise<void>((r) => setTimeout(r, ms)).then(() => route.fallback()));
+}
+
 test("живая цена: тики каждые 250 мс двигают цену в шапке и текущую свечу, без нового бара и сброса вида", async ({ page }) => {
   const calls: string[] = [];
   await mock(page, calls);
+  // после mock(): обработчик срабатывает первым и передаёт запрос заглушке с задержкой
+  await slowCandles(page, 1200);
   const live = await liveSocket(page);
   try {
     await page.goto("/chart/BTCUSDT/4h");
@@ -82,15 +99,19 @@ test("живая цена: тики каждые 250 мс двигают цен�
     await page.waitForTimeout(200);
     const view = (await logical(page))!;
 
-    // цена в шапке и close текущей свечи — свежие, в пределах секунды от тика
-    await expect.poll(() => headerPrice(page), { timeout: 2000 }).toBeGreaterThan(RICH_C0 + 19);
-    await expect.poll(async () => (await lastBar(page)).last!.close, { timeout: 1500 }).toBeGreaterThan(RICH_C0 + 19);
+    // цена в шапке и close текущей свечи — свежие, в пределах секунды от тика. Опрос — каждые 100 мс:
+    // по умолчанию паузы растут до секунды, и смена шапки (раз в секунду) попадала между опросами
+    const often = { intervals: [100] };
+    await expect.poll(() => headerPrice(page), { timeout: 2000, ...often }).toBeGreaterThan(RICH_C0 + 19);
+    await expect.poll(async () => (await lastBar(page)).last!.close, { timeout: 1500, ...often }).toBeGreaterThan(RICH_C0 + 19);
     const p1 = await headerPrice(page);
     const c1 = (await lastBar(page)).last!.close;
-    await expect.poll(() => headerPrice(page), { timeout: 1500 }).toBeGreaterThan(p1);
-    await expect.poll(async () => (await lastBar(page)).last!.close, { timeout: 1200 }).toBeGreaterThan(c1);
+    await expect.poll(() => headerPrice(page), { timeout: 1500, ...often }).toBeGreaterThan(p1);
+    await expect.poll(async () => (await lastBar(page)).last!.close, { timeout: 1200, ...often }).toBeGreaterThan(c1);
 
-    // свёртка в текущую свечу: тот же бар, low — провал первого тика, high — не ниже close
+    // свёртка в текущую свечу: тот же бар, low — провал первого тика (он пришёл раньше свечей и не
+    // потерялся), high — не ниже close
+    expect(live.subs[0]).toEqual(["BTCUSDT"]);
     const { len, last } = await lastBar(page);
     expect(len).toBe(FIRST_PAGE + 1);
     expect(last!.time).toBe(CUR);
@@ -107,6 +128,41 @@ test("живая цена: тики каждые 250 мс двигают цен�
     await expect(strip).toContainText("без связи", { timeout: 8000 });
     live.state.on = true;
     await expect(strip).toContainText("онлайн", { timeout: 2000 });
+  } finally {
+    live.dispose();
+  }
+});
+
+test("переподключение: сервер закрыл сокет — клиент подключается снова, свежая история без сброса вида", async ({ page }) => {
+  const calls: string[] = [];
+  await mock(page, calls);
+  const live = await liveSocket(page);
+  try {
+    await page.goto("/chart/BTCUSDT/4h");
+    const strip = page.getByLabel("состояние");
+    await expect(strip).toContainText("онлайн");
+    await expect.poll(async () => (await lastBar(page)).len).toBe(FIRST_PAGE + 1);
+    await setLogical(page, { from: 180, to: 305 });
+    await page.waitForTimeout(200);
+    const view = (await logical(page))!;
+    const candles = () => calls.filter((c) => c.startsWith("/v1/chart/candles")).length;
+    expect(candles()).toBe(1);
+
+    await live.sockets[0]!.close();
+    await expect(strip).toContainText("без связи", { timeout: 3000 });
+    // новое соединение через 3–5 с; после него — свежая история с сервера (пропущенные свечи)
+    await expect.poll(() => live.sockets.length, { timeout: 8000 }).toBe(2);
+    await expect(strip).toContainText("онлайн", { timeout: 3000 });
+    await expect.poll(candles, { timeout: 3000 }).toBe(2);
+    const c1 = (await lastBar(page)).last!.close;
+    await expect.poll(async () => (await lastBar(page)).last!.close, { timeout: 1500, intervals: [100] }).toBeGreaterThan(c1);
+    const { len, last } = await lastBar(page);
+    expect(len).toBe(FIRST_PAGE + 1);
+    expect(last!.time).toBe(CUR);
+    expect(last!.low).toBeCloseTo(LOW, 1); // свежая история не затёрла свёрнутые тики
+    const now = (await logical(page))!;
+    expect(now.from).toBeCloseTo(view.from, 1);
+    expect(now.to).toBeCloseTo(view.to, 1);
   } finally {
     live.dispose();
   }
