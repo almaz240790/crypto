@@ -1,4 +1,4 @@
-import { CHART_TYPES, LAYERS_VERSION, canAdd, clampParams, indicatorById, nextUid, normalizeInstances, normalizeMarkup, resolvePreset, selectPreset, setLayerOverride, suggestParams, type ChartType, type IndicatorInstance, type LayerKey, type MarkupSettings, type PanelKey, type PresetId, type ScaleMode } from "@platform/charts";
+import { CHART_TYPES, LAYERS_VERSION, canAdd, clampParams, indicatorById, isEmptyPaneLayout, nextUid, normalizeInstances, normalizeMarkup, normalizePaneLayout, prunePaneLayout, resolvePreset, selectPreset, setLayerOverride, suggestParams, type ChartType, type IndicatorInstance, type LayerKey, type MarkupSettings, type PaneLayout, type PanelKey, type PresetId, type ScaleMode } from "@platform/charts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getLayout, putLayout } from "@/lib/drawings";
 import { TEMPLATES } from "../templates";
@@ -18,6 +18,12 @@ export interface SavedV5 {
   panels: PanelKey[];
   scale: ScaleMode;
   overlay: string | null;
+  /**
+   * Порядок и высоты панелей под графиком (ADR-0009, «Управление панелями»): только у панелей, которые есть сейчас;
+   * пустая раскладка не хранится (поля нет — порядок добавления и высоты по умолчанию). Новое поле без смены
+   * версии: старые сохранения его не имеют, старая сборка его отбрасывает.
+   */
+  paneLayout?: PaneLayout;
   updated_at?: number;
 }
 
@@ -28,6 +34,19 @@ export const DEFAULT_SAVED: SavedV5 = { layers_v: LAYERS_VERSION, type: "candles
 const PANEL_KEYS: readonly PanelKey[] = ["funding", "oi", "liq", "ls"];
 const SCALES: readonly ScaleMode[] = ["linear", "log", "percent"];
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+
+/** Ключи панелей под графиком: экземпляры индикаторов на отдельной панели (uid) и панели данных фьючерсов. */
+export function paneKeys(s: Pick<SavedV5, "indicators" | "panels">): string[] {
+  return [...s.indicators.filter((i) => indicatorById(i.id)?.pane === "separate").map((i) => i.uid), ...s.panels];
+}
+
+/** Настройки с раскладкой панелей: записи убранных панелей отбрасываются, пустая раскладка — без поля. */
+export function withPaneLayout(s: SavedV5, l: PaneLayout | undefined): SavedV5 {
+  const { paneLayout: _p, ...rest } = s;
+  void _p;
+  const pruned = l ? prunePaneLayout(l, paneKeys(s)) : undefined;
+  return pruned && !isEmptyPaneLayout(pruned) ? { ...rest, paneLayout: pruned } : rest;
+}
 
 /** Сохранение старше v5 (набор слоёв `layers` или без версии): разметка сбрасывается на «Чистый». */
 export function isLegacySave(raw: unknown): boolean {
@@ -56,24 +75,27 @@ export function migrateSaved(raw: unknown): SavedV5 {
     overlay: typeof raw.overlay === "string" && raw.overlay ? raw.overlay : null,
   };
   if (typeof raw.updated_at === "number" && Number.isFinite(raw.updated_at)) out.updated_at = raw.updated_at;
-  return out;
+  // раскладка панелей: мусор — без поля; ключи — только панелей из этих же настроек
+  return raw.paneLayout === undefined ? out : withPaneLayout(out, normalizePaneLayout(raw.paneLayout));
 }
 
 /**
  * Раскладка поверх текущих настроек (именованная или с сервера): поля, которых в раскладке нет (шкала,
- * наложение), остаются текущими; разметка и версия — только из раскладки, поэтому раскладка v4 станет «Чистым».
+ * наложение), остаются текущими; разметка, версия и раскладка панелей — только из раскладки, поэтому раскладка v4
+ * станет «Чистым», а раскладка без порядка и высот панелей — с порядком добавления и высотами по умолчанию.
  */
 export function migrateLayout(raw: unknown, base: SavedV5): SavedV5 {
   if (!isObj(raw)) return base;
-  const { markup: _m, layers_v: _v, ...rest } = base;
+  const { markup: _m, layers_v: _v, paneLayout: _p, ...rest } = base;
   void _m;
   void _v;
+  void _p;
   return migrateSaved({ ...rest, ...raw, layers_v: raw.layers_v, markup: raw.markup });
 }
 
 /** Что пишет saveLayout: разметка и версия 5 вместо набора слоёв. */
 export function layoutData(s: SavedV5, symbol: string, tf: string): Record<string, unknown> {
-  return { layers_v: LAYERS_VERSION, type: s.type, indicators: s.indicators, markup: s.markup, panels: s.panels, symbol, tf };
+  return { layers_v: LAYERS_VERSION, type: s.type, indicators: s.indicators, markup: s.markup, panels: s.panels, ...(s.paneLayout ? { paneLayout: s.paneLayout } : {}), symbol, tf };
 }
 
 /** Новый экземпляр индикатора в конце списка (если лимит позволяет): uid — минимальный свободный номер. */
@@ -152,7 +174,15 @@ export function useTerminalSettings(authed: boolean) {
 
   const st = saved ?? load();
   /** Изменение настроек с отметкой времени (по ней сервер и локальная копия решают, что новее). */
-  const update = useCallback((fn: (cur: SavedV5) => SavedV5) => setSaved((p) => ({ ...fn(p ?? load()), updated_at: Date.now() })), []);
+  // после любой правки раскладка панелей — только у оставшихся панелей (убрали RSI — его высота и место забыты)
+  const update = useCallback(
+    (fn: (cur: SavedV5) => SavedV5) =>
+      setSaved((p) => {
+        const next = fn(p ?? load());
+        return { ...withPaneLayout(next, next.paneLayout), updated_at: Date.now() };
+      }),
+    [],
+  );
   const patch = useCallback((p: Partial<Omit<SavedV5, "layers_v" | "updated_at">>) => update((cur) => ({ ...cur, ...p })), [update]);
   /** Флажок в «Индикаторах»: есть экземпляры — убрать все, нет — добавить один с параметрами по умолчанию. */
   const toggleIndicator = useCallback(
@@ -220,10 +250,18 @@ export function useTerminalSettings(authed: boolean) {
     },
     [update],
   );
+  /** Порядок и высоты панелей под графиком (граница, «выше / ниже»): пустая раскладка — поле убирается. */
+  const setPaneLayout = useCallback((l: PaneLayout) => update((cur) => withPaneLayout(cur, l)), [update]);
+  /** «убрать» в заголовке панели: экземпляр индикатора по uid или панель данных фьючерсов по ключу. */
+  const removePane = useCallback(
+    (key: string) =>
+      update((cur) => (PANEL_KEYS.includes(key as PanelKey) ? { ...cur, panels: cur.panels.filter((k) => k !== key) } : { ...cur, indicators: cur.indicators.filter((i) => i.uid !== key) })),
+    [update],
+  );
   /** Именованная раскладка поверх текущих настроек — через ту же миграцию: v4 применяется как «Чистый». */
   const applyLayout = useCallback((raw: unknown) => update((cur) => migrateLayout(raw, cur)), [update]);
 
-  return { st, resolved, legacyFound, patch, toggleIndicator, addIndicator, removeInstance, setInstanceParams, toggleInstanceHidden, togglePanel, toggleLayer, selectMarkup, applyTemplate, applyLayout };
+  return { st, resolved, legacyFound, patch, toggleIndicator, addIndicator, removeInstance, setInstanceParams, toggleInstanceHidden, togglePanel, toggleLayer, selectMarkup, applyTemplate, applyLayout, setPaneLayout, removePane };
 }
 
 export type TerminalSettings = ReturnType<typeof useTerminalSettings>;
