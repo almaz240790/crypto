@@ -23,6 +23,11 @@ type Props = {
   onDone: () => void;
 };
 
+/** Название в списке: объём — «Объём», как заголовок его панели (в реестре — «Volume»). */
+const pickerTitle = (spec: IndicatorSpec, t: (s: string) => string) => (spec.id === "volume" ? t("Объём") : t(spec.title));
+/** Порядок под графиком (§9): RSI, MACD, Stochastic, ATR, CCI, OBV и последним — объём; остальное — как в реестре. */
+const pickerOrder = (list: readonly IndicatorSpec[]) => [...list].sort((a, b) => Number(a.id === "volume") - Number(b.id === "volume"));
+
 /** Подсказки панелей производных: ликвидации — публичный поток, не полный объём. */
 const PANEL_HINT: Partial<Record<PanelKey, string>> = { liq: "данные публичного потока, не полный объём" };
 
@@ -52,25 +57,31 @@ export function IndicatorsPicker({ instances, panels, onIndicator, onAdd, onRemo
       </fieldset>
     );
   const indicator = (spec: IndicatorSpec): false | ReactElement => {
-    if (!match(t(spec.title))) return false;
+    const title = pickerTitle(spec, t);
+    if (!match(title)) return false;
     const mine = instances.filter((i) => i.id === spec.id);
     const multi = maxInstances(spec.id) > 1 && spec.pane === "overlay";
     const color = mine[0] ? colors.get(mine[0].uid) : undefined;
     return (
       <div key={spec.id} className={c.pickerItem}>
-        {row(spec.id, t(spec.title), mine.length > 0, () => onIndicator(spec.id), IND_COLOR_VAR[color ?? indicatorColor(spec.id)])}
+        {row(spec.id, title, mine.length > 0, () => onIndicator(spec.id), IND_COLOR_VAR[color ?? indicatorColor(spec.id)])}
         {mine.length > 0 && (spec.params.length > 0 || multi) && (
           <div className={c.instances}>
             {mine.map((inst) => {
               const name = instanceTitle(spec, inst.params, t);
               return (
                 <div key={inst.uid} className={c.instance}>
-                  <span className={c.dot} style={{ background: `var(${IND_COLOR_VAR[colors.get(inst.uid) ?? indicatorColor(spec.id)]})` }} aria-hidden="true" />
+                  {/* точка и «убрать» — на уровне первой строки полей, когда поля переносятся на несколько строк */}
+                  <span className={c.instanceLead} aria-hidden="true">
+                    <span className={c.dot} style={{ background: `var(${IND_COLOR_VAR[colors.get(inst.uid) ?? indicatorColor(spec.id)]})` }} />
+                  </span>
                   <IndicatorParams inst={inst} onChange={onParams} />
                   {multi && (
-                    <IconButton size="xs" label={t("убрать {name}", { name })} onClick={() => onRemove(inst.uid)}>
-                      <IconClose />
-                    </IconButton>
+                    <span className={c.instanceLead}>
+                      <IconButton size="xs" label={t("убрать {name}", { name })} onClick={() => onRemove(inst.uid)}>
+                        <IconClose />
+                      </IconButton>
+                    </span>
                   )}
                 </div>
               );
@@ -85,7 +96,7 @@ export function IndicatorsPicker({ instances, panels, onIndicator, onAdd, onRemo
       </div>
     );
   };
-  const ind = (pane: "overlay" | "separate") => INDICATORS.filter((i) => i.pane === pane).map(indicator);
+  const ind = (pane: "overlay" | "separate") => pickerOrder(INDICATORS.filter((i) => i.pane === pane)).map(indicator);
   return (
     <div className={c.picker}>
       <div className={c.pickerHead}>

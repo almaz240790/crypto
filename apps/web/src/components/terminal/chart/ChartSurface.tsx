@@ -119,6 +119,8 @@ const MOBILE_QUERY = MQ.mobile;
 /** Формат шкалы индикатора на отдельной панели: объём и OBV — компактно, остальное — значения. */
 const COMPACT_INDICATORS = new Set(["volume", "obv"]);
 const indicatorFormat = (id: string): PriceFormat => (COMPACT_INDICATORS.has(id) ? COMPACT_FORMAT : VALUE_FORMAT);
+/** Зазор между низом легенды и верхом свечей, px (верхнее поле шкалы цены — Terminal.setTopMargin). */
+const LEGEND_GAP_PX = 6;
 const NO_PATTERNS: readonly PatternOnChart[] = [];
 const NO_FIGURES: readonly FigureOnChart[] = [];
 
@@ -164,6 +166,8 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
   const legendRef = useRef<HTMLDivElement>(null);
   /** Прямоугольник легенды в координатах графика (CSS px) — препятствие для подписей разметки. */
   const [legendBox, setLegendBox] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+  /** Низ легенды без строки OHLC под перекрестием: под него — верхнее поле шкалы цены (свечи не уходят под легенду). */
+  const [legendBottom, setLegendBottom] = useState<number | null>(null);
   const collapsedRef = useRef<Set<string>>(new Set());
   const paneObsRef = useRef<ResizeObserver | null>(null);
   const swipeRef = useRef<{ key: string; y: number } | null>(null);
@@ -635,6 +639,7 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     const el = ref.current;
     if (!hasLegend || !host || !el) {
       setLegendBox(null);
+      setLegendBottom(null);
       return;
     }
     const measure = () => {
@@ -642,12 +647,21 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
       const r0 = el.getBoundingClientRect();
       const next = r.width > 0 && r.height > 0 ? { x: Math.round(r.left - r0.left), y: Math.round(r.top - r0.top), w: Math.round(r.width), h: Math.round(r.height) } : null;
       setLegendBox((prev) => (prev === next || (prev && next && prev.x === next.x && prev.y === next.y && prev.w === next.w && prev.h === next.h) ? prev : next));
+      // под перекрестием легенда шире на строку OHLC (и может перенестись): поле шкалы от этого не прыгает
+      if (!store.getState().crosshair) setLegendBottom(next ? next.y + next.h : null);
     };
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(host);
     return () => ro.disconnect();
-  }, [hasLegend]);
+  }, [hasLegend, store]);
+
+  // верхнее поле шкалы цены — под легенду (план 2B.9 §10, не больше 35 % панели): свечи не рисуются под строками
+  useLayoutEffect(() => {
+    const term = termRef.current;
+    if (!term || !mainBox || mainBox.h <= 0) return;
+    term.setTopMargin(legendBottom == null ? 0 : (legendBottom + LEGEND_GAP_PX) / mainBox.h);
+  }, [legendBottom, mainBox]);
 
   // угол графика и легенда — препятствия для подписей разметки (координаты основной панели, CSS px)
   const hasCorner = !!corner;
@@ -708,7 +722,7 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
           <span className={s.paneTitle} style={h.color ? { color: h.color } : undefined}>
             {h.title}
           </span>
-          {h.values && !h.collapsed && <PaneValue store={store} uid={h.key} />}
+          {h.values && !h.collapsed && <PaneValue store={store} uid={h.key} compact={COMPACT_INDICATORS.has(h.testId)} />}
           <button type="button" className={s.paneToggle} aria-expanded={!h.collapsed} aria-label={t(h.collapsed ? "развернуть панель {name}" : "свернуть панель {name}", { name: h.title })} onClick={() => togglePane(h.key)}>
             {h.collapsed ? "▴" : "▾"}
           </button>

@@ -1,7 +1,7 @@
 "use client";
 
-import { formatCompactValue, formatIndicatorValue, formatSignedPercent, indicatorById, instanceColors, instanceTitle, type ChartState, type ChartStore, type IndicatorInstance, type IndicatorValue } from "@platform/charts";
-import { memo, useMemo } from "react";
+import { formatCompactValue, formatIndicatorValue, formatSignedPercent, indicatorById, instanceColors, instanceTitle, type Candle, type ChartState, type ChartStore, type IndicatorInstance, type IndicatorValue } from "@platform/charts";
+import { memo, useMemo, useState } from "react";
 import { IconButton, Popover, usePopover } from "@/components/ui";
 import { IconClose } from "@/components/ui/icons";
 import { useT } from "@/i18n/client";
@@ -26,7 +26,19 @@ type Props = {
   onHide: (uid: string) => void;
   onRemove: (uid: string) => void;
   onParams: (uid: string, params: Record<string, number>) => void;
+  /** Наложенный инструмент (план 2A.3): строка «ETHUSDT · наложение» со значением и «убрать наложение». */
+  overlay?: LegendOverlay | null;
+  onOverlayRemove?: () => void;
 };
+
+/** Наложение в легенде: инструмент, его закрытые свечи на том же таймфрейме и шаг цены. */
+export type LegendOverlay = { symbol: string; candles: readonly Candle[]; tick: string | null };
+
+/**
+ * Строк индикаторов в легенде без раскрытия: остальные — за «ещё N» (как сворачивает легенду TradingView), чтобы
+ * легенда не росла на пол-панели и не закрывала свечи (её высота уходит в верхнее поле шкалы цены).
+ */
+export const LEGEND_ROWS = 3;
 
 const selectCross = (s: ChartState) => s.crosshair;
 const selectValues = (s: ChartState) => s.values;
@@ -39,13 +51,16 @@ const selectValues = (s: ChartState) => s.values;
  * data-testid — «ohlc» под перекрестием (контракт e2e: только при активном перекрестии), иначе «legend».
  * Лист: читает перекрестие и значения из хранилища графика сам — TerminalShell при движении курсора не перерисовывается.
  */
-export const OhlcLegend = memo(function OhlcLegend({ store, symbol, tfLabel, exchange, tick, instances, liqLayerOn, onHide, onRemove, onParams }: Props) {
+export const OhlcLegend = memo(function OhlcLegend({ store, symbol, tfLabel, exchange, tick, instances, liqLayerOn, onHide, onRemove, onParams, overlay = null, onOverlayRemove }: Props) {
   const t = useT();
   const cross = useChartStore(selectCross, store);
   const last = useChartStore(selectValues, store);
+  const [expanded, setExpanded] = useState(false);
   const values = cross?.values ?? last;
   const colors = useMemo(() => instanceColors(instances), [instances]);
   const overlays = instances.filter((i) => indicatorById(i.id)?.pane === "overlay");
+  const more = overlays.length - LEGEND_ROWS;
+  const shown = more > 0 && !expanded ? overlays.slice(0, LEGEND_ROWS) : overlays;
   const k = cross?.candle;
   const px = (v: number) => formatPrice(v, tick);
   const change = k && k.open ? ((k.close - k.open) / k.open) * 100 : null;
@@ -69,9 +84,15 @@ export const OhlcLegend = memo(function OhlcLegend({ store, symbol, tfLabel, exc
         )}
       </div>
       <LiqUnavailableNote store={store} on={liqLayerOn} inline />
-      {overlays.map((inst) => (
+      {overlay && <OverlayRow overlay={overlay} time={cross?.time ?? null} onRemove={onOverlayRemove} />}
+      {shown.map((inst) => (
         <IndicatorRow key={inst.uid} inst={inst} color={`var(${IND_COLOR_VAR[colors.get(inst.uid) ?? "ind1"]})`} values={values} tick={tick} onHide={onHide} onRemove={onRemove} onParams={onParams} />
       ))}
+      {more > 0 && (
+        <button type="button" className={c.legendMore} aria-expanded={expanded} onClick={() => setExpanded((x) => !x)}>
+          {expanded ? t("свернуть") : t("ещё {n}", { n: more })}
+        </button>
+      )}
     </div>
   );
 });
@@ -96,9 +117,10 @@ function IndicatorRow({ inst, color, values, tick, onHide, onRemove, onParams }:
     <div className={c.legendRow} data-hidden={inst.hidden || undefined}>
       <span className={c.legendDot} style={{ background: color }} aria-hidden="true" />
       <span className={c.legendName}>{name}</span>
+      {/* значения непрозрачные (контраст на плашке): первое — цвет экземпляра, линии полос — --text-2 */}
       {!inst.hidden &&
-        mine.map((v) => (
-          <span key={v.key} className="num" style={{ color: v.color }}>
+        mine.map((v, i) => (
+          <span key={v.key} className="num" style={{ color: i === 0 ? color : "var(--text-2)" }}>
             {fmt(v)}
           </span>
         ))}
@@ -121,6 +143,43 @@ function IndicatorRow({ inst, color, values, tick, onHide, onRemove, onParams }:
           <IndicatorParams inst={inst} onChange={onParams} />
         </div>
       </Popover>
+    </div>
+  );
+}
+
+/** Закрытие наложенного инструмента на свече времени time (null — последнее). */
+function overlayClose(candles: readonly Candle[], time: number | null): number | null {
+  if (candles.length === 0) return null;
+  if (time === null) return candles[candles.length - 1]!.close;
+  let lo = 0;
+  let hi = candles.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const x = candles[mid]!.time;
+    if (x === time) return candles[mid]!.close;
+    if (x < time) lo = mid + 1;
+    else hi = mid - 1;
+  }
+  return null;
+}
+
+/** Строка наложения: нейтральная точка --text-2 (как линия на графике), «ETHUSDT · наложение», закрытие и «убрать». */
+function OverlayRow({ overlay, time, onRemove }: { overlay: LegendOverlay; time: number | null; onRemove?: () => void }) {
+  const t = useT();
+  const v = overlayClose(overlay.candles, time);
+  return (
+    <div className={c.legendRow} data-testid="legend-overlay">
+      <span className={c.legendDot} style={{ background: "var(--text-2)" }} aria-hidden="true" />
+      <span className={c.legendName}>{overlay.symbol}</span>
+      <span className={c.legendNote}>{t("наложение")}</span>
+      <span className="num">{v == null ? "—" : formatPrice(v, overlay.tick)}</span>
+      {onRemove && (
+        <span className={c.legendActions}>
+          <IconButton size="xs" label={t("убрать наложение")} onClick={onRemove}>
+            <IconClose />
+          </IconButton>
+        </span>
+      )}
     </div>
   );
 }

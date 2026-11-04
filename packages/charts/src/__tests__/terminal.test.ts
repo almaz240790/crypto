@@ -120,7 +120,8 @@ vi.mock("lightweight-charts", () => {
       },
       removeSeries: (s: FakeSeries) => series.splice(series.indexOf(s), 1),
       timeScale: () => ts,
-      priceScale: () => ({ applyOptions: () => {} }),
+      scales: [] as { id: string; opts: Record<string, unknown> }[],
+      priceScale: (id = "right") => ({ applyOptions: (o: Record<string, unknown>) => chart.scales.push({ id, opts: o }) }),
       applyOptions: (o: Record<string, unknown>) => chart.applied.push(o),
       panes: () => [],
       addPane: () => ({ setHeight: () => {} }),
@@ -149,7 +150,8 @@ import { createTerminal, type Terminal } from "../terminal";
 type FakeChart = {
   width: number;
   series: FakeSeries[];
-  applied: { layout?: { fontSize?: number; background?: unknown }; timeScale?: Record<string, unknown> }[];
+  applied: { layout?: { fontSize?: number; background?: unknown }; timeScale?: Record<string, unknown>; rightPriceScale?: { scaleMargins?: { top: number } } }[];
+  scales: { id: string; opts: { scaleMargins?: { top: number; bottom: number } } }[];
   ts: { setCalls: number; applied: Record<string, unknown>[]; getVisibleLogicalRange(): Range | null; setVisibleLogicalRange(r: Range): void };
   timeAt(i: number): number | undefined;
 };
@@ -382,6 +384,38 @@ describe("шрифт шкал", () => {
     const last = chart.applied.at(-1)!;
     expect(last.layout?.fontSize).toBe(10);
     expect(last.layout?.background).toBeDefined();
+  });
+});
+
+describe("верхнее поле шкалы цены под легенду (план 2B.9 §10)", () => {
+  const topOf = (id: string) => chart.scales.filter((x) => x.id === id && x.opts.scaleMargins).at(-1)?.opts.scaleMargins;
+
+  it("доля панели — в пределах 0.08…0.35; низ (объём) не меняется; мелкие изменения не применяются", () => {
+    make();
+    term.setTopMargin(0.2);
+    expect(topOf("right")).toEqual({ top: 0.2, bottom: 0.2 });
+    term.setTopMargin(0.9);
+    expect(term.topMarginShare).toBe(0.35);
+    term.setTopMargin(0.01);
+    expect(term.topMarginShare).toBe(0.08);
+    const n = chart.scales.length;
+    term.setTopMargin(0.083);
+    expect(chart.scales.length).toBe(n);
+    term.setTopMargin(Number.NaN);
+    expect(term.topMarginShare).toBe(0.08);
+  });
+
+  it("переживает смену темы и действует на шкалу наложенного инструмента", () => {
+    make();
+    term.setCandles(bars(0, 50), false);
+    term.setTopMargin(0.25);
+    term.setTheme({ ...tokens, surface: "#ffffff" });
+    expect(chart.applied.at(-1)!.rightPriceScale?.scaleMargins?.top).toBe(0.08);
+    expect(topOf("right")?.top).toBe(0.25);
+    term.setOverlay(bars(0, 50), "#999999");
+    expect(topOf("overlay")?.top).toBe(0.25);
+    term.setTopMargin(0.3);
+    expect(topOf("overlay")?.top).toBe(0.3);
   });
 });
 

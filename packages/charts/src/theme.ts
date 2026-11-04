@@ -15,6 +15,14 @@ export function alpha(hex: string, a: number): string {
   return `rgba(${parseInt(m[1]!, 16)}, ${parseInt(m[2]!, 16)}, ${parseInt(m[3]!, 16)}, ${a})`;
 }
 
+/** Поля шкалы цены основной панели (доли высоты): сверху — воздух над свечами, снизу — объём. */
+export const PRICE_MARGINS = { top: 0.08, bottom: 0.2 } as const;
+/**
+ * Верхнее поле не больше этой доли панели (план 2B.9 §10): поле растёт под легенду графика, чтобы она не закрывала
+ * свечи, но свечам остаётся не меньше 45 % высоты (с объёмом снизу).
+ */
+export const PRICE_MARGIN_TOP_MAX = 0.35;
+
 /**
  * Настройки LWC из токенов: без градиентов и свечений, сетка — токен границы (план 5.6). Шрифт шкал —
  * из вида устройства (12 / 11 px). Вид шкалы времени (шаг бара, отступ справа) здесь не задаётся: эти настройки
@@ -39,7 +47,7 @@ export function chartOptions(t: ThemeTokens, fontSize: number = DEFAULT_SCALE_FO
       horzLine: { color: t.text3, width: 1, style: LineStyle.Dashed, labelBackgroundColor: t.text },
     },
     // минимальная ширина шкалы — страховка: если браузер неверно измерит текст, цены всё равно не обрежутся
-    rightPriceScale: { borderColor: t.border, scaleMargins: { top: 0.08, bottom: 0.2 }, minimumWidth: PRICE_SCALE_MIN_PX },
+    rightPriceScale: { borderColor: t.border, scaleMargins: { ...PRICE_MARGINS }, minimumWidth: PRICE_SCALE_MIN_PX },
     timeScale: { borderColor: t.border, timeVisible: true, secondsVisible: false, minBarSpacing: 2 },
     // колесо и трекпад обрабатывает Terminal сам (см. onWheel): горизонтальный жест — прокрутка,
     // вертикальный и pinch — масштаб вокруг курсора; встроенная обработка слишком резкая на трекпаде

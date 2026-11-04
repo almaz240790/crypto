@@ -7,12 +7,14 @@ const SCALE_MODES: Record<ScaleMode, PriceScaleMode> = { linear: PriceScaleMode.
 /** Деление процентной шкалы так же, как PercentageFormatter LWC: знак «−» (U+2212), два знака, «%». */
 export const formatPercentTick = (p: number): string => `${p < 0 ? "−" : ""}${Math.abs(p).toFixed(2)}%`;
 const OVERLAY_SCALE = "overlay";
+/** Изменение верхнего поля меньше полпроцента панели не применяется: легенда меняет высоту на пиксели. */
+const TOP_MARGIN_EPS = 0.005;
 import { createBuffer, EDGE, needsNewer, needsOlder, prependOlder, pushLatest, replaceNewest, type BufferState } from "./buffer";
 import { heikinAshi } from "./heikin";
 import { LayerManager } from "./layers";
 import { INTERACTION, VIEW } from "./presets";
 import { planPanes } from "./controller/paneManager";
-import { chartOptions, seriesColors } from "./theme";
+import { chartOptions, PRICE_MARGIN_TOP_MAX, PRICE_MARGINS, seriesColors } from "./theme";
 import type { Candle, ChartType, ThemeTokens } from "./types";
 
 export type TerminalOptions = {
@@ -70,6 +72,8 @@ export class Terminal {
   private overlayLast: number | null = null;
   private fontSize: number;
   private rightOffsetPx: number;
+  /** Верхнее поле шкалы цены (доля панели): под легендой графика (setTopMargin). */
+  private topMargin: number = PRICE_MARGINS.top;
   private readonly container: HTMLElement;
 
   constructor(container: HTMLElement, opts: TerminalOptions) {
@@ -161,9 +165,36 @@ export class Terminal {
     return this.rightOffsetPx;
   }
 
+  /**
+   * Верхнее поле шкалы цены — доля высоты основной панели (план 2B.9 §10): легенда графика в левом верхнем углу не
+   * закрывает свечи. Не меньше PRICE_MARGINS.top и не больше PRICE_MARGIN_TOP_MAX; у наложенного инструмента — то же.
+   * Хранится в Terminal: смена темы заново применяет chartOptions (там поле по умолчанию).
+   */
+  setTopMargin(share: number): void {
+    const top = Math.min(PRICE_MARGIN_TOP_MAX, Math.max(PRICE_MARGINS.top, Number.isFinite(share) ? share : PRICE_MARGINS.top));
+    if (Math.abs(top - this.topMargin) < TOP_MARGIN_EPS) return;
+    this.topMargin = top;
+    this.applyMargins();
+  }
+
+  /** Текущее верхнее поле шкалы цены (доля панели). */
+  get topMarginShare(): number {
+    return this.topMargin;
+  }
+
+  private margins() {
+    return { top: this.topMargin, bottom: PRICE_MARGINS.bottom };
+  }
+
+  private applyMargins(): void {
+    this.chart.priceScale("right").applyOptions({ scaleMargins: this.margins() });
+    if (this.overlay) this.chart.priceScale(OVERLAY_SCALE).applyOptions({ scaleMargins: this.margins() });
+  }
+
   setTheme(tokens: ThemeTokens): void {
     this.tokens = tokens;
     this.chart.applyOptions(chartOptions(tokens, this.fontSize));
+    if (this.topMargin !== PRICE_MARGINS.top) this.applyMargins();
     const c = seriesColors(tokens);
     if (this.type === "bars") this.main.applyOptions(c.bars);
     else if (this.type === "line") this.main.applyOptions(c.line);
@@ -348,7 +379,7 @@ export class Terminal {
     this.overlayCandles = candles;
     if (!this.overlay) {
       this.overlay = this.chart.addSeries(LineSeries, { color, lineWidth: 1, priceLineVisible: false, lastValueVisible: true, crosshairMarkerVisible: false, priceScaleId: this.scaleMode === "percent" ? "right" : OVERLAY_SCALE }, 0);
-      this.chart.priceScale(OVERLAY_SCALE).applyOptions({ visible: false, scaleMargins: { top: 0.08, bottom: 0.2 } });
+      this.chart.priceScale(OVERLAY_SCALE).applyOptions({ visible: false, scaleMargins: this.margins() });
     } else {
       this.overlay.applyOptions({ color });
     }

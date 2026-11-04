@@ -450,3 +450,76 @@ test("вход, /v1/billing/me не отвечает: минутные ТФ не
   await page.locator("body").press("1");
   await expect(page).toHaveURL(/\/chart\/BTCUSDT\/1m$/);
 });
+
+test("легенда: больше трёх наложений — «ещё N»; свечи не под легендой (верхнее поле шкалы цены); значения непрозрачные", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  // только наложения: панелей под графиком нет, основная панель — во всю высоту
+  await page.addInitScript((v) => localStorage.setItem("pl-terminal", JSON.stringify(v)), { ...MANY_INDICATORS, indicators: ["ema", "sma", "supertrend", "bb", "ichimoku", "keltner"].map((id) => ({ id, params: {} })) });
+  await open(page);
+  const legend = page.getByTestId("legend");
+  const rows = legend.locator("[class*=legendRow]");
+  // шесть наложений: три строки и «ещё 3»
+  await expect(rows).toHaveCount(3);
+  const more = legend.getByRole("button", { name: "ещё 3" });
+  await expect(more).toHaveAttribute("aria-expanded", "false");
+  // верхнее поле шкалы цены — под низ легенды (доля панели, не больше 0.35)
+  const fit = () =>
+    page.evaluate(() => {
+      const host = document.querySelector<HTMLElement>("[data-testid=terminal]")! as HTMLElement & { __chart: { priceScale(id: string): { options(): { scaleMargins: { top: number } } }; panes(): { getHeight(): number }[] } };
+      const lg = document.querySelector<HTMLElement>("[data-testid=legend]")!.getBoundingClientRect();
+      const top = host.__chart.priceScale("right").options().scaleMargins.top;
+      const h = host.__chart.panes()[0]!.getHeight();
+      return { top, free: top * h, legendBottom: lg.bottom - host.getBoundingClientRect().top };
+    });
+  await expect.poll(async () => (await fit()).top).toBeGreaterThan(0.08);
+  let f = await fit();
+  expect(f.free).toBeGreaterThanOrEqual(f.legendBottom);
+  // раскрыта — шесть строк, поле растёт, но не больше 35 % панели
+  await more.click();
+  await expect(rows).toHaveCount(6);
+  await expect(legend.getByRole("button", { name: "свернуть" })).toHaveAttribute("aria-expanded", "true");
+  await expect.poll(async () => (await fit()).top).toBeGreaterThan(f.top);
+  f = await fit();
+  expect(f.top).toBeLessThanOrEqual(0.35);
+  // поле — до низа легенды, если легенда не выше 35 % панели
+  expect(f.free + 1).toBeGreaterThanOrEqual(Math.min(f.legendBottom, 0.35 * (f.free / f.top)));
+  // значения в строках — непрозрачным цветом (линии полос на графике бледнее, в легенде — нет)
+  const colors = await rows.locator(".num").evaluateAll((els) => els.map((e) => getComputedStyle(e).color));
+  expect(colors.length).toBeGreaterThan(6);
+  for (const c of colors) expect(c, c).not.toMatch(/rgba\([^)]*,\s*0?\.\d+\)/);
+});
+
+test("наложенный инструмент — строкой легенды «ETHUSDT · наложение» со значением; «убрать наложение» снимает его", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.addInitScript(() => localStorage.setItem("pl-terminal", JSON.stringify({ layers_v: 5, type: "candles", indicators: [{ id: "ema", params: { period: 50 } }], markup: { preset: "clean", overrides: {} }, panels: [], scale: "percent", overlay: "ETHUSDT" })));
+  await open(page);
+  const row = page.getByTestId("legend-overlay");
+  await expect(row).toContainText("ETHUSDT");
+  await expect(row).toContainText("наложение");
+  await expect(row.locator(".num")).toHaveText(/^\d[\d\s]*\.\d+$/);
+  await row.hover();
+  await row.getByRole("button", { name: "убрать наложение" }).click();
+  await expect(page.getByTestId("legend-overlay")).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("pl-terminal") ?? "{}").overlay)).toBeNull();
+});
+
+test("заголовки панелей объёма и OBV — компактно, как их шкала; в «Индикаторах» объём — «Объём», последним; точка экземпляра — у первой строки полей", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.addInitScript((v) => localStorage.setItem("pl-terminal", JSON.stringify(v)), { ...MANY_INDICATORS, indicators: ["macd", "volume", "obv"].map((id) => ({ id, params: {} })) });
+  await open(page);
+  await expect(page.getByTestId("pane-volume")).toContainText("1.00K");
+  await expect(page.getByTestId("pane-volume")).not.toContainText("1 000.00");
+  await expect(page.getByTestId("pane-obv")).toContainText(/\d(\.\d+)?K/);
+  await page.getByRole("button", { name: /^Индикаторы/ }).click();
+  const dlg = page.getByRole("dialog", { name: "Индикаторы" });
+  const below = dlg.getByRole("group", { name: "Под графиком" });
+  expect((await below.getByRole("checkbox").evaluateAll((els) => els.map((e) => e.closest("label")!.textContent!.trim())))).toEqual(["RSI", "MACD", "Stochastic", "ATR", "CCI", "OBV", "Объём"]);
+  // MACD: три поля переносятся на несколько строк; точка — на уровне первого поля
+  const dot = await dlg.getByLabel("Быстрая MACD 12 26 9").evaluate((input) => {
+    const inst = input.closest("[class*=instance]")!;
+    const d = inst.querySelector("[class*=dot]")!.getBoundingClientRect();
+    const i = input.getBoundingClientRect();
+    return Math.abs(d.top + d.height / 2 - (i.top + i.height / 2));
+  });
+  expect(dot).toBeLessThanOrEqual(1.5);
+});

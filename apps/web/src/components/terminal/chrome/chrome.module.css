@@ -398,10 +398,20 @@
 }
 
 .instance {
+  /* высота первой строки полей (поле параметра 28 px, под пальцем 44): по ней ставятся точка и «убрать» */
+  --param-row-h: 28px;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: var(--gap-2);
   min-height: 32px;
+  padding: 2px 0;
+}
+
+.instanceLead {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  height: var(--param-row-h);
 }
 
 .addInstance {
@@ -490,6 +500,10 @@
   .toolbar button,
   .toolbar a {
     min-width: var(--touch-min);
+  }
+
+  .instance {
+    --param-row-h: var(--touch-min);
   }
 }
 

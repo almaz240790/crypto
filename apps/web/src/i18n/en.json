@@ -1371,5 +1371,8 @@
   "Горячие клавиши": "Keyboard shortcuts",
   "удалить выбранный рисунок": "delete the selected drawing",
   "приблизить / отдалить": "zoom in / out",
-  "снять выбор, закончить рисование": "clear selection, stop drawing"
+  "снять выбор, закончить рисование": "clear selection, stop drawing",
+  "свернуть": "show less",
+  "ещё {n}": "{n} more",
+  "убрать наложение": "remove overlay"
 }

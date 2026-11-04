@@ -275,9 +275,13 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
   const signalsLink = data.layers?.signals.length ? { symbol, n: data.layers.signals.length } : null;
   const clearCrosshair = useCallback(() => controls.current?.clearCrosshair(), []);
   const liqLayerOn = resolved.layers.liq_map;
+  // наложенный инструмент — строкой легенды: на графике его линия без подписи (D4)
+  const overlayTick = overlaySymbol ? (instruments.find((i) => i.symbol === overlaySymbol)?.tick_size ?? null) : null;
+  const legendOverlay = useMemo(() => (overlaySymbol && overlayCandles?.length ? { symbol: overlaySymbol, candles: overlayCandles, tick: overlayTick } : null), [overlaySymbol, overlayCandles, overlayTick]);
+  const removeOverlay = useCallback(() => patch({ overlay: null }), [patch]);
   const legend = useMemo(
-    () => (desktop ? <OhlcLegend store={store} symbol={symbol} tfLabel={t(TF_LABEL[tf])} exchange="Binance" tick={data.tick} instances={st.indicators} liqLayerOn={liqLayerOn} onHide={toggleInstanceHidden} onRemove={removeInstance} onParams={setInstanceParams} /> : null),
-    [desktop, store, symbol, t, tf, data.tick, st.indicators, liqLayerOn, toggleInstanceHidden, removeInstance, setInstanceParams],
+    () => (desktop ? <OhlcLegend store={store} symbol={symbol} tfLabel={t(TF_LABEL[tf])} exchange="Binance" tick={data.tick} instances={st.indicators} liqLayerOn={liqLayerOn} onHide={toggleInstanceHidden} onRemove={removeInstance} onParams={setInstanceParams} overlay={legendOverlay} onOverlayRemove={removeOverlay} /> : null),
+    [desktop, store, symbol, t, tf, data.tick, st.indicators, liqLayerOn, toggleInstanceHidden, removeInstance, setInstanceParams, legendOverlay, removeOverlay],
   );
   // правая панель: стабильные пропсы (memo), «Найдено» и счётчики читают хранилище графика сами
   const panelDrawings = useMemo(
