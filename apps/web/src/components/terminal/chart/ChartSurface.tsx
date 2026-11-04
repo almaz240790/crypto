@@ -38,6 +38,7 @@ export const PANELS: { id: PanelKey; title: string }[] = [
 ];
 
 type Props = {
+  /** Закрытые свечи и текущая из состояния React — для индикаторов (текущая — раз в 5 с и при закрытии свечи). */
   candles: Candle[];
   current: Candle | null;
   tf: Timeframe;
@@ -100,10 +101,11 @@ type Props = {
   scale?: ScaleMode;
   overlay?: Candle[] | null;
   /**
-   * Живая текущая свеча (тики раз в секунду, ADR-0010): события идут в серию напрямую — без React и
-   * без setCandles; `current` тогда нужен только при замене свечей (смена инструмента/таймфрейма).
+   * Живая свеча (LiveBar, ADR-0010) — единственный источник свечей графика: замена — по её снимку (смена
+   * инструмента/таймфрейма, первые данные), тики, закрытия, уточнения и догон — её подписчиком, без React и без
+   * setCandles. Пути «свечи из состояния React в серию» больше нет (ревью C1): у каждой задачи один владелец.
    */
-  live?: LiveSource | null;
+  live: LiveSource;
   drawings?: {
     state: DrawingsState;
     tool: DrawingType | null;
@@ -177,7 +179,7 @@ function indexOfTime(candles: readonly Candle[], time: number): number {
  * терминалом, темой, классом устройства, сценой разметки (один OverlayPrimitive), шкалой и наведением.
  * Здесь до PR D остаются эффекты данных, индикаторов, панелей производных и рисунков (через controller.terminal).
  */
-export function ChartSurface({ candles, current, tf, type, indicators, markup, authed, store, device = "auto", layers, patterns, figures, alerts, external = NONE, derivatives, panels, tick, dataKey = "", onNeedOlder, drawings, onReady, corner, topRight, onAxisHeight, legend, scale = "linear", overlay = null, paneLayout, onPaneLayout, onRemovePane, onInstanceParams, paneHint = false, live = null }: Props) {
+export function ChartSurface({ candles, current, tf, type, indicators, markup, authed, store, device = "auto", layers, patterns, figures, alerts, external = NONE, derivatives, panels, tick, dataKey = "", onNeedOlder, drawings, onReady, corner, topRight, onAxisHeight, legend, scale = "linear", overlay = null, paneLayout, onPaneLayout, onRemovePane, onInstanceParams, paneHint = false, live }: Props) {
   const t = useT();
   const ref = useRef<HTMLDivElement>(null);
   const ctrlRef = useRef<ChartController | null>(null);
@@ -245,7 +247,7 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
   /** Свёрнута ли панель: своим ▾, раскладкой (строк не хватило) или на время «развернуть» другой. */
   const isCollapsed = useCallback((key: string) => (maxRef.current ? key !== maxRef.current : collapsedRef.current.has(key) || forcedRef.current.has(key)), []);
   /** Что загружено в график: смена инструмента или таймфрейма — замена и сброс вида, иначе — дописывание. */
-  const loadedRef = useRef<{ key: string; tf: Timeframe; candles: Candle[]; live?: LiveSource | null; filled?: boolean } | null>(null);
+  const loadedRef = useRef<{ key: string; tf: Timeframe; candles: Candle[]; live: LiveSource; filled: boolean } | null>(null);
 
   // проектор рисунков читает ту же модель свечей, что и график
   const syncModel = useCallback(() => {
@@ -722,11 +724,10 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // данные: смена инструмента или таймфрейма — замена свечей и сброс вида; закрытие свечи — дописывание,
-  // масштаб, прокрутка и подгруженная слева история пользователя сохраняются (план 2A.7). С живой свечой (live) график
-  // меняет только её подписчик (ниже): здесь — лишь замена при смене инструмента или таймфрейма и на первых данных, по
-  // снимку live (история и текущая — без отставания состояния React); остальные изменения свечей React для графика —
-  // ничто (иначе текущая откатывалась бы к состоянию React, которое обновляется раз в 5 с)
+  // данные: график меняет только подписчик живой свечи (ниже); здесь — лишь замена при смене инструмента или
+  // таймфрейма и на первых данных, по снимку live (история и текущая — без отставания состояния React; сброс вида).
+  // Остальные изменения свечей React для графика — ничто (иначе текущая откатывалась бы к состоянию React, которое
+  // обновляется раз в 5 с); масштаб, прокрутка и подгруженная слева история пользователя сохраняются (план 2A.7)
   useEffect(() => {
     const term = termRef.current;
     const ctrl = ctrlRef.current;
@@ -734,55 +735,27 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     const prev = loadedRef.current;
     const same = prev !== null && prev.key === dataKey && prev.tf === tf;
     if (same && prev.candles.length === 0 && candles.length === 0) return;
-    if (live) {
-      if (same && prev.live === live && prev.filled) {
-        loadedRef.current = { ...prev, candles };
-        return;
-      }
-      // свечи — только из снимка этой live: React-свечи в этот момент могут быть ещё прежнего инструмента
-      const snap = live.snapshot();
-      const all = snap.bar ? [...snap.closed, snap.bar] : snap.closed.slice();
-      if (same && prev.live === live && all.length === 0) return;
-      loadedRef.current = { key: dataKey, tf, candles, live, filled: all.length > 0 };
-      ctrl.set({ tf });
-      term.setCandles(all, true);
-      ctrl.notifyCandles("replace");
-      syncModel();
+    if (same && prev.live === live && prev.filled) {
+      loadedRef.current = { ...prev, candles };
       return;
     }
-    const n = prev?.candles.length ?? 0;
-    const append = same && n > 0 && candles.length >= n && candles[0]?.time === prev.candles[0]?.time && candles[n - 1]?.time === prev.candles[n - 1]?.time;
-    loadedRef.current = { key: dataKey, tf, candles };
+    // свечи — только из снимка этой live: React-свечи в этот момент могут быть ещё прежнего инструмента
+    const snap = live.snapshot();
+    const all = snap.bar ? [...snap.closed, snap.bar] : snap.closed.slice();
+    if (same && prev.live === live && all.length === 0) return;
+    loadedRef.current = { key: dataKey, tf, candles, live, filled: all.length > 0 };
     // таймфрейм — до данных: сброс вида считает число свечей по лимиту таймфрейма
     ctrl.set({ tf });
-    if (append) {
-      // закрывшиеся свечи заменяют текущую с тем же временем; новая текущая придёт через term.update(current)
-      for (const c of candles.slice(n)) term.update(c);
-      if (candles.length > n) ctrl.notifyCandles("append");
-    } else {
-      term.setCandles(current ? [...candles, current] : candles, true);
-      ctrl.notifyCandles("replace");
-    }
+    term.setCandles(all, true);
+    ctrl.notifyCandles("replace");
     syncModel();
-    // текущая свеча обновляется своим эффектом ниже; здесь она нужна только при замене
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [candles, tf, dataKey, syncModel, live]);
-
-  useEffect(() => {
-    const term = termRef.current;
-    // с живой свечой серия уже обновлена подписчиком ниже; состояние React может отставать на секунды
-    if (!term || !current || live) return;
-    term.update(current);
-    ctrlRef.current?.notifyCandles("tick");
-    syncModel();
-  }, [current, syncModel, live]);
 
   // живая свеча — единственный путь живых изменений графика (ADR-0010): закрытые — дописать, уточнённую — заменить
   // (Terminal.amend), текущую — обновить; догон — хвост с первой изменённой свечи (Terminal.replaceTail: устаревшая
   // текущая уходит, подгруженная слева история и вид остаются) или замена целиком. События, пока график держит не
   // свечи этой live (другой инструмент или таймфрейм, данных ещё нет), не применяются: замена по снимку их уже учтёт
   useEffect(() => {
-    if (!live) return;
     return live.subscribe((step) => {
       const term = termRef.current;
       const ctrl = ctrlRef.current;
