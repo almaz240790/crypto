@@ -9,6 +9,12 @@
 - Раз в ``DERIVATIVES_EVERY`` секунд — REST: funding, OI (1h), long/short (1h).
 - При старте и после каждого переподключения — догрузка пропусков по REST от последней
   закрытой свечи в БД.
+- Живые цены (план 2A.3, ADR-0010): раз в ``TICKER_EVERY`` секунд — одно сообщение в Redis канал
+  ``prices.live`` с изменившимися ценами ``{"at": ISO, "p": {SYMBOL: "цена"}}``. Источник — kline 1m
+  стрима, пока он жив, иначе один REST-запрос ``/fapi/v1/ticker/price`` на все символы (вес 2).
+  Формирующаяся минутная свеча (из стрима или из REST-опроса раз в 15 с) уходит в тот же канал
+  ``{"at": ISO, "c": {SYMBOL: {t, o, h, l, c, v}}}`` — у текущей свечи терминала верные high, low
+  и объём. В БД тики не пишутся.
 - Heartbeat в Redis ``market_data:heartbeat`` (unix time) — для /health и алертов.
 """
 
@@ -59,14 +65,53 @@ STATUS_KEY = "market_data:status"
 REPORT_EVERY = 60
 CHANNEL_CLOSED = "candles.closed"
 
+# --- живые цены (план 2A.3, ADR-0010) ------------------------------------------------------------
+CHANNEL_PRICES = "prices.live"
+TICKER_URL = "https://fapi.binance.com/fapi/v1/ticker/price"
+TICKER_EVERY = 1.0
+"""Бюджет веса Binance (лимит 2400/мин на IP): тикер без symbol — вес 2, раз в секунду = 120/мин.
+REST-опрос свечей — 7 запросов веса 1 на инструмент в минуту (1m каждые 15 с, 4 tf раз в минуту),
+т. е. 7·N: при N = 59 — 413, вместе с тикером 533/мин (22 % лимита), при N = 85 — 715/мин (30 %).
+Деривативы (fundingRate и futures/data/*) считаются в отдельных лимитах."""
+TICKER_TIMEOUT = 3.0
+TICKER_WS_FRESH = 5.0
+"""kline 1m по WebSocket свежее этого — цены берутся из стрима, REST-тикер не тратит вес."""
+TICKER_LOG_EVERY = 60
+"""Ошибки тикера (при сбое — каждую секунду) пишутся в лог только первая и каждая 60-я."""
+
 
 def _dt(ms: int) -> datetime:
     return datetime.fromtimestamp(ms / 1000, tz=UTC)
 
 
+def _num(x: Decimal) -> str:
+    """Цена строкой без хвостовых нулей и без экспоненты: «67000.1», «100», «0.0000123»."""
+    return format(x.normalize(), "f")
+
+
+def _forming(c: Candle) -> dict[str, Any]:
+    """Формирующаяся минутная свеча для канала ``prices.live`` (время — unix с начала минуты)."""
+    return {
+        "t": int(c.open_time.timestamp()),
+        "o": _num(c.open),
+        "h": _num(c.high),
+        "l": _num(c.low),
+        "c": _num(c.close),
+        "v": _num(c.volume),
+    }
+
+
+def _now_iso() -> str:
+    return datetime.now(tz=UTC).isoformat(timespec="milliseconds")
+
+
+def _dumps(payload: dict[str, Any]) -> str:
+    return json.dumps(payload, separators=(",", ":"))
+
+
 class MarketData:
-    def __init__(self) -> None:
-        self.redis = aioredis.from_url(settings.redis_url)
+    def __init__(self, redis: Any = None) -> None:
+        self.redis = redis if redis is not None else aioredis.from_url(settings.redis_url)
         self.symbols: dict[str, int] = {}  # symbol → instrument_id
         self.candle_buffer: dict[tuple[int, str, datetime], dict[str, Any]] = {}
         self.liq_buffer: dict[tuple[int, datetime], list[Decimal]] = defaultdict(
@@ -83,7 +128,17 @@ class MarketData:
         self.ws_silent = False
         self.n_polled = 0
         self.last_closed: dict[tuple[int, str], datetime] = {}
-        self.poll_pause_until = 0.0  # 429/418 от Binance: пауза опроса до этого момента
+        self.poll_pause_until = 0.0  # 429/418 от Binance: пауза опроса и тикера до этого момента
+        # живые цены (план 2A.3): последнее опубликованное, накопленное из стрима, счётчики
+        self.last_prices: dict[str, str] = {}
+        self.ws_prices: dict[str, str] = {}
+        self.forming: dict[str, dict[str, Any]] = {}
+        self.last_kline_at = 0.0
+        self.n_ticks = 0  # опубликовано сообщений с ценами (одно за цикл тикера)
+        self.n_tick_prices = 0  # цен в них (только изменившиеся)
+        self.n_forming = 0  # опубликовано формирующихся минутных свечей
+        self.n_ticker_errors = 0
+        self.used_weight: int | None = None  # X-MBX-USED-WEIGHT-1M из последнего ответа тикера
 
     # --- инструменты и догрузка ----------------------------------------------------------------
     def load_symbols(self) -> None:
@@ -132,22 +187,27 @@ class MarketData:
             return
         self.n_klines += 1
         self.ws_silent = False
-        self._put_candle(
-            symbol,
-            inst_id,
-            k["i"],
-            Candle(
-                open_time=_dt(int(k["t"])),
-                open=Decimal(k["o"]),
-                high=Decimal(k["h"]),
-                low=Decimal(k["l"]),
-                close=Decimal(k["c"]),
-                volume=Decimal(k["v"]),
-                quote_volume=Decimal(k["q"]),
-                trades=int(k["n"]),
-            ),
-            closed=bool(k["x"]),
+        candle = Candle(
+            open_time=_dt(int(k["t"])),
+            open=Decimal(k["o"]),
+            high=Decimal(k["h"]),
+            low=Decimal(k["l"]),
+            close=Decimal(k["c"]),
+            volume=Decimal(k["v"]),
+            quote_volume=Decimal(k["q"]),
+            trades=int(k["n"]),
         )
+        closed = bool(k["x"])
+        self._put_candle(symbol, inst_id, k["i"], candle, closed=closed)
+        if k["i"] == Timeframe.M1.value:
+            # живая цена и формирующаяся минута — из стрима; публикует тикер/flusher раз в секунду
+            self.last_kline_at = time.time()
+            self.ws_prices[symbol] = _num(candle.close)
+            if closed:
+                if self.forming.get(symbol, {}).get("t") == int(candle.open_time.timestamp()):
+                    del self.forming[symbol]
+            else:
+                self.forming[symbol] = _forming(candle)
 
     def _put_candle(self, symbol: str, inst_id: int, tf: str, c: Candle, closed: bool) -> None:
         """Свеча в буфер записи; закрытая — ещё и событие ``candles.closed`` (один раз)."""
@@ -182,6 +242,16 @@ class MarketData:
             )
 
     # --- REST-резерв -------------------------------------------------------------------------
+    def _rate_limited(self, resp: httpx.Response) -> bool:
+        """418/429 от Binance: пауза REST-опроса и тикера не меньше ``RATE_LIMIT_PAUSE``."""
+        if resp.status_code not in (418, 429):
+            return False
+        retry = resp.headers.get("Retry-After") or ""
+        pause = max(int(retry) if retry.isdigit() else 0, RATE_LIMIT_PAUSE)
+        self.poll_pause_until = time.time() + pause
+        log.warning("Binance %s: лимит запросов, пауза опроса %d с", resp.status_code, pause)
+        return True
+
     def _poll_symbol(self, history: BinanceHistory, symbol: str, tfs: tuple[Timeframe, ...]) -> int:
         inst_id = self.symbols[symbol]
         now = datetime.now(tz=UTC)
@@ -192,14 +262,7 @@ class MarketData:
             try:
                 candles = history.fetch_rest(symbol, tf, now - tf.delta * 2, now)
             except httpx.HTTPStatusError as exc:
-                if exc.response.status_code in (418, 429):
-                    retry = int(exc.response.headers.get("Retry-After") or RATE_LIMIT_PAUSE)
-                    self.poll_pause_until = time.time() + max(retry, RATE_LIMIT_PAUSE)
-                    log.warning(
-                        "Binance %s: лимит запросов, пауза опроса %d с",
-                        exc.response.status_code,
-                        max(retry, RATE_LIMIT_PAUSE),
-                    )
+                if self._rate_limited(exc.response):
                     return n
                 log.warning("%s %s: REST-опрос не удался: %s", symbol, tf.value, exc)
                 continue
@@ -207,7 +270,10 @@ class MarketData:
                 log.warning("%s %s: REST-опрос не удался: %s", symbol, tf.value, exc)
                 continue
             for c in candles:
-                self._put_candle(symbol, inst_id, tf.value, c, closed=c.close_time(tf) <= now)
+                closed = c.close_time(tf) <= now
+                self._put_candle(symbol, inst_id, tf.value, c, closed=closed)
+                if tf is Timeframe.M1 and not closed:
+                    self.forming[symbol] = _forming(c)  # уйдёт в prices.live со следующей записью
                 n += 1
         return n
 
@@ -232,6 +298,81 @@ class MarketData:
                 ]
                 results = await asyncio.gather(*futures, return_exceptions=True)
                 self.n_polled += sum(r for r in results if isinstance(r, int))
+
+    # --- живые цены (план 2A.3) -----------------------------------------------------------------
+    async def _fetch_prices(self, client: httpx.AsyncClient) -> dict[str, str] | None:
+        """Один запрос ``ticker/price`` на все символы (вес 2); только наши инструменты.
+
+        ``None`` — цен нет (таймаут, сеть, 418/429 — тогда же пауза опроса, как у свечей)."""
+        try:
+            resp = await client.get(TICKER_URL, timeout=TICKER_TIMEOUT)
+            weight = resp.headers.get("X-MBX-USED-WEIGHT-1M") or ""
+            if weight.isdigit():
+                self.used_weight = int(weight)
+            if self._rate_limited(resp):
+                return None
+            resp.raise_for_status()
+            rows = resp.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            self.n_ticker_errors += 1
+            if self.n_ticker_errors % TICKER_LOG_EVERY == 1:
+                log.warning(
+                    "тикер цен: %s: %s (ошибок всего %d)",
+                    type(exc).__name__,
+                    exc,
+                    self.n_ticker_errors,
+                )
+            return None
+        out: dict[str, str] = {}
+        for r in rows if isinstance(rows, list) else []:
+            symbol = r.get("symbol") if isinstance(r, dict) else None
+            if symbol not in self.symbols:
+                continue
+            try:
+                out[symbol] = _num(Decimal(str(r["price"])))
+            except (KeyError, ArithmeticError):
+                continue
+        return out
+
+    async def ticker_cycle(self, client: httpx.AsyncClient) -> None:
+        """Цикл тикера: цены из стрима, если он жив, иначе из REST; в канал — только изменившиеся.
+
+        Сообщение уходит и без изменений (``"p": {}``): по нему API понимает, что поток цен жив."""
+        if time.time() - self.last_kline_at < TICKER_WS_FRESH:
+            prices, self.ws_prices = self.ws_prices, {}
+        else:
+            if time.time() < self.poll_pause_until:
+                return
+            fetched = await self._fetch_prices(client)
+            if fetched is None:
+                return
+            prices = fetched
+        changed = {s: p for s, p in prices.items() if self.last_prices.get(s) != p}
+        self.last_prices.update(changed)
+        await self.redis.publish(CHANNEL_PRICES, _dumps({"at": _now_iso(), "p": changed}))
+        self.n_ticks += 1
+        self.n_tick_prices += len(changed)
+
+    async def ticker(self, transport: httpx.AsyncBaseTransport | None = None) -> None:
+        """Раз в ``TICKER_EVERY`` секунд — цикл тикера; запросы не перекрываются (один в полёте)."""
+        loop = asyncio.get_running_loop()
+        async with httpx.AsyncClient(timeout=TICKER_TIMEOUT, transport=transport) as client:
+            while not self.stop.is_set():
+                started = loop.time()
+                try:
+                    await self.ticker_cycle(client)
+                except Exception as exc:  # Redis недоступен и т. п. — не роняем цикл
+                    self.n_ticker_errors += 1
+                    if self.n_ticker_errors % TICKER_LOG_EVERY == 1:
+                        log.warning("тикер цен: %s: %s", type(exc).__name__, exc)
+                await asyncio.sleep(max(0.0, TICKER_EVERY - (loop.time() - started)))
+
+    async def publish_forming(self) -> None:
+        """Формирующиеся минутные свечи (из REST-опроса или стрима) — одним сообщением."""
+        forming, self.forming = self.forming, {}
+        if forming:
+            await self.redis.publish(CHANNEL_PRICES, _dumps({"at": _now_iso(), "c": forming}))
+            self.n_forming += len(forming)
 
     def on_force_order(self, o: dict[str, Any]) -> None:
         inst_id = self.symbols.get(o["s"])
@@ -319,35 +460,48 @@ class MarketData:
             for e in events:
                 await self.redis.publish(CHANNEL_CLOSED, json.dumps(e))
                 self.n_published += 1
+            # после закрытых: клиент сначала закрывает минуту, затем видит следующую
+            await self.publish_forming()
             await self.redis.set(HEARTBEAT_KEY, int(time.time()))
-            await self.redis.set(
-                STATUS_KEY,
-                json.dumps(
-                    {
-                        "klines": self.n_klines,
-                        "polled": self.n_polled,
-                        "mode": "rest" if self.ws_silent else "ws",
-                        "flushed": self.n_flushed,
-                        "published": self.n_published,
-                        "flush_errors": self.n_flush_errors,
-                        "buffer": len(self.candle_buffer),
-                        "at": int(time.time()),
-                    }
-                ),
-            )
+            await self.redis.set(STATUS_KEY, json.dumps(self.status()))
+
+    def status(self) -> dict[str, Any]:
+        """Счётчики для ключа ``market_data:status`` (видно в /debug/live и админке)."""
+        return {
+            "klines": self.n_klines,
+            "polled": self.n_polled,
+            "mode": "rest" if self.ws_silent else "ws",
+            "flushed": self.n_flushed,
+            "published": self.n_published,
+            "flush_errors": self.n_flush_errors,
+            "buffer": len(self.candle_buffer),
+            "ticks": self.n_ticks,
+            "tick_prices": self.n_tick_prices,
+            "forming": self.n_forming,
+            "ticker_errors": self.n_ticker_errors,
+            "prices_mode": "ws" if time.time() - self.last_kline_at < TICKER_WS_FRESH else "rest",
+            "used_weight_1m": self.used_weight,
+            "at": int(time.time()),
+        }
 
     async def reporter(self) -> None:
         """Раз в минуту — строка сводки в лог: видно, идут ли данные и пишутся ли они."""
         while not self.stop.is_set():
             await asyncio.sleep(REPORT_EVERY)
             log.info(
-                "сводка: klines=%d rest=%d записано=%d опубликовано=%d ошибок записи=%d режим=%s",
+                "сводка: klines=%d rest=%d записано=%d опубликовано=%d ошибок записи=%d режим=%s "
+                "тиков=%d цен=%d формирующихся=%d ошибок тикера=%d вес=%s",
                 self.n_klines,
                 self.n_polled,
                 self.n_flushed,
                 self.n_published,
                 self.n_flush_errors,
                 "rest" if self.ws_silent else "ws",
+                self.n_ticks,
+                self.n_tick_prices,
+                self.n_forming,
+                self.n_ticker_errors,
+                self.used_weight,
             )
 
     # --- деривативы -----------------------------------------------------------------------------
@@ -442,6 +596,7 @@ class MarketData:
             asyncio.create_task(self.derivatives_loop()),
             asyncio.create_task(self.reporter()),
             asyncio.create_task(self.poller()),
+            asyncio.create_task(self.ticker()),
         ]
         tasks += [
             asyncio.create_task(self.connection(chunk, i))
