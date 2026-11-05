@@ -98,6 +98,24 @@ def test_worst_drawdowns_open_and_expired_ignored() -> None:
     ]
 
 
+def test_forward_notice_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    """По умолчанию плашка включена и без даты; пустая дата в окружении — тоже «без даты»."""
+    from datetime import date
+
+    from app.config import Settings
+
+    monkeypatch.delenv("FORWARD_NOTICE", raising=False)
+    monkeypatch.delenv("FORWARD_NOTICE_UNTIL", raising=False)
+    s = Settings(_env_file=None)  # type: ignore[call-arg]
+    assert s.forward_notice is True and s.forward_notice_until is None
+    monkeypatch.setenv("FORWARD_NOTICE_UNTIL", "")
+    assert Settings(_env_file=None).forward_notice_until is None  # type: ignore[call-arg]
+    monkeypatch.setenv("FORWARD_NOTICE_UNTIL", "2026-11-06")
+    monkeypatch.setenv("FORWARD_NOTICE", "false")
+    s = Settings(_env_file=None)  # type: ignore[call-arg]
+    assert s.forward_notice is False and s.forward_notice_until == date(2026, 11, 6)
+
+
 def test_load_trades_forward_requires_version() -> None:
     """Агрегата «все версии» у форварда нет даже на уровне выборки (план 2.11)."""
     from app.stats import load_trades
@@ -266,9 +284,10 @@ def test_forward_notice_setting(fx: Fixture, monkeypatch: pytest.MonkeyPatch) ->
     """Плашка включена по умолчанию; дата и выключение — настройки."""
     from datetime import date
 
-    from app.config import Settings, settings
+    from app.config import settings
 
-    assert Settings().forward_notice is True and Settings().forward_notice_until is None
+    monkeypatch.setattr(settings, "forward_notice", True)
+    monkeypatch.setattr(settings, "forward_notice_until", None)
     assert _get("/v1/stats?scope=forward")["notice"] == {"invalid_until": None}
     monkeypatch.setattr(settings, "forward_notice_until", date(2026, 11, 6))
     assert _get("/v1/stats?scope=forward")["notice"] == {"invalid_until": "2026-11-06"}
