@@ -29,6 +29,9 @@
  * sessionStorage и переживает и уход со страницы графика, и перезагрузку вкладки. Любое сообщение биржи сбрасывает паузу.
  * Вкладка снова видна, страница из кэша, сеть вернулась (online) — попытка сразу, не дожидаясь паузы (кроме долгой паузы
  * COOL_MS: её прерывает только online); вкладка скрыта — без попыток до возврата, закрытие в скрытой вкладке — не отказ.
+ * Таймеры спали (тишина дольше SLEPT_MS без проверки, проверка просрочена намного) — открытое соединение заменяется сразу,
+ * в каком бы порядке ни пришли таймер проверки и visibilitychange (Chrome размораживает страницу скрытой: просроченный
+ * таймер срабатывает раньше возврата вкладки).
  * Binance закрывает соединение через 24 ч — за час до этого открывается новое с теми же потоками, старое закрывается,
  * когда новое ответило (без паузы в ценах).
  *
@@ -74,6 +77,11 @@ export const BATCH_MS = 20;
 export const LINGER_MS = 15_000;
 /** Проверка соединения (рукопожатие, тишина, замена) — раз в. */
 export const WATCH_MS = 1000;
+/**
+ * Соединение молчит дольше, а проверки не было (или она просрочена намного) — таймеры спали (сон телефона, ноутбука,
+ * заморозка вкладки): живое за это время ответило бы на проверку, поэтому новое — сразу, без проверки и без паузы.
+ */
+export const SLEPT_MS = SILENCE_MS + PROBE_TIMEOUT_MS + WATCH_MS;
 /** Ключ sessionStorage: отказы подряд и время следующей попытки. */
 export const RETRY_KEY = "binanceFeed.retry";
 
@@ -285,16 +293,21 @@ export class BinanceFeed {
    * Вкладка снова видна, страница из кэша, сеть вернулась (online):
    * - соединения нет (пауза после отказа или вкладка была скрыта) — попытка сразу; долгую паузу COOL_MS (биржа закрыта
    *   для пользователя) прерывает только online. Отказ за WAKE_GRACE_MS до этого (телефон закрыл сокет во сне) — не отказ;
-   * - соединение открыто, но молчит дольше, чем живое (таймеры спали) — новое сразу; молчит дольше SILENCE_MS — проверка.
+   * - соединение открыто, но молчит дольше SLEPT_MS (таймеры спали) — новое сразу, даже если проверку уже отправил
+   *   таймер, сработавший при пробуждении раньше visibilitychange; молчит дольше SILENCE_MS — проверка (если её нет);
+   * - рукопожатие идёт дольше CONNECT_TIMEOUT_MS (началось перед сном) — новое сразу.
    */
   wake(online = false): void {
     if (!this.wanted().size || this.hidden()) return;
     const now = Date.now();
     if (this.ws) {
-      if (this.openedAt === null || this.probeAt !== null) return;
+      if (this.openedAt === null) {
+        if (now - this.dialAt > CONNECT_TIMEOUT_MS) this.fail(true);
+        return;
+      }
       const quiet = now - this.lastMsg;
-      if (quiet > SILENCE_MS + PROBE_TIMEOUT_MS + WATCH_MS) this.fail(true);
-      else if (quiet > SILENCE_MS) this.probe();
+      if (quiet > SLEPT_MS) this.fail(true);
+      else if (quiet > SILENCE_MS && this.probeAt === null) this.probe();
       return;
     }
     if (this.fails >= BLOCKED_AFTER && !online) {
@@ -654,7 +667,11 @@ export class BinanceFeed {
     for (const l of this.listeners.get(sym) ?? []) l.fresh?.(on);
   }
 
-  /** Раз в WATCH_MS: рукопожатие, тишина и проверка, замена до 24 ч. */
+  /**
+   * Раз в WATCH_MS: рукопожатие, тишина и проверка, замена до 24 ч. Таймеры спали (вкладка видна: ноутбук проснулся без
+   * visibilitychange) — тишина дольше SLEPT_MS без проверки или проверка, просроченная больше чем на 2 WATCH_MS, — новое
+   * соединение сразу, без проверки и паузы; во скрытой вкладке — как обычно (проверка; замена — при возврате, wake).
+   */
   private check(): void {
     const ws = this.ws;
     if (!ws) return;
@@ -665,11 +682,14 @@ export class BinanceFeed {
     }
     if (!this.wanted().size) return; // символов нет — соединение закроется через LINGER_MS
     if (this.probeAt !== null) {
-      if (now - this.probeAt > PROBE_TIMEOUT_MS) this.fail(false);
+      const age = now - this.probeAt;
+      if (age > PROBE_TIMEOUT_MS) this.fail(age > PROBE_TIMEOUT_MS + 2 * WATCH_MS && !this.hidden());
       return;
     }
-    if (now - this.lastMsg > SILENCE_MS) {
-      this.probe();
+    const quiet = now - this.lastMsg;
+    if (quiet > SILENCE_MS) {
+      if (quiet > SLEPT_MS && !this.hidden()) this.fail(true);
+      else this.probe();
       return;
     }
     if (this.next) {

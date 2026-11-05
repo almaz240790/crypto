@@ -20,6 +20,7 @@ import {
   SILENCE_MS,
   streamsOf,
   streamUrl,
+  WATCH_MS,
   type BinanceListener,
 } from "./binanceFeed";
 import type { LiveCandle, LiveTick } from "./useLive";
@@ -689,6 +690,91 @@ describe("пауза: возврат вкладки, сеть, уход со с�
     expect(ws2.control.map((c) => c.method)).toEqual(["LIST_SUBSCRIPTIONS"]);
     f.dispose();
     expect(ev.count()).toBe(0);
+  });
+
+  it("сон с полуоткрытым сокетом, таймер проверки раньше visibilitychange (Chrome размораживает страницу скрытой) — новое сразу при возврате, без проверки и паузы", async () => {
+    const ev = targets();
+    const f = feed({ doc: ev.doc, win: ev.win });
+    const l = listener();
+    f.subscribe("BTCUSDT", l);
+    await vi.advanceTimersByTimeAsync(BATCH_MS);
+    const ws = last();
+    ws.open();
+    ws.kline("BTCUSDT");
+    ev.hide();
+    // 60 с сна: таймеры стояли; при пробуждении вкладка ещё скрыта, просроченный таймер — первым
+    vi.setSystemTime(Date.now() + 60_000);
+    await vi.advanceTimersByTimeAsync(WATCH_MS);
+    expect(ws.control.map((c) => c.method)).toEqual(["LIST_SUBSCRIPTIONS"]); // скрытая: проверка, не замена
+    expect(FakeWS.all).toHaveLength(1);
+    // раньше: wake() видел отправленную проверку и выходил — замена через 3 с проверки + 5 с паузы, 3 с «онлайн» на
+    // замёрзшей цене
+    ev.show();
+    expect(ws.closed).toBe(true);
+    expect(FakeWS.all).toHaveLength(2);
+    expect(l.log.fresh.at(-1)).toBe(false);
+    last().open();
+    last().kline("BTCUSDT");
+    expect(l.log.fresh.at(-1)).toBe(true);
+    f.dispose();
+  });
+
+  it("ноутбук проснулся (вкладка видна, visibilitychange нет): первый же таймер — новое соединение, без проверки; проверка, просроченная сном, — тоже без паузы", async () => {
+    const ev = targets();
+    const f = feed({ doc: ev.doc, win: ev.win });
+    f.subscribe("BTCUSDT", listener());
+    await vi.advanceTimersByTimeAsync(BATCH_MS);
+    const ws = last();
+    ws.open();
+    ws.kline("BTCUSDT");
+    vi.setSystemTime(Date.now() + 60_000);
+    await vi.advanceTimersByTimeAsync(WATCH_MS);
+    expect(ws.sent).toEqual([]); // раньше: проверка, 3 с без ответа, затем пауза 5 с — новое через 9–10 с
+    expect(ws.closed).toBe(true);
+    expect(FakeWS.all).toHaveLength(2);
+    // уснул, пока ждал ответа на проверку: после сна — новое сразу, а не пауза отказа
+    const ws2 = last();
+    ws2.open();
+    ws2.kline("BTCUSDT");
+    await vi.advanceTimersByTimeAsync(SILENCE_MS + WATCH_MS);
+    expect(ws2.control.map((c) => c.method)).toEqual(["LIST_SUBSCRIPTIONS"]);
+    vi.setSystemTime(Date.now() + 60_000);
+    await vi.advanceTimersByTimeAsync(WATCH_MS);
+    expect(ws2.closed).toBe(true);
+    expect(FakeWS.all).toHaveLength(3);
+    // рукопожатие началось перед сном — при возврате новое сразу
+    ev.hide();
+    vi.setSystemTime(Date.now() + 60_000);
+    ev.show();
+    expect(FakeWS.all).toHaveLength(4);
+    f.dispose();
+  });
+
+  it("обычная проверка без ответа (сокет полуоткрыт, таймеры шли) — по-прежнему отказ с паузой; online после таймера сна — новое сразу", async () => {
+    const ev = targets();
+    const f = feed({ doc: ev.doc, win: ev.win });
+    f.subscribe("BTCUSDT", listener());
+    await vi.advanceTimersByTimeAsync(BATCH_MS);
+    const ws = last();
+    ws.open();
+    ws.kline("BTCUSDT");
+    await vi.advanceTimersByTimeAsync(SILENCE_MS + WATCH_MS + PROBE_TIMEOUT_MS + WATCH_MS);
+    expect(ws.closed).toBe(true);
+    expect(FakeWS.all).toHaveLength(1);
+    expect(Math.round((await waitDial(RETRY_MAX_MS)) / 1000) * 1000).toBe(RETRY_MIN_MS);
+    // скрытая вкладка, сон, таймер проверки, затем сеть вернулась (online) раньше visibilitychange
+    const ws2 = last();
+    ws2.open();
+    ws2.kline("BTCUSDT");
+    ev.hide();
+    vi.setSystemTime(Date.now() + 60_000);
+    await vi.advanceTimersByTimeAsync(WATCH_MS);
+    expect(ws2.control.map((c) => c.method)).toEqual(["LIST_SUBSCRIPTIONS"]);
+    (ev.doc as unknown as { visibilityState: string }).visibilityState = "visible";
+    ev.online();
+    expect(ws2.closed).toBe(true);
+    expect(FakeWS.all).toHaveLength(3);
+    f.dispose();
   });
 
   it("сокет закрылся во сне (iOS доставляет close до visibilitychange) — при возврате новое сразу, пауза не растёт", async () => {
