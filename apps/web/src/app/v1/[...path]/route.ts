@@ -7,7 +7,8 @@ import type { NextRequest } from "next/server";
  */
 export const dynamic = "force-dynamic";
 
-const PASS_REQ = ["content-type", "authorization", "cookie", "accept", "user-agent", "accept-language"];
+// x-requested-with — заголовок админки против CSRF (ADR-0011): без него изменяющие запросы к /v1/admin/* — 403
+const PASS_REQ = ["content-type", "authorization", "cookie", "accept", "user-agent", "accept-language", "x-requested-with"];
 const PASS_RES = ["content-type", "cache-control", "content-disposition", "retry-after"];
 
 async function proxy(req: NextRequest, ctx: { params: Promise<{ path: string[] }> }): Promise<Response> {

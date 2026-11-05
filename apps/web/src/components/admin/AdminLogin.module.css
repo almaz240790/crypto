@@ -1,0 +1,276 @@
+/* Вход в админку (ADR-0011): одна карточка по центру, без шапки и подвала сайта. */
+.page {
+  min-height: 100dvh;
+  display: grid;
+  align-content: start;
+  justify-items: center;
+  gap: var(--gap-4);
+  padding: var(--gap-6) var(--gap-4) var(--gap-6);
+  background: var(--bg);
+}
+
+.top {
+  width: min(100%, 440px);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gap-3);
+}
+
+.brand {
+  color: var(--text);
+  text-decoration: none;
+}
+
+.badge {
+  padding: 2px var(--gap-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  color: var(--text-2);
+  font-size: var(--fs-caption);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.card {
+  width: min(100%, 440px);
+  padding: var(--gap-5);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+}
+
+.form {
+  display: grid;
+  gap: var(--gap-3);
+}
+
+/* Поля и кнопки входа крупнее, чем в таблицах кабинета; на телефоне — не меньше 44 px. */
+.card input:not([type="checkbox"]) {
+  height: var(--touch-min);
+  padding: 0 var(--gap-3);
+  background: var(--bg);
+  font-size: 16px;
+}
+
+.card input:not([type="checkbox"]):focus {
+  border-color: var(--accent);
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-fill);
+}
+
+.form > button[type="submit"],
+.form > button:not(.link) {
+  min-height: var(--touch-min);
+  border-radius: var(--radius-lg);
+  font-size: var(--fs-body);
+  font-weight: 600;
+}
+
+.step {
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--fs-caption);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.lead {
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--fs-table);
+  line-height: 1.45;
+}
+
+.steps {
+  display: grid;
+  gap: var(--gap-3);
+  margin: 0;
+  padding-left: 1.25em;
+  font-size: var(--fs-table);
+  line-height: 1.45;
+}
+
+.qrBox {
+  display: grid;
+  justify-items: start;
+  gap: var(--gap-2);
+  margin-top: var(--gap-2);
+}
+
+.qr {
+  width: 184px;
+  padding: 0;
+  border-radius: var(--radius);
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+
+.appLink {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--touch-min);
+  padding: 0 var(--gap-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-raised);
+  color: var(--text);
+  font-size: var(--fs-table);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.appLink:hover {
+  background: var(--row-hover);
+  text-decoration: none;
+}
+
+.key {
+  display: grid;
+  gap: var(--gap-1);
+  justify-items: start;
+}
+
+.key code {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 15px;
+  letter-spacing: 0.04em;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+.hint {
+  color: var(--text-3);
+  font-size: var(--fs-caption);
+}
+
+.codes {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--gap-2);
+  margin: 0;
+  padding: var(--gap-3);
+  list-style: none;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 15px;
+  letter-spacing: 0.06em;
+  user-select: all;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gap-2);
+}
+
+.check {
+  display: flex;
+  gap: var(--gap-2);
+  align-items: flex-start;
+  font-size: var(--fs-table);
+  line-height: 1.4;
+}
+
+.check input {
+  width: 20px;
+  height: 20px;
+  margin-top: 1px;
+  flex: none;
+  accent-color: var(--accent);
+}
+
+.link {
+  justify-self: start;
+  min-height: var(--touch-min);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: var(--fs-table);
+  text-align: left;
+  cursor: pointer;
+}
+
+.link:hover {
+  text-decoration: underline;
+}
+
+.note {
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--fs-caption);
+  line-height: 1.45;
+}
+
+.error,
+.info,
+.ok {
+  margin: 0;
+  padding: var(--gap-2) var(--gap-3);
+  border-radius: var(--radius);
+  font-size: var(--fs-table);
+  line-height: 1.45;
+}
+
+.error {
+  border: 1px solid var(--down);
+  background: var(--down-fill);
+  color: var(--down);
+}
+
+.info {
+  border: 1px solid var(--warn);
+  background: var(--warn-fill);
+}
+
+.ok {
+  border: 1px solid var(--up);
+  background: var(--up-fill);
+}
+
+.foot {
+  width: min(100%, 440px);
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--fs-caption);
+  text-align: center;
+}
+
+@media (max-width: 560px) {
+  .page {
+    padding-top: var(--gap-4);
+  }
+
+  .card {
+    padding: var(--gap-4);
+    border-radius: var(--radius-lg);
+  }
+
+  .title {
+    font-size: 20px;
+  }
+
+  /* на телефоне QR-код сканировать нечем — сначала кнопка «Добавить код на этом устройстве» */
+  .qrBox .appLink {
+    order: -1;
+    width: 100%;
+    justify-content: center;
+  }
+
+  .qr {
+    width: 160px;
+  }
+}

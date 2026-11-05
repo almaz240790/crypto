@@ -1,6 +1,6 @@
 "use client";
 
-import { api } from "./auth-client";
+import { adminApi as api } from "./admin-auth";
 
 export type AdminVersion = { id: number; strategy: string; name: string; version: string; status: string; params: Record<string, unknown>; created_by: string | null; approved_by: string | null; activated_at: string | null; signals: number };
 export type AdminRun = { id: number; strategy_version: string; period: [string, string]; instruments: number; note: string | null; metrics: Record<string, number | null> };
@@ -35,4 +35,5 @@ export type LabelStats = { labelers: { id: number; email: string | null; n: numb
 export const getNextLabel = () => api<{ candidate: LabelCandidate | null; message?: string }>("/v1/admin/labels/next");
 export const submitLabel = (body: { figure_id: number; label: "figure" | "not_figure" | "unsure"; figure_type?: string | null; time_spent_s: number }) => api("/v1/admin/labels", { method: "POST", json: body });
 export const getLabelStats = () => api<LabelStats>("/v1/admin/labels/stats");
+/** Картинка кандидата: браузер сам отправит cookie админки (путь /v1/admin), заголовок не нужен. */
 export const labelImageUrl = (figureId: number) => `/v1/admin/labels/${figureId}/image.png`;
