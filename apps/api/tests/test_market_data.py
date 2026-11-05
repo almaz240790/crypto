@@ -1307,7 +1307,7 @@ def test_stop_during_resync_writes_and_publishes_what_it_found(monkeypatch: Any)
     ok, _ = _run_service(md, monkeypatch, connection)
     assert ok is True
     assert 0 < len(calls) < 30  # вышла после текущего запроса, не досверяв
-    written = sorted(i for _, i, tf, t, closed in db.log if (tf, t, closed) == ("1m", m, True))
+    written = sorted({i for _, i, tf, t, closed in db.log if (tf, t, closed) == ("1m", m, True)})
     published = sorted(e["instrument_id"] for e in _closed(md) if e["tf"] == "1m")
     assert written and published == written  # всё, что сверка записала, — опубликовано
     assert md.closed_events == [] and md.ready_events == [] and md.candle_buffer == {}
@@ -1402,3 +1402,24 @@ def test_buffer_overflow_drops_earliest_closes_and_poller_refills_them(monkeypat
     assert all(db.rows[(1, "1m", t)] for t in minutes)
     assert md.refill_from == {} and md.backfill_needed == set()
     assert [e["tf"] for e in _closed(md)] == ["1m", "1m", "1d"]  # без повторов
+
+
+def test_resync_row_is_not_rolled_back_by_a_write_already_in_flight(monkeypatch: Any) -> None:
+    # снимок идущей минуты из стрима до обрыва уже взят записью (она идёт), сверка тем временем
+    # пишет минуту закрытой по REST; запись коммитится позже и откатывала бы строку в незакрытую,
+    # а событие уже стояло в очереди. Теперь закрытая строка сверки — ещё и в буфере: следующая
+    # запись её восстанавливает, событие — после неё
+    md = _md()
+    db = MemDb().install(monkeypatch, md)
+    m = datetime.now(tz=UTC).replace(second=0, microsecond=0) - timedelta(minutes=1)
+    db.write("seed", 1, "1m", m - timedelta(minutes=1), True)
+    md.last_closed[(1, "1m")] = m - timedelta(minutes=1)
+    md.on_kline({**KLINE, "i": "1m", "t": int(m.timestamp() * 1000)})  # снимок до обрыва
+    in_flight, _ = md._take_rows(final=False)
+    md.resync(["BTCUSDT"], history=RestHistory({Timeframe.M1: [_m1(m)]}, []))
+    for r in in_flight:  # запись снимка закончилась после сверки
+        db.write("flush", r["instrument_id"], r["timeframe"], r["open_time"], r["is_closed"])
+    assert db.rows[(1, "1m", m)] is False
+    asyncio.run(md.flush_once())
+    assert db.rows[(1, "1m", m)] is True
+    assert [datetime.fromisoformat(e["open_time"]) for e in _closed(md)] == [m]

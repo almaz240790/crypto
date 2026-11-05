@@ -420,8 +420,10 @@ class MarketData:
         история, событий нет) и новее нынешней ``last_closed`` (свечу мог закрыть стрим, пока шёл
         запрос), если закрылись не раньше ``LATE_CLOSE_MAX`` назад; события — в очередь записи
         (уйдут со следующей). Точка сверки сдвигается на последнюю закрытую; отброшенные из буфера
-        строки (``refill`` — откуда) догружены. Незакрытый снимок той
-        же свечи в буфере (стрим до закрытия) заменяется закрытой строкой: запись не откатит её."""
+        строки (``refill`` — откуда) догружены. Новые закрытые — ещё и в буфер, а у прочих
+        незакрытый снимок в буфере заменяется закрытым: снимок стрима до закрытия, записанный
+        после (в том числе запись, уже идущая сейчас), не откатит строку, и событие уйдёт после
+        записи с закрытой."""
         key = (inst_id, tf.value)
         fresh = datetime.now(tz=UTC) - timedelta(seconds=LATE_CLOSE_MAX)
         with self._lock:
@@ -432,11 +434,12 @@ class MarketData:
                 mark = synced if mark is None else max(mark, synced)
             for c in closed:
                 row_key = (inst_id, tf.value, c.open_time)
-                row = self.candle_buffer.get(row_key)
-                if row is not None and not row["is_closed"]:
-                    self.candle_buffer[row_key] = _row(inst_id, tf.value, c, True)
                 if mark is not None and c.open_time <= mark:
+                    row = self.candle_buffer.get(row_key)
+                    if row is not None and not row["is_closed"]:
+                        self.candle_buffer[row_key] = _row(inst_id, tf.value, c, True)
                     continue
+                self.candle_buffer[row_key] = _row(inst_id, tf.value, c, True)
                 mark = c.open_time
                 if synced is not None and c.close_time(tf) >= fresh:
                     self.closed_events.append(_event(symbol, inst_id, tf.value, c))
@@ -887,6 +890,7 @@ class MarketData:
                         if key[0] in symbol_of:
                             self.backfill_needed.add(symbol_of[key[0]])
                 n_events = len(queued)
+                gone = set(dropped)
                 queued = [
                     e
                     for e in queued
@@ -895,7 +899,7 @@ class MarketData:
                         e["tf"],
                         datetime.fromisoformat(e["open_time"]),
                     )
-                    in buffer
+                    not in gone
                 ]
                 log.error(
                     "буфер записи переполнен: отброшено %d строк и %d событий; строки догрузит "
