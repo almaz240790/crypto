@@ -64,16 +64,6 @@ def _scope(scope: str, user: User | None, ent: Entitlements | None = None) -> st
     return scope
 
 
-def _version_id(
-    db: Session, scope: str, strategy_version_id: int | None, version: str | None
-) -> int | None:
-    """Явная версия для live/forward: id или номер (``1.2.0``). Для backtest номер версии выбирает
-    прогон (``_latest_run``), поэтому здесь не разрешается."""
-    if strategy_version_id is None and version and scope != "backtest":
-        return db.scalar(select(StrategyVersion.id).where(StrategyVersion.version == version))
-    return strategy_version_id
-
-
 def _apply_entitlements(
     q: Any, ent: Entitlements, allowed_ids: list[int] | None, now: datetime
 ) -> Any:
@@ -233,9 +223,11 @@ def signals(
     now = datetime.now(tz=UTC)
     ent = entitlements_for(db, user, now)
     scope = _scope(scope, user, ent)
-    version_id = _version_id(db, scope, None, version)
-    if version and version_id is None:
-        raise HTTPException(404, "версия не найдена")
+    version_id: int | None = None
+    if version:  # явная версия: её сигналы этой области в любом текущем статусе версии
+        version_id = db.scalar(select(StrategyVersion.id).where(StrategyVersion.version == version))
+        if version_id is None:
+            raise HTTPException(404, "версия не найдена")
     q = (
         select(Signal, Instrument.symbol, StrategyVersion.version)
         .join(Instrument, Instrument.id == Signal.instrument_id)
@@ -555,7 +547,10 @@ def stats(
     ``live`` — опубликованные сигналы, ``forward`` — форвард-тест на живых данных,
     ``backtest`` — сохранённый прогон бэктеста. Ручного ввода нет."""
     s, u = _since_until(days, since, until)
-    strategy_version_id = _version_id(db, scope, strategy_version_id, version)
+    if strategy_version_id is None and version and scope != "backtest":
+        strategy_version_id = db.scalar(
+            select(StrategyVersion.id).where(StrategyVersion.version == version)
+        )
     if scope != "backtest" and not (entry_type or s or u):
         snap = find_snapshot(db, scope, strategy_version_id, symbol, grade)
         if snap is not None:
@@ -645,7 +640,6 @@ def stats_trades(
     if scope == "forward" and (user is None or user.role not in ("admin", "owner")):
         raise HTTPException(403, "построчная история форварда не публикуется")
     s, u = _since_until(days, None, None)
-    strategy_version_id = _version_id(db, scope, strategy_version_id, version)
     trades, meta = _collect_trades(
         db, scope, strategy_version_id, run_id, version, symbol, grade, entry_type, s, u
     )
@@ -675,18 +669,7 @@ def stats_export(
         raise HTTPException(403, "экспорт CSV доступен на тарифе Pro")
     if scope == "forward" and user.role not in ("admin", "owner") and not ent.forward_scope:
         raise HTTPException(403, "форвард в CSV не публикуется")
-    trades, _ = _collect_trades(
-        db,
-        scope,
-        _version_id(db, scope, None, version),
-        run_id,
-        version,
-        symbol,
-        None,
-        None,
-        None,
-        None,
-    )
+    trades, _ = _collect_trades(db, scope, None, run_id, version, symbol, None, None, None, None)
     rows = trade_rows(sorted(trades, key=lambda t: t.signal_time))
     cols = [
         "id",
