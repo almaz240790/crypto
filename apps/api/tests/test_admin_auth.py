@@ -281,6 +281,9 @@ def world(monkeypatch: pytest.MonkeyPatch) -> Iterator[World]:
 
     monkeypatch.setattr(router_mod, "send_mail", lambda *a: w.mails.append(a))
     monkeypatch.setattr(settings, "owner_emails", "")
+    # local: cookie без Secure (тестовый клиент ходит по http), письма — в лог
+    monkeypatch.setattr(settings, "app_env", "local")
+    monkeypatch.setattr(settings, "resend_api_key", None)
     try:
         yield w
     finally:
