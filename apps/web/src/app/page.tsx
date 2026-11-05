@@ -106,9 +106,9 @@ export default async function Home() {
           <div className={`${s.visual} ${s.cards}`}>
             <span className={s.beam} aria-hidden="true" />
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img className={s.cardLiq} src="/landing/liq.cc9bf925.webp" width={900} height={1340} alt={t("График BTCUSDT, 4 часа, разметка «Карта ликвидаций»: полоса ликвидаций у шкалы цен с расчётными суммами в долларах, линии поддержки и сопротивления")} loading="lazy" />
+            <img className={s.cardLiq} src="/landing/liq.faa9e71d.webp" width={900} height={1540} alt={t("График BTCUSDT, 4 часа, разметка «Карта ликвидаций»: у шкалы цен — полоса ликвидаций с расчётными суммами в долларах; на графике — линии сопротивления и поддержки, средняя EMA 50 и объёмы")} loading="lazy" />
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img className={s.cardLv} src="/landing/levels.d87a7c31.webp" width={600} height={1200} alt={t("Список «Уровни» на панели «Найдено»: сопротивление, поддержка, максимумы и минимумы дня и недели, зоны спроса — с ценой и расстоянием до неё")} loading="lazy" />
+            <img className={s.cardLv} src="/landing/levels.4b62b45e.webp" width={600} height={1200} alt={t("Часть списка «Уровни» на панели «Найдено»: зоны спроса, поддержка, минимумы дня и недели и раскрытая группа «Ликвидации (оценка)» — ликвидации шортов и лонгов с ценой, расстоянием до неё и расчётной суммой в долларах")} loading="lazy" />
           </div>
           <div className={`${s.copy} ${s.right}`}>
             <p className={s.lockup}>
@@ -123,7 +123,7 @@ export default async function Home() {
               <span aria-hidden="true">i</span>
               {nb(t("Карта ликвидаций — расчётная оценка, а не данные биржи"))}
             </p>
-            <p className={s.fine}>{t("На снимках — BTCUSDT, 4 часа: разметка «Карта ликвидаций» и список «Уровни». Структура и зоны строятся только по закрытым свечам.")}</p>
+            <p className={s.fine}>{t("На снимках — BTCUSDT, 4 часа: разметка «Карта ликвидаций» и список «Уровни» с раскрытой группой «Ликвидации (оценка)». Структура и зоны строятся только по закрытым свечам.")}</p>
           </div>
         </section>
 

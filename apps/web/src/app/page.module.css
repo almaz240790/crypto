@@ -262,7 +262,9 @@
   height: auto;
 }
 
-/* 2. «Слои» на светлом камне: карточки уходят за верхний и нижний край полосы */
+/* 2. «Слои» на светлом камне: веер из двух карточек — список слева, график с полосой ликвидаций справа, ближе
+   к тексту; правый край графика (шкала, полоса ликвидаций и метки сумм) ничем не закрыт. Карточки уходят за верхний
+   и нижний край полосы */
 .stone {
   background: linear-gradient(160deg, var(--lp-stone-2) 0%, var(--lp-stone) 100%);
   color: var(--lp-ink);
@@ -281,22 +283,23 @@
 }
 
 .cardLiq {
-  left: calc(50% - 600px);
-  top: -40px;
+  left: calc(50% - 400px);
+  top: -10px;
   width: 360px;
-  transform: rotate(-4deg);
+  transform: rotate(4deg);
 }
 
+/* список закрывает только левый край графика — свечи, не шкалу */
 .cardLv {
-  left: calc(50% - 330px);
-  top: 300px;
+  left: calc(50% - 600px);
+  top: 250px;
   width: 280px;
-  transform: rotate(3deg);
+  transform: rotate(-3deg);
 }
 
 .beam {
   position: absolute;
-  left: calc(50% - 340px);
+  left: calc(50% - 280px);
   top: 0;
   bottom: 0;
   width: 2px;
@@ -305,10 +308,9 @@
   opacity: 0.85;
 }
 
-/* компьютер: салатовый луч — курсором поверх графика ликвидаций, в стороне от карточки уровней */
+/* компьютер: салатовый луч — курсором поверх свечей графика, в стороне от шкалы и от карточки уровней */
 @media (min-width: 901px) {
   .beam {
-    left: calc(50% - 420px);
     z-index: 1;
     background: linear-gradient(180deg, transparent, var(--lp-lime) 12%, var(--lp-lime) 88%, transparent);
   }
@@ -334,14 +336,14 @@
   }
 }
 
-/* при сжатии 0,86 карточки по-прежнему уходят за верхний и нижний край полосы */
+/* при сжатии 0,86 карточки по-прежнему уходят за верхний и нижний край полосы, метка суммы вверху графика видна */
 @media (min-width: 1100px) and (max-width: 1279px) {
   .cardLiq {
-    top: -100px;
+    top: -50px;
   }
 
   .cardLv {
-    top: 370px;
+    top: 330px;
   }
 }
 
@@ -603,20 +605,22 @@
     transform-origin: top center;
   }
 
+  /* луч — за графиком: виден над карточкой и под ней */
   .beam {
-    left: 30%;
+    left: calc(50% + 60px);
   }
 
+  /* веер по центру: список слева, график справа; шкала графика и метки сумм не закрыты */
   .cardLiq {
-    left: 6%;
-    top: 40px;
+    left: calc(50% - 30px);
+    top: 28px;
     width: 52%;
-    max-width: 300px;
+    max-width: 280px;
   }
 
   .cardLv {
-    left: 44%;
-    top: 110px;
+    left: max(4%, calc(50% - 250px));
+    top: 120px;
     width: 46%;
     max-width: 200px;
   }
