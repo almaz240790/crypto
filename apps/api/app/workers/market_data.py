@@ -1,7 +1,8 @@
 """Сервис market-data (этап 2.1, план 6.1/6.3): живые свечи и деривативы Binance USDT-M → БД.
 
-- WebSocket combined streams: kline_1m / kline_4h / kline_1d / kline_1w и forceOrder (ликвидации)
-  по всем активным инструментам; до ``STREAMS_PER_CONNECTION`` потоков на соединение.
+- WebSocket рыночных потоков (``WS_URL`` — ``/market/ws``, подписка командой SUBSCRIBE):
+  kline_1m / kline_4h / kline_1d / kline_1w и forceOrder (ликвидации) по всем активным
+  инструментам; до ``STREAMS_PER_CONNECTION`` потоков на соединение.
 - Свечи пишутся батчами раз в секунду (upsert); текущая незакрытая свеча хранится с
   ``is_closed = false``, на закрытии перезаписывается с ``true`` и публикуется в Redis
   канал ``candles.closed`` (планировщик слушает 4h, трекер — 1m).
@@ -52,9 +53,19 @@ from engine.data.binance import BinanceHistory
 
 log = logging.getLogger("market_data")
 
-WS_URL = "wss://fstream.binance.com/ws"
-"""Подключение без потоков в URL; подписка командой SUBSCRIBE — Binance подтверждает её ответом
-``{"result": null, "id": 1}`` (с длинным URL combined-stream сервер молчал)."""
+WS_URL = "wss://fstream.binance.com/market/ws"
+"""Рыночные потоки USDⓈ-M Futures: kline и forceOrder (как и aggTrade, markPrice) Binance
+перенесла в категорию «market» — адрес ``/market/ws``. Потоки фьючерсов разделены по адресам:
+``/public`` — bookTicker и depth, ``/market`` — kline, aggTrade, markPrice, forceOrder,
+``/private`` — данные аккаунта (listenKey). Подключение без потоков в URL; подписка командой
+SUBSCRIBE — Binance подтверждает её ответом ``{"result": null, "id": 1}``, дальше события
+приходят как есть (raw).
+
+Проверка из контейнера 2026-11-05 (websockets, SUBSCRIBE на kline и forceOrder): старый
+``wss://fstream.binance.com/ws`` подписку подтверждает ``{"result": null}``, но данных не шлёт
+ни одного; ``/market/ws`` — kline (61 сообщение за 8 с на 4 потока) и ликвидации
+(``!forceOrder@arr`` — 23 за 25 с); ``/public/ws`` — ни того, ни другого. Поэтому на хостинге
+воркер со старым адресом работал в режиме REST (``klines=0``) и ликвидации не приходили."""
 STREAMS_PER_CONNECTION = 150
 """Кратно 5 (4 kline + forceOrder на инструмент): потоки инструмента — в одном соединении."""
 SILENCE_TIMEOUT = 60
@@ -152,8 +163,10 @@ class MarketData:
         self.n_published = 0
         self.n_flush_errors = 0
         self.n_redis_errors = 0
-        # REST-резерв: Binance может держать WebSocket открытым и не слать данные (гео-политика).
-        # Свежесть — по инструменту: соединений несколько, одно может молчать при живом другом.
+        # REST-резерв: Binance может держать WebSocket открытым и не слать данные (так было со
+        # старым адресом ``/ws`` после переноса рыночных потоков на ``/market``, см. WS_URL; так же
+        # будет, если адрес сменится снова). Свежесть — по инструменту: соединений несколько, одно
+        # может молчать при живом другом.
         self.kline_at: dict[str, float] = {}  # symbol → time.time() последней kline 1m
         self.n_polled = 0
         self.last_closed: dict[tuple[int, str], datetime] = {}
@@ -675,9 +688,9 @@ class MarketData:
 
     async def connection(self, streams: list[str], idx: int) -> None:
         """Одно WebSocket-соединение Binance. Обрыв после данных — догрузка пропуска по REST только
-        инструментов этого соединения. Молчащий стрим (данных нет, как в production)
-        переподключается без догрузки — его инструменты держит REST-опрос — и с растущей до 60 с
-        задержкой."""
+        инструментов этого соединения. Молчащий стрим (подписка подтверждена, данных нет — так
+        молчал в production старый адрес ``/ws``, см. ``WS_URL``) переподключается без догрузки —
+        его инструменты держит REST-опрос — и с растущей до 60 с задержкой."""
         backoff = RECONNECT_MIN
         symbols = sorted({name.split("@", 1)[0].upper() for name in streams})
         while not self.stop.is_set():

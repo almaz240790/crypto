@@ -128,11 +128,18 @@ liveCandle/liveRestart`):
   заменяет основу, а не прибавляется (ADR-0003). С `through: null` (старый API до выката; нет закрытых минут и за час
   до интервала) работает оценка `restThrough(server_time)`: объём формирующейся минуты может посчитаться дважды до
   следующей загрузки или догона.
-- Пересмотреть: если WebSocket Binance заработает на хостинге, тикер сам перейдёт на цены из стрима. Вероятная причина
-  `klines=0 … режим=rest` найдена при проверке дополнения ниже: Binance перенесла рыночные потоки фьючерсов (kline,
-  forceOrder, aggTrade, markPrice) на `wss://fstream.binance.com/market/…`, а старые `/ws` и `/stream` отдают только
-  public-потоки (bookTicker, depth) — воркер (`WS_URL = "wss://fstream.binance.com/ws"`) подключается, но данных не
-  получает. Перевод воркера на `/market/ws` — отдельная задача apps/api.
+- Пересмотреть: если WebSocket Binance заработает на хостинге, тикер сам перейдёт на цены из стрима. Причина
+  `klines=0 … режим=rest` найдена при проверке дополнения ниже: Binance разделила потоки фьючерсов по адресам —
+  `/public` (bookTicker, depth), `/market` (kline, forceOrder, aggTrade, markPrice), `/private` (аккаунт), — а воркер
+  подключался к старому `wss://fstream.binance.com/ws`: подписку тот подтверждает (`{"result": null}`), но данных не
+  шлёт. **Исправлено в этом же релизе** (2026-11-05): `WS_URL = "wss://fstream.binance.com/market/ws"`, подписка
+  по-прежнему командой SUBSCRIBE. Проверка из контейнера тем же кодом `MarketData.connection` на 59 инструментах
+  production (295 потоков, 2 соединения): `/market/ws` за 20 с — 2 720 kline и 5 ликвидаций (в тихий рынок ликвидаций
+  за 20–60 с может не быть: `<sym>@forceOrder` приходит только по ликвидации), старый `/ws` и `/public/ws` — ни одного
+  сообщения с данными. pytest `test_ws_url_is_binance_market_category` и
+  `test_connection_subscribes_by_message_and_parses_market_events` держат адрес `/market/` и формат подписки. После
+  деплоя API сводка market-data должна показать `klines > 0` и режим WebSocket, тикер — цены из стрима (отставание
+  сервера меньше 1–2 с), панель ликвидаций — живые данные; деплой — решение владельца.
 
 ## Дополнение: цена с биржи напрямую (2026-11-04)
 

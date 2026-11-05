@@ -9,6 +9,7 @@ import time
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 import pytest
@@ -70,6 +71,7 @@ KLINE = {
     "n": 1000,
     "x": False,
 }
+KLINE_STREAMS = ("kline_1m", "kline_4h", "kline_1d", "kline_1w")
 
 
 def test_kline_open_then_closed_and_event() -> None:
@@ -553,6 +555,56 @@ def test_dropped_stream_with_data_backfills_only_its_symbols(monkeypatch: Any) -
     kline = json.dumps({"e": "kline", "k": {**KLINE, "i": "1m"}})
     backfills = _run_connection(md, monkeypatch, [[kline, OSError("reset")]], 0.1)
     assert backfills == [["BTCUSDT"]] and md.n_klines == 1
+
+
+def test_ws_url_is_binance_market_category() -> None:
+    # kline и forceOrder Binance отдаёт только на /market/: старый /ws подписку подтверждает
+    # ({"result": null}), но данных не шлёт (проверка 2026-11-05) — воркер жил на REST,
+    # без ликвидаций
+    url = urlparse(mdmod.WS_URL)
+    assert (url.scheme, url.netloc, url.path) == ("wss", "fstream.binance.com", "/market/ws")
+    assert url.query == ""  # потоки — командой SUBSCRIBE, не в адресе
+
+
+def test_connection_subscribes_by_message_and_parses_market_events(monkeypatch: Any) -> None:
+    md = _md()
+    md.symbols = {"BTCUSDT": 1, "ETHUSDT": 2}
+    urls: list[str] = []
+    sent: list[Any] = []
+    # события /market/ws после SUBSCRIBE — как есть (raw), без обёртки combined-stream
+    kline = json.dumps(
+        {"e": "kline", "E": 1704067201000, "s": "BTCUSDT", "k": {**KLINE, "i": "1m"}}
+    )
+    liq = {"s": "ETHUSDT", "S": "SELL", "o": "LIMIT", "f": "IOC", "q": "0.5", "p": "2200"}
+    liq |= {"ap": "2210", "X": "FILLED", "l": "0.5", "z": "0.5", "T": 1704067260123}
+    force = json.dumps({"e": "forceOrder", "E": 1704067260130, "o": liq})
+
+    class Ws(FakeBinanceWs):
+        async def send(self, msg: str) -> None:
+            sent.append(json.loads(msg))
+
+    def fake_connect(url: str, **kw: Any) -> Ws:
+        urls.append(url)
+        return Ws([kline, force])
+
+    monkeypatch.setattr(mdmod, "connect", fake_connect)
+    monkeypatch.setattr(md, "backfill", lambda *a, **k: True)
+
+    async def run() -> None:
+        task = asyncio.create_task(md.connection(md._streams()[0], 0))
+        await asyncio.sleep(0.05)
+        md.stop.set()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+    assert urls == ["wss://fstream.binance.com/market/ws"]
+    streams = [f"{s}@{x}" for s in ("btcusdt", "ethusdt") for x in (*KLINE_STREAMS, "forceOrder")]
+    assert sent == [{"method": "SUBSCRIBE", "params": streams, "id": 1}]
+    assert md.n_klines == 1
+    minute = datetime(2024, 1, 1, 0, 1, tzinfo=UTC)
+    assert md.liq_buffer[(2, minute)] == [Decimal("1105"), Decimal(0)]  # SELL — ликвидирован лонг
 
 
 def test_flusher_survives_redis_outage_and_republishes_closed(monkeypatch: Any) -> None:
