@@ -1,7 +1,10 @@
-"""Трекер сигналов по 1m-свечам (этап 2.3, план 2.10/6.3).
+"""Трекер сигналов по 1m-свечам (этап 2.3, план 2.6, 2.10, 6.3).
 
 - Подписка на ``candles.closed`` с ``tf == 1m``; для каждого открытого сигнала инструмента —
   один шаг ``engine.tracker.SignalTracker``; состояние хранится в ``signal_tracking``.
+- Сроки (лимит 6 × H4, time stop 15 × H4) трекер считает по времени от
+  ``signals.candle_close_time`` в свечах сигнального таймфрейма, а не в штуках 1m-свечей.
+  Для time stop и истечения в ``signal_events.note`` пишутся срок, фактическое время и цена.
 - Новые события → ``signal_events``, смена статуса → ``signals.status``, закрытие →
   ``signal_results``. Статусы и события те же, что в бэктесте (эквивалентность доказана тестом).
 - При старте и раз в минуту — догон: для открытых сигналов проигрываются все закрытые 1m-свечи
@@ -31,7 +34,7 @@ from app.db import SessionLocal
 from app.forward import _setup_from_row
 from app.models import Signal, SignalEvent, SignalResult, SignalTracking, StrategyVersion
 from app.workers.market_data import CHANNEL_CLOSED
-from engine.candles import Candle, Timeframe
+from engine.candles import SIGNAL_TIMEFRAME, Candle, Timeframe
 from engine.strategies import STRATEGIES
 from engine.tracker import EventType, SignalStatus, SignalTracker, TrackerEvent, TrackerState
 
@@ -123,11 +126,48 @@ def _params_for(session: Session, sig: Signal) -> Any:
     return STRATEGIES[key].trade if key else STRATEGIES["trend-ob-retest@1.0.0"].trade
 
 
+def _hm(t: datetime) -> str:
+    return f"{t:%Y-%m-%d %H:%M} UTC"
+
+
+def _price(p: Decimal) -> str:
+    """Цена без хвостовых нулей Numeric из БД: 100.1000000000 → 100.1."""
+    return format(p.normalize(), "f")
+
+
+def event_note(e: TrackerEvent, tracker: SignalTracker) -> str | None:
+    """Пояснение к time stop и истечению лимита: срок, фактическое время и цена выхода."""
+    deadline = tracker.state.deadline_at
+    if e.type not in (EventType.TIME_STOP, EventType.EXPIRED) or e.at is None or deadline is None:
+        return None
+    tf = tracker.timeframe
+    if e.type is EventType.TIME_STOP:
+        what, n = "time stop", tracker.params.time_stop_candles
+    else:
+        what, n = "истечение лимита", tracker.params.limit_expiry_candles
+    candle = f"{e.at - tf.delta:%H:%M}–{e.at:%H:%M}"
+    if e.at == deadline:
+        where = f"по close свечи {tf.value} {candle}"
+    else:
+        where = f"свечи на сроке нет — по close первой свечи {tf.value} после срока {candle}"
+    return (
+        f"{what}: срок {_hm(deadline)} ({n} свечей {SIGNAL_TIMEFRAME.value}); "
+        f"выход {_hm(e.at)} {where}: {_price(e.price)}"
+    )
+
+
 def apply_candles(session: Session, sig: Signal, candles: list[Candle], tf: Timeframe) -> int:
     """Проигрывает свечи для сигнала, пишет события/статус/результат. Возвращает число событий."""
     row = session.get(SignalTracking, sig.id)
     state = state_from_json(row.state) if row else None
-    tracker = SignalTracker(_setup_from_row(sig), _params_for(session, sig), "market", state)
+    tracker = SignalTracker(
+        _setup_from_row(sig),
+        _params_for(session, sig),
+        "market",
+        state,
+        signal_close=sig.candle_close_time.astimezone(UTC),
+        timeframe=tf,
+    )
     total = 0
     last_time = row.last_candle_time if row else None
     for c in candles:
@@ -143,6 +183,7 @@ def apply_candles(session: Session, sig: Signal, candles: list[Candle], tf: Time
                     price=e.price,
                     occurred_at=when,
                     source="tracker",
+                    note=event_note(e, tracker),
                 )
             )
         total += len(events)
