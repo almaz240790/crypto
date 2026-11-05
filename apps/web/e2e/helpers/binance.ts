@@ -3,8 +3,9 @@ import type { BrowserContext, Page, WebSocketRoute } from "@playwright/test";
 /**
  * Заглушка прямого потока Binance USDⓈ-M Futures (wss://fstream.binance.com/market/stream?streams=…) для e2e (ADR-0010,
  * дополнение «цена с биржи»). Настоящая биржа давала бы настоящие цены поверх фикстур (и CI без сети к ней): поэтому
- * mock() из helpers/chart закрывает её для всех спеков (blockBinance), а спеки прямого потока ставят эту заглушку на
- * страницу (маршрут страницы важнее маршрута контекста).
+ * её закрывает blockBinance — mock() из helpers/chart (спеки графика) и своя заглушка API у спеков, которые без mock()
+ * доходят до терминала (auth.spec: после входа — /chart); спек, который откроет терминал без них, должен вызвать
+ * blockBinance сам. Спеки прямого потока ставят эту заглушку на страницу (маршрут страницы важнее маршрута контекста).
  *
  * Как настоящая Binance после переноса рыночных потоков: kline и сделки — только на адресах `/market/…`; старый адрес
  * (`/stream`, `/ws`) соединение принимает и на управляющие сообщения отвечает, но рыночных данных не шлёт — откат адреса
@@ -22,7 +23,10 @@ export const BINANCE_RE = /^wss:\/\/fstream\.binance\.com\//;
 /** Адрес рыночных потоков (kline, aggTrade). */
 export const BINANCE_MARKET = "wss://fstream.binance.com/market/stream";
 
-/** Биржа недоступна (как из контейнера и CI): соединение закрывается сразу. Для всех спеков — через mock(). */
+/**
+ * Биржа недоступна (как из контейнера и CI): соединение закрывается сразу. Вызывают mock() (helpers/chart) и auth.spec;
+ * спек, открывающий терминал или мультичарт без них, вызывает сам.
+ */
 export async function blockBinance(ctx: BrowserContext): Promise<void> {
   await ctx.routeWebSocket(BINANCE_RE, (ws) => void ws.close());
 }

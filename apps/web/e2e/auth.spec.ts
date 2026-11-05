@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { blockBinance } from "./helpers/binance";
 
 /** e2e трёх способов входа (план 2.8) с заглушкой API на уровне браузера. */
 
@@ -16,6 +17,9 @@ const ME = {
 const TOKEN = { access_token: "test.jwt.token", token_type: "bearer", expires_in: 900 };
 
 async function mockApi(page: Page, calls: string[]) {
+  // после входа — /chart: терминал соединился бы с настоящей Binance (своя заглушка API, mock() из helpers/chart
+  // здесь не вызывается) — биржа закрыта, как в остальных спеках
+  await blockBinance(page.context());
   await page.route("**/v1/**", async (route) => {
     const req = route.request();
     const url = new URL(req.url());
