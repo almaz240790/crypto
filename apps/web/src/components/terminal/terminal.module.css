@@ -722,6 +722,24 @@
   margin-left: auto;
 }
 
+/* телефон: карточка позиции одной строкой, пока её не раскрыли («параметры ▾») — свечи, ручки и плашки позиции над
+   ней видны (раскрытая закрывала половину области свечей) */
+.cardBar {
+  flex-wrap: nowrap;
+}
+
+.cardBar .cardTitle {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cardBar > button {
+  flex: none;
+}
+
 .limitCard p {
   margin: 0;
   flex: 1 1 240px;
@@ -737,10 +755,56 @@
   }
 }
 
+/* поля позиции: вход, стоп, цель, R:R, риск и «перевернуть» — сеткой во всю ширину карточки (телефон — по три в ряд) */
+.posFields {
+  flex: 1 1 100%;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+  gap: 6px;
+  align-items: start;
+}
+
+/* подпись поля — внутри рамки сверху слева, значение — справа ниже: одна строка высотой с кнопку */
+.posField {
+  position: relative;
+  min-width: 0;
+}
+
+.posCaption {
+  position: absolute;
+  left: 8px;
+  top: 4px;
+  z-index: 1;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--text-3);
+  pointer-events: none;
+}
+
+.posField input {
+  height: 40px;
+  padding-top: 12px;
+  min-width: 0;
+}
+
+.posFlip {
+  height: 40px;
+  white-space: nowrap;
+}
+
+@media (pointer: coarse) {
+  .posField input,
+  .posFlip {
+    height: var(--touch-min);
+  }
+}
+
 .posStats {
   display: inline-flex;
+  flex: 1 1 100%;
   flex-wrap: wrap;
-  gap: 6px;
+  column-gap: 10px;
+  row-gap: 0;
   align-items: center;
   font-family: var(--font-mono);
   font-size: 12px;
@@ -986,6 +1050,27 @@
 .page[data-layout="desktop"] .cards {
   bottom: calc(var(--time-scale-h, 28px) + 8px);
   align-items: flex-start;
+}
+
+/* телефон: ссылки «в журнал», «в калькулятор» — одной строкой, риск или подсказка — под ними (карточка ниже) */
+.page:not([data-layout="desktop"]) .posHint {
+  order: 1;
+  flex-basis: 100%;
+}
+
+.posStats a {
+  display: inline-flex;
+  align-items: center;
+}
+
+/* телефон: карточка не выше 60 % колонки графика — рисунок над ней виден; остальное — прокруткой карточки */
+.page:not([data-layout="desktop"]) .cards {
+  max-height: 60%;
+}
+
+.page:not([data-layout="desktop"]) .card {
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .page[data-layout="desktop"] .card {

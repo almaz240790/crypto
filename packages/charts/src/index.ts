@@ -8,7 +8,7 @@ export { createTerminal, Terminal } from "./terminal";
 export type { PaneSeries, ScaleMode, TerminalOptions } from "./terminal";
 export { LIQ_DEFAULTS, LIQ_MIN_OI_COVERAGE, liquidationMap, oiCoverage, SR_DEFAULTS, supportResistance } from "./levels";
 export type { LiqBucket, LiqMap, LiqOptions, SrLevel, SrOptions } from "./levels";
-export { DEFAULT_PRECISION, formatCompactValue, formatCountdown, formatSignedPercent, formatUsd, formatIndicatorValue, formatPercentValue, formatPriceLabel, formatPriceShort, formatTicks, tickDecimals, tickFormat, tickPrecision } from "./format";
+export { DEFAULT_PRECISION, formatCompactValue, formatCountdown, formatSignedPercent, formatUsd, formatIndicatorValue, formatPercentValue, formatPriceLabel, formatPriceShort, formatQuantity, formatTicks, tickDecimals, tickFormat, tickPrecision } from "./format";
 export type { TickFormat } from "./format";
 export { COMPACT_FORMAT, instrumentPriceFormat, PERCENT_FORMAT, priceFormatter, VALUE_FORMAT, withHiddenTicks } from "./priceFormat";
 export type { InstrumentPriceFormat, PriceFormatter } from "./priceFormat";

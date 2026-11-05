@@ -1,8 +1,8 @@
 "use client";
 
 import { COMPACT_FORMAT, ChartController, EMPTY_PANE_LAYOUT, FALLBACK_COLOR, INDICATOR_COLOR, INTERACTION, NONE, PERCENT_FORMAT, VIEW, alpha, commitPaneHeights, dragSeparator, instanceColors, instanceTitle, mainMinShareFor, movePaneKey, orderPaneKeys, paneLevels, planMaximized, planPanes, resolvePreset, VALUE_FORMAT, alignToCandles, tickPrecision, tokensFromElement, type AlertLine, type Candle, type ChartHandle, type ChartStore, type ChartType, type CrosshairSnapshot, type Device, type ExternalObject, type IndColor, type IndicatorInstance, type IndicatorValue, type MarkupSettings, type PaneLayout, type PanePlan, type PanelKey, type ScaleMode, type SepLimits, type Terminal, type Timeframe } from "@platform/charts";
-import { DrawingController, DrawingsPrimitive, INDICATORS, defaultParams, indicatorById, visibleOn, type Drawing, type DrawingType, type DrawingsState, type IndicatorSpec, type Layer, type LayerContext, type Point, TF_SECONDS } from "@platform/charts";
-import { LineStyle, type IPriceLine, type ISeriesApi, type PriceFormat, type UTCTimestamp } from "lightweight-charts";
+import { DrawingController, DrawingsPrimitive, INDICATORS, defaultParams, indicatorById, visibleOn, type Drawing, type DrawingText, type DrawingType, type DrawingsState, type IndicatorSpec, type Layer, type LayerContext, type Point, type RiskProfile, TF_SECONDS } from "@platform/charts";
+import { LineStyle, TrackingModeExitMode, type IPriceLine, type ISeriesApi, type PriceFormat, type UTCTimestamp } from "lightweight-charts";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Derivatives, FigureOnChart, LayersResponse, PatternOnChart } from "@/lib/chart";
 import type { LiveSource } from "@/lib/liveBar";
@@ -81,6 +81,11 @@ type Props = {
   /** Высота шкалы времени (px) при изменении: карточки внизу колонки графика ставятся над ней. */
   onAxisHeight?: (px: number) => void;
   /**
+   * Стопка карточек поверх графика (выбранный рисунок, лимит рисунков): прямоугольник каждой карточки уходит в
+   * uiObstacles — плашки позиции, уровни Фибоначчи и подписи разметки не ставятся под карточку (ADR-0009, «Рисование»).
+   */
+  cards?: HTMLElement | null;
+  /**
    * Легенда в левом верхнем углу панели цены (десктоп, план 2B.9 §10): символ, «?», OHLC под перекрестием и строки
    * индикаторов. Её прямоугольник уходит в uiObstacles. Без неё — «?» и пометка ликвидаций B на своих местах.
    */
@@ -110,12 +115,20 @@ type Props = {
     state: DrawingsState;
     tool: DrawingType | null;
     magnet: boolean;
+    /** «Рисовать серию»: инструмент не снимается после рисунка. */
+    series: boolean;
     draft: Drawing | null;
     onCreate: (d: Drawing) => void;
-    onMove: (id: string, points: Point[], final: boolean) => void;
+    /** Перетаскивание; final — конец, origin — точки до него (шаг отмены — от них). */
+    onMove: (id: string, points: Point[], final: boolean, origin?: Point[]) => void;
     onSelect: (id: string | null) => void;
     onDraft: (d: Drawing | null) => void;
-    onToolDone: () => void;
+    /** Сколько точек начатого рисунка поставлено (0 — не начат). */
+    onStep: (placed: number) => void;
+    /** Рисунок завершён; ended — контроллер снял инструмент (без «серии»). */
+    onToolDone: (ended: boolean) => void;
+    /** Депозит и доля риска из настроек: у позиции на графике — риск в $ и объём. */
+    profile?: RiskProfile | null;
   };
 };
 
@@ -179,7 +192,7 @@ function indexOfTime(candles: readonly Candle[], time: number): number {
  * терминалом, темой, классом устройства, сценой разметки (один OverlayPrimitive), шкалой и наведением.
  * Здесь до PR D остаются эффекты данных, индикаторов, панелей производных и рисунков (через controller.terminal).
  */
-export function ChartSurface({ candles, current, tf, type, indicators, markup, authed, store, device = "auto", layers, patterns, figures, alerts, external = NONE, derivatives, panels, tick, dataKey = "", onNeedOlder, drawings, onReady, corner, topRight, onAxisHeight, legend, scale = "linear", overlay = null, paneLayout, onPaneLayout, onRemovePane, onInstanceParams, paneHint = false, live }: Props) {
+export function ChartSurface({ candles, current, tf, type, indicators, markup, authed, store, device = "auto", layers, patterns, figures, alerts, external = NONE, derivatives, panels, tick, dataKey = "", onNeedOlder, drawings, onReady, corner, topRight, onAxisHeight, cards = null, legend, scale = "linear", overlay = null, paneLayout, onPaneLayout, onRemovePane, onInstanceParams, paneHint = false, live }: Props) {
   const t = useT();
   const ref = useRef<HTMLDivElement>(null);
   const ctrlRef = useRef<ChartController | null>(null);
@@ -189,12 +202,16 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
   const cryptoRef = useRef<Map<PanelKey, { paneIndex: number; series: ISeriesApi<"Line" | "Histogram">[] }>>(new Map());
   const drawPrimRef = useRef<DrawingsPrimitive | null>(null);
   const drawCtrlRef = useRef<DrawingController | null>(null);
+  /** Шаг цены инструмента: стоп и цель новой позиции — по нему. */
+  const tickRef = useRef<number | null>(null);
   const drawingsRef = useRef(drawings);
   const needOlderRef = useRef(onNeedOlder);
   const onReadyRef = useRef(onReady);
   /** Линии индикаторов по ключу `${uid}.${серия}`: значения на всех свечах буфера — для перекрестия и легенды. */
   const valuesRef = useRef<Map<string, SeriesValues>>(new Map());
   const stickyRef = useRef(false);
+  /** Снять перекрестие (и липкий режим) — из эффектов вне создания графика. */
+  const clearCrossRef = useRef<(() => void) | null>(null);
   /** Панели на экране (заголовки, границы, «A» у шкалы) — геометрия для PaneChrome. */
   const [geo, setGeo] = useState<ChartGeo>(NO_GEO);
   /** Колонка графика (.chart): PaneChrome следит по ней за курсором. */
@@ -585,6 +602,7 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
       crossRaf = 0;
       store.patch({ crosshair: null });
     };
+    clearCrossRef.current = clearCrosshair;
     onReadyRef.current?.({ zoom: ctrl.handle.zoom, reset: ctrl.handle.reset, clearCrosshair, focus: ctrl.handle.focus, snapshot: ctrl.handle.snapshot });
     const prim = new DrawingsPrimitive(tokensFromElement(el));
     prim.touch = typeof window !== "undefined" && window.matchMedia(MQ.coarse).matches;
@@ -600,20 +618,27 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
         },
         getCandles: () => term.candles,
         tfSeconds: TF_SECONDS[tfRef.current],
+        getTfSeconds: () => TF_SECONDS[tfRef.current],
+        getTick: () => tickRef.current,
         timeframe: null,
         touch: prim.touch,
         magnet: true,
         newId: () => `d_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`,
+        getSelectedId: () => drawingsRef.current?.state.selectedId ?? null,
       },
       {
         onCreate: (d) => drawingsRef.current?.onCreate(d),
-        onMove: (id, pts, final) => drawingsRef.current?.onMove(id, pts, final),
+        onMove: (id, pts, final, origin) => drawingsRef.current?.onMove(id, pts, final, origin),
         onSelect: (id) => drawingsRef.current?.onSelect(id),
         onDraft: (d) => drawingsRef.current?.onDraft(d),
-        onDone: () => drawingsRef.current?.onToolDone(),
+        onStep: (n) => drawingsRef.current?.onStep(n),
+        onDone: (ended) => drawingsRef.current?.onToolDone(ended),
       },
     );
     drawCtrlRef.current = dctrl;
+    // подписи рисунков — в общей раскладке с подписями разметки: разметка их обходит, они не ложатся на неё
+    ctrl.setDrawingLabels((measure) => prim.labelCandidates(measure));
+    prim.linked = () => ctrl.drawingLabels();
     // рисунки пользователя важнее разметки: с инструментом или над рисунком наведения и выбора объектов нет
     ctrl.setHitGate((x, y) => !drawingsRef.current?.tool && dctrl.hitAt(x, y) === null);
     // перекрестие → свеча и значения индикаторов; на телефоне long-press (300 мс) включает «липкий» режим
@@ -714,6 +739,7 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
       groupRef.current = { grouped: new Set(), host: null };
       dctrl.destroy();
       drawCtrlRef.current = null;
+      clearCrossRef.current = null;
       drawPrimRef.current = null;
       ctrl.destroy();
       ctrlRef.current = null;
@@ -785,7 +811,16 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
   useEffect(() => {
     ctrlRef.current?.set({ tick });
     drawPrimRef.current?.update({ precision: tickPrecision(tick) });
+    const n = tick === null ? NaN : Number(tick);
+    tickRef.current = n > 0 ? n : null;
   }, [tick]);
+
+  // тексты плашек позиции на холсте — на языке интерфейса
+  const drawText: DrawingText = useMemo(() => ({ entry: t("Вход"), stop: t("Стоп"), target: t("Цель"), risk: t("риск"), size: t("объём") }), [t]);
+  const drawProfile = drawings?.profile ?? null;
+  useEffect(() => {
+    drawPrimRef.current?.update({ text: drawText, profile: drawProfile });
+  }, [drawText, drawProfile]);
 
   // вход сцены разметки: пресет, слои с сервера, паттерны, фигуры, алерты, производные (OI), тексты
   useEffect(() => {
@@ -816,7 +851,27 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     prim.update({ drawings: drawings ? visibleOn(drawings.state, tf) : [], draft: drawings?.draft ?? null, selectedId: drawings?.state.selectedId ?? null });
     if (dctrl.tool !== (drawings?.tool ?? null)) dctrl.setTool(drawings?.tool ?? null);
     dctrl.setMagnet(drawings?.magnet ?? true);
+    dctrl.setSeries(drawings?.series ?? false);
   }, [drawings, tf]);
+
+  // инструмент рисования выбран (ADR-0009, «Рисование»): долгое касание, которым ставят точку, включает у LWC режим
+  // перекрестия, а выходит он по умолчанию следующим касанием — оно уже уходит рисунку и до LWC не доходит, и сдвиги
+  // «застревали» в перекрестии. С инструментом режим кончается с отпусканием пальца; липкое перекрестие и карточка
+  // свечи при выборе инструмента убираются
+  const drawTool = drawings?.tool ?? null;
+  useEffect(() => {
+    const chart = termRef.current?.chart;
+    if (!chart) return;
+    if (drawTool) {
+      clearCrossRef.current?.();
+      chart.applyOptions({ trackingMode: { exitMode: TrackingModeExitMode.OnTouchEnd } });
+      return;
+    }
+    // инструмент снят отпусканием, которое поставило последнюю точку: touchend этого касания идёт следом в той же
+    // задаче, что pointerup, — прежний выход (следующим касанием) возвращается после него
+    const id = setTimeout(() => chart.applyOptions({ trackingMode: { exitMode: TrackingModeExitMode.OnNextTap } }), 0);
+    return () => clearTimeout(id);
+  }, [drawTool]);
 
   useEffect(() => {
     if (themeVersion > 1 && ref.current) drawPrimRef.current?.update({ tokens: tokensFromElement(ref.current) });
@@ -1029,7 +1084,43 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
   const mainH = mainBox?.h ?? 0;
   const fit = useMemo(() => (mainH > 0 ? legendFit(mainH, coarse) : null), [mainH, coarse]);
 
-  // угол графика, чип справа сверху, легенда и «A» — препятствия для подписей разметки (координаты основной панели, CSS px)
+  // карточки поверх графика: прямоугольники в координатах графика, по изменению размера (раскрыли, другой рисунок)
+  const [cardBoxes, setCardBoxes] = useState<readonly { x: number; y: number; w: number; h: number }[]>(NONE);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!cards || !el) {
+      setCardBoxes(NONE);
+      return;
+    }
+    const measure = () => {
+      const r0 = el.getBoundingClientRect();
+      const next = [...cards.children]
+        .map((c) => c.getBoundingClientRect())
+        .filter((r) => r.width > 0 && r.height > 0)
+        .map((r) => ({ x: Math.round(r.left - r0.left), y: Math.round(r.top - r0.top), w: Math.round(r.width), h: Math.round(r.height) }));
+      setCardBoxes((prev) => (prev.length === next.length && prev.every((p, i) => p.x === next[i]!.x && p.y === next[i]!.y && p.w === next[i]!.w && p.h === next[i]!.h) ? prev : next.length ? next : NONE));
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    const watch = () => {
+      ro.disconnect();
+      ro.observe(cards);
+      for (const c of cards.children) ro.observe(c);
+    };
+    watch();
+    const mo = new MutationObserver(() => {
+      watch();
+      measure();
+    });
+    mo.observe(cards, { childList: true });
+    return () => {
+      ro.disconnect();
+      mo.disconnect();
+    };
+  }, [cards, mainBox]);
+
+  // угол графика, чип справа сверху, легенда, «A» и карточки — препятствия для подписей разметки и рисунков (координаты
+  // основной панели, CSS px)
   const mainGeo = geo.panes[0];
   const mainAuto = mainGeo?.manual && !mainGeo.collapsed ? autoBox(mainGeo, geo.plotW, coarse) : null;
   const [autoL, autoT, autoS] = mainAuto ? [mainAuto.left, mainAuto.top, mainAuto.size] : [0, 0, 0];
@@ -1047,8 +1138,9 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     if (legendBox) rects.push(legendBox);
     // «A» у шкалы основной панели, растянутой вручную, — в её правом нижнем углу (PaneChrome, autoBox)
     if (autoS > 0) rects.push({ x: autoL, y: autoT, w: autoS, h: autoS });
+    rects.push(...cardBoxes);
     ctrl.set({ uiObstacles: rects.length ? rects : NONE });
-  }, [hasCorner, hasTopRight, mainBox, legendBox, autoL, autoT, autoS]);
+  }, [hasCorner, hasTopRight, mainBox, legendBox, autoL, autoT, autoS, cardBoxes]);
 
   return (
     <div ref={setWrap} className={s.chart}>

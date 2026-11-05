@@ -56,7 +56,7 @@ test("график: смена инструмента и сигналы по и�
   await expect(page.getByRole("link", { name: "1м", exact: true })).toBeVisible();
 });
 
-test("рисование: трендовая линия двумя кликами, отмена, удаление клавишей, позиция в журнал", async ({ page }) => {
+test("рисование: трендовая линия двумя кликами, инструмент снимается, отмена, удаление клавишей, позиция в журнал", async ({ page }) => {
   const calls: string[] = [];
   await mock(page, calls, true);
   await page.goto("/chart/BTCUSDT/4h");
@@ -67,27 +67,31 @@ test("рисование: трендовая линия двумя кликам�
   // инструменты на десктопе — в левой панели рисования
   const tools = page.getByRole("toolbar", { name: "панель рисования" });
   await tools.getByRole("button", { name: "Трендовая линия" }).click();
-  await expect(page.getByRole("button", { name: /Рисую: Трендовая линия/ })).toBeVisible();
+  // чип режима рисования: инструмент и шаг (ADR-0009, «Рисование»)
+  const chip = page.getByTestId("draw-chip");
+  await expect(chip).toContainText("Трендовая линия");
+  await expect(chip).toContainText("Нажмите первую точку");
   const box = (await term.boundingBox())!;
   await page.mouse.click(box.x + box.width * 0.3, box.y + box.height * 0.4);
+  await expect(chip).toContainText("Нажмите вторую точку");
   await page.mouse.click(box.x + box.width * 0.6, box.y + box.height * 0.3);
   await expect(count).toHaveText("рисунков: 1");
   await expect(page.getByRole("region", { name: "выбранный рисунок" })).toContainText("Трендовая линия");
-  await page.getByRole("button", { name: "закончить рисование" }).click();
-  await page.getByRole("button", { name: "отменить" }).click();
+  // один рисунок на выбор инструмента: дальше курсор (раньше инструмент оставался до «Готово»)
+  await expect(chip).toHaveCount(0);
+  await expect(tools.getByRole("button", { name: "Трендовая линия" })).toHaveAttribute("aria-pressed", "false");
+  await tools.getByRole("button", { name: "отменить", exact: true }).click();
   await expect(count).toHaveText("рисунков: 0");
-  await page.getByRole("button", { name: "повторить" }).click();
+  await tools.getByRole("button", { name: "повторить", exact: true }).click();
   await expect(count).toHaveText("рисунков: 1");
   // выбор кликом по телу и удаление клавишей
   await page.mouse.click(box.x + box.width * 0.45, box.y + box.height * 0.35);
   await expect(page.getByRole("region", { name: "выбранный рисунок" })).toBeVisible();
   await page.keyboard.press("Delete");
   await expect(count).toHaveText("рисунков: 0");
-  // позиция long: вход, стоп, цель → карточка с R:R и ссылкой в журнал
+  // позиция long одним нажатием (стоп по ATR, цель 1:2) → карточка с R:R и ссылкой в журнал
   await tools.getByRole("button", { name: "Позиция Long" }).click();
   await page.mouse.click(box.x + box.width * 0.5, box.y + box.height * 0.5);
-  await page.mouse.click(box.x + box.width * 0.5, box.y + box.height * 0.6);
-  await page.mouse.click(box.x + box.width * 0.5, box.y + box.height * 0.3);
   await expect(count).toHaveText("рисунков: 1");
   const card = page.getByRole("region", { name: "выбранный рисунок" });
   await expect(card).toContainText("R:R");
@@ -286,7 +290,7 @@ test("алерты на графике: из горизонтальной лин
   await expect(term.locator("canvas").first()).toBeVisible();
   await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 0");
   await page.keyboard.press("Alt+h");
-  await expect(page.getByRole("button", { name: /Рисую: Горизонтальная линия/ })).toBeVisible();
+  await expect(page.getByTestId("draw-chip")).toContainText("Горизонтальная линия");
   const box = (await term.boundingBox())!;
   await page.mouse.click(box.x + box.width * 0.4, box.y + box.height * 0.55);
   await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 1");
@@ -342,7 +346,7 @@ test("рисунок копируется на другой инструмент
   await expect(term.locator("canvas").first()).toBeVisible();
   await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 0");
   await page.keyboard.press("Alt+h");
-  await expect(page.getByRole("button", { name: /Рисую: Горизонтальная линия/ })).toBeVisible();
+  await expect(page.getByTestId("draw-chip")).toContainText("Горизонтальная линия");
   const box = (await term.boundingBox())!;
   await page.mouse.click(box.x + box.width * 0.4, box.y + box.height * 0.55);
   await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 1");

@@ -24,6 +24,9 @@ export interface Viewport {
   gutter: { x0: number; x1: number; mode: "reserved" | "overlay" } | null;
 }
 
+/** Слой подписи в раскладке: слой сцены или рисунки пользователя (drawings/labels.ts). */
+export type LabelLayer = SceneLayer | "drawings";
+
 /** Место подписи: левый верхний угол плашки. clampX — зона: прижать к области, а не выбросить (M09). */
 export interface Slot {
   key: SlotKey;
@@ -36,7 +39,7 @@ export interface LabelCandidate {
   /** `${objectId}#label` */
   id: string;
   objectId: string;
-  layer: SceneLayer;
+  layer: LabelLayer;
   text: string;
   font: "sans" | "mono";
   px: number;
@@ -54,6 +57,20 @@ export interface LabelCandidate {
   rank?: number;
   /** Свой лимит группы подписей (суммы ликвидаций одной стороны): сверх max — «budget». */
   cap?: { key: string; max: number };
+  /**
+   * Подпись рисунка пользователя (drawings/labels.ts): рисует её примитив рисунков, а не разметка — в результате она
+   * в external, а не в placed; подписи разметки обходят её так же, как друг друга.
+   */
+  external?: boolean;
+  /** Плашка с фоном: колонки свечей не обходит. */
+  overCandles?: boolean;
+  /** Область — вся панель (без полосы OHLC сверху и объёма снизу): подписи рисунков у краёв панели. */
+  area?: "pane";
+  /**
+   * Нет свободного места: fixed — на первом месте всё равно; soft — первое место в области, не задевающее
+   * препятствия (легенду, кнопки, полосу цены), даже поверх других подписей. Без force — подпись выброшена.
+   */
+  force?: "fixed" | "soft";
 }
 
 /** Видимые свечи как индекс колонок: проверка пересечения за O(колонок под прямоугольником). */
@@ -77,7 +94,7 @@ export interface Obstacles {
 export interface PlacedLabel {
   id: string;
   objectId: string;
-  layer: SceneLayer;
+  layer: LabelLayer;
   text: string;
   rect: Rect;
   slot: SlotKey;
@@ -94,6 +111,8 @@ export type DropReason = "budget" | "collision" | "offscreen";
 export interface LayoutResult {
   placed: readonly PlacedLabel[];
   dropped: readonly { id: string; reason: DropReason }[];
+  /** Размещённые подписи рисунков пользователя (кандидаты external): их рисует примитив рисунков. */
+  external?: readonly PlacedLabel[];
 }
 
 export interface AxisCandidate {

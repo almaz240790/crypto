@@ -6,6 +6,7 @@ import {
   canRedo,
   canUndo,
   clearDrawings,
+  commitMove,
   createState,
   mergeRemote,
   redo,
@@ -24,6 +25,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fromWire, listDrawings, queueAdd, queueFlush, toWire } from "@/lib/drawings";
 
 const KEY = (symbol: string) => `pl-drawings:${symbol}`;
+/** «Рисовать серию» — настройка устройства (не синхронизируется): инструмент не снимается после рисунка. */
+export const SERIES_KEY = "pl-draw-series";
 const SYNC_AT = (symbol: string) => `pl-drawings-sync:${symbol}`;
 /** Лимит без входа (Free); с входом сервер отдаёт лимит тарифа. */
 export const DRAWINGS_LIMIT = 10;
@@ -38,13 +41,17 @@ function load(symbol: string): Drawing[] {
 }
 
 /**
- * Рисунки инструмента: состояние с undo/redo, инструмент, магнит, localStorage; с входом —
+ * Рисунки инструмента: состояние с undo/redo, инструмент, магнит, «серия», localStorage; с входом —
  * синхронизация с сервером (оптимистичная запись, офлайн-очередь, последняя запись побеждает).
+ * Инструмент — на один рисунок (ADR-0009, «Рисование»): после рисунка контроллер снимает его, если «серия» выключена.
  */
 export function useDrawings(symbol: string, authed: boolean) {
   const [state, setState] = useState<DrawingsState>(() => createState());
   const [tool, setTool] = useState<DrawingType | null>(null);
   const [magnet, setMagnet] = useState(true);
+  const [series, setSeriesState] = useState(false);
+  /** Поставлено точек начатого рисунка (0 — не начат): подсказка шага в чипе режима рисования. */
+  const [step, setStep] = useState(0);
   const [draft, setDraft] = useState<Drawing | null>(null);
   const [limit, setLimit] = useState<number | null>(DRAWINGS_LIMIT);
   const [sync, setSync] = useState<"off" | "ok" | "queued" | "error">("off");
@@ -55,6 +62,25 @@ export function useDrawings(symbol: string, authed: boolean) {
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
+
+  // «серия» — из памяти устройства после монтирования (на сервере её нет: без расхождения при гидратации)
+  useEffect(() => {
+    queueMicrotask(() => {
+      try {
+        setSeriesState(localStorage.getItem(SERIES_KEY) === "1");
+      } catch {
+        /* приватный режим */
+      }
+    });
+  }, []);
+  const setSeries = useCallback((v: boolean) => {
+    setSeriesState(v);
+    try {
+      localStorage.setItem(SERIES_KEY, v ? "1" : "0");
+    } catch {
+      /* приватный режим */
+    }
+  }, []);
 
   const flush = useCallback(async () => {
     if (!authed) return;
@@ -80,6 +106,7 @@ export function useDrawings(symbol: string, authed: boolean) {
       loaded.current = symbol;
       setTool(null);
       setDraft(null);
+      setStep(0);
       setLimit(authed ? null : DRAWINGS_LIMIT);
     });
     if (!authed) return;
@@ -149,7 +176,8 @@ export function useDrawings(symbol: string, authed: boolean) {
           }
           return addDrawing(s, d);
         }),
-      move: (id: string, points: Point[], final: boolean) => setState((s) => updateDrawing(s, id, { points }, final)),
+      // перетаскивание: промежуточные положения — без шага отмены; конец — один шаг от положения до перетаскивания
+      move: (id: string, points: Point[], final: boolean, origin?: Point[]) => setState((s) => (final && origin ? commitMove(s, id, points, origin) : updateDrawing(s, id, { points }, final))),
       select: (id: string | null) => setState((s) => select(s, id)),
       remove: (id: string) => setState((s) => removeDrawing(s, id)),
       clear: () => setState((s) => clearDrawings(s)),
@@ -189,5 +217,5 @@ export function useDrawings(symbol: string, authed: boolean) {
   const dismissLimit = useCallback(() => setLimitHit(false), []);
   // одна ссылка на список, пока состояние то же: правая панель (memo) не перерисовывается на каждом тике
   const items = useMemo(() => alive(state), [state]);
-  return { state, items, selected, tool, setTool, magnet, setMagnet, draft, setDraft, actions, canUndo: canUndo(state), canRedo: canRedo(state), limit, limitHit, dismissLimit, sync };
+  return { state, items, selected, tool, setTool, magnet, setMagnet, series, setSeries, step, setStep, draft, setDraft, actions, canUndo: canUndo(state), canRedo: canRedo(state), limit, limitHit, dismissLimit, sync };
 }

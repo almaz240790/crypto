@@ -15,7 +15,7 @@ import type {
 import { bandsKey, inBands } from "../layout/axis";
 import { canvasMeasurer, type TextMeasurer } from "../layout/measure";
 import { hitTestScreen, projectScene, screenFrameKey, type ScreenScene } from "../layout/project";
-import type { AxisLayout, AxisPlaced, LayoutResult, PlacedLabel, Rect, Viewport } from "../layout/types";
+import type { AxisLayout, AxisPlaced, LabelCandidate, LayoutResult, PlacedLabel, Rect, Viewport } from "../layout/types";
 import { hitTolerance, type LabelBudget, type ViewPreset } from "../presets";
 import { volumeProfile, type VpRow } from "../scene/layers/profile";
 import type { ProfileObject, Scene, SceneObject } from "../scene/types";
@@ -53,7 +53,12 @@ export interface OverlayDebug {
   objects: readonly { id: string; layer: string; kind: SceneObject["kind"]; tone: string; color: string; emphasis: SceneObject["emphasis"]; rect: Rect | null }[];
   /** Сколько раз раскладка пересчитывалась (неподвижный график — 0 новых пересчётов). */
   layouts: number;
+  /** Подписи рисунков пользователя, размещённые той же раскладкой (их рисует примитив рисунков). */
+  drawingLabels: readonly PlacedLabel[];
 }
+
+/** Подписи рисунков пользователя для общей раскладки: кандидаты по измерителю текста темы (drawings/labels.ts). */
+export type ExternalLabels = (measure: TextMeasurer) => readonly LabelCandidate[];
 
 export interface OverlayOptions {
   view: ViewPreset;
@@ -84,6 +89,11 @@ function geomRect(g: ScreenScene["objects"][number]["geom"]): Rect | null {
     default:
       return null;
   }
+}
+
+/** Ключ подписей рисунков: раскладка пересчитывается, когда они сдвинулись, сменили текст или размер. */
+function externalKey(list: readonly LabelCandidate[]): string {
+  return list.map((l) => `${l.id}:${l.text}:${Math.round(l.w)}x${Math.round(l.h)}:${l.slots.map((s) => `${Math.round(s.x)},${Math.round(s.y)}`).join(";")}`).join("|");
 }
 
 /** Сколько после изменения видимого диапазона подписи считаются «в жесте» (план 2A.7). */
@@ -154,6 +164,7 @@ export class OverlayPrimitive implements ISeriesPrimitive<Time> {
   private layouts = 0;
   /** Кэш строк профиля объёма на устоявшийся видимый диапазон. */
   private vp: { key: string; rows: readonly VpRow[] } | null = null;
+  private external: ExternalLabels | null = null;
   /** Сколько раз считался профиль (тест: во время жеста — 0 новых). */
   profileComputations = 0;
 
@@ -221,6 +232,20 @@ export class OverlayPrimitive implements ISeriesPrimitive<Time> {
     this.requestUpdate?.();
   }
 
+  /**
+   * Подписи рисунков пользователя — в той же раскладке, что подписи разметки (ADR-0009, «Рисование»): провайдер
+   * зовётся в каждом кадре, его кандидаты и ключ входят в кадр; места — externalPlaced().
+   */
+  setExternalLabels(provider: ExternalLabels | null): void {
+    this.external = provider;
+    this.requestUpdate?.();
+  }
+
+  /** Места подписей рисунков в текущем кадре; null — кадра нет (сцена ещё не пришла). */
+  externalPlaced(): readonly PlacedLabel[] | null {
+    return this.screen ? (this.screen.labels.external ?? []) : null;
+  }
+
   /** Шрифт загрузился (document.fonts.ready): ширины подписей перемеряются. */
   remeasure(): void {
     this.measure.clear();
@@ -268,6 +293,7 @@ export class OverlayPrimitive implements ISeriesPrimitive<Time> {
     const shown = proj.visible[proj.visible.length - 1];
     const bar = shown ?? last;
     const profile = this.profileFor(scene, proj.visible, r, last, moving);
+    const external = this.external?.(this.measure) ?? [];
     const opts = {
       view: this.view,
       theme: this.theme,
@@ -280,6 +306,7 @@ export class OverlayPrimitive implements ISeriesPrimitive<Time> {
       uiRev: this.uiRev,
       gesture,
       ...profile,
+      ...(external.length ? { external, externalKey: externalKey(external) } : {}),
     };
     const key = screenFrameKey(scene, proj, proj.visible, opts);
     if (this.screen && this.screen.frameKey === key) return;
@@ -417,6 +444,7 @@ export class OverlayPrimitive implements ISeriesPrimitive<Time> {
       countdown: this.countdownRect,
       objects,
       layouts: this.layouts,
+      drawingLabels: s?.labels.external ?? [],
     };
   }
 }

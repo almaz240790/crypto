@@ -41,6 +41,7 @@ import { TerminalHeader, type HeaderFacts } from "./chrome/TerminalHeader";
 import { TerminalToolbar } from "./chrome/TerminalToolbar";
 import type { TimeframeBarHandle } from "./chrome/TimeframeBar";
 import { ChartCorner, DrawModeChip } from "./chrome/ChartCorner";
+import { drawHint } from "./chrome/drawHint";
 import { PhoneBottom, PhoneStrip, PhoneTop } from "./chrome/PhoneBars";
 
 const NO_FIGURES: readonly FigureOnChart[] = [];
@@ -235,6 +236,7 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
   const clearDrawings = () => {
     if (confirm(t("Удалить все рисунки по {symbol} ({n})?", { symbol, n: dr.items.length }))) dr.actions.clear();
   };
+  // «Отменить» и «Готово» чипа режима рисования (то же — Esc): начатый рисунок брошен, курсор
   const finishTool = useCallback(() => {
     dr.setTool(null);
     dr.setDraft(null);
@@ -262,29 +264,38 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
     [symbol, tf, data.tick, lastClose, figures, data.figures?.stats, patterns, data.patterns?.stats, authed, askAccess, signalsLinkN, pickLevel, focusObject],
   );
   const sel = dr.selected;
+  /** Стопка карточек поверх графика (выбранный рисунок, лимит): её прямоугольник — препятствие для подписей на графике. */
+  const [cardsEl, setCardsEl] = useState<HTMLDivElement | null>(null);
   /** Высота шкалы времени: карточка выбранного рисунка на десктопе — над ней, даты и метка перекрестия видны (D7). */
   const [axisH, setAxisH] = useState<number | null>(null);
+  /** Депозит и доля риска из настроек: риск в $ и объём позиции — в карточке и на плашке входа на графике. */
+  const riskDeposit = user?.risk?.deposit ?? null;
+  const riskPct = user?.risk?.risk_pct ?? null;
+  const riskProfile = useMemo(() => (riskDeposit && Number(riskDeposit) > 0 ? { deposit: Number(riskDeposit), riskPct: Number(riskPct) } : null), [riskDeposit, riskPct]);
   const pos = useMemo(() => {
     if (!sel || !sel.type.startsWith("position") || sel.points.length < 3) return null;
-    const risk = user?.risk;
-    const profile = risk?.deposit ? { deposit: Number(risk.deposit), riskPct: Number(risk.risk_pct) } : null;
-    return positionStats(sel.type === "position-long" ? "long" : "short", sel.points[0]!.price, sel.points[1]!.price, sel.points[2]!.price, profile);
-  }, [sel, user]);
+    return positionStats(sel.type === "position-long" ? "long" : "short", sel.points[0]!.price, sel.points[1]!.price, sel.points[2]!.price, riskProfile);
+  }, [sel, riskProfile]);
+  const setDrawTool = dr.setTool;
   const drawingsProps = useMemo(
     () => ({
       state: dr.state,
       tool: dr.tool,
       magnet: dr.magnet,
+      series: dr.series,
       draft: dr.draft,
       onCreate: dr.actions.create,
       onMove: dr.actions.move,
       onSelect: dr.actions.select,
       onDraft: dr.setDraft,
-      onToolDone: () => {
-        /* инструмент остаётся выбранным для серии рисунков; Esc — выход */
+      onStep: dr.setStep,
+      // один рисунок на выбор инструмента (ADR-0009, «Рисование»): без «серии» контроллер снял инструмент — курсор
+      onToolDone: (ended: boolean) => {
+        if (ended) setDrawTool(null);
       },
+      profile: riskProfile,
     }),
-    [dr.state, dr.tool, dr.magnet, dr.draft, dr.actions, dr.setDraft],
+    [dr.state, dr.tool, dr.magnet, dr.series, dr.draft, dr.actions, dr.setDraft, dr.setStep, setDrawTool, riskProfile],
   );
   const fundingRate = data.derivatives?.funding_current ?? null;
   const fundingNext = data.derivatives?.next_funding_t ?? null;
@@ -377,10 +388,11 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
         {!desktop && <PhoneTop symbol={symbol} tf={tf} instruments={instruments} onSymbol={goSymbol} guest={!authed} type={st.type} scale={st.scale} onType={(type) => patch({ type })} onScale={(scale) => patch({ scale })} onZoom={zoom} onReset={reset} onSnapshot={snapshot} />}
         {!desktop && <PhoneStrip {...facts} tf={tf} />}
         <div className={s.area} data-objects={panelShown ? "shown" : "hidden"} data-panel={panelOverlay ? "overlay" : "inline"} style={{ "--objects-w": objWidth } as React.CSSProperties}>
-          <DrawToolbar tool={dr.tool} onTool={dr.setTool} magnet={dr.magnet} onMagnet={dr.setMagnet} hidden={dr.state.hidden} onHidden={dr.actions.hide} canUndo={dr.canUndo} canRedo={dr.canRedo} onUndo={dr.actions.undo} onRedo={dr.actions.redo} />
+          <DrawToolbar tool={dr.tool} onTool={dr.setTool} magnet={dr.magnet} onMagnet={dr.setMagnet} series={dr.series} onSeries={dr.setSeries} hidden={dr.state.hidden} onHidden={dr.actions.hide} canUndo={dr.canUndo} canRedo={dr.canRedo} onUndo={dr.actions.undo} onRedo={dr.actions.redo} />
           <div className={s.chartCol} style={axisH ? ({ "--time-scale-h": `${axisH}px` } as React.CSSProperties) : undefined}>
-            {/* карточка перекрестия телефона (вид прежний до C2); на десктопе — легенда в углу графика */}
-            {!desktop && <CrosshairCard store={store} tick={data.tick} more={ohlcMore} onMore={setOhlcMore} onClose={clearCrosshair} />}
+            {/* карточка перекрестия телефона (вид прежний до C2); на десктопе — легенда в углу графика. С инструментом
+                рисования её нет: на её месте чип шага с «Отменить» (ADR-0009, «Рисование») */}
+            {!desktop && !dr.tool && <CrosshairCard store={store} tick={data.tick} more={ohlcMore} onMore={setOhlcMore} onClose={clearCrosshair} />}
             {data.error && !intradayDenied ? (
               <div className={s.empty} role="alert">
                 {data.error}
@@ -420,14 +432,15 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
                 onInstanceParams={setInstanceParams}
                 paneHint
                 corner={desktop && !sel && !dr.limitHit ? <ChartCorner onZoom={zoom} onReset={reset} /> : null}
-                topRight={desktop && dr.tool ? <DrawModeChip tool={t(TOOL_TITLES[dr.tool])} onFinish={finishTool} /> : null}
+                topRight={dr.tool ? <DrawModeChip tool={t(TOOL_TITLES[dr.tool])} hint={t(drawHint(dr.tool, dr.step))} finish={dr.series && dr.step === 0} onExit={finishTool} /> : null}
                 onAxisHeight={setAxisH}
+                cards={cardsEl}
               />
             )}
             {(sel || dr.limitHit) && (
-              <div className={s.cards}>
+              <div ref={setCardsEl} className={s.cards}>
                 {dr.limitHit && <DrawingLimitCard limit={dr.limit} guest={!user} onDismiss={dr.dismissLimit} />}
-                {sel && <SelectedDrawingCard drawing={sel} symbol={symbol} tf={tf} instruments={instruments} pos={pos} onPatch={dr.actions.patch} onLock={dr.actions.lock} onRemove={dr.actions.remove} onDeselect={deselectDrawing} onAlert={alertOnLevel} onCopy={copyDrawing} />}
+                {sel && <SelectedDrawingCard drawing={sel} symbol={symbol} tf={tf} instruments={instruments} pos={pos} tick={data.tick} compact={!desktop} onPatch={dr.actions.patch} onEdit={dr.actions.move} onLock={dr.actions.lock} onRemove={dr.actions.remove} onDeselect={deselectDrawing} onAlert={alertOnLevel} onCopy={copyDrawing} />}
               </div>
             )}
             {/* тост: единственный role=status на странице; поверх колонки графика, раскладку не сдвигает */}
@@ -503,6 +516,10 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
                       <input type="checkbox" checked={dr.magnet} onChange={(e) => dr.setMagnet(e.target.checked)} /> {t("магнит к OHLC")}
                     </label>
                     <label>
+                      <input type="checkbox" checked={dr.series} onChange={(e) => dr.setSeries(e.target.checked)} /> {t("рисовать серию")}
+                      <span className="caption">{t("инструмент не снимается после рисунка")}</span>
+                    </label>
+                    <label>
                       <input type="checkbox" checked={dr.state.hidden} onChange={(e) => dr.actions.hide(e.target.checked)} /> {t("скрыть все рисунки")}
                     </label>
                     <button
@@ -564,7 +581,6 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
             }
             alertsCount={alerts.length}
             tool={dr.tool ? t(TOOL_TITLES[dr.tool]) : null}
-            onFinishTool={finishTool}
             canUndo={dr.canUndo}
             canRedo={dr.canRedo}
             onUndo={dr.actions.undo}

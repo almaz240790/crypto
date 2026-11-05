@@ -30,6 +30,8 @@ export type Overlay = {
   countdown: Rect | null;
   objects: { id: string; layer: string; kind: string; tone: string; color: string; emphasis: string; rect: Rect | null }[];
   layouts: number;
+  /** Подписи рисунков пользователя в той же раскладке (у ручек выбранного рисунка текст пустой). */
+  drawingLabels: OverlayLabel[];
 };
 export type Census = {
   texts: CensusText[];

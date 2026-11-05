@@ -53,6 +53,12 @@ export interface ProjectOptions {
    */
   profileRows?: (obj: ProfileObject) => readonly VpRow[];
   profileKey?: string;
+  /**
+   * Подписи рисунков пользователя (drawings/labels.ts) — в той же раскладке: подписи разметки ниже их приоритета
+   * обходят их, они обходят старшие (алерты, уровни сигнала, выбранный объект). externalKey — в ключе кадра.
+   */
+  external?: readonly LabelCandidate[];
+  externalKey?: string;
 }
 
 export type ScreenGeom =
@@ -118,6 +124,7 @@ export function screenFrameKey(scene: Scene, proj: SceneProjector, visibleCandle
     opts.hovered ?? "",
     opts.uiRev ?? 0,
     opts.gesture ? 1 : 0,
+    opts.externalKey ?? "",
     r2(opts.overlayY),
     opts.profileKey ?? "",
     opts.plaque ? `${opts.plaque.price}:${opts.plaque.live ? 1 : 0}` : "",
@@ -436,7 +443,7 @@ export function projectScene(scene: Scene, proj: SceneProjector, visibleCandles:
   }
   for (const r of opts.ui ?? []) rects.push({ rect: r, kind: "ui" });
   const obstacles: Obstacles = { candles: candleBand(proj, visibleCandles), rects };
-  const labels = layoutLabels(cands, obstacles, viewport, view.labels);
+  const labels = layoutLabels(opts.external?.length ? [...cands, ...opts.external] : cands, obstacles, viewport, view.labels);
   // шкала
   const axisCands: AxisCandidate[] = [];
   for (const obj of scene.objects) {

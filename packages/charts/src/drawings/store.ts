@@ -1,4 +1,4 @@
-import { UNDO_STEPS, type Drawing } from "./types";
+import { UNDO_STEPS, type Drawing, type Point } from "./types";
 
 /** Состояние рисунков с отменой/повтором (50 шагов) — чистые функции без побочных эффектов. */
 export type DrawingsState = {
@@ -25,6 +25,16 @@ export function addDrawing(state: DrawingsState, d: Drawing): DrawingsState {
 export function updateDrawing(state: DrawingsState, id: string, patch: Partial<Drawing>, record = true): DrawingsState {
   const items = state.items.map((d) => (d.id === id ? { ...d, ...patch, updated_at: Date.now() } : d));
   return record ? commit(state, items) : { ...state, items };
+}
+
+/**
+ * Конец перетаскивания рисунка: промежуточные положения шли без записи в историю (updateDrawing, record = false),
+ * поэтому шаг отмены пишется от положения до перетаскивания (origin) — отмена возвращает рисунок туда, откуда его
+ * взяли, а не в последнее промежуточное положение.
+ */
+export function commitMove(state: DrawingsState, id: string, points: Point[], origin: Point[]): DrawingsState {
+  const before = { ...state, items: state.items.map((d) => (d.id === id ? { ...d, points: origin } : d)) };
+  return updateDrawing(before, id, { points }, true);
 }
 
 /** Удаление — мягкое: остаётся запись с ``deleted_at`` для синхронизации. */
