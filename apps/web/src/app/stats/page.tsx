@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { DISCLAIMER, EquityChart, Footer, Header, RHistogram } from "@/components/site";
 import { CsvButton } from "@/components/stats/CsvButton";
-import { EmptyState, GradeBadge, Panel, StatusBadge, Table, Td, Th, Tooltip } from "@/components/ui";
+import { Badge, EmptyState, GradeBadge, Panel, StatusBadge, Table, Td, Th, Tooltip } from "@/components/ui";
 import {
   getRuns,
   getStatsFor,
@@ -12,7 +12,8 @@ import {
   type Metrics,
   type StatsQuery,
 } from "@/lib/api";
-import { formatDuration, formatPct, formatR, formatTimeUTC, plural } from "@/lib/format";
+import { formatDayUTC, formatDuration, formatPct, formatR, formatTimeUTC, plural } from "@/lib/format";
+import { forwardVersionOptions } from "@/lib/forwardStats";
 import s from "./page.module.css";
 import { getT } from "@/i18n/server";
 
@@ -52,7 +53,8 @@ function pct(v: number | null | undefined): string {
   return num(v, (n) => formatPct(n * 100, { signed: false }));
 }
 
-async function MetricCards({ m }: { m: Metrics }) {
+/** lowN — порог «мало данных» из API (только форвард): числа не скрываем, только помечаем. */
+async function MetricCards({ m, lowN }: { m: Metrics; lowN?: number | null }) {
   const tr = await getT();
   const cards: [string, string, string, string?][] = [
     ["closed", tr("закрытых сделок"), String(m.closed), `${m.open} ${plural(m.open, tr("активная"), tr("активные"), tr("активных"))}, ${m.expired} ${plural(m.expired, tr("истёк"), tr("истекли"), tr("истекли"))}`],
@@ -75,6 +77,13 @@ async function MetricCards({ m }: { m: Metrics }) {
           </dt>
           <dd>
             {value}
+            {k === "closed" && lowN != null && m.closed < lowN && (
+              <span className={s.low}>
+                <Badge tone="warn" title={tr("Меньше {n} закрытых сделок: выводы по этим числам делать рано.", { n: lowN })}>
+                  {tr("мало данных")}
+                </Badge>
+              </span>
+            )}
             {sub && (
               <>
                 <br />
@@ -146,12 +155,20 @@ export default async function StatsPage({ searchParams }: { searchParams: Promis
   };
   const page = Math.max(0, Number(one(sp.page)) || 0);
   const PAGE = 50;
-  const [stats, strategies, runs, trades] = await Promise.all([
+  const [first, strategies, runs, trades] = await Promise.all([
     getStatsFor(q),
     getStrategies(),
     scope === "backtest" ? getRuns() : Promise.resolve([]),
     scope === "forward" ? Promise.resolve(null) : getStatsTrades(q, page * PAGE, PAGE),
   ]);
+  let stats = first;
+  if (!stats && scope === "forward" && q.version && strategies.length && !strategies.some((v) => v.version === q.version)) {
+    // неизвестная версия в адресе (API ответил 404) — показываем форвард-версию по умолчанию
+    q.version = undefined;
+    stats = await getStatsFor(q);
+  }
+  // форвард всегда по одной версии: какую посчитал API, он называет сам (план 2.11)
+  const fwd = scope === "forward" ? (stats?.strategy_version ?? null) : null;
   const query = statsSearch(q);
   const m = stats?.metrics;
   const has = !!m && (m.closed > 0 || m.open > 0 || m.expired > 0);
@@ -167,7 +184,9 @@ export default async function StatsPage({ searchParams }: { searchParams: Promis
     return `/stats?${str}${pg ? `&page=${pg}` : ""}`;
   };
   const pages = trades ? Math.ceil(trades.total / PAGE) : 0;
-  const versionOptions = strategies.filter((v) => (scope === "backtest" ? true : v.status === scope));
+  const versionOptions =
+    scope === "forward" ? forwardVersionOptions(strategies, fwd) : strategies.filter((v) => (scope === "backtest" ? true : v.status === scope));
+  const filtered = !!(q.symbol || q.grade || q.entry_type || q.days);
 
   return (
     <>
@@ -190,8 +209,19 @@ export default async function StatsPage({ searchParams }: { searchParams: Promis
           </nav>
         </div>
 
+        {scope === "forward" && stats?.notice && (
+          <p className={s.notice} role="note">
+            {stats.notice.invalid_until
+              ? tr("Результаты форварда до {date} недействительны: из-за ошибки учёта сделки закрывались через 15 минут вместо 60 часов. Исправление и пересчёт — в работе.", {
+                  date: formatDayUTC(stats.notice.invalid_until),
+                })
+              : tr("Результаты форварда недействительны: из-за ошибки учёта сделки закрывались через 15 минут вместо 60 часов. Исправление и пересчёт — в работе.")}
+          </p>
+        )}
+
         <p className={s.note}>
           <strong>{scopeInfo.label}.</strong> {scopeInfo.note}
+          {fwd && <> {tr("Показана версия {name} {version}: форвард считается по каждой версии отдельно.", { name: fwd.name, version: fwd.version })}</>}
           {scope === "backtest" && stats?.run && (
             <>
               {" "}
@@ -214,8 +244,8 @@ export default async function StatsPage({ searchParams }: { searchParams: Promis
               </select>
             </label>
           ) : (
-            <label>{tr("версия стратегии")}<select name="version" defaultValue={q.version ?? ""}>
-                <option value="">{tr("все")}</option>
+            <label>{tr("версия стратегии")}<select name="version" defaultValue={scope === "forward" ? (fwd?.version ?? q.version ?? "") : (q.version ?? "")}>
+                {scope !== "forward" && <option value="">{tr("все")}</option>}
                 {versionOptions.map((v) => (
                   <option key={v.id} value={v.version}>
                     {v.name} {v.version}
@@ -265,13 +295,17 @@ export default async function StatsPage({ searchParams }: { searchParams: Promis
                   ? tr("Live-сигналов пока нет: текущая версия стратегии проходит форвард-тест. Переключите область на «Форвард-тест» или «Бэктест».")
                   : scope === "backtest" && !stats.run
                     ? tr("Сохранённых прогонов бэктеста нет.")
-                    : tr("По этим фильтрам сделок нет.")
+                    : scope === "forward" && !fwd
+                      ? tr("Ни одна версия стратегии сейчас не проходит форвард-тест.")
+                      : scope === "forward" && !filtered
+                        ? tr("У версии {version} пока нет форвард-сделок.", { version: fwd!.version })
+                        : tr("По этим фильтрам сделок нет.")
               }
             />
           </Panel>
         ) : (
           <>
-            <MetricCards m={m!} />
+            <MetricCards m={m!} lowN={scope === "forward" ? (stats.low_n_threshold ?? null) : null} />
 
             <div className={s.two}>
               <Panel title={tr("Накопленный результат, R")} actions={<span>{m!.closed} {plural(m!.closed, tr("сделка"), tr("сделки"), tr("сделок"))}, итог {formatR(m!.sum_r)}</span>}>

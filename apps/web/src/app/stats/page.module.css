@@ -80,6 +80,26 @@
   max-width: 90ch;
 }
 
+/* Плашка над форвард-статистикой: старые результаты недействительны (задание «сигналы», задача 2). */
+.notice {
+  margin: 0;
+  padding: var(--gap-2) var(--gap-3);
+  border: 1px solid var(--warn);
+  border-radius: var(--radius);
+  background: var(--warn-fill);
+  color: var(--text);
+  font-size: var(--fs-table);
+  font-weight: 500;
+  max-width: 90ch;
+}
+
+.low {
+  display: inline-flex;
+  margin-left: var(--gap-2);
+  vertical-align: middle;
+  font-family: var(--font-sans), sans-serif;
+}
+
 .cards {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));

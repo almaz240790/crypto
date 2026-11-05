@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   decimalsFromTick,
+  formatDayUTC,
   formatDuration,
   formatPct,
   formatListPrice,
@@ -90,6 +91,14 @@ describe("formatTimeUTC", () => {
     expect(formatTimeUTC("2026-10-25T18:00:00+02:00", { now })).toBe("25.10 16:00 UTC");
     expect(formatTimeUTC("2025-03-01T04:00:00Z", { now })).toBe("01.03.2025 04:00 UTC");
     expect(formatTimeUTC("nope")).toBe("—");
+  });
+});
+
+describe("formatDayUTC", () => {
+  it("дата без времени для плашки форварда", () => {
+    expect(formatDayUTC("2026-11-06")).toBe("06.11.2026");
+    expect(formatDayUTC("2026-11-05T23:30:00-02:00")).toBe("06.11.2026");
+    expect(formatDayUTC("nope")).toBe("—");
   });
 });
 

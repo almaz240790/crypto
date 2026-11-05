@@ -52,3 +52,50 @@ test("статистика: CSV скачивается после входа", a
   await btn.click();
   expect((await dl).suggestedFilename()).toBe("platform-backtest-signals.csv");
 });
+
+test("форвард: одна версия без пункта «все», плашка, пометка «мало данных»", async ({ page }) => {
+  await mockClient(page, false);
+  await page.goto("/stats?scope=forward");
+  const plaque = page.getByRole("note");
+  await expect(plaque).toHaveText(
+    "Результаты форварда до 06.11.2026 недействительны: из-за ошибки учёта сделки закрывались через 15 минут вместо 60 часов. Исправление и пересчёт — в работе.",
+  );
+  // без версии — версия по умолчанию из ответа API, она названа на странице и выбрана в селекторе
+  await expect(page.getByText("Показана версия Trend OB retest 1.1.0: форвард считается по каждой версии отдельно.")).toBeVisible();
+  const sel = page.getByRole("combobox", { name: "версия стратегии" });
+  await expect(sel).toHaveValue("1.1.0");
+  await expect(sel.locator("option")).toHaveText(["Trend OB retest 1.0.0", "Trend OB retest 1.1.0"]);
+  // числа не скрыты, только помечены: 12 закрытых < 30
+  const closedCard = page.locator("dl", { has: page.getByText("закрытых сделок", { exact: true }) });
+  await expect(closedCard.locator("dd")).toContainText(/^12\s*мало данных/);
+  await expect(page.getByText("мало данных")).toBeVisible();
+  await expect(page.getByText("построчная история форварда не публикуется")).toBeVisible();
+
+  await sel.selectOption("1.0.0");
+  await page.getByRole("button", { name: "Применить" }).click();
+  await expect(page).toHaveURL(/scope=forward&version=1\.0\.0/);
+  await expect(page.getByText("Показана версия Trend OB retest 1.0.0: форвард считается по каждой версии отдельно.")).toBeVisible();
+  await expect(page.getByText("мало данных")).toHaveCount(0);
+  await expect(plaque).toBeVisible();
+
+  // опечатка в версии — не «API недоступен», а версия по умолчанию
+  await page.goto("/stats?scope=forward&version=9.9.9");
+  await expect(page.getByText("Показана версия Trend OB retest 1.1.0: форвард считается по каждой версии отдельно.")).toBeVisible();
+
+  // на live и бэктесте плашки нет, у live в селекторе по-прежнему есть «все»
+  await page.goto("/stats");
+  await expect(page.getByRole("note")).toHaveCount(0);
+  await expect(page.getByRole("combobox", { name: "версия стратегии" }).locator("option").first()).toHaveText("все");
+  await page.goto("/stats?scope=backtest");
+  await expect(page.getByRole("note")).toHaveCount(0);
+});
+
+test("форвард: плашка по-английски", async ({ page }) => {
+  await mockClient(page, false);
+  await page.context().addCookies([{ name: "pl_locale", value: "en", url: "http://localhost:3101" }]);
+  await page.goto("/stats?scope=forward");
+  await expect(page.getByRole("note")).toHaveText(
+    "Forward-test results before 06.11.2026 are invalid: because of an accounting error, trades were closed after 15 minutes instead of 60 hours. A fix and a recalculation are in progress.",
+  );
+  await expect(page.getByText("not enough data")).toBeVisible();
+});

@@ -38,6 +38,21 @@ export type Stats = {
   run?: BacktestRunMeta | null;
   scope: "live" | "forward" | "backtest";
   generated_at: string;
+  /** Только у форварда: версия, по которой посчитана сводка (агрегата «все версии» нет). */
+  strategy_version?: StrategyVersionRef | null;
+  /** Только у форварда: плашка «старые результаты недействительны» (null — снята). */
+  notice?: { invalid_until: string | null } | null;
+  /** Только у форварда: порог «мало данных» (LOW_N в API) и пометка, что сделок меньше. */
+  low_n_threshold?: number;
+  low_data?: boolean;
+};
+
+export type StrategyVersionRef = {
+  id: number;
+  strategy: string;
+  name: string;
+  version: string;
+  status: string;
 };
 
 export type BacktestRunMeta = {

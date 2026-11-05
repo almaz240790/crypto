@@ -21,6 +21,10 @@ const stats = (scope) => ({
   scope,
   generated_at: new Date().toISOString(),
 });
+const VERSIONS = [
+  { id: 1, strategy: "trend-ob-retest", name: "Trend OB retest", version: "1.0.0", status: "forward", activated_at: null },
+  { id: 2, strategy: "trend-ob-retest", name: "Trend OB retest", version: "1.1.0", status: "forward", activated_at: null },
+];
 const trade = (i) => ({ id: `s${i}`, symbol: i % 2 ? "BTCUSDT" : "ETHUSDT", direction: i % 3 ? "long" : "short", signal_time: new Date(Date.UTC(2026, 8, 1 + (i % 28), 8)).toISOString(), grade: "AB"[i % 2], score: 60 + i, entry: "100", stop: "98", rr_tp2: "2.5", entry_type: "market", status: i % 4 ? "closed_tp3" : "closed_sl", tp_hits: i % 4 ? 3 : 0, realized_r: i % 4 ? 2.9 : -1, mfe_r: 3, mae_r: 0.2, exit_time: null });
 
 http
@@ -35,6 +39,15 @@ http
     if (p === "/v1/stats") {
       const scope = u.searchParams.get("scope") ?? "live";
       if (scope === "live") return J(200, { ...stats("live"), metrics: m(0, null, 0), by_grade: {}, by_symbol: {}, by_month: {}, by_direction: {}, by_entry_type: {}, r_histogram: [], equity: [], worst_drawdowns: [] });
+      if (scope === "forward") {
+        // как API: форвард только по одной версии; без версии — наибольший id в статусе forward
+        const want = u.searchParams.get("version");
+        const sv = want ? VERSIONS.find((v) => v.version === want) : VERSIONS.filter((v) => v.status === "forward").at(-1);
+        if (!sv) return J(404, { detail: "версия стратегии не найдена" });
+        const s = { ...stats("forward"), metrics: sv.version === "1.1.0" ? m(12, 0.5, 2.4) : m(40, 0.47, 14.2) };
+        const { activated_at: _, ...ref } = sv;
+        return J(200, { ...s, strategy_version: ref, notice: { invalid_until: "2026-11-06" }, low_n_threshold: 30, low_data: s.metrics.closed < 30 });
+      }
       const s = stats(scope);
       if (u.searchParams.get("grade") === "A") s.metrics = m(15, 0.55, 9);
       return J(200, s);
@@ -48,7 +61,7 @@ http
       return J(200, { items: all.slice(offset, offset + 50), total: all.length, limit: 50, offset, scope });
     }
     if (p === "/v1/stats/runs") return J(200, [{ id: 3, strategy_version: "1.1.0", period: ["2022-01-01", "2026-10-01"], instruments: 20, entry_type: "market", closed: 40, note: "walk-forward", created_at: null }]);
-    if (p === "/v1/strategies") return J(200, [{ id: 1, strategy: "trend-ob-retest", name: "Trend OB retest", version: "1.0.0", status: "forward", activated_at: null }, { id: 2, strategy: "trend-ob-retest", name: "Trend OB retest", version: "1.1.0", status: "forward", activated_at: null }]);
+    if (p === "/v1/strategies") return J(200, VERSIONS);
     if (p === "/v1/signals") return J(200, { items: [], sparklines: {}, prices: {}, total: 0, scope: "live", limit: 50, offset: 0 });
     if (p === "/status")
       return J(200, {
