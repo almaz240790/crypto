@@ -6,6 +6,7 @@ from __future__ import annotations
 from dataclasses import asdict
 from datetime import datetime
 from decimal import Decimal
+from itertools import groupby
 from typing import Any
 
 from sqlalchemy import text
@@ -255,16 +256,35 @@ def stats_payload(trades: list[BacktestTrade]) -> dict[str, Any]:
     }
 
 
+def _closed_at(t: BacktestTrade) -> datetime:
+    """Момент, когда результат сделки попал в накопленный итог: закрытие (или сигнал, если
+    времени закрытия нет — так было в ``equity_curve``)."""
+    return t.exit_time or t.signal_time
+
+
 def worst_drawdowns(trades: list[BacktestTrade], n: int = 3) -> list[dict[str, Any]]:
-    """Три самые глубокие просадки с датами (план 3.10 «Худшие периоды»)."""
-    closed = sorted((t for t in trades if t.result.closed), key=lambda t: t.signal_time)
+    """Три самые глубокие просадки с датами (план 3.10 «Худшие периоды»).
+
+    Накопленный результат строится в порядке **закрытия** сделок: пик и дно подписаны временем
+    закрытия, поэтому и считать нужно по нему, иначе дно оказывается раньше пика
+    («30.10 17:28 → 30.10 16:15»). Сделки с одинаковым временем закрытия входят в итог вместе:
+    их взаимный порядок ничего не значит и не должен рождать «просадку внутри минуты». До первой
+    сделки итог равен 0, и пиком считается начало учёта — время первого сигнала.
+
+    Метрики движка (``summarize``, ``max_drawdown_r``) считаются в порядке сигналов, как в
+    отчётах бэктеста, и здесь не меняются; поэтому глубина худшего периода может немного
+    отличаться от карточки «макс. просадка».
+    """
+    closed = sorted((t for t in trades if t.result.closed), key=_closed_at)
+    if not closed:
+        return []
     eq = peak = Decimal(0)
-    peak_t: datetime | None = None
+    peak_t = min(t.signal_time for t in closed)
     cur: dict[str, Any] | None = None
+    cur_depth = Decimal(0)
     out: list[dict[str, Any]] = []
-    for t in closed:
-        eq += t.realized_r
-        when = t.exit_time or t.signal_time
+    for when, group in groupby(closed, key=_closed_at):
+        eq += sum((t.realized_r for t in group), Decimal(0))
         if eq >= peak:
             if cur is not None:
                 out.append(cur)
@@ -272,9 +292,10 @@ def worst_drawdowns(trades: list[BacktestTrade], n: int = 3) -> list[dict[str, A
             peak, peak_t = eq, when
         else:
             depth = peak - eq
-            if cur is None or depth > cur["depth_r"]:
+            if cur is None or depth > cur_depth:
+                cur_depth = depth
                 cur = {
-                    "start": (peak_t or when).isoformat(),
+                    "start": peak_t.isoformat(),
                     "trough": when.isoformat(),
                     "depth_r": float(round(depth, 2)),
                 }
