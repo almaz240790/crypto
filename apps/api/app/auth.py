@@ -261,12 +261,3 @@ def promote_owner(user: User, owner_emails: set[str]) -> bool:
         user.email_verified_at = datetime.now(tz=UTC)
         changed = True
     return changed
-
-
-def require_role(*roles: str) -> Any:
-    def dep(user: User = Depends(current_user)) -> User:
-        if user.role not in roles:
-            raise HTTPException(403, "недостаточно прав")
-        return user
-
-    return dep

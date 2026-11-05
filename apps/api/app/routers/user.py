@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app import apikeys, auth, sessions, twofactor
+from app import admin_auth, apikeys, auth, sessions, twofactor
 from app.config import settings
 from app.entitlements import entitlements_for
 from app.journal_analytics import TradeRow, analytics
@@ -106,7 +106,13 @@ def change_password(
         body.current_password or "", user.password_hash
     ):
         raise HTTPException(400, "текущий пароль неверен")
+    if not user.password_hash and admin_auth.is_admin_account(user):
+        # ADR-0011: иначе чужой сеанс сайта задал бы пароль — первый фактор входа в админку
+        raise HTTPException(
+            403, "Администратору пароль задаётся через «Забыли пароль?» на странице входа (письмом)"
+        )
     user.password_hash = auth.hash_password(body.new_password)
+    admin_auth.revoke_user_sessions(db, user.id)  # новый пароль закрывает сеансы админки
     db.commit()
     return Response(status_code=204)
 
@@ -552,6 +558,7 @@ def two_factor_disable(
         db.commit()
         raise HTTPException(400, "неверный код")
     db.delete(row)
+    admin_auth.revoke_user_sessions(db, user.id)  # без 2FA сеанс админки не держится
     db.commit()
     return Response(status_code=204)
 

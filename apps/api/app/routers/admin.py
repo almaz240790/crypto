@@ -1,6 +1,9 @@
 """/v1/admin/* — базовая админка (план 3.15, задача 2.14): стратегии и версии с четырёхглазым
 подтверждением статусов, инструменты, сигналы (отмена с публичной причиной), пользователи,
-системный статус. Каждое действие — строка в admin_audit."""
+системный статус. Каждое действие — строка в admin_audit.
+
+Доступ — только по сеансу админки (ADR-0011, ``admin_auth.require_admin``): отдельный вход
+/admin/login с обязательным кодом 2FA; обычный токен сайта сюда не пускает даже владельца."""
 
 from __future__ import annotations
 
@@ -16,7 +19,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
-from app import auth, billing
+from app import admin_auth, auth, billing
 from app.admin_rules import can_decide, transition_allowed
 from app.config import settings
 from app.models import (
@@ -37,7 +40,7 @@ from app.models import (
 from app.support import reply_ticket, ticket_dict
 
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
-ADMIN = auth.require_role("admin", "owner")
+ADMIN = admin_auth.require_admin
 OPEN = ("pending", "active", "tp1_hit", "tp2_hit")
 
 
@@ -416,6 +419,7 @@ def update_user(
             raise HTTPException(400, "свою роль менять нельзя")
         _audit(db, user, "user.role", f"user:{u.id}", {"from": u.role, "to": body.role})
         u.role = body.role
+        admin_auth.revoke_user_sessions(db, u.id)  # новая роль — новый вход в админку
     if body.block is not None:
         if u.id == user.id:
             raise HTTPException(400, "себя заблокировать нельзя")
@@ -423,6 +427,8 @@ def update_user(
             raise HTTPException(403, "владельца заблокировать нельзя")
         u.blocked_at = datetime.now(tz=UTC) if body.block else None
         u.blocked_reason = body.reason if body.block else None
+        if body.block:
+            admin_auth.revoke_user_sessions(db, u.id)
         _audit(
             db,
             user,
@@ -497,14 +503,15 @@ def audit(
 ) -> list[dict[str, Any]]:
     rows = db.execute(
         select(AdminAudit, User.email)
-        .join(User, User.id == AdminAudit.actor_id)
+        .outerjoin(User, User.id == AdminAudit.actor_id)
         .order_by(AdminAudit.id.desc())
         .limit(limit)
     ).all()
     return [
         {
             "id": a.id,
-            "actor": email,
+            # попытка входа с неизвестным адресом: пользователя нет, в деталях — адрес под маской
+            "actor": email or str((a.payload or {}).get("email") or "—"),
             "action": a.action,
             "target": a.target,
             "payload": a.payload,

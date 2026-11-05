@@ -11,7 +11,7 @@ from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import auth, ratelimit, twofactor
+from app import admin_auth, auth, ratelimit, twofactor
 from app.config import settings
 from app.mail import send_mail
 from app.models import EmailToken, RiskProfile, TwoFactor, User
@@ -288,6 +288,7 @@ class ResetIn(BaseModel):
 def reset_confirm(body: ResetIn, db: Session = Depends(auth.get_db)) -> Response:
     user = _consume_email_token(db, body.token, "reset")
     user.password_hash = auth.hash_password(body.password)
+    admin_auth.revoke_user_sessions(db, user.id)  # новый пароль закрывает сеансы админки
     db.commit()
     return Response(status_code=204)
 

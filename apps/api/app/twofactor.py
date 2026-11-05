@@ -10,7 +10,7 @@ import pyotp
 from app import auth
 from app.models import TwoFactor
 
-ISSUER = "Platform"
+ISSUER = "PlatformSol"  # подпись в приложении-аутентификаторе («Пароли» на iPhone и др.)
 BACKUP_CODES = 10
 BACKUP_LEN = 10  # символов base32 без похожих букв
 VALID_WINDOW = 1  # ±30 с на расхождение часов

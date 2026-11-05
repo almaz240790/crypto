@@ -18,8 +18,8 @@ def test_totp_verify_and_url() -> None:
     assert not twofactor.verify_totp(secret, "000000") or code == "000000"
     assert not twofactor.verify_totp(secret, "12345")
     url = twofactor.otpauth_url(secret, "trader@example.com")
-    assert url.startswith("otpauth://totp/Platform:trader%40example.com?secret=")
-    assert "issuer=Platform" in url
+    assert url.startswith("otpauth://totp/PlatformSol:trader%40example.com?secret=")
+    assert "issuer=PlatformSol" in url
 
 
 def test_backup_codes_single_use() -> None:
