@@ -19,6 +19,8 @@ from app.db import Base
 from app.models.market import PRICE
 
 STRATEGY_STATUSES = ("backtest", "forward", "live", "archived")
+SIGNAL_SCOPES = ("forward", "live")
+"""Область сигнала (план 2.11, правило 5): статус версии в момент публикации, дальше не меняется."""
 SIGNAL_STATUSES = (
     "pending",
     "active",
@@ -73,7 +75,12 @@ class StrategyVersion(Base):
 
 
 class Signal(Base):
-    """Торговые поля insert-only: UPDATE entry/sl/tp/score/grade запрещён триггером."""
+    """Торговые поля insert-only: UPDATE entry/sl/tp/score/grade запрещён триггером.
+
+    ``scope`` (forward | live) — область, в которой сигнал опубликован. Пишется при вставке из
+    статуса версии и тоже неизменяема (триггер, миграция 0022): перевод версии forward → live
+    не делает её прошлые сигналы live, возврат live → forward не убирает live-историю.
+    """
 
     __tablename__ = "signals"
     __table_args__ = (
@@ -99,6 +106,7 @@ class Signal(Base):
     score_breakdown: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     rationale_facts: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     status: Mapped[str] = mapped_column(String(16), default="pending")
+    scope: Mapped[str] = mapped_column(String(8))  # forward / live, без значения по умолчанию
     input_hash: Mapped[str] = mapped_column(String(64))
     correlated_signal_id: Mapped[int | None] = mapped_column(ForeignKey("signals.id"))
     news_flag: Mapped[str | None] = mapped_column(String(64))
