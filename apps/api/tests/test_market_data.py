@@ -857,6 +857,8 @@ def test_startup_publishes_closes_missed_while_down_but_never_replays_old_ones(
         [],
     )
     assert md.backfill(history=rest) is True
+    # в буфер записи (повтор строки перед событием) — только свечи с событием, не история
+    assert {tf for _, tf, _ in md.candle_buffer} == {"1m"} and len(md.candle_buffer) <= 31
     # первая сверка после старта — по точке сверки, ничего не публикует повторно
     md.resync(["BTCUSDT"], history=rest, gen=md.hold(["BTCUSDT"]))
     asyncio.run(md.flush_once())

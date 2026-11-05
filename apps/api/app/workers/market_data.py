@@ -420,10 +420,10 @@ class MarketData:
         история, событий нет) и новее нынешней ``last_closed`` (свечу мог закрыть стрим, пока шёл
         запрос), если закрылись не раньше ``LATE_CLOSE_MAX`` назад; события — в очередь записи
         (уйдут со следующей). Точка сверки сдвигается на последнюю закрытую; отброшенные из буфера
-        строки (``refill`` — откуда) догружены. Новые закрытые — ещё и в буфер, а у прочих
-        незакрытый снимок в буфере заменяется закрытым: снимок стрима до закрытия, записанный
-        после (в том числе запись, уже идущая сейчас), не откатит строку, и событие уйдёт после
-        записи с закрытой."""
+        строки (``refill`` — откуда) догружены. Свеча с событием — ещё и в буфер (не история: их
+        не больше ``LATE_CLOSE_MAX``), у прочих незакрытый снимок в буфере заменяется закрытым:
+        снимок стрима до закрытия, записанный после (в том числе запись, уже идущая сейчас), не
+        откатит строку, и событие уйдёт после записи с закрытой."""
         key = (inst_id, tf.value)
         fresh = datetime.now(tz=UTC) - timedelta(seconds=LATE_CLOSE_MAX)
         with self._lock:
@@ -434,15 +434,16 @@ class MarketData:
                 mark = synced if mark is None else max(mark, synced)
             for c in closed:
                 row_key = (inst_id, tf.value, c.open_time)
-                if mark is not None and c.open_time <= mark:
-                    row = self.candle_buffer.get(row_key)
-                    if row is not None and not row["is_closed"]:
-                        self.candle_buffer[row_key] = _row(inst_id, tf.value, c, True)
-                    continue
-                self.candle_buffer[row_key] = _row(inst_id, tf.value, c, True)
-                mark = c.open_time
-                if synced is not None and c.close_time(tf) >= fresh:
+                new = mark is None or c.open_time > mark
+                if new:
+                    mark = c.open_time
+                if new and synced is not None and c.close_time(tf) >= fresh:
+                    self.candle_buffer[row_key] = _row(inst_id, tf.value, c, True)
                     self.closed_events.append(_event(symbol, inst_id, tf.value, c))
+                    continue
+                row = self.candle_buffer.get(row_key)
+                if row is not None and not row["is_closed"]:
+                    self.candle_buffer[row_key] = _row(inst_id, tf.value, c, True)
             if mark is not None:
                 self.last_closed[key] = mark
 
