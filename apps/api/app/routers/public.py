@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from app import auth
 from app.analysis import analyze_signal
 from app.coin_rank import current_ranks, rank_of, rank_sort_key
+from app.config import settings
 from app.entitlements import (
     Entitlements,
     allowed_instrument_ids,
@@ -38,9 +39,18 @@ from app.models import (
     StrategyVersion,
     User,
 )
+from app.patterns import LOW_N
 from app.screener import CSV_COLUMNS, csv_rows, screener_cached
 from app.snapshots import find as find_snapshot
-from app.stats import filter_trades, load_trades, stats_payload, trade_rows, trades_from_run
+from app.stats import (
+    FORWARD,
+    default_forward_version,
+    filter_trades,
+    load_trades,
+    stats_payload,
+    trade_rows,
+    trades_from_run,
+)
 from engine.backtest import BacktestTrade
 from engine.candles import Timeframe
 from engine.patterns import PatternType
@@ -522,7 +532,63 @@ def _collect_trades(
             }
         }
         return trades, meta
+    if scope == FORWARD and strategy_version_id is None:
+        return [], {}  # форвард-версий нет; агрегата «все версии» у форварда нет (план 2.11)
     return load_trades(db, scope, strategy_version_id, symbol, since, until, grade, entry_type), {}
+
+
+def _forward_version(
+    db: Session, strategy_version_id: int | None, version: str | None
+) -> StrategyVersion | None:
+    """Версия, по которой считается форвард (план 2.11: версии не смешиваются).
+
+    Явная версия (id или номер) — она, а если её нет — 404. Без версии — версия по умолчанию:
+    наибольший id среди версий в статусе forward (``None``, если таких нет).
+    """
+    if strategy_version_id is None and not version:
+        return default_forward_version(db)
+    q = select(StrategyVersion).order_by(StrategyVersion.id.desc())
+    if strategy_version_id is not None:
+        q = q.where(StrategyVersion.id == strategy_version_id)
+    else:
+        q = q.where(StrategyVersion.version == version)
+    sv = db.scalars(q.limit(1)).first()
+    if sv is None:
+        raise HTTPException(404, "версия стратегии не найдена")
+    return sv
+
+
+def _version_ref(db: Session, sv: StrategyVersion | None) -> dict[str, Any] | None:
+    """Версия в ответе — в том же виде, что в ``/v1/strategies``."""
+    if sv is None:
+        return None
+    name, slug = db.execute(
+        select(Strategy.name, Strategy.slug).where(Strategy.id == sv.strategy_id)
+    ).one()
+    return {
+        "id": sv.id,
+        "strategy": slug,
+        "name": name,
+        "version": sv.version,
+        "status": sv.status,
+    }
+
+
+def _forward_meta(db: Session, sv: StrategyVersion | None, closed: int) -> dict[str, Any]:
+    """Что сопровождает форвард-статистику: какая версия посчитана, плашка о недействительных
+    результатах (настройки ``FORWARD_NOTICE``, ``FORWARD_NOTICE_UNTIL``) и пометка «мало данных»
+    при числе закрытых сделок меньше ``LOW_N`` (план 2A.10.4). Числа не скрываются."""
+    until = settings.forward_notice_until
+    return {
+        "strategy_version": _version_ref(db, sv),
+        "notice": (
+            {"invalid_until": until.isoformat() if until else None}
+            if settings.forward_notice
+            else None
+        ),
+        "low_n_threshold": LOW_N,
+        "low_data": closed < LOW_N,
+    }
 
 
 @router.get("/stats")
@@ -541,28 +607,40 @@ def stats(
 ) -> dict[str, Any]:
     """Публичная статистика (план 2.11, 3.10). Три области помечены явно и не смешиваются:
     ``live`` — опубликованные сигналы, ``forward`` — форвард-тест на живых данных,
-    ``backtest`` — сохранённый прогон бэктеста. Ручного ввода нет."""
+    ``backtest`` — сохранённый прогон бэктеста. Ручного ввода нет.
+
+    Форвард всегда по одной версии: без версии — форвард-версия по умолчанию; какая именно,
+    сказано в поле ``strategy_version``. Там же ``notice`` (плашка) и ``low_data``."""
     s, u = _since_until(days, since, until)
-    if strategy_version_id is None and version and scope != "backtest":
+    fwd: StrategyVersion | None = None
+    if scope == FORWARD:
+        fwd = _forward_version(db, strategy_version_id, version)
+        strategy_version_id = fwd.id if fwd is not None else None
+    elif strategy_version_id is None and version and scope != "backtest":
         strategy_version_id = db.scalar(
             select(StrategyVersion.id).where(StrategyVersion.version == version)
         )
-    if scope != "backtest" and not (entry_type or s or u):
+    payload: dict[str, Any] | None = None
+    # у форварда нет снимка «все версии»: без форвард-версий считать нечего
+    no_forward = scope == FORWARD and strategy_version_id is None
+    if scope != "backtest" and not (entry_type or s or u or no_forward):
         snap = find_snapshot(db, scope, strategy_version_id, symbol, grade)
         if snap is not None:
             payload = dict(snap.metrics)
             payload["scope"] = scope
             payload["source"] = "snapshot"
             payload["generated_at"] = snap.computed_at.isoformat()
-            return payload
-    trades, meta = _collect_trades(
-        db, scope, strategy_version_id, run_id, version, symbol, grade, entry_type, s, u
-    )
-    payload = stats_payload(trades)
-    payload.update(meta)
-    payload["scope"] = scope
-    payload["source"] = "live"
-    payload["generated_at"] = datetime.now(tz=UTC).isoformat()
+    if payload is None:
+        trades, meta = _collect_trades(
+            db, scope, strategy_version_id, run_id, version, symbol, grade, entry_type, s, u
+        )
+        payload = stats_payload(trades)
+        payload.update(meta)
+        payload["scope"] = scope
+        payload["source"] = "live"
+        payload["generated_at"] = datetime.now(tz=UTC).isoformat()
+    if scope == FORWARD:
+        payload.update(_forward_meta(db, fwd, int(payload["metrics"]["closed"])))
     return payload
 
 
@@ -636,9 +714,15 @@ def stats_trades(
     if scope == "forward" and (user is None or user.role not in ("admin", "owner")):
         raise HTTPException(403, "построчная история форварда не публикуется")
     s, u = _since_until(days, None, None)
+    if scope == FORWARD:
+        fwd = _forward_version(db, strategy_version_id, version)
+        strategy_version_id = fwd.id if fwd is not None else None
+        meta_fwd: dict[str, Any] = {"strategy_version": _version_ref(db, fwd)}
     trades, meta = _collect_trades(
         db, scope, strategy_version_id, run_id, version, symbol, grade, entry_type, s, u
     )
+    if scope == FORWARD:
+        meta.update(meta_fwd)
     rows = trade_rows(sorted(trades, key=lambda t: t.signal_time, reverse=True))
     return {
         "items": rows[offset : offset + limit],
@@ -665,7 +749,11 @@ def stats_export(
         raise HTTPException(403, "экспорт CSV доступен на тарифе Pro")
     if scope == "forward" and user.role not in ("admin", "owner") and not ent.forward_scope:
         raise HTTPException(403, "форвард в CSV не публикуется")
-    trades, _ = _collect_trades(db, scope, None, run_id, version, symbol, None, None, None, None)
+    svid: int | None = None
+    if scope == FORWARD:  # форвард — по одной версии, как /v1/stats
+        fwd = _forward_version(db, None, version)
+        svid = fwd.id if fwd is not None else None
+    trades, _ = _collect_trades(db, scope, svid, run_id, version, symbol, None, None, None, None)
     rows = trade_rows(sorted(trades, key=lambda t: t.signal_time))
     cols = [
         "id",

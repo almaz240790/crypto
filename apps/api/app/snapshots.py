@@ -2,7 +2,8 @@
 
 ``build`` — чистая функция: по списку сделок отдаёт агрегаты по ключам (все / по градации /
 по инструменту) тем же кодом, что бэктест (``stats_payload`` → ``engine.backtest.summarize``).
-``recompute`` пишет снимки в БД по каждой версии стратегии в live/forward и по области целиком;
+``recompute`` пишет снимки в БД по каждой версии стратегии в live/forward и по live целиком;
+у форварда снимка «все версии» нет — он считается только по одной версии (план 2.11).
 ``find`` достаёт снимок для ``GET /v1/stats``, если запрос ложится на ключ.
 """
 
@@ -17,7 +18,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.models import Instrument, StatsSnapshot, StrategyVersion
-from app.stats import load_trades, stats_payload
+from app.stats import FORWARD, load_trades, stats_payload
 from engine.backtest import BacktestTrade
 
 log = logging.getLogger("snapshots")
@@ -55,7 +56,8 @@ def recompute(db: Session, now: datetime | None = None) -> int:
         versions = db.scalars(
             select(StrategyVersion.id).where(StrategyVersion.status == scope)
         ).all()
-        targets: list[int | None] = [None, *versions]
+        # форвард — только по версиям: сумма по версиям смешивает правила (план 2.11)
+        targets: list[int | None] = list(versions) if scope == FORWARD else [None, *versions]
         db.execute(delete(StatsSnapshot).where(StatsSnapshot.scope == scope))
         for vid in targets:
             trades = load_trades(db, scope, vid)

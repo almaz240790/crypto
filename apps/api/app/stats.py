@@ -9,9 +9,10 @@ from decimal import Decimal
 from itertools import groupby
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
+from app.models import StrategyVersion
 from engine.backtest import (
     BacktestTrade,
     Metrics,
@@ -33,6 +34,7 @@ STATUS_TO_RESULT = {
     "cancelled": TradeStatus.CLOSED_TIME,  # 0 R, учитывается как закрытая (план 2.10)
 }
 HITS = {"closed_tp3": 3, "tp2_hit": 2, "tp1_hit": 1}
+FORWARD = "forward"
 HIST_EDGES = [Decimal(x) for x in ("-1.5", "-1", "-0.5", "0", "0.5", "1", "1.5", "2", "3", "4")]
 """Границы корзин гистограммы R; крайние корзины открытые."""
 
@@ -50,7 +52,11 @@ def load_trades(
     """Сигналы версий стратегии в статусе ``scope`` (live/forward) как сделки бэктеста.
 
     ``facts`` каждой сделки = (public_id, тип входа) — для ссылок и разбивки по типу входа.
+    Форвард считается только по одной версии (план 2.11: версии не смешиваются), поэтому для
+    ``forward`` версия обязательна — см. ``default_forward_version``.
     """
+    if scope == FORWARD and strategy_version_id is None:
+        raise ValueError("форвард считается по одной версии стратегии: укажите версию")
     where = ["sv.status = :scope"]
     params: dict[str, Any] = {"scope": scope}
     if grade:
@@ -119,6 +125,20 @@ def load_trades(
             )
         )
     return out
+
+
+def default_forward_version(session: Session) -> StrategyVersion | None:
+    """Форвард-версия по умолчанию: наибольший id среди версий в статусе forward.
+
+    Агрегата «все версии» у форварда нет: сумма по версиям смешивала бы разные правила и
+    считала одни и те же сделки дважды (план 2.11). ``None`` — форвард-версий нет.
+    """
+    return session.scalars(
+        select(StrategyVersion)
+        .where(StrategyVersion.status == FORWARD)
+        .order_by(StrategyVersion.id.desc())
+        .limit(1)
+    ).first()
 
 
 STATUS_FROM_VALUE = {s.value: s for s in TradeStatus}

@@ -1,3 +1,6 @@
+from datetime import date
+
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -38,6 +41,17 @@ class Settings(BaseSettings):
     llm_daily_budget_usd: float = 15.0
     llm_prompts_dir: str | None = None
     """Email владельцев через запятую: при входе получают роль owner (до админки 2.14)."""
+    forward_notice: bool = True
+    """Плашка над форвард-статистикой на /stats: старые результаты форварда недействительны
+    (трекер закрывал сделки через 15 минут вместо 60 часов). Снимает человек после пересчёта или
+    пометки старых результатов (задание «сигналы», задачи 2 и 10)."""
+    forward_notice_until: date | None = None
+    """До какой даты (ГГГГ-ММ-ДД) результаты форварда недействительны. Пусто — плашка без даты."""
+
+    @field_validator("forward_notice_until", mode="before")
+    @classmethod
+    def _empty_date_is_none(cls, v: object) -> object:
+        return None if v == "" else v
 
     @property
     def owner_email_set(self) -> set[str]:
