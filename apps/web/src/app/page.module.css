@@ -377,7 +377,8 @@
     margin-top: 30px !important;
   }
 
-  .copy.left > p + p {
+  /* подпись к картинке (.fine) — внизу полосы, а не сразу под текстом */
+  .copy.left > p + p:not(.fine) {
     margin-top: 25px !important;
   }
 }

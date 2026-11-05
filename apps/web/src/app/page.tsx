@@ -17,13 +17,16 @@ export async function generateMetadata(): Promise<Metadata> {
   const t = await getT();
   return {
     title: t("PlatformSol — крипто-график для технического анализа"),
-    description: t("Индикаторы, инструменты рисования и автоматическая разметка: уровни, зоны OB и FVG, структура рынка и карта ликвидаций. Монеты Binance — в браузере и на телефоне."),
+    description: t("Индикаторы, инструменты рисования и автоматическая разметка: поддержка и сопротивление, зоны спроса и предложения (ордер-блоки и FVG), пробои структуры и карта ликвидаций. Монеты Binance — в браузере и на телефоне."),
   };
 }
 
 /**
  * Главная (ADR-0006): порядок и сетка блоков — по образцу robinhood.com по просьбе владельца,
  * содержание, изображения и тексты — свои. Цвета блоков — токены --lp-*, не зависят от темы.
+ * Кнопка «Открыть график» — одна, на первом экране. Названия разметки — как на графике (packages/charts
+ * scene/text.ts): «Поддержка», «Сопротивление», «Спрос», «Предложение», «Пробой», «Смена», «Ликвидации».
+ * Картинки public/landing/*.webp — снимки production (гость, тёмная тема); подписи и alt описывают ровно их.
  */
 
 const TRUST = [
@@ -33,10 +36,11 @@ const TRUST = [
   { art: "loupe", t: "Без обещаний доходности — только инструмент анализа." },
 ] as const;
 
+/** Классические сокращения и то, как они подписаны на графике. */
 const BASICS = [
-  { thumb: "ob", t: "Что такое ордер-блок?", p: "Зона, откуда цена ушла импульсом; цена может к ней вернуться" },
-  { thumb: "fvg", t: "Что такое FVG?", p: "Разрыв между свечами, который цена может заполнить" },
-  { thumb: "choch", t: "Что такое CHoCH?", p: "Первый слом структуры против тренда — возможный разворот" },
+  { thumb: "ob", t: "Что такое ордер-блок (OB)?", p: "Зона, откуда цена ушла импульсом и может к ней вернуться. На графике — зона «Спрос» или «Предложение»" },
+  { thumb: "fvg", t: "Что такое FVG?", p: "Разрыв цены между свечами, который цена может заполнить. На графике — тоже зона «Спрос» или «Предложение»" },
+  { thumb: "choch", t: "Что такое CHoCH?", p: "Первый пробой против прежнего движения — возможная смена направления. На графике — метка «Смена ↑» или «Смена ↓»" },
 ] as const;
 
 export default async function Home() {
@@ -51,7 +55,7 @@ export default async function Home() {
         {/* Полоса-объявление */}
         <p className={s.promo}>
           <b>{t("Новое:")}</b>{" "}
-          <Link href="/chart/BTCUSDT/4h">{t("расчётная карта ликвидаций с суммами в долларах — прямо на графике")}</Link>. {t("Бесплатно, без регистрации.")}
+          <Link href="/chart/BTCUSDT/4h">{t("цена прямо с биржи в реальном времени")}</Link>; {t("позиция Long/Short — одним нажатием.")} {t("Бесплатно, без регистрации.")}
         </p>
 
         {/* Первый экран */}
@@ -64,7 +68,7 @@ export default async function Home() {
               {t("Без рутины.")}
             </h1>
             <p className={s.heroSub}>
-              {nb(t("{i} индикаторов, {d} инструментов рисования, авторазметка: уровни, зоны, структура рынка, ликвидации.", { i: COUNTS.indicators, d: COUNTS.tools }))}{" "}
+              {nb(t("{i} индикаторов, {d} инструментов рисования, авторазметка: поддержка и сопротивление, зоны спроса и предложения, ликвидации.", { i: COUNTS.indicators, d: COUNTS.tools }))}{" "}
               {coins !== null &&
                 nb(t(plural(coins, "{n} монета Binance — бесплатно.", "{n} монеты Binance — бесплатно.", "{n} монет Binance — бесплатно."), { n: coins }))}
             </p>
@@ -81,7 +85,7 @@ export default async function Home() {
               <DeskTools />
               <div className={s.tablet}>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src="/landing/multi.webp" width={2000} height={1312} alt={t("Мультичарт PlatformSol: четыре графика с автоматической разметкой")} loading="lazy" />
+                <img src="/landing/multi.webp" width={2000} height={1312} alt={t("Мультичарт PlatformSol: четыре графика — BTCUSDT и ETHUSDT на 4 часах, SOLUSDT и BNBUSDT на 1 дне — с поддержкой, сопротивлением и зонами спроса")} loading="lazy" />
               </div>
             </div>
           </div>
@@ -91,7 +95,7 @@ export default async function Home() {
               {nb(t("Разметка, индикаторы и рынок — в одном окне"))}
             </h2>
             <p>{nb(t("{i} индикаторов, {d} инструментов рисования, мультичарт на 4 графика и алерты прямо с графика.", { i: COUNTS.indicators, d: COUNTS.tools }))}</p>
-            <p className={s.fine}>{t("Данные: Binance Futures. Информация не является инвестиционной рекомендацией.")}</p>
+            <p className={s.fine}>{t("На снимке — мультичарт на 4 графика с разметкой «Компактный». Данные: Binance Futures. Информация не является инвестиционной рекомендацией.")}</p>
           </div>
         </section>
 
@@ -100,9 +104,9 @@ export default async function Home() {
           <div className={`${s.visual} ${s.cards}`}>
             <span className={s.beam} aria-hidden="true" />
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img className={s.cardLiq} src="/landing/liq.webp" width={900} height={1340} alt={t("Карта ликвидаций с суммами на графике BTCUSDT")} loading="lazy" />
+            <img className={s.cardLiq} src="/landing/liq.webp" width={900} height={1340} alt={t("График BTCUSDT, 4 часа, разметка «Карта ликвидаций»: полоса ликвидаций у шкалы цен с расчётными суммами в долларах, линии поддержки и сопротивления")} loading="lazy" />
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img className={s.cardLv} src="/landing/levels.webp" width={600} height={1200} alt={t("Список уровней, зон и ликвидаций с ценами")} loading="lazy" />
+            <img className={s.cardLv} src="/landing/levels.webp" width={600} height={1200} alt={t("Список «Уровни» на панели «Найдено»: сопротивление, поддержка, максимумы и минимумы дня и недели, зоны спроса — с ценой и расстоянием до неё")} loading="lazy" />
           </div>
           <div className={`${s.copy} ${s.right}`}>
             <p className={s.lockup}>
@@ -112,12 +116,12 @@ export default async function Home() {
             <h2 id="h-auto" className={s.h2}>
               {nb(t("Уровни, зоны и ликвидации — сами"))}
             </h2>
-            <p>{nb(t("Уровни по касаниям, ордер-блоки, FVG, сломы структуры и карта ликвидаций — со списком цен."))}</p>
+            <p>{nb(t("Поддержка и сопротивление по касаниям, зоны спроса и предложения, пробои и смены направления, карта ликвидаций — и список найденного с ценами."))}</p>
             <p className={s.info}>
               <span aria-hidden="true">i</span>
               {nb(t("Карта ликвидаций — расчётная оценка, а не данные биржи"))}
             </p>
-            <p className={s.fine}>{t("Структура и зоны строятся только по закрытым свечам.")}</p>
+            <p className={s.fine}>{t("На снимках — BTCUSDT, 4 часа: разметка «Карта ликвидаций» и список «Уровни». Структура и зоны строятся только по закрытым свечам.")}</p>
           </div>
         </section>
 
@@ -133,12 +137,12 @@ export default async function Home() {
             </h2>
             <p>{nb(t("Масштаб двумя пальцами, перекрестие по удержанию пальца, рисование и индикаторы из нижней панели. Ничего не нужно устанавливать — сайт можно добавить на главный экран."))}</p>
             <p>{t("Работает в любом современном браузере.")}</p>
-            <p className={s.fine}>{t("На скриншоте — BTCUSDT, 4 часа, с картой ликвидаций и структурой рынка.")}</p>
+            <p className={s.fine}>{t("На скриншоте — BTCUSDT, 4 часа, разметка «Уровни и зоны»: сопротивление, поддержка, зона спроса и максимум вчерашнего дня.")}</p>
           </div>
           <div className={`${s.visual} ${s.phoneWrap}`}>
             <div className={s.phone}>
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src="/landing/phone.webp" width={390} height={844} alt={t("График PlatformSol на телефоне")} loading="lazy" />
+              <img src="/landing/phone.webp" width={390} height={844} alt={t("График BTCUSDT на телефоне: разметка «Уровни и зоны», цена в реальном времени и нижняя панель с кнопками")} loading="lazy" />
             </div>
           </div>
         </section>
