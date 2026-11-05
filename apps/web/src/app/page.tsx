@@ -87,7 +87,7 @@ export default async function Home() {
               <DeskTools />
               <div className={s.tablet}>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src="/landing/multi.8073678b.webp" width={2000} height={1312} alt={t("Мультичарт PlatformSol: четыре графика — BTCUSDT и ETHUSDT на 4 часах, SOLUSDT и BNBUSDT на 1 дне — с поддержкой, сопротивлением и зонами спроса")} loading="lazy" />
+                <img src="/landing/multi.8073678b.webp" width={2000} height={1312} alt={t("Мультичарт PlatformSol: четыре графика — BTCUSDT и ETHUSDT на 4 часах, SOLUSDT и BNBUSDT на 1 дне — с поддержкой, сопротивлением и зонами спроса и предложения")} loading="lazy" />
               </div>
             </div>
           </div>
