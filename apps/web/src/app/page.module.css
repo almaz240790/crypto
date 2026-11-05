@@ -110,6 +110,8 @@
   inset: 0;
 }
 
+/* компьютер: текст — по центру полосы по высоте (кнопок в полосах нет, пустоты под текстом тоже),
+   подпись к картинке (.fine) — внизу полосы */
 .copy {
   position: absolute;
   top: 0;
@@ -117,8 +119,9 @@
   z-index: 1;
   display: flex;
   flex-direction: column;
+  justify-content: center;
   align-items: flex-start;
-  padding: 221px 0 34px;
+  padding: 64px 0 104px;
 }
 
 /* колонка 440 px; на узких экранах сжимается и не уходит за край */
@@ -130,7 +133,6 @@
 .copy.left {
   left: max(24px, calc(50% - 508px));
   width: min(440px, calc(50% - 76px));
-  padding-top: 150px;
 }
 
 .copy > p {
@@ -142,7 +144,10 @@
 }
 
 .copy .fine {
-  margin-top: auto !important;
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 34px;
   font-size: 12px;
   line-height: 19px;
   letter-spacing: -0.1px;
@@ -261,10 +266,6 @@
 .stone {
   background: linear-gradient(160deg, var(--lp-stone-2) 0%, var(--lp-stone) 100%);
   color: var(--lp-ink);
-}
-
-.stone .copy {
-  padding-top: 227px;
 }
 
 .stone .copy .fine {
