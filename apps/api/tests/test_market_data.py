@@ -1261,3 +1261,54 @@ def test_poller_retries_interrupted_backfill_and_survives_its_errors(monkeypatch
 
     asyncio.run(run())
     assert calls and calls[0] == ["BTCUSDT"]
+
+
+def test_stop_during_resync_writes_and_publishes_what_it_found(monkeypatch: Any) -> None:
+    # MD-STOP-DURING-RESYNC: на остановке задачу соединения отменяли, а сверка в потоке шла
+    # дальше и клала события после последней записи — их не публиковал никто (деплой вскоре после
+    # старта или обрыва). Теперь сверка выходит после текущего запроса, run() ждёт её, затем —
+    # последняя запись
+    monkeypatch.setattr(mdmod, "FLUSH_EVERY", 0.02)
+    md = _md()
+    md.symbols = {f"S{i:02d}USDT": i for i in range(1, 31)}  # одно соединение production
+    db = MemDb().install(monkeypatch, md)
+    m = datetime.now(tz=UTC).replace(second=0, microsecond=0) - timedelta(minutes=1)
+    for i in md.symbols.values():
+        db.write("seed", i, "1m", m - timedelta(minutes=1), True)
+        md.last_closed[(i, "1m")] = m - timedelta(minutes=1)
+    calls: list[str] = []
+
+    class SlowRest:
+        def fetch_rest(
+            self, symbol: str, tf: Timeframe, start: datetime, end: datetime
+        ) -> list[Candle]:
+            calls.append(symbol)
+            time.sleep(0.02)
+            return [_m1(m), _m1(m + timedelta(minutes=1))] if tf is Timeframe.M1 else []
+
+    monkeypatch.setattr(mdmod, "BinanceHistory", lambda *a, **k: SlowRest())
+    first = {
+        **KLINE,
+        "s": "S01USDT",
+        "i": "1m",
+        "t": int((m + timedelta(minutes=1)).timestamp() * 1000),
+    }
+    monkeypatch.setattr(
+        mdmod, "connect", lambda *a, **k: FakeBinanceWs([json.dumps({"e": "kline", "k": first})])
+    )
+    real_connection = md.connection
+
+    async def connection(streams: list[str], idx: int) -> None:
+        task = asyncio.create_task(real_connection(streams, idx))
+        await asyncio.sleep(0.25)  # сверка 30 инструментов (120 запросов по 20 мс) — в начале
+        md.stop.set()  # SIGTERM
+        await task
+
+    ok, _ = _run_service(md, monkeypatch, connection)
+    assert ok is True
+    assert 0 < len(calls) < 30  # вышла после текущего запроса, не досверяв
+    written = sorted(i for _, i, tf, t, closed in db.log if (tf, t, closed) == ("1m", m, True))
+    published = sorted(e["instrument_id"] for e in _closed(md) if e["tf"] == "1m")
+    assert written and published == written  # всё, что сверка записала, — опубликовано
+    assert md.closed_events == [] and md.ready_events == [] and md.candle_buffer == {}
+    assert md.held == {} and md.deferred == {}

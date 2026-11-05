@@ -8,7 +8,8 @@
   канал ``candles.closed`` (планировщик слушает 4h, трекер — 1m) — только после того, как
   закрытая строка записана в БД. Незакрытые 4h/1d/1w пишутся не чаще раза в
   ``FORMING_HTF_EVERY`` секунд (Binance шлёт их на каждой сделке), 1m и закрытые — сразу. Ошибка
-  записи возвращает строки, события и ликвидации в буфер; на остановке — последняя запись всего.
+  записи возвращает строки, события и ликвидации в буфер; на остановке — после источников
+  данных и сверок — последняя запись всего.
 - Ликвидации агрегируются по минутам: SELL = ликвидация лонга, BUY = шорта; сумма в USDT.
 - Раз в ``DERIVATIVES_EVERY`` секунд — REST: funding, OI (1h), long/short (1h).
 - Точка сверки (``last_closed``) пары (инструмент, tf) — последняя закрытая свеча, о которой
@@ -239,6 +240,8 @@ class MarketData:
         конца). Закрытия из стрима и опроса — в ``deferred``, не в буфер и не в ``last_closed``."""
         self.deferred: dict[tuple[int, str], dict[datetime, tuple[str, Candle]]] = {}
         self._hold_gen = 0
+        self._resyncs: set[asyncio.Future[int]] = set()
+        """Сверки в потоках: отмена задачи соединения поток не прерывает — остановка ждёт их."""
         self.stop = asyncio.Event()
         # счётчики для ежеминутной сводки в лог и ключа статуса в Redis (план 2.16)
         self.n_klines = 0
@@ -799,15 +802,15 @@ class MarketData:
             s.commit()
 
     async def flusher(self) -> None:
-        """Раз в ``FLUSH_EVERY`` секунд — запись; на остановке — последняя, всего буфера."""
-        while True:
-            if not self.stop.is_set():
-                with contextlib.suppress(TimeoutError):
-                    await asyncio.wait_for(self.stop.wait(), FLUSH_EVERY)
-            final = self.stop.is_set()
-            await self.flush_once(final=final)
-            if final:
+        """Раз в ``FLUSH_EVERY`` секунд — запись, до остановки. Последнюю, всего буфера, делает
+        ``run()`` — после источников данных и сверок в потоках: иначе то, что они положат после
+        неё, не было бы ни записано, ни опубликовано."""
+        while not self.stop.is_set():
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self.stop.wait(), FLUSH_EVERY)
+            if self.stop.is_set():
                 return
+            await self.flush_once()
 
     def _take_rows(self, final: bool) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         """Строки для записи и события их закрытых свечей — одним снимком под замком: событие,
@@ -1009,6 +1012,11 @@ class MarketData:
             for i in range(0, len(names), STREAMS_PER_CONNECTION)
         ]
 
+    def _resync_done(self, job: asyncio.Future[int]) -> None:
+        self._resyncs.discard(job)
+        if not job.cancelled():
+            job.exception()  # ошибку уже записал resyncer (или остановка его не ждала)
+
     async def connection(self, streams: list[str], idx: int) -> None:
         """Одно WebSocket-соединение Binance. Когда по нему пошли данные (после старта и после
         обрыва) — удержание закрытий его инструментов (``hold``) и сверка (``resync``, в фоне: приём
@@ -1024,12 +1032,18 @@ class MarketData:
 
         async def resyncer() -> None:
             history = BinanceHistory("futures")
+            loop = asyncio.get_running_loop()
             while True:
                 await wanted.wait()
                 wanted.clear()
+                job = loop.run_in_executor(None, self.resync, symbols, history, gen)
+                self._resyncs.add(job)
+                job.add_done_callback(self._resync_done)
                 try:
-                    n = await asyncio.to_thread(self.resync, symbols, history, gen)
+                    n = await asyncio.shield(job)
                     log.info("соединение %d: сверка — закрытых свечей %d", idx, n)
+                except asyncio.CancelledError:
+                    raise
                 except Exception:
                     self.backfill_needed.update(symbols)
                     log.exception("соединение %d: сверка не удалась", idx)
@@ -1102,8 +1116,9 @@ class MarketData:
         """Задачи сервиса до сигнала остановки. Тикер цен и запись (heartbeat) — до стартовой
         догрузки: она идёт десятки секунд, а цены и «жив» нужны сразу. Основная задача, вышедшая
         без остановки, останавливает сервис (``False``): хостинг перезапустит процесс. Запись
-        останавливается последней: после источников данных она пишет весь буфер (и ликвидации
-        текущей минуты) и публикует закрытые — деплой их не теряет."""
+        останавливается последней: после источников данных и сверок в потоках (они выходят после
+        текущего запроса) — последняя запись всего буфера (и ликвидаций текущей минуты, и закрытий,
+        ждавших сверки) и публикация закрытых — деплой их не теряет."""
         self.load_symbols()
         flusher = asyncio.create_task(self.flusher(), name="flusher")
         tasks = [
@@ -1134,11 +1149,15 @@ class MarketData:
         for t in sources:
             t.cancel()
         await asyncio.gather(*sources, return_exceptions=True)
+        if self._resyncs:
+            await asyncio.wait(set(self._resyncs), timeout=FINAL_FLUSH_TIMEOUT)
         try:
-            if flusher.done():  # запись упала сама — последняя запись здесь
-                await self.flush_once(final=True)
-            else:
+            if not flusher.done():  # текущая запись — до конца: её события не теряются
                 await asyncio.wait_for(flusher, FINAL_FLUSH_TIMEOUT)
+        except Exception:
+            log.exception("запись не остановилась")
+        try:
+            await asyncio.wait_for(self.flush_once(final=True), FINAL_FLUSH_TIMEOUT)
         except Exception:
             log.exception("последняя запись не удалась")
         await self.redis.aclose()
