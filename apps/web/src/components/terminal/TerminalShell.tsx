@@ -256,6 +256,8 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
     [symbol, tf, data.tick, lastClose, figures, data.figures?.stats, patterns, data.patterns?.stats, authed, askAccess, signalsLinkN, pickLevel, focusObject],
   );
   const sel = dr.selected;
+  /** Стопка карточек поверх графика (выбранный рисунок, лимит): её прямоугольник — препятствие для подписей на графике. */
+  const [cardsEl, setCardsEl] = useState<HTMLDivElement | null>(null);
   /** Высота шкалы времени: карточка выбранного рисунка на десктопе — над ней, даты и метка перекрестия видны (D7). */
   const [axisH, setAxisH] = useState<number | null>(null);
   /** Депозит и доля риска из настроек: риск в $ и объём позиции — в карточке и на плашке входа на графике. */
@@ -424,12 +426,13 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
                 corner={desktop && !sel && !dr.limitHit ? <ChartCorner onZoom={zoom} onReset={reset} /> : null}
                 topRight={dr.tool ? <DrawModeChip tool={t(TOOL_TITLES[dr.tool])} hint={t(drawHint(dr.tool, dr.step))} finish={dr.series && dr.step === 0} onExit={finishTool} /> : null}
                 onAxisHeight={setAxisH}
+                cards={cardsEl}
               />
             )}
             {(sel || dr.limitHit) && (
-              <div className={s.cards}>
+              <div ref={setCardsEl} className={s.cards}>
                 {dr.limitHit && <DrawingLimitCard limit={dr.limit} guest={!user} onDismiss={dr.dismissLimit} />}
-                {sel && <SelectedDrawingCard drawing={sel} symbol={symbol} tf={tf} instruments={instruments} pos={pos} tick={data.tick} onPatch={dr.actions.patch} onEdit={dr.actions.move} onLock={dr.actions.lock} onRemove={dr.actions.remove} onDeselect={deselectDrawing} onAlert={alertOnLevel} onCopy={copyDrawing} />}
+                {sel && <SelectedDrawingCard drawing={sel} symbol={symbol} tf={tf} instruments={instruments} pos={pos} tick={data.tick} compact={!desktop} onPatch={dr.actions.patch} onEdit={dr.actions.move} onLock={dr.actions.lock} onRemove={dr.actions.remove} onDeselect={deselectDrawing} onAlert={alertOnLevel} onCopy={copyDrawing} />}
               </div>
             )}
             {/* тост: единственный role=status на странице; поверх колонки графика, раскладку не сдвигает */}

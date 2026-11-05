@@ -78,6 +78,11 @@ type Props = {
   /** Высота шкалы времени (px) при изменении: карточки внизу колонки графика ставятся над ней. */
   onAxisHeight?: (px: number) => void;
   /**
+   * Стопка карточек поверх графика (выбранный рисунок, лимит рисунков): прямоугольник каждой карточки уходит в
+   * uiObstacles — плашки позиции, уровни Фибоначчи и подписи разметки не ставятся под карточку (ADR-0009, «Рисование»).
+   */
+  cards?: HTMLElement | null;
+  /**
    * Легенда в левом верхнем углу панели цены (десктоп, план 2B.9 §10): символ, «?», OHLC под перекрестием и строки
    * индикаторов. Её прямоугольник уходит в uiObstacles. Без неё — «?» и пометка ликвидаций B на своих местах.
    */
@@ -185,7 +190,7 @@ function indexOfTime(candles: readonly Candle[], time: number): number {
  * терминалом, темой, классом устройства, сценой разметки (один OverlayPrimitive), шкалой и наведением.
  * Здесь до PR D остаются эффекты данных, индикаторов, панелей производных и рисунков (через controller.terminal).
  */
-export function ChartSurface({ candles, current, tf, type, indicators, markup, authed, store, device = "auto", layers, patterns, figures, alerts, external = NONE, derivatives, panels, tick, dataKey = "", onNeedOlder, drawings, onReady, corner, topRight, onAxisHeight, legend, scale = "linear", overlay = null, paneLayout, onPaneLayout, onRemovePane, onInstanceParams, paneHint = false, live = null }: Props) {
+export function ChartSurface({ candles, current, tf, type, indicators, markup, authed, store, device = "auto", layers, patterns, figures, alerts, external = NONE, derivatives, panels, tick, dataKey = "", onNeedOlder, drawings, onReady, corner, topRight, onAxisHeight, cards = null, legend, scale = "linear", overlay = null, paneLayout, onPaneLayout, onRemovePane, onInstanceParams, paneHint = false, live = null }: Props) {
   const t = useT();
   const ref = useRef<HTMLDivElement>(null);
   const ctrlRef = useRef<ChartController | null>(null);
@@ -1103,7 +1108,43 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     term.setTopMargin(legendBottom == null ? 0 : (legendBottom + LEGEND_GAP_PX) / mainBox.h);
   }, [legendBottom, mainBox]);
 
-  // угол графика, чип справа сверху, легенда и «A» — препятствия для подписей разметки (координаты основной панели, CSS px)
+  // карточки поверх графика: прямоугольники в координатах графика, по изменению размера (раскрыли, другой рисунок)
+  const [cardBoxes, setCardBoxes] = useState<readonly { x: number; y: number; w: number; h: number }[]>(NONE);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!cards || !el) {
+      setCardBoxes(NONE);
+      return;
+    }
+    const measure = () => {
+      const r0 = el.getBoundingClientRect();
+      const next = [...cards.children]
+        .map((c) => c.getBoundingClientRect())
+        .filter((r) => r.width > 0 && r.height > 0)
+        .map((r) => ({ x: Math.round(r.left - r0.left), y: Math.round(r.top - r0.top), w: Math.round(r.width), h: Math.round(r.height) }));
+      setCardBoxes((prev) => (prev.length === next.length && prev.every((p, i) => p.x === next[i]!.x && p.y === next[i]!.y && p.w === next[i]!.w && p.h === next[i]!.h) ? prev : next.length ? next : NONE));
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    const watch = () => {
+      ro.disconnect();
+      ro.observe(cards);
+      for (const c of cards.children) ro.observe(c);
+    };
+    watch();
+    const mo = new MutationObserver(() => {
+      watch();
+      measure();
+    });
+    mo.observe(cards, { childList: true });
+    return () => {
+      ro.disconnect();
+      mo.disconnect();
+    };
+  }, [cards, mainBox]);
+
+  // угол графика, чип справа сверху, легенда, «A» и карточки — препятствия для подписей разметки и рисунков (координаты
+  // основной панели, CSS px)
   const mainGeo = geo.panes[0];
   const mainAuto = mainGeo?.manual && !mainGeo.collapsed ? autoBox(mainGeo, geo.plotW, coarse) : null;
   const [autoL, autoT, autoS] = mainAuto ? [mainAuto.left, mainAuto.top, mainAuto.size] : [0, 0, 0];
@@ -1121,8 +1162,9 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     if (legendBox) rects.push(legendBox);
     // «A» у шкалы основной панели, растянутой вручную, — в её правом нижнем углу (PaneChrome, autoBox)
     if (autoS > 0) rects.push({ x: autoL, y: autoT, w: autoS, h: autoS });
+    rects.push(...cardBoxes);
     ctrl.set({ uiObstacles: rects.length ? rects : NONE });
-  }, [hasCorner, hasTopRight, mainBox, legendBox, autoL, autoT, autoS]);
+  }, [hasCorner, hasTopRight, mainBox, legendBox, autoL, autoT, autoS, cardBoxes]);
 
   return (
     <div ref={setWrap} className={s.chart}>
