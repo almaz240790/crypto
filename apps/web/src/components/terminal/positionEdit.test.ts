@@ -56,6 +56,35 @@ describe("поля позиции", () => {
     expect(prices(applyField(long, "risk", "100", 0.1))).toBe(POS_ERROR_TEXT.risk);
   });
 
+  it("R:R выше 100 — «от 0 до 100», а не «больше нуля»", () => {
+    expect(POS_ERROR_TEXT.rr).toBe("R:R от 0 до 100");
+    expect(prices(applyField(long, "rr", "150", 0.1))).toBe(POS_ERROR_TEXT.rr);
+    expect(prices(applyField(long, "rr", "100", 0.1))).toEqual([100, 95, 600]);
+  });
+
+  it("итог R:R и риска проверяется: стоп или цель за нулём или на входе после шага цены — ошибка, позиция не меняется", () => {
+    const sh: Pick<Drawing, "type" | "points"> = { type: "position-short", points: [long.points[0]!, { ...long.points[1]!, price: 110 }, { ...long.points[2]!, price: 90 }] };
+    // Short: цель на 15 рисков ниже входа — −50; на 10 — ровно 0
+    expect(prices(applyField(sh, "rr", "15", 0.1))).toBe(POS_ERROR_TEXT["target-zero"]);
+    expect(prices(applyField(sh, "rr", "10", 0.1))).toBe(POS_ERROR_TEXT["target-zero"]);
+    expect(prices(applyField(sh, "rr", "9", 0.1))).toEqual([100, 110, 10]);
+    // риск 60 % при R:R 2: стоп 160, цель −20
+    const sh2 = { ...sh, points: [sh.points[0]!, sh.points[1]!, { ...sh.points[2]!, price: 80 }] };
+    expect(prices(applyField(sh2, "risk", "60", 0.1))).toBe(POS_ERROR_TEXT["target-zero"]);
+    expect(prices(applyField(sh2, "risk", "40", 0.1))).toEqual([100, 140, 20]);
+    // Long у нуля: риск 99.9 % при шаге 0.1 — стоп 0
+    const low: Pick<Drawing, "type" | "points"> = { type: "position-long", points: [{ time: T, price: 1 }, { time: T + 3600, price: 0.9 }, { time: T + 3600, price: 1.2 }] };
+    expect(prices(applyField(low, "risk", "99.9", 0.1))).toBe(POS_ERROR_TEXT["stop-zero"]);
+    // грубый шаг: стоп или цель ложатся на вход
+    expect(prices(applyField(long, "risk", "0.4", 1))).toBe(POS_ERROR_TEXT.tick);
+    expect(prices(applyField(short, "risk", "0.4", 1))).toBe(POS_ERROR_TEXT.tick);
+    expect(prices(applyField(long, "rr", "0.01", 1))).toBe(POS_ERROR_TEXT.tick);
+    expect(prices(applyField({ ...long, points: [{ time: T, price: 100 }, { time: T + 3600, price: 99 }, long.points[2]!] }, "risk", "0.01", 0.1))).toBe(POS_ERROR_TEXT.tick);
+    // дешёвая монета (шаг 1e-7): риск 0.001 % у 0.0049702 — стоп на входе
+    const pepe: Pick<Drawing, "type" | "points"> = { type: "position-long", points: [{ time: T, price: 0.0049702 }, { time: T + 3600, price: 0.0048 }, { time: T + 3600, price: 0.0053 }] };
+    expect(prices(applyField(pepe, "risk", "0.001", 0.0000001))).toBe(POS_ERROR_TEXT.tick);
+  });
+
   it("точки совпадают — шага отмены нет", () => {
     expect(samePoints(long.points, long.points.map((p) => ({ ...p })))).toBe(true);
     expect(samePoints(long.points, short.points)).toBe(false);
@@ -64,7 +93,7 @@ describe("поля позиции", () => {
 
   it("тексты ошибок, полей и плашек переведены", () => {
     const dict = en as Record<string, string>;
-    const keys = [...Object.values(POS_ERROR_TEXT), "Вход", "Стоп", "Цель", "R:R 1:", "Риск, %", "риск", "объём", "параметры позиции", "перевернуть в Short", "перевернуть в Long", "цена входа", "цена стопа", "цена цели"];
+    const keys = [...Object.values(POS_ERROR_TEXT), "Вход", "Стоп", "Цель", "R:R 1:", "Риск, %", "риск", "объём", "параметры", "параметры позиции", "перевернуть в Short", "перевернуть в Long", "цена входа", "цена стопа", "цена цели"];
     expect(keys.filter((k) => !dict[k])).toEqual([]);
   });
 });

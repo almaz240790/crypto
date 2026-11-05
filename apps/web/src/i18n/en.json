@@ -631,7 +631,6 @@
   "TP2 достигнут": "TP2 reached",
   "TP3 достигнут": "TP3 reached",
   "«Значимый» — паттерн с контекстом из правил (после движения, у зоны, со sweep или объёмом). «Найден» — без контекста.": "“Significant” — a pattern with rule-based context (after a move, near a zone, with a sweep or volume). “Found” — without context.",
-  "· размер": "· size",
   "Алерт по цене": "Price alert",
   "Алерты доступны после входа": "Alerts are available after sign-in",
   "Бары": "Bars",
@@ -1456,6 +1455,10 @@
   "у Short стоп выше входа": "for Short, stop must be above entry",
   "у Long цель выше входа": "for Long, target must be above entry",
   "у Short цель ниже входа": "for Short, target must be below entry",
-  "R:R больше нуля": "R:R must be greater than zero",
-  "риск от 0 до 100 %": "risk must be between 0 and 100 %"
+  "R:R от 0 до 100": "R:R must be between 0 and 100",
+  "риск от 0 до 100 %": "risk must be between 0 and 100 %",
+  "меньше шага цены": "smaller than the price tick",
+  "стоп — ноль или ниже": "stop is zero or below",
+  "цель — ноль или ниже": "target is zero or below",
+  "параметры": "parameters"
 }

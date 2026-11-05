@@ -722,6 +722,24 @@
   margin-left: auto;
 }
 
+/* телефон: карточка позиции одной строкой, пока её не раскрыли («параметры ▾») — свечи, ручки и плашки позиции над
+   ней видны (раскрытая закрывала половину области свечей) */
+.cardBar {
+  flex-wrap: nowrap;
+}
+
+.cardBar .cardTitle {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cardBar > button {
+  flex: none;
+}
+
 .limitCard p {
   margin: 0;
   flex: 1 1 240px;

@@ -1,6 +1,6 @@
 "use client";
 
-import { NOTE_MAX, TOOL_TITLES, flipPosition, isPosition, positionParts, tickPrecision, type Drawing, type Point, type PositionStats } from "@platform/charts";
+import { NOTE_MAX, TOOL_TITLES, flipPosition, isPosition, positionParts, positionRiskText, roundToTick, tickPrecision, type Drawing, type Point, type PositionStats } from "@platform/charts";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { Button, IconButton, Input, Select } from "@/components/ui";
@@ -25,6 +25,11 @@ type Props = {
   pos: PositionStats | null;
   /** Шаг цены инструмента: поля позиции — с его точностью, новые цены — по нему. */
   tick?: string | null;
+  /**
+   * Телефон: карточка позиции — одна строка (название, «перевернуть», «параметры», закрыть), пока её не раскрыли:
+   * раскрытая закрывала половину свечей, а с ней ручку и плашку цели у Short (ADR-0009, «Рисование»).
+   */
+  compact?: boolean;
   onPatch: (id: string, patch: Partial<Drawing>) => void;
   /**
    * Правка точек полем позиции: final = false — промежуточное значение (без шага отмены), final = true — конец правки,
@@ -44,13 +49,40 @@ type Props = {
  * Input, Select, IconButton. На десктопе — слева снизу над шкалой времени, не шире 720 px; на телефоне — во всю
  * ширину колонки графика (до C2). Имена полей и кнопок — прежние (контракт e2e).
  */
-export function SelectedDrawingCard({ drawing: d, symbol, tf, instruments, pos, tick = null, onPatch, onEdit, onLock, onRemove, onDeselect, onAlert, onCopy }: Props) {
+export function SelectedDrawingCard({ drawing: d, symbol, tf, instruments, pos, tick = null, compact = false, onPatch, onEdit, onLock, onRemove, onDeselect, onAlert, onCopy }: Props) {
   const t = useT();
+  /** Раскрытая на телефоне карточка позиции (по рисунку: другой выбранный — снова одной строкой). */
+  const [openId, setOpenId] = useState<string | null>(null);
   const targets = instruments.filter((i) => i.symbol !== symbol);
-  const posQuery = pos ? `symbol=${symbol}&direction=${pos.direction}&entry=${pos.entry}&stop=${pos.stop}&tp=${pos.target}` : "";
+  const tickN = tick !== null && Number(tick) > 0 ? Number(tick) : null;
+  // цены — по шагу инструмента: в журнал и калькулятор без хвостов float (сохранённые раньше позиции)
+  const q = (v: number) => roundToTick(v, tickN);
+  const posQuery = pos ? `symbol=${symbol}&direction=${pos.direction}&entry=${q(pos.entry)}&stop=${q(pos.stop)}&tp=${q(pos.target)}` : "";
+  const fold = compact && isPosition(d.type);
+  const collapsed = fold && openId !== d.id;
+  const close = (
+    <IconButton label={t("снять выделение")} onClick={onDeselect} className={s.cardClose}>
+      <IconClose />
+    </IconButton>
+  );
+  const toggle = fold && (
+    <Button size="sm" aria-expanded={!collapsed} onClick={() => setOpenId(collapsed ? d.id : null)}>
+      {t("параметры")} {collapsed ? "▾" : "▴"}
+    </Button>
+  );
+  if (collapsed)
+    return (
+      <div className={`${s.card} ${s.cardBar}`} role="region" aria-label={t("выбранный рисунок")}>
+        <strong className={s.cardTitle}>{t(TOOL_TITLES[d.type])}</strong>
+        <FlipButton d={d} tick={tickN} onPatch={onPatch} />
+        {toggle}
+        {close}
+      </div>
+    );
   return (
     <div className={s.card} role="region" aria-label={t("выбранный рисунок")}>
       <strong className={s.cardTitle}>{t(TOOL_TITLES[d.type])}</strong>
+      {toggle}
       {WITH_TEXT.has(d.type) && (
         <span className={s.cardText}>
           <Input aria-label={t("текст рисунка")} placeholder={t("подпись (до 140 символов)")} maxLength={NOTE_MAX} value={d.text ?? ""} onChange={(e) => onPatch(d.id, { text: e.target.value })} />
@@ -60,9 +92,7 @@ export function SelectedDrawingCard({ drawing: d, symbol, tf, instruments, pos, 
       {pos && (
         <span className={s.posStats}>
           {pos.riskUsd != null && pos.size != null ? (
-            <span className={s.posHint}>
-              {t("риск")} <strong>{pos.riskUsd.toFixed(0)} USDT</strong> {t("· размер")} <strong>{pos.size.toPrecision(4)}</strong>
-            </span>
+            <span className={s.posHint}>{positionRiskText(pos.riskUsd, pos.size, { risk: t("риск"), size: t("объём") })}</span>
           ) : (
             <span className={`caption ${s.posHint}`}>{t("задайте депозит и риск в настройках")}</span>
           )}
@@ -98,10 +128,27 @@ export function SelectedDrawingCard({ drawing: d, symbol, tf, instruments, pos, 
       <Button variant="danger" disabled={d.locked} onClick={() => onRemove(d.id)}>
         {t("удалить")}
       </Button>
-      <IconButton label={t("снять выделение")} onClick={onDeselect} className={s.cardClose}>
-        <IconClose />
-      </IconButton>
+      {close}
     </div>
+  );
+}
+
+/** «Перевернуть»: Long ⇄ Short, стоп и цель зеркально по шагу цены (шаг отмены). */
+function FlipButton({ d, tick, onPatch, className }: { d: Drawing; tick: number | null; onPatch: Props["onPatch"]; className?: string }) {
+  const t = useT();
+  const dir = d.type === "position-long" ? "Short" : "Long";
+  return (
+    <Button
+      className={className}
+      disabled={d.locked}
+      aria-label={t(dir === "Short" ? "перевернуть в Short" : "перевернуть в Long")}
+      onClick={() => {
+        const flipped = flipPosition(d, tick);
+        if (flipped) onPatch(d.id, flipped);
+      }}
+    >
+      ⇅ {dir}
+    </Button>
   );
 }
 
@@ -111,8 +158,10 @@ const FIELD_NAME: Readonly<Record<PosField, string>> = { entry: "цена вхо
 /**
  * Поля позиции (ADR-0009, «Рисование», дополнение «Позиция»): вход, стоп, цель, R:R и риск, % — правка сразу видна на
  * графике; конец правки (уход из поля, Enter) — один шаг отмены от значения до правки; Esc — вернуть. Неверное
- * значение (стоп или цель не по свою сторону от входа) не применяется, поле показывает ошибку. «Перевернуть» — Long ⇄
- * Short (стоп и цель зеркально, шаг отмены).
+ * значение (стоп или цель не по свою сторону от входа) не применяется: позиция на графике — как до правки, поле
+ * показывает ошибку, а уход из поля с ошибкой — как Esc (ничего не сохраняется). Ввод по одной цифре (клавиатура
+ * телефона) поэтому не оставляет на графике верное начало числа: «8» от «80380» — не стоп. «Перевернуть» — Long ⇄
+ * Short (стоп и цель зеркально по шагу цены, шаг отмены).
  */
 function PositionFields({ d, tick, locked, onEdit, onPatch }: { d: Drawing; tick: string | null; locked: boolean; onEdit: NonNullable<Props["onEdit"]>; onPatch: Props["onPatch"] }) {
   const t = useT();
@@ -122,6 +171,8 @@ function PositionFields({ d, tick, locked, onEdit, onPatch }: { d: Drawing; tick
   const [edit, setEdit] = useState<{ field: PosField; raw: string; error: string | null } | null>(null);
   /** Точки до правки поля: шаг отмены — от них. */
   const origin = useRef<Point[] | null>(null);
+  /** В поле сейчас неверное значение: уход из поля его не сохраняет. */
+  const invalid = useRef(false);
   const latest = useRef(d);
   useEffect(() => {
     latest.current = d;
@@ -129,22 +180,30 @@ function PositionFields({ d, tick, locked, onEdit, onPatch }: { d: Drawing; tick
   if (!p) return null;
   const finish = (cancel: boolean) => {
     const o = origin.current;
+    const bad = invalid.current;
     origin.current = null;
+    invalid.current = false;
     setEdit(null);
     if (!o) return;
     const cur = latest.current;
-    if (cancel) onEdit(cur.id, o, false);
-    else if (!samePoints(o, cur.points)) onEdit(cur.id, cur.points, true, o);
+    if (cancel || bad) {
+      if (!samePoints(o, cur.points)) onEdit(cur.id, o, false);
+    } else if (!samePoints(o, cur.points)) onEdit(cur.id, cur.points, true, o);
   };
   const change = (field: PosField, raw: string) => {
-    origin.current ??= d.points.map((q) => ({ ...q }));
-    const base = { type: d.type, points: origin.current };
-    const r = applyField(field === "rr" || field === "risk" ? base : d, field, raw, tickN);
-    if ("error" in r) return setEdit({ field, raw, error: r.error });
+    const o = (origin.current ??= d.points.map((q) => ({ ...q })));
+    // от позиции до правки: каждое значение поля — само по себе, а не поверх предыдущего начала числа
+    const r = applyField({ type: d.type, points: o }, field, raw, tickN);
+    if ("error" in r) {
+      invalid.current = true;
+      setEdit({ field, raw, error: r.error });
+      if (!samePoints(o, latest.current.points)) onEdit(d.id, o, false);
+      return;
+    }
+    invalid.current = false;
     setEdit({ field, raw, error: null });
     onEdit(d.id, r.points, false);
   };
-  const dir = d.type === "position-long" ? "Short" : "Long";
   return (
     <div className={s.posFields} role="group" aria-label={t("параметры позиции")}>
       {(["entry", "stop", "target", "rr", "risk"] as const).map((f) => {
@@ -176,17 +235,7 @@ function PositionFields({ d, tick, locked, onEdit, onPatch }: { d: Drawing; tick
           </div>
         );
       })}
-      <Button
-        className={s.posFlip}
-        disabled={locked}
-        aria-label={t(dir === "Short" ? "перевернуть в Short" : "перевернуть в Long")}
-        onClick={() => {
-          const flipped = flipPosition(d);
-          if (flipped) onPatch(d.id, flipped);
-        }}
-      >
-        ⇅ {dir}
-      </Button>
+      <FlipButton d={d} tick={tickN} onPatch={onPatch} className={s.posFlip} />
     </div>
   );
 }
