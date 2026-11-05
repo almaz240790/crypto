@@ -239,3 +239,107 @@ test("биржа замолчала (полуоткрытый сокет): це�
     server.dispose();
   }
 });
+
+test("тихий рынок: сделок нет 9 с — цена с биржи, то же соединение (проверки отвечены); сервер с той же ценой не мешает, с новой — сразу сервер; биржа догнала — снова биржа", async ({ page }) => {
+  test.setTimeout(60_000);
+  const calls: string[] = [];
+  await mock(page, calls);
+  const now = fixtureClock();
+  // цена на сетке 0.5: строки сервера (1 знак) и биржи (1 знак) совпадают, когда цена та же
+  const bn = await binanceSocket(page, { at: () => now(), price: (k) => RICH_C0 + 10 + k * 0.5, digits: 1 });
+  let serverPrice: number | null = null; // null — та же, что последняя у биржи
+  const server = await liveSocket(page, { ticks: false, at: () => now(1), price: (_k, s) => serverPrice ?? bn.state.last.get(s) ?? RICH_C0 });
+  try {
+    await page.goto("/chart/BTCUSDT/4h");
+    const strip = state(page);
+    await expect(strip.locator(BINANCE_TITLE)).toHaveCount(1);
+    await expect.poll(() => headerPrice(page)).toBeGreaterThan(RICH_C0 + 10);
+    // рынок затих: ни сделок, ни kline; сервер раз в 250 мс повторяет ту же цену
+    bn.state.data = false;
+    await page.waitForTimeout(300);
+    const quiet = bn.state.last.get("BTCUSDT")!;
+    server.state.ticks = true;
+    for (let i = 0; i < 18; i++) {
+      await expect(strip.locator(BINANCE_TITLE)).toHaveCount(1, { timeout: 100 });
+      await page.waitForTimeout(500);
+    }
+    expect(bn.sockets).toHaveLength(1);
+    expect(bn.openCount()).toBe(1);
+    expect(bn.control.filter((c) => c.method === "LIST_SUBSCRIPTIONS").length).toBeGreaterThanOrEqual(2);
+    expect(await headerPrice(page)).toBeCloseTo(quiet, 1);
+    // сделка, которую биржа не принесла: у сервера новая цена — сразу сервер, цена шапки и свечи — его
+    serverPrice = quiet + 7;
+    await expect(strip.locator(SERVER_TITLE)).toHaveCount(1, { timeout: 3000 });
+    await expect(strip).toContainText("онлайн");
+    await expect.poll(() => headerPrice(page)).toBeCloseTo(quiet + 7, 1);
+    await expect.poll(async () => (await lastBar(page)).close).toBeCloseTo(quiet + 7, 1);
+    // биржа снова шлёт сделки (новее улики) — снова основная, соединение то же
+    serverPrice = null;
+    bn.state.data = true;
+    await expect(strip.locator(BINANCE_TITLE)).toHaveCount(1, { timeout: 3000 });
+    expect(bn.sockets).toHaveLength(1);
+  } finally {
+    bn.dispose();
+    server.dispose();
+  }
+});
+
+test("сеть вернулась (online) во время паузы после отказов — попытка биржи сразу, не дожидаясь паузы", async ({ page, context }) => {
+  test.setTimeout(60_000);
+  const calls: string[] = [];
+  await mock(page, calls);
+  const now = fixtureClock();
+  const server = await liveSocket(page, { at: () => now(1), price: (k) => RICH_C0 + 5 + k * 0.1 });
+  const bn = await binanceSocket(page, { at: () => now(), price: (k) => RICH_C0 + 20 + k * 0.1 });
+  bn.state.refuse = true; // туннель: попытки не проходят
+  try {
+    await page.goto("/chart/BTCUSDT/4h");
+    const strip = state(page);
+    await expect(strip.locator(SERVER_TITLE)).toHaveCount(1);
+    await expect.poll(() => bn.state.attempts.length, { timeout: 12_000 }).toBe(2); // 0 и +5 с; следующая — через 10 с
+    bn.state.refuse = false;
+    await context.setOffline(true);
+    await page.waitForTimeout(200);
+    await context.setOffline(false); // браузер шлёт online
+    const back = Date.now();
+    await expect.poll(() => bn.state.attempts.length, { timeout: 3000 }).toBe(3);
+    expect(bn.state.attempts[2]! - back).toBeLessThan(2000);
+    await expect(strip.locator(BINANCE_TITLE)).toHaveCount(1, { timeout: 5000 });
+    await expect.poll(() => headerPrice(page)).toBeGreaterThan(RICH_C0 + 20);
+  } finally {
+    bn.dispose();
+    server.dispose();
+  }
+});
+
+test("биржа недоступна: уход на «Скринер» и возврат к графику во время паузы — без лишних попыток (ошибка в консоли не чаще паузы)", async ({ page }) => {
+  test.setTimeout(60_000);
+  const calls: string[] = [];
+  await mock(page, calls);
+  const now = fixtureClock();
+  const server = await liveSocket(page, { at: () => now(1) });
+  const bn = await binanceSocket(page, { at: () => now(), price: () => RICH_C0 + 50 });
+  bn.state.refuse = true;
+  try {
+    await page.goto("/chart/BTCUSDT/4h");
+    await expect(state(page).locator(SERVER_TITLE)).toHaveCount(1);
+    await expect.poll(() => bn.state.attempts.length).toBe(1);
+    // переходы внутри приложения (страница не перезагружается): график → Скринер → назад, дважды
+    await page.evaluate(() => ((window as unknown as { __mark: number }).__mark = 1));
+    for (let i = 0; i < 2; i++) {
+      await page.getByRole("link", { name: "Скринер" }).first().click();
+      await expect(page).toHaveURL(/screener/);
+      await page.goBack();
+      await expect(page).toHaveURL(/\/chart\/BTCUSDT\/4h/);
+      await expect(state(page).locator(SERVER_TITLE)).toHaveCount(1);
+    }
+    expect(await page.evaluate(() => (window as unknown as { __mark?: number }).__mark)).toBe(1);
+    expect(bn.state.attempts).toHaveLength(1);
+    // следующая — по паузе (5 с после первой), а не при возврате
+    await expect.poll(() => bn.state.attempts.length, { timeout: 9000 }).toBe(2);
+    expect(bn.state.attempts[1]! - bn.state.attempts[0]!).toBeGreaterThanOrEqual(4800);
+  } finally {
+    bn.dispose();
+    server.dispose();
+  }
+});
