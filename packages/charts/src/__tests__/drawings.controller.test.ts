@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DrawingController, type DrawProjector } from "../drawings/controller";
+import { positionScreen } from "../drawings/geometry";
 import { atrAt } from "../drawings/position";
 import { CLICK_SLOP_PX, DBLCLICK_MS, DEFAULT_STYLE, HANDLE_TOUCH_PX, type Drawing } from "../drawings/types";
 import type { Candle } from "../types";
@@ -773,16 +774,43 @@ describe("позиция: одно нажатие", () => {
     expect(s.log.created[0]!.points[0]).toEqual({ time: T0 + 40 * H, price: 100 });
   });
 
-  it("правый край — не дальше края области свечей (у последних свечей), но не уже 40 px", () => {
+  it("правый край — не дальше края области свечей (width − 8): у последних свечей позиция уже, у самого края — левее", () => {
     const s = setup();
     s.ctrl.setTool("position-long");
     s.mouse.tap(...at(90, 100));
-    // 30 свечей вправо — за краем (1000 px): край — на свече под x = 992
+    // 30 свечей вправо — за краем (1000 px): край — на свече под x = 990 ≤ 992
     expect(s.log.created[0]!.points[1]!.time).toBe(T0 + 99 * H);
     s.ctrl.setTool("position-long");
     s.mouse.tap(...at(98, 100));
-    // у самого края — не уже 40 px (4 свечи)
-    expect(s.log.created[1]!.points[1]!.time).toBe(T0 + 102 * H);
+    // у самого края — одна свеча (раньше запас 40 px уводил край и его ручку под шкалу цены)
+    expect(s.log.created[1]!.points.map((p) => p.time)).toEqual([T0 + 98 * H, T0 + 99 * H, T0 + 99 * H]);
+    // нажали в последних 8 px (свеча входа за краем) — позиция на свечу левее, край на экране
+    s.ctrl.setTool("position-short");
+    s.mouse.tap(996, yOf(100));
+    const d = s.log.created[2]!;
+    expect(d.points.map((p) => p.time)).toEqual([T0 + 98 * H, T0 + 99 * H, T0 + 99 * H]);
+    expect(d.points[0]!.price).toBe(100);
+    // ручка края — в области свечей: хватается мышью
+    const sc = positionScreen(d, projOf(PX_BAR).projector())!;
+    expect(sc.xR).toBeLessThanOrEqual(PLOT_W - 8);
+    expect(s.ctrl.hitAt(sc.xR, sc.yE)).toBe(d.id);
+  });
+
+  it("широкие свечи (36 px): край — последняя свеча не правее width − 8, а не ближайшая (за краем)", () => {
+    for (const pxBar of [36, 44, 60]) {
+      for (const x of [500, 640, 800, 930]) {
+        const s = setup({ pxBar });
+        s.ctrl.setTool("position-long");
+        s.mouse.tap(x, yOf(100));
+        const d = s.log.created[0]!;
+        const pr = projOf(pxBar).projector();
+        const xEnd = pr.x(d.points[1]!.time)!;
+        expect(xEnd, `${pxBar} px, x ${x}`).toBeLessThanOrEqual(PLOT_W - 8);
+        expect(d.points[1]!.time).toBeGreaterThan(d.points[0]!.time);
+        const sc = positionScreen(d, pr)!;
+        expect(sc.xR, `${pxBar} px, x ${x}`).toBeLessThanOrEqual(PLOT_W - 8);
+      }
+    }
   });
 
   it("без ATR (свечей меньше 14) — стоп на 1 % цены; цены — по шагу инструмента", () => {
@@ -908,6 +936,52 @@ describe("позиция: ручки и тело", () => {
     expect(m.points[1]!.price).toBeCloseTo(96 - 6, 9);
     expect(m.points[0]).toEqual(POS.points[0]);
     expect(m.points[2]).toEqual(POS.points[2]);
+  });
+
+  it("тело позиции — по шагу цены: сдвиг кратен шагу, цены без хвостов float", () => {
+    const pts = [
+      { time: T0 + 20 * H, price: 100.1 },
+      { time: T0 + 50 * H, price: 96.3 },
+      { time: T0 + 50 * H, price: 108.7 },
+    ];
+    for (const kind of ["mouse", "touch"] as const) {
+      const s = setup({ items: [{ ...POS, points: pts }], tick: 0.1, coarse: kind === "touch" });
+      s.select("P");
+      // сдвиг на 19.3 px — 4.825 цены: не кратно шагу
+      s.pointer(kind).drag(300, 384, 300, 403.3);
+      const m = last(s);
+      expect(m.final).toBe(true);
+      for (const p of m.points) expect(Number(p.price.toFixed(1))).toBe(p.price);
+      const d0 = m.points[0]!.price - pts[0]!.price;
+      expect(Number((m.points[1]!.price - pts[1]!.price).toFixed(9))).toBe(Number(d0.toFixed(9)));
+      expect(Number((m.points[2]!.price - pts[2]!.price).toFixed(9))).toBe(Number(d0.toFixed(9)));
+    }
+  });
+
+  it("правый край — от показанного края: прежняя позиция со стопом левее входа или на свече входа не схлопывается", () => {
+    // прежняя (три нажатия): вход на свече 40, стоп на 20, цель на 60 — на экране свечи 20…40 (x 200…400)
+    const old: Drawing = { ...POS, points: [{ time: T0 + 40 * H, price: 100 }, { time: T0 + 20 * H, price: 96 }, { time: T0 + 60 * H, price: 108 }] };
+    const s = setup({ items: [old] });
+    expect(positionScreen(old, projOf(PX_BAR).projector())).toMatchObject({ xL: 200, xR: 400 });
+    s.mouse.drag(400, 400, 420, 400);
+    let sc = positionScreen({ type: "position-long", points: last(s).points }, projOf(PX_BAR).projector())!;
+    expect([sc.xL, sc.xR]).toEqual([200, 420]);
+    // все три точки на свече входа: край нарисован на 40 px правее — ручка идёт за указателем сразу, без мёртвой зоны
+    const same: Drawing = { ...POS, points: [{ time: T0 + 40 * H, price: 100 }, { time: T0 + 40 * H, price: 96 }, { time: T0 + 40 * H, price: 108 }] };
+    const t = setup({ items: [same] });
+    t.mouse.down(440, 400);
+    for (const dx of [10, 20]) {
+      t.mouse.move(440 + dx, 400);
+      sc = positionScreen({ type: "position-long", points: last(t).points }, projOf(PX_BAR).projector())!;
+      expect(sc.xR).toBe(440 + dx);
+    }
+    t.mouse.up(460, 400);
+    // отдалённый график (1 px на свечу): 30 свечей — 30 px, нарисовано 40 — ручка тоже сразу идёт за указателем
+    const far = setup({ items: [POS], pxBar: 1 });
+    far.mouse.down(60, 400);
+    far.mouse.move(70, 400);
+    sc = positionScreen({ type: "position-long", points: last(far).points }, projOf(1).projector())!;
+    expect(sc.xR).toBe(70);
   });
 
   it("попадание: ручки раньше линий, линии раньше тела, правый край по высоте позиции", () => {

@@ -68,7 +68,8 @@ export const FIB_MINOR_ALPHA = 0.6;
  * Позиция Long/Short — как в TradingView (ADR-0009, «Рисование», дополнение «Позиция»): одно нажатие на цену входа
  * ставит готовую позицию. Стоп — на POSITION_STOP_ATR × ATR(POSITION_ATR_PERIOD) от входа (ниже у Long, выше у
  * Short), без ATR — POSITION_FALLBACK_PCT % цены; цель — POSITION_RR риска за входом; ширина — POSITION_BARS свечей
- * вправо от свечи входа, но не дальше правого края области свечей (POSITION_EDGE_PX), и не уже POSITION_MIN_PX.
+ * вправо от свечи входа, но правый край не дальше правого края области свечей (width − POSITION_EDGE_PX): у края
+ * позиция уже, до одной свечи. Узкая позиция рисуется шириной POSITION_MIN_PX — но тоже не за этим краем.
  */
 export const POSITION_ATR_PERIOD = 14;
 export const POSITION_STOP_ATR = 1;

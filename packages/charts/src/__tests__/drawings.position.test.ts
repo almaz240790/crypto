@@ -120,6 +120,11 @@ describe("геометрия позиции", () => {
     // зеркальная цель ниже нуля — половина пути до нуля
     expect(flipPosition(pos("position-long", 100, 95, 250))!.points[2]!.price).toBe(50);
     expect(flipPosition({ ...d, type: "trend" })).toBeNull();
+    // по шагу цены, без хвостов float (2 × 80775.1 − 81502.2 = 80048.00000000001)
+    const sh = pos("position-short", 80775.1, 81502.2, 79320.9);
+    expect(flipPosition(sh, 0.1)!.points.map((p) => p.price)).toEqual([80775.1, 80048, 82229.3]);
+    expect(flipPosition(sh)!.points.map((p) => p.price)).toEqual([80775.1, 80048, 82229.3]);
+    expect(flipPosition(pos("position-long", 0.0049, 0.0048852, 0.0049296), 0.0000001)!.points.map((p) => p.price)).toEqual([0.0049, 0.0049148, 0.0048704]);
     expect(formatRR(2)).toBe("2");
     expect(formatRR(1.5)).toBe("1.5");
     expect(formatRR(2.3456)).toBe("2.35");
@@ -137,6 +142,13 @@ describe("ручки позиции", () => {
     expect(positionKnobs(s)).toEqual({ entry: { x: 200, y: 400 }, stop: { x: 200, y: 416 }, target: { x: 200, y: 368 }, end: { x: 500, y: 400 } });
     const narrow = positionScreen(pos("position-long", 100, 96, 108, 20, 20), PROJ)!;
     expect(narrow.xR - narrow.xL).toBe(40);
+    // у правого края панели запас до 40 px не уводит край за width − 8 (там нажатие — жест шкалы цены)
+    const edge = positionScreen(pos("position-long", 100, 96, 108, 97, 98), PROJ)!;
+    expect([edge.xL, edge.xR]).toEqual([970, 992]);
+    const edge2 = positionScreen(pos("position-long", 100, 96, 108, 99, 99), PROJ)!;
+    expect([edge2.xL, edge2.xR]).toEqual([990, 992]);
+    // позиция, которая сама тянется за край (график прокрутили), — как есть
+    expect(positionScreen(pos("position-long", 100, 96, 108, 90, 120), PROJ)!.xR).toBe(1200);
     expect(positionScreen({ type: "trend", points: [] }, PROJ)).toBeNull();
   });
 

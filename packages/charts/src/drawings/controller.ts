@@ -1,8 +1,8 @@
 import { INTERACTION } from "../presets";
 import type { Candle } from "../types";
-import { hitTest, magnetSnap, type Hit, type Projector } from "./geometry";
-import { POSITION_PARTS, POSITION_PART_INDEX, atrAt, positionDir, positionFromEntry, setPositionEnd, setPositionPrice } from "./position";
-import { CLICK_SLOP_PX, DBLCLICK_MS, DBLCLICK_SLOP_PX, DEFAULT_STYLE, FIB_LEVELS, HANDLE_PX, HANDLE_TOUCH_PX, POSITION_BARS, POSITION_EDGE_PX, POSITION_KNOB_TOUCH_PX, POSITION_MIN_PX, WIDE_TYPES, isPosition, pointsNeeded, type Drawing, type DrawingType, type Point } from "./types";
+import { hitTest, magnetSnap, positionScreen, type Hit, type Projector } from "./geometry";
+import { POSITION_PARTS, POSITION_PART_INDEX, atrAt, positionDir, positionFromEntry, roundToTick, setPositionEnd, setPositionPrice } from "./position";
+import { CLICK_SLOP_PX, DBLCLICK_MS, DBLCLICK_SLOP_PX, DEFAULT_STYLE, FIB_LEVELS, HANDLE_PX, HANDLE_TOUCH_PX, POSITION_BARS, POSITION_EDGE_PX, POSITION_KNOB_TOUCH_PX, WIDE_TYPES, isPosition, pointsNeeded, type Drawing, type DrawingType, type Point } from "./types";
 
 /**
  * Контроллер жестов рисования (план 2A.5, 2A.7; ADR-0009, «Рисование»): постановка точек кликами и касаниями,
@@ -412,7 +412,9 @@ export class DrawingController {
       const part = POSITION_PARTS[hit.index];
       const pr = this.proj.projector();
       if (part === "end") {
-        const x0 = pr.x(origin[1]!.time);
+        // от показанного правого края (там ручка): у прежних позиций стоп бывает левее входа или на его свече, у узкой
+        // позиции край дорисован до 40 px — от времени стопа ручка прыгала бы или стояла первые 40 px
+        const x0 = positionScreen({ type, points: origin }, pr)?.xR ?? null;
         const t = this.proj.timeAt((x0 ?? start.x) + x - start.x);
         if (t !== null) pts = setPositionEnd({ type, points: origin }, this.snapTime(t), this.tf);
       } else if (part) {
@@ -427,10 +429,13 @@ export class DrawingController {
       const t0 = this.proj.timeAt(start.x), t1 = this.proj.timeAt(x);
       const p0 = this.proj.priceAt(start.y), p1 = this.proj.priceAt(y);
       if (t0 !== null && t1 !== null && p0 !== null && p1 !== null) {
-        const dt = this.snapTime(t1) - this.snapTime(t0), dp = p1 - p0;
+        const dt = this.snapTime(t1) - this.snapTime(t0);
+        // позиция — по шагу цены (сдвиг кратен шагу: риск и R:R те же, в журнал и калькулятор — цены без хвостов)
+        const tick = isPosition(type) ? (this.opts.getTick?.() ?? null) : undefined;
+        const dp = tick !== undefined ? roundToTick(p1 - p0, tick) : p1 - p0;
         for (const p of pts) {
           p.time += dt;
-          p.price += dp;
+          p.price = tick !== undefined ? roundToTick(p.price + dp, tick) : p.price + dp;
         }
       }
     }
@@ -546,44 +551,50 @@ export class DrawingController {
   }
 
   /**
-   * Правый край новой позиции: POSITION_BARS свечей правее свечи входа, но не дальше правого края области свечей
-   * (POSITION_EDGE_PX) — ручка края и подписи на экране; не уже POSITION_MIN_PX и не меньше одной свечи.
+   * Свечи новой позиции: от свечи входа на POSITION_BARS свечей вправо, но правый край — не дальше правого края области
+   * свечей (width − POSITION_EDGE_PX): ручка края и подписи на экране. Не помещается — позиция уже (до одной свечи);
+   * нажали у самого края (и одна свеча за краем) — позиция на свечу левее. Свечи — по индексу буфера (правее последней
+   * — шагом таймфрейма), край проверяется по экрану: привязка к ближайшей свече не уводит его за край.
    */
-  private positionEnd(entry: Point): number {
+  private positionSpan(entry: Point): { start: number; end: number } {
     const c = this.opts.getCandles();
     const tf = this.tf;
-    let end = entry.time + POSITION_BARS * tf;
-    if (c.length > 0) {
-      const n = c.length;
-      const lastT = c[n - 1]!.time;
-      let i = n - 1 + Math.round((entry.time - lastT) / tf);
-      if (entry.time <= lastT) {
-        let lo = 0, hi = n - 1;
-        while (lo < hi) {
-          const mid = (lo + hi) >> 1;
-          if (c[mid]!.time < entry.time) lo = mid + 1;
-          else hi = mid;
-        }
-        i = lo;
+    const n = c.length;
+    const lastT = n > 0 ? c[n - 1]!.time : entry.time;
+    let i0 = n - 1 + Math.round((entry.time - lastT) / tf);
+    if (n > 0 && entry.time <= lastT) {
+      let lo = 0, hi = n - 1;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (c[mid]!.time < entry.time) lo = mid + 1;
+        else hi = mid;
       }
-      const j = i + POSITION_BARS;
-      end = j <= n - 1 ? c[j]!.time : lastT + (j - (n - 1)) * tf;
+      i0 = lo;
     }
+    const timeOf = (i: number) => (n === 0 ? entry.time + (i - i0) * tf : i < 0 ? c[0]!.time + i * tf : i <= n - 1 ? c[i]!.time : lastT + (i - (n - 1)) * tf);
     const pr = this.proj.projector();
-    const x0 = pr.x(entry.time), x1 = pr.x(end);
     const limit = pr.width - POSITION_EDGE_PX;
-    if (x0 !== null && x1 !== null && x1 > limit) {
-      const t = this.proj.timeAt(Math.max(limit, x0 + POSITION_MIN_PX));
-      if (t !== null) end = this.snapTime(t);
+    const past = (i: number) => {
+      const x = pr.x(timeOf(i));
+      return x !== null && x > limit;
+    };
+    let i1 = i0 + POSITION_BARS;
+    while (i1 > i0 + 1 && past(i1)) i1--;
+    for (let k = 0; k < 2 && past(i1) && !past(i0 - 1); k++) {
+      i0--;
+      i1--;
     }
-    return Math.max(end, entry.time + tf);
+    return { start: timeOf(i0), end: timeOf(i1) };
   }
 
   private makeDraft(points: Point[]): Drawing {
     const type = this.tool ?? "trend";
     let pts = points.slice(0, pointsNeeded(type));
     // позиция одним нажатием: стоп по ATR, цель 1:2, ширина ~30 свечей
-    if (isPosition(type) && pts[0]) pts = positionFromEntry(positionDir(type), pts[0], { atr: this.atrFor(pts[0].time), end: this.positionEnd(pts[0]), tick: this.opts.getTick?.() ?? null });
+    if (isPosition(type) && pts[0]) {
+      const span = this.positionSpan(pts[0]);
+      pts = positionFromEntry(positionDir(type), { time: span.start, price: pts[0].price }, { atr: this.atrFor(pts[0].time), end: span.end, tick: this.opts.getTick?.() ?? null });
+    }
     const color = type === "position-long" ? "up" : type === "position-short" ? "down" : DEFAULT_STYLE.color;
     return {
       id: this.opts.newId(),

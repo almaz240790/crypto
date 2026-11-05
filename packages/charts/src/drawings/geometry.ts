@@ -1,6 +1,6 @@
 import type { Candle } from "../types";
 import { POSITION_PARTS, positionParts, type PositionPart } from "./position";
-import { FIB_LEVELS, POSITION_MIN_PX, isPosition, type Drawing, type Point } from "./types";
+import { FIB_LEVELS, POSITION_EDGE_PX, POSITION_MIN_PX, isPosition, type Drawing, type Point } from "./types";
 
 /** Магнит к OHLC: ближайшая из цен свечи, если она в пределах tolerance (в единицах цены). */
 export function magnetSnap(candle: Candle | undefined, price: number, tolerance: number): number {
@@ -114,14 +114,20 @@ const LINE_MIN_TOL = 3;
 /** Позиция на экране: левый и правый край (не уже POSITION_MIN_PX), середина, y входа, стопа и цели. */
 export type PositionScreen = { xL: number; xR: number; xC: number; yE: number; yS: number; yT: number };
 
-export function positionScreen(d: Pick<Drawing, "type" | "points">, proj: Pick<Projector, "x" | "y">): PositionScreen | null {
+/**
+ * Позиция на экране. Узкая позиция (уже POSITION_MIN_PX: отдалили график) рисуется шириной POSITION_MIN_PX, но этот
+ * запас не уводит правый край и его ручку за правый край области свечей (width − POSITION_EDGE_PX): там нажатие —
+ * жест шкалы цены. Позиция, которая сама тянется за край (прокрутили график), — как есть.
+ */
+export function positionScreen(d: Pick<Drawing, "type" | "points">, proj: Pick<Projector, "x" | "y"> & { width?: number }): PositionScreen | null {
   const p = positionParts(d);
   if (!p) return null;
   const x1 = proj.x(p.start), x2 = proj.x(p.end);
   const yE = proj.y(p.entry), yS = proj.y(p.stop), yT = proj.y(p.target);
   if (x1 === null || x2 === null || yE === null || yS === null || yT === null) return null;
   const xL = Math.min(x1, x2);
-  const xR = Math.max(x1, x2, xL + POSITION_MIN_PX);
+  const cap = proj.width !== undefined ? Math.max(xL, proj.width - POSITION_EDGE_PX) : Infinity;
+  const xR = Math.max(x1, x2, Math.min(xL + POSITION_MIN_PX, cap));
   return { xL, xR, xC: (xL + xR) / 2, yE, yS, yT };
 }
 

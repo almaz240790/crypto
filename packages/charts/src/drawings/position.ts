@@ -46,9 +46,13 @@ function tickDigits(tick: number): number {
   return Math.max(0, frac - Number(e));
 }
 
-/** Цена по шагу инструмента (без хвостов float: 0.1 + 0.2 → 0.3); без шага — как есть. */
+/**
+ * Цена по шагу инструмента (без хвостов float: 0.1 + 0.2 → 0.3); без шага — 12 значащих цифр (хвосты float вида
+ * 80048.00000000001 срезаются, цена остаётся той же).
+ */
 export function roundToTick(price: number, tick: number | null | undefined): number {
-  if (!tick || !(tick > 0) || !Number.isFinite(price)) return price;
+  if (!Number.isFinite(price)) return price;
+  if (!tick || !(tick > 0)) return Number(price.toPrecision(12));
   const d = Math.min(12, tickDigits(tick));
   return Number((Math.round(price / tick) * tick).toFixed(d));
 }
@@ -173,13 +177,16 @@ export function withRiskPct(d: Pick<Drawing, "type" | "points">, pct: number, ti
   return positionPoints({ ...p, stop, target });
 }
 
-/** Long ⇄ Short: стоп и цель зеркально относительно входа (риск и R:R те же), цвет — по новому направлению. */
-export function flipPosition(d: Pick<Drawing, "type" | "points">): Pick<Drawing, "type" | "points" | "style"> | null {
+/**
+ * Long ⇄ Short: стоп и цель зеркально относительно входа (риск и R:R те же), цвет — по новому направлению; цены — по
+ * шагу инструмента (без хвостов float: 2 × 80775.1 − 81502.2 = 80048, а не 80048.00000000001).
+ */
+export function flipPosition(d: Pick<Drawing, "type" | "points">, tick?: number | null): Pick<Drawing, "type" | "points" | "style"> | null {
   const p = positionParts(d);
   if (!p) return null;
   const dir: PositionDir = p.dir === "long" ? "short" : "long";
   // зеркальная цена ниже нуля (стоп или цель дальше входа больше чем вдвое) — половина пути до нуля
-  const mirror = (v: number) => (2 * p.entry - v > 0 ? 2 * p.entry - v : p.entry / 2);
+  const mirror = (v: number) => roundToTick(2 * p.entry - v > 0 ? 2 * p.entry - v : p.entry / 2, tick);
   return { type: positionType(dir), points: positionPoints({ ...p, stop: mirror(p.stop), target: mirror(p.target) }), style: { color: dir === "long" ? "up" : "down", width: 1, dashed: false } };
 }
 
