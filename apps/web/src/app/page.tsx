@@ -27,6 +27,8 @@ export async function generateMetadata(): Promise<Metadata> {
  * Кнопка «Открыть график» — одна, на первом экране. Названия разметки — как на графике (packages/charts
  * scene/text.ts): «Поддержка», «Сопротивление», «Спрос», «Предложение», «Пробой», «Смена», «Ликвидации».
  * Картинки public/landing/*.webp — снимки production (гость, тёмная тема); подписи и alt описывают ровно их.
+ * В имени картинки — начало sha256 содержимого (landingImages.test.ts): Cloudflare кэширует /landing/* на 4 часа,
+ * поэтому новый снимок — всегда новое имя, иначе рядом с новыми подписями браузер покажет старую картинку.
  */
 
 const TRUST = [
@@ -85,7 +87,7 @@ export default async function Home() {
               <DeskTools />
               <div className={s.tablet}>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src="/landing/multi.webp" width={2000} height={1312} alt={t("Мультичарт PlatformSol: четыре графика — BTCUSDT и ETHUSDT на 4 часах, SOLUSDT и BNBUSDT на 1 дне — с поддержкой, сопротивлением и зонами спроса")} loading="lazy" />
+                <img src="/landing/multi.8073678b.webp" width={2000} height={1312} alt={t("Мультичарт PlatformSol: четыре графика — BTCUSDT и ETHUSDT на 4 часах, SOLUSDT и BNBUSDT на 1 дне — с поддержкой, сопротивлением и зонами спроса")} loading="lazy" />
               </div>
             </div>
           </div>
@@ -104,9 +106,9 @@ export default async function Home() {
           <div className={`${s.visual} ${s.cards}`}>
             <span className={s.beam} aria-hidden="true" />
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img className={s.cardLiq} src="/landing/liq.webp" width={900} height={1340} alt={t("График BTCUSDT, 4 часа, разметка «Карта ликвидаций»: полоса ликвидаций у шкалы цен с расчётными суммами в долларах, линии поддержки и сопротивления")} loading="lazy" />
+            <img className={s.cardLiq} src="/landing/liq.cc9bf925.webp" width={900} height={1340} alt={t("График BTCUSDT, 4 часа, разметка «Карта ликвидаций»: полоса ликвидаций у шкалы цен с расчётными суммами в долларах, линии поддержки и сопротивления")} loading="lazy" />
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img className={s.cardLv} src="/landing/levels.webp" width={600} height={1200} alt={t("Список «Уровни» на панели «Найдено»: сопротивление, поддержка, максимумы и минимумы дня и недели, зоны спроса — с ценой и расстоянием до неё")} loading="lazy" />
+            <img className={s.cardLv} src="/landing/levels.d87a7c31.webp" width={600} height={1200} alt={t("Список «Уровни» на панели «Найдено»: сопротивление, поддержка, максимумы и минимумы дня и недели, зоны спроса — с ценой и расстоянием до неё")} loading="lazy" />
           </div>
           <div className={`${s.copy} ${s.right}`}>
             <p className={s.lockup}>
@@ -142,7 +144,7 @@ export default async function Home() {
           <div className={`${s.visual} ${s.phoneWrap}`}>
             <div className={s.phone}>
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src="/landing/phone.webp" width={390} height={844} alt={t("График BTCUSDT на телефоне: разметка «Уровни и зоны», цена в реальном времени и нижняя панель с кнопками")} loading="lazy" />
+              <img src="/landing/phone.ce7c3325.webp" width={390} height={844} alt={t("График BTCUSDT на телефоне: разметка «Уровни и зоны», цена в реальном времени и нижняя панель с кнопками")} loading="lazy" />
             </div>
           </div>
         </section>
