@@ -1,4 +1,4 @@
-import { formatPriceLabel } from "../format";
+import { formatPriceLabel, formatQuantity } from "../format";
 import type { LabelCandidate, Slot } from "../layout/types";
 import type { ThemeTokens } from "../types";
 import { fibLevels, positionKnobs, positionScreen, type Projector } from "./geometry";
@@ -43,7 +43,8 @@ const POS_GAP = 2;
 export type DrawingLabelStyle = "text" | "plaque" | "outline" | "note";
 /**
  * Нет свободного места: fixed — подпись на своём месте всё равно (заметка — это сам рисунок), soft — первое место,
- * не задевающее легенду, кнопки и полосу цены, drop — не показывать (второстепенный уровень Фибоначчи).
+ * не задевающее легенду, кнопки, полосу цены и другие подписи рисунков (поверх подписи разметки старше — можно), а
+ * нет и такого — не показывать; drop — не показывать (второстепенный уровень Фибоначчи).
  */
 export type DrawingLabelMode = "fixed" | "soft" | "drop";
 
@@ -106,6 +107,14 @@ export function formatDrawingPrice(p: number, precision: number | null): string 
 /** Процент в подписи позиции: «2.31». */
 const pct2 = (v: number) => (Math.round(v * 100) / 100).toFixed(2);
 
+/**
+ * Риск в $ и объём позиции по профилю: «риск 100 $ · объём 449 438» — одна строка для плашки входа на графике и для
+ * карточки позиции (те же слова и та же запись числа, без экспоненты).
+ */
+export function positionRiskText(riskUsd: number, size: number, text: Pick<DrawingText, "risk" | "size">): string {
+  return `${text.risk} ${formatQuantity(riskUsd)} $ · ${text.size} ${formatQuantity(size)}`;
+}
+
 /** Тексты плашек позиции: цель, стоп, вход (с риском и объёмом по профилю — второй строкой). */
 export function positionLabelTexts(p: PositionParts, precision: number | null, profile: RiskProfile | null, text: DrawingText): { target: string; stop: string; entry: string[] } {
   const risk = Math.abs(p.entry - p.stop);
@@ -116,7 +125,7 @@ export function positionLabelTexts(p: PositionParts, precision: number | null, p
   const entry = [`${text.entry} ${fmt(p.entry)} · R:R 1:${formatRR(rr)}`];
   if (profile && profile.deposit > 0 && profile.riskPct > 0 && risk > 0) {
     const usd = (profile.deposit * profile.riskPct) / 100;
-    entry.push(`${text.risk} ${usd.toFixed(0)} $ · ${text.size} ${(usd / risk).toPrecision(4)}`);
+    entry.push(positionRiskText(usd, usd / risk, text));
   }
   return {
     target: `${text.target} ${fmt(p.target)} · +${pct2((reward / ref) * 100)}% · ${formatRR(rr)}R`,
@@ -204,6 +213,9 @@ function labelsOf(d: Drawing, base: number, o: DrawingLabelInput, out: DrawingLa
       const b = xy(1);
       if (!b) return;
       const left = Math.min(a.x, b.x), right = Math.max(a.x, b.x);
+      // Фибоначчи за экраном (график прокрутили) — без подписей: иначе запасное место у края панели собирало бы все
+      // его уровни у текущей цены без линий рядом
+      if (right < 0 || left > W) return;
       for (const { level, price } of fibLevels(d.points[0]!, d.points[1]!, d.levels)) {
         const y = proj.y(price);
         if (y === null) continue;
@@ -260,14 +272,18 @@ function positionLabels(d: Drawing, base: number, o: DrawingLabelInput, out: Dra
   // k — на сколько плашек дальше от линии (полоса текущей цены, подпись разметки старше — следующее место)
   const outside = (y: number, up: boolean, k = 0): Yf => (h) => (up ? y - (k + 1) * (h + POS_GAP) : y + POS_GAP + k * (h + POS_GAP));
   const inside = (y: number, up: boolean, k = 0): Yf => (h) => (up ? y + POS_GAP + k * (h + POS_GAP) : y - (k + 1) * (h + POS_GAP));
-  const near = (y: number, up: boolean): Yf[] => [outside(y, up), inside(y, up), outside(y, up, 1), inside(y, up, 1), outside(y, up, 2)];
+  // дальние места (до пяти плашек от линии) — раньше, чем запасное место поверх другой подписи: позиции рядом и
+  // Фибоначчи у цены раскладываются стопкой, а не друг на друга
+  const near = (y: number, up: boolean): Yf[] => [outside(y, up), inside(y, up), outside(y, up, 1), inside(y, up, 1), outside(y, up, 2), inside(y, up, 2), outside(y, up, 3), outside(y, up, 4)];
   const targetUp = s.yT <= s.yE;
   const stopUp = s.yS < s.yE;
   if (visible(s.yE, s.yT)) plaque("target", [t.target], near(s.yT, targetUp), 1);
   if (visible(s.yE, s.yS)) plaque("stop", [t.stop], near(s.yS, stopUp), 2);
   // вход — на своей линии (плашка поперёк линии), иначе над ней или под ней
   const yE = s.yE;
-  if (visible(s.yS, s.yT)) plaque("entry", t.entry, [(h) => yE - h / 2, (h) => yE - h - POS_GAP, (h) => yE + POS_GAP, (h) => yE - 2 * (h + POS_GAP), (h) => yE + h + 2 * POS_GAP], 0);
+  const entryYs: Yf[] = [(h) => yE - h / 2, (h) => yE - h - POS_GAP, (h) => yE + POS_GAP];
+  for (let k = 2; k <= 4; k++) entryYs.push((h) => yE - k * (h + POS_GAP), (h) => yE + (k - 1) * h + k * POS_GAP);
+  if (visible(s.yS, s.yT)) plaque("entry", t.entry, entryYs, 0);
 }
 
 /** Ручки выбранного рисунка — выше всех подписей: ни подпись рисунка, ни подпись разметки на них не ложится. */

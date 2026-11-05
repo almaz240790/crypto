@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatCompactValue, formatIndicatorValue, formatPercentValue, formatPriceLabel, formatPriceShort, formatTicks, tickDecimals, tickFormat, tickPrecision } from "../format";
+import { formatCompactValue, formatIndicatorValue, formatQuantity, formatPercentValue, formatPriceLabel, formatPriceShort, formatTicks, tickDecimals, tickFormat, tickPrecision } from "../format";
 import type { PriceFormat } from "lightweight-charts";
 import { COMPACT_FORMAT, instrumentPriceFormat, PERCENT_FORMAT, VALUE_FORMAT } from "../priceFormat";
 
@@ -95,6 +95,23 @@ describe("форматы панелей", () => {
     expect(formatCompactValue(-2000)).toBe("−2.00K");
     expect(formatCompactValue(512.345)).toBe("512.35");
     expect(fmt(COMPACT_FORMAT, 1_500_000)).toBe("1.50M");
+  });
+  it("количество (объём позиции, риск в $): разряды от тысячи, четыре значащие цифры меньше, без экспоненты", () => {
+    expect(formatQuantity(449_438.2)).toBe("449 438");
+    expect(formatQuantity(20_000)).toBe("20 000");
+    expect(formatQuantity(10_000)).toBe("10 000");
+    expect(formatQuantity(1_234_567_890)).toBe("1 234 567 890");
+    expect(formatQuantity(999.96)).toBe("1 000");
+    expect(formatQuantity(512.345)).toBe("512.3");
+    expect(formatQuantity(12.345)).toBe("12.35");
+    expect(formatQuantity(20)).toBe("20");
+    expect(formatQuantity(0.1)).toBe("0.1");
+    expect(formatQuantity(0.00042134)).toBe("0.0004213");
+    expect(formatQuantity(1e-9)).toBe("0.000000001");
+    expect(formatQuantity(0)).toBe("0");
+    expect(formatQuantity(-2500)).toBe("−2 500");
+    expect(formatQuantity(Number.NaN)).toBe("—");
+    for (const v of [4.494e5, 1e7, 3e-7, 123.4]) expect(formatQuantity(v)).not.toMatch(/e/);
   });
   it("компактно: сначала округление, потом единица и число знаков", () => {
     expect(formatCompactValue(999_800)).toBe("1.00M");

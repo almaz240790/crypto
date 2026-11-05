@@ -66,7 +66,10 @@ export function layoutLabels(candidates: readonly LabelCandidate[], obstacles: O
     let onScreen = false;
     type At = { rect: Rect; slot: LabelCandidate["slots"][number] };
     let at: At | null = null;
-    /** Запасное место (force soft): в области и без препятствий, пусть и поверх другой подписи. */
+    /**
+     * Запасное место (force soft): в области, без препятствий и не на подписи рисунка или ручке (external) — пусть и
+     * поверх подписи разметки старше. Нет такого места — подпись выброшена, а не положена на другую подпись рисунка.
+     */
     let spare: At | null = null;
     const first = c.slots[0];
     if (c.force === "fixed" && first && Number.isFinite(first.x) && Number.isFinite(first.y)) {
@@ -80,7 +83,7 @@ export function layoutLabels(candidates: readonly LabelCandidate[], obstacles: O
       onScreen = true;
       const big = inflate(rect, LABEL_GAP);
       if (obstacles.rects.some((o) => intersects(big, o.rect))) continue;
-      if (!spare && c.force === "soft") spare = { rect, slot: s };
+      if (!spare && c.force === "soft" && !external.some((p) => intersects(big, p.rect))) spare = { rect, slot: s };
       if (!c.overCandles && hitsCandles(big, obstacles.candles)) continue;
       if (taken(big)) continue;
       at = { rect, slot: s };

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { hitTest, positionHit, positionKnobs, positionScreen, type Projector } from "../drawings/geometry";
-import { DRAWING_LABEL_PRIORITY, DRAWING_TEXT, drawingLabels, handleCandidate, handleRects, positionLabelTexts, toCandidate, type DrawingLabel } from "../drawings/labels";
+import { DRAWING_LABEL_PRIORITY, DRAWING_TEXT, drawingLabels, handleCandidate, handleRects, positionLabelTexts, positionRiskText, toCandidate, type DrawingLabel } from "../drawings/labels";
 import { atrAt, flipPosition, formatRR, positionError, positionFieldError, positionFromEntry, positionParts, roundToTick, setPositionEnd, setPositionPrice, withRiskPct, withRiskReward } from "../drawings/position";
 import { DrawingsPrimitive } from "../drawings/primitive";
 import { DEFAULT_STYLE, POSITION_FILL_ALPHA, type Drawing } from "../drawings/types";
@@ -184,7 +184,12 @@ describe("подписи позиции", () => {
   it("тексты: цель «+%» и R, стоп «−%», вход с R:R 1:x; с депозитом и риском — риск в $ и объём", () => {
     const p = positionParts(pos("position-long", 100, 95, 110))!;
     expect(positionLabelTexts(p, 2, null, DRAWING_TEXT)).toEqual({ target: "Цель 110.00 · +10.00% · 2R", stop: "Стоп 95.00 · −5.00%", entry: ["Вход 100.00 · R:R 1:2"] });
-    expect(positionLabelTexts(p, 2, { deposit: 10000, riskPct: 1 }, DRAWING_TEXT).entry).toEqual(["Вход 100.00 · R:R 1:2", "риск 100 $ · объём 20.00"]);
+    expect(positionLabelTexts(p, 2, { deposit: 10000, riskPct: 1 }, DRAWING_TEXT).entry).toEqual(["Вход 100.00 · R:R 1:2", "риск 100 $ · объём 20"]);
+    // дешёвая монета: объём от 10 000 — разрядами, а не «4.494e+5»; та же строка — в карточке позиции
+    const pepe = positionParts(pos("position-long", 0.0052448, 0.0050223, 0.0056898))!;
+    expect(positionLabelTexts(pepe, 7, { deposit: 10000, riskPct: 1 }, DRAWING_TEXT).entry[1]).toBe("риск 100 $ · объём 449 438");
+    expect(positionRiskText(100, 449438.2, DRAWING_TEXT)).toBe("риск 100 $ · объём 449 438");
+    expect(positionRiskText(12.5, 0.1, { risk: "risk", size: "size" })).toBe("risk 12.5 $ · size 0.1");
     const s = positionParts(pos("position-short", 100, 104, 94))!;
     expect(positionLabelTexts(s, 2, null, DRAWING_TEXT)).toEqual({ target: "Цель 94.00 · +6.00% · 1.5R", stop: "Стоп 104.00 · −4.00%", entry: ["Вход 100.00 · R:R 1:1.5"] });
     expect(positionLabelTexts(s, 2, null, { entry: "Entry", stop: "Stop", target: "Target", risk: "risk", size: "size" }).target).toMatch(/^Target 94.00/);
@@ -219,6 +224,19 @@ describe("подписи позиции", () => {
     // зона прибыли целиком выше панели — подписи цели нет, стоп и вход есть
     const off = labelsOf([pos("position-long", 210, 190, 260)]).map((l) => l.id);
     expect(off).toEqual(["P#stop", "P#entry"]);
+  });
+
+  it("Фибоначчи за экраном (слева и справа) — без подписей; частично на экране — с подписями в панели", () => {
+    const fib = (from: number, to: number): Drawing => ({ ...pos("position-long", 100, 96, 108), id: "F", type: "fib", points: [{ time: T0 + from * H, price: 120 }, { time: T0 + to * H, price: 80 }], levels: [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1] });
+    expect(labelsOf([fib(-160, -144)])).toEqual([]);
+    expect(labelsOf([fib(160, 176)])).toEqual([]);
+    expect(labelsOf([fib(101, 103)])).toEqual([]);
+    const part = labelsOf([fib(90, 120)]);
+    expect(part.length).toBe(7);
+    const res = layoutLabels(part.map(toCandidate), obstacles(), VP, BUDGET);
+    for (const l of res.external!) expect(l.rect.x + l.rect.w).toBeLessThanOrEqual(1000);
+    // и в раскладке: за экраном слева — ни одной подписи у правого края
+    expect(layoutLabels(labelsOf([fib(-160, -144)]).map(toCandidate), obstacles(), VP, BUDGET).external).toEqual([]);
   });
 
   it("порядок: начатый и выбранный рисунок раньше остальных; уровни Фибоначчи — ключевые раньше", () => {
@@ -307,6 +325,41 @@ describe("подписи рисунков и разметки в одной ра
     const labels = res.external!.filter((p) => p.text !== "");
     expect(labels).toHaveLength(3);
     for (const l of labels) for (const h of handles) expect(overlaps(l.rect, h.rect), `${l.id} / ${h.id}`).toBe(false);
+  });
+
+  it("запасное место soft — не на подписи другого рисунка: нет места — подпись не показывается", () => {
+    const c0 = cands().find((x) => x.id === "P#stop")!;
+    const c = { ...c0, slots: [c0.slots[0]!] };
+    const other: LabelCandidate = { ...c, id: "Q#stop", objectId: "Q", rank: -10 };
+    const res = layoutLabels([c, other], obstacles(), VP, BUDGET);
+    expect(res.external!.map((p) => p.id)).toEqual(["Q#stop"]);
+    expect(res.dropped).toContainEqual({ id: "P#stop", reason: "collision" });
+  });
+
+  it("две позиции и Фибоначчи у одной цены, выбран Фибоначчи (с ручками): подписи рисунков не друг на друге", () => {
+    const a = pos("position-long", 100, 96, 108, 60, 90);
+    const b = { ...pos("position-short", 100.6, 104.6, 92.6, 66, 96), id: "Q" };
+    const fib: Drawing = { ...a, id: "F", type: "fib", points: [{ time: T0 + 35 * H, price: 112 }, { time: T0 + 72 * H, price: 90 }], levels: [0, 0.236, 0.382, 0.5, 0.618, 0.705, 0.786, 1] };
+    for (const touch of [false, true]) {
+      const handles = handleRects({ drawings: [a, b, fib], draft: null, selectedId: "F", proj: PROJ }, touch);
+      const ls = labelsOf([a, b, fib], { selectedId: "F" });
+      const res = layoutLabels([...handles.map(handleCandidate), ...ls.map(toCandidate)], obstacles(), VP, BUDGET);
+      const ext = res.external!;
+      for (let i = 0; i < ext.length; i++) for (let j = i + 1; j < ext.length; j++) if (ext[i]!.text || ext[j]!.text) expect(overlaps(ext[i]!.rect, ext[j]!.rect), `${ext[i]!.id} / ${ext[j]!.id}`).toBe(false);
+      // плашки выбранного и ключевые уровни на месте; второстепенные могут уступить
+      for (const id of ["F#L0.5", "F#L0.618", "P#entry", "Q#entry"]) expect(ext.map((p) => p.id), id).toContain(id);
+    }
+  });
+
+  it("три позиции стопкой у цены (телефон): входы не друг на друге", () => {
+    const ds = [pos("position-long", 100, 97, 106, 60, 90), { ...pos("position-short", 100.8, 103.8, 94.8, 60, 90), id: "Q" }, { ...pos("position-long", 101.6, 98.6, 107.6, 60, 90), id: "R" }];
+    const proj: Projector = { ...PROJ, width: 330, x: (t) => ((t - T0) / H) * 3 };
+    const handles = handleRects({ drawings: ds, draft: null, selectedId: "R", proj }, true);
+    const res = layoutLabels([...handles.map(handleCandidate), ...labelsOf(ds, { selectedId: "R", proj }).map(toCandidate)], obstacles(), { ...VP, width: 330 }, BUDGET);
+    // ручки (fixed) стоят где стоят и сами могут касаться друг друга; подписи — ни на ручках, ни друг на друге
+    const ext = res.external!;
+    for (let i = 0; i < ext.length; i++) for (let j = i + 1; j < ext.length; j++) if (ext[i]!.text || ext[j]!.text) expect(overlaps(ext[i]!.rect, ext[j]!.rect), `${ext[i]!.id} / ${ext[j]!.id}`).toBe(false);
+    for (const id of ["R#entry", "R#stop", "R#target"]) expect(ext.map((p) => p.id), id).toContain(id);
   });
 
   it("подписи рисунков не ложатся друг на друга: две позиции рядом, подписи сдвинуты", () => {
@@ -447,7 +500,7 @@ describe("отрисовка позиции", () => {
     const r = paint(p);
     expect(r.arcs).toBe(3);
     expect(r.rects).toBe(1);
-    expect(r.texts.map((t) => t.text)).toContain("риск 100 $ · объём 25.00");
+    expect(r.texts.map((t) => t.text)).toContain("риск 100 $ · объём 25");
   });
 
   it("места подписей — из общей раскладки, если она посчитана для этого состояния", () => {
