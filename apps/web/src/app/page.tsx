@@ -4,7 +4,6 @@ import { Footer, Header } from "@/components/site";
 import { HeroLine } from "@/components/landing/HeroLine";
 import { DeskTools } from "@/components/landing/DeskTools";
 import { LineArt, Thumb } from "@/components/landing/LineArt";
-import { TrustCarousel } from "@/components/landing/TrustCarousel";
 import { getDailyCloses, getHealth, getInstrumentCount } from "@/lib/api";
 import { COUNTS } from "@/lib/capabilities";
 import { nb, plural } from "@/lib/format";
@@ -171,21 +170,21 @@ export default async function Home() {
           </div>
         </section>
 
-        {/* 5. Доверие — тёмный блок перед подвалом, 2×2 */}
+        {/* 5. Доверие — тёмный блок перед подвалом: 2×2, на телефоне — список строками */}
         <section className={s.trust} aria-labelledby="h-trust">
           <h2 id="h-trust" className={s.h2c}>
             {nb(t("Честный инструмент —"))}
             <br />
             {t("структура без перерисовки")}
           </h2>
-          <TrustCarousel dotsClassName={s.dots} labelledBy="h-trust">
+          <ul aria-labelledby="h-trust">
             {TRUST.map((i) => (
               <li key={i.art}>
                 <LineArt name={i.art} />
                 <p>{nb(t(i.t))}</p>
               </li>
             ))}
-          </TrustCarousel>
+          </ul>
         </section>
 
       </main>

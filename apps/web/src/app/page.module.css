@@ -421,11 +421,6 @@
   letter-spacing: -0.3px;
 }
 
-/* точки листалки — только на телефоне */
-.dots {
-  display: none;
-}
-
 /* ── 4. Основы: салатовый, низ карточки обрезан краем блока ─ */
 .learn {
   --focus: var(--lp-ink);
@@ -716,46 +711,34 @@
   }
 }
 
-/* телефон: «доверие» — листалка с точками */
+/* телефон: «доверие» — список строками (рисунок слева, текст справа): все четыре пункта видны целиком,
+   без листалки и обрезанного соседнего слайда */
 @media (max-width: 640px) {
-  .trust ul {
-    display: flex;
-    justify-content: flex-start;
-    gap: 26px;
-    margin-top: 70px;
-    padding: 0 calc(50% - 100px);
-    overflow-x: auto;
-    scroll-snap-type: x mandatory;
-    scrollbar-width: none;
+  .trust {
+    padding: 56px 20px 72px;
   }
 
-  .trust ul:focus-visible {
-    outline: 2px solid var(--lp-lime);
-    outline-offset: 4px;
+  .trust ul {
+    grid-template-columns: minmax(0, 358px);
+    row-gap: 28px;
+    margin-top: 48px;
   }
 
   .trust li {
+    flex-direction: row;
+    gap: 20px;
+    text-align: left;
+  }
+
+  .trust li svg {
     flex: none;
-    width: 200px;
-    scroll-snap-align: center;
+    width: 88px;
+    height: 88px;
   }
 
-  .dots {
-    display: flex;
-    justify-content: center;
-    gap: 8px;
-    margin-top: 82px;
-  }
-
-  .dots i {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--lp-mute-2);
-    transition: background-color 0.2s;
-  }
-
-  .dots i[data-active] {
-    background: var(--lp-white);
+  .trust li p {
+    margin-top: 0 !important;
+    font-size: 18px;
+    line-height: 26px;
   }
 }

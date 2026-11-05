@@ -8,6 +8,8 @@
   fill: none;
   stroke: var(--lp-art);
   stroke-width: 1.1;
+  /* толщина линии одинакова при любом размере рисунка (на телефоне он 88 px вместо 200) */
+  vector-effect: non-scaling-stroke;
   stroke-linejoin: round;
   stroke-linecap: round;
 }
