@@ -228,16 +228,36 @@ class StatusChangeRequest(Base):
 
 
 class AdminAudit(Base):
-    """Аудит-лог действий админов (план 3.15): кто, что, с чем, когда."""
+    """Аудит-лог действий админов (план 3.15): кто, что, с чем, когда.
+
+    ``actor_id`` пуст только у попыток входа в админку с неизвестным адресом (ADR-0011)."""
 
     __tablename__ = "admin_audit"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    actor_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    actor_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), index=True)
     action: Mapped[str] = mapped_column(String(48))
     target: Mapped[str] = mapped_column(String(128))
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AdminSession(Base):
+    """Сеанс админки (ADR-0011), отдельно от сессии сайта. Токен админки (JWT, scope=admin)
+    ссылается на строку по ``id``; на каждый запрос проверяется: не отозван, не старше 8 ч,
+    без простоя дольше 1 ч."""
+
+    __tablename__ = "admin_sessions"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    method: Mapped[str] = mapped_column(String(16))  # password / magic — первый фактор
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ip: Mapped[str | None] = mapped_column(String(64))
+    user_agent: Mapped[str | None] = mapped_column(String(255))
 
 
 class PushSubscription(Base):
