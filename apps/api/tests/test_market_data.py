@@ -581,17 +581,27 @@ def test_silent_stream_reconnects_without_backfill(monkeypatch: Any) -> None:
     assert backfills == [] and rest.calls == []  # ни догрузки, ни сверки
 
 
-def test_dropped_stream_with_data_backfills_only_its_symbols(monkeypatch: Any) -> None:
+def test_dropped_stream_with_data_resyncs_its_symbols_from_sync_point(monkeypatch: Any) -> None:
     monkeypatch.setattr(mdmod, "RECONNECT_MIN", 0.01)
     md = _md()
     md.symbols = {"BTCUSDT": 1}
+    m = datetime.now(tz=UTC).replace(second=0, microsecond=0)
+    for tf in mdmod.TIMEFRAMES:
+        md.last_closed[(1, tf.value)] = m - tf.delta * 3
     kline = json.dumps({"e": "kline", "k": {**KLINE, "i": "1m"}})
-    # обрыв после данных — догрузка, когда по новому соединению снова пошли данные (раньше — до
-    # подключения: свеча, закрывшаяся между догрузкой и данными, терялась); без данных — без неё
+    # сверка — когда по соединению пошли данные (раньше догрузка шла до подключения: свеча,
+    # закрывшаяся между догрузкой и данными, терялась); без данных — без неё
     scripts = [[kline, 0.05, OSError("reset")], [], [kline]]
     monkeypatch.setattr(mdmod, "SILENCE_TIMEOUT", 0.05)
-    backfills = _run_connection(md, monkeypatch, scripts, 0.3)
-    assert backfills == [["BTCUSDT"]] and md.n_klines == 2
+    rest = RestHistory({}, [])
+    backfills = _run_connection(md, monkeypatch, scripts, 0.3, rest)
+    assert backfills == [] and md.n_klines == 2
+    # две сверки по 4 tf, каждая — от точки сверки (последней опубликованной), без БД
+    assert len(rest.calls) == 2 * len(mdmod.TIMEFRAMES)
+    assert {(tf, start) for _, tf, start, _ in rest.calls} == {
+        (tf, m - tf.delta * 2) for tf in mdmod.TIMEFRAMES
+    }
+    assert md.held == {}  # сверенные пары больше не ждут
 
 
 def _minute_candles(m: datetime) -> list[Candle]:
@@ -609,6 +619,94 @@ def _minute_candles(m: datetime) -> list[Candle]:
     ]
 
 
+class MemDb:
+    """БД свечей в памяти: запросы догрузки, ``upsert_candles`` (REST мимо буфера) и запись буфера.
+    ``log`` — порядок записей: (откуда, инструмент, tf, open_time, is_closed)."""
+
+    def __init__(self) -> None:
+        self.rows: dict[tuple[int, str, datetime], bool] = {}
+        self.log: list[tuple[str, int, str, datetime, bool]] = []
+
+    def write(self, src: str, inst: int, tf: str, t: datetime, closed: bool) -> None:
+        self.rows[(inst, tf, t)] = closed
+        self.log.append((src, inst, tf, t, closed))
+
+    def install(self, monkeypatch: Any, md: MarketData) -> MemDb:
+        db = self
+
+        class Session:
+            def __enter__(self) -> Session:
+                return self
+
+            def __exit__(self, *a: Any) -> None:
+                return None
+
+            def execute(self, sql: Any, p: dict[str, Any]) -> Any:
+                q = str(sql)
+                keys = [k[2] for k, closed in db.rows.items() if k[:2] == (p["i"], p["tf"])]
+                if "max(open_time)" in q:
+                    vals = [t for t in keys if db.rows[(p["i"], p["tf"], t)]]
+                    res = max(vals) if vals else None
+                else:
+                    vals = [
+                        t
+                        for t in keys
+                        if not db.rows[(p["i"], p["tf"], t)] and p["w"] <= t <= p["due"]
+                    ]
+                    res = min(vals) if vals else None
+
+                class Result:
+                    def scalar(self) -> Any:
+                        return res
+
+                return Result()
+
+            def commit(self) -> None:
+                return None
+
+        def upsert(s: Any, inst: int, tf: Timeframe, cs: list[Candle]) -> None:
+            for c in cs:
+                db.write("rest", inst, tf.value, c.open_time, True)
+
+        def flush(candles: list[dict[str, Any]], liqs: Any) -> None:
+            for c in candles:
+                db.write(
+                    "flush", c["instrument_id"], c["timeframe"], c["open_time"], c["is_closed"]
+                )
+
+        monkeypatch.setattr(mdmod, "SessionLocal", Session)
+        monkeypatch.setattr(mdmod, "upsert_candles", upsert)
+        monkeypatch.setattr(md, "_flush_sync", flush)
+        return self
+
+    def closed_in_order(self, inst: int, since: datetime) -> bool:
+        """Трекер идёт от последней обработанной минуты: закрытая минута не должна появиться в БД
+        раньше незакрытой (или отсутствующей) более старой — её он пропустил бы навсегда."""
+        closed: set[datetime] = set()
+        for _, i, tf, t, is_closed in self.log:
+            if (i, tf) != (inst, "1m") or not is_closed or t <= since:
+                continue
+            m = since + timedelta(minutes=1)
+            while m < t:
+                if m not in closed:
+                    return False
+                m += timedelta(minutes=1)
+            closed.add(t)
+        return True
+
+
+def _m1(t: datetime, high: int = 105) -> Candle:
+    return Candle(t, Decimal(100), Decimal(high), Decimal(99), Decimal(104), Decimal(7))
+
+
+def _closed_1m(md: MarketData) -> list[datetime]:
+    return [
+        datetime.fromisoformat(e["open_time"])
+        for e in _closed(md) + md.closed_events + md.ready_events
+        if e["tf"] == "1m"
+    ]
+
+
 def test_candle_closed_while_disconnected_is_written_closed_and_published(
     monkeypatch: Any,
 ) -> None:
@@ -618,7 +716,9 @@ def test_candle_closed_while_disconnected_is_written_closed_and_published(
     # закрытой)
     monkeypatch.setattr(mdmod, "RECONNECT_MIN", 0.01)
     md = _md()
+    db = MemDb().install(monkeypatch, md)
     m = datetime.now(tz=UTC).replace(second=0, microsecond=0) - timedelta(minutes=1)
+    db.write("seed", 1, "1m", m - timedelta(minutes=1), True)
     ohlc = {"o": "100", "h": "101", "l": "99", "c": "100"}
     before = {**KLINE, **ohlc, "i": "1m", "t": int(m.timestamp() * 1000)}
     after = {**before, "t": int((m + timedelta(minutes=1)).timestamp() * 1000), "h": "106"}
@@ -628,42 +728,177 @@ def test_candle_closed_while_disconnected_is_written_closed_and_published(
         [json.dumps({"e": "kline", "k": before}), 0.05, OSError("reset")],
         [json.dumps({"e": "kline", "k": after})],
     ]
-    backfills = _run_connection(md, monkeypatch, scripts, 0.3, rest)
-    row = md.candle_buffer[(1, "1m", m)]
-    assert row["is_closed"] is True and row["high"] == Decimal(105)
-    events = [e for e in md.closed_events if e["tf"] == "1m"]
-    assert [e["open_time"] for e in events] == [m.isoformat()]  # одно событие на две сверки
+    _run_connection(md, monkeypatch, scripts, 0.3, rest)
+    asyncio.run(md.flush_once())
+    # минута m закрыта в БД по REST (high 105 — после обрыва) и опубликована один раз
+    assert db.rows[(1, "1m", m)] is True
+    assert ("rest", 1, "1m", m, True) in db.log
+    assert _closed_1m(md) == [m]
     # идущую минуту сверка не трогает — её пишет стрим
-    assert md.candle_buffer[(1, "1m", m + timedelta(minutes=1))]["high"] == Decimal(106)
-    # две сверки: после первых данных и после переподключения; вторая — с догрузкой пропуска
-    # перед REST-свечами (событие уходит, когда БД уже полна)
-    assert backfills == [["BTCUSDT"]]
-    second = log[log.index(("backfill", ["BTCUSDT"])) :]
-    assert second[0] == ("backfill", ["BTCUSDT"]) and second[1] == ("fetch", "1m")
+    assert md.candle_buffer == {} and db.rows[(1, "1m", m + timedelta(minutes=1))] is False
+    # две сверки: после первых данных (точки сверки нет — по БД) и после переподключения
     assert len([x for x in log if x == ("fetch", "1m")]) == 2
-    assert md.status()["resynced"] == 2
+    assert md.status()["resynced"] == 1
+
+
+def test_resync_publishes_every_minute_closed_while_disconnected_however_long_it_took(
+    monkeypatch: Any,
+) -> None:
+    # MD-RESYNC-WINDOW-LOSES-CLOSED-EVENTS / MD-HOLE-EVENT-NEVER-PUBLISHED (a): после обрыва
+    # догрузка писала пропуск в БД без событий, а окно сверки (последние ~2 минуты) считалось
+    # после неё — минута, закрывшаяся раньше, оставалась без candles.closed (в живом прогоне — у 54
+    # из 59 инструментов). Теперь всё от точки сверки (последней опубликованной) — с событием
+    md = _md()
+    db = MemDb().install(monkeypatch, md)
+    now = datetime.now(tz=UTC).replace(second=0, microsecond=0)
+    synced = now - timedelta(minutes=6)
+    db.write("seed", 1, "1m", synced, True)
+    db.write("seed", 1, "1m", synced + timedelta(minutes=1), False)  # шла при обрыве
+    md.last_closed[(1, "1m")] = synced
+    minutes = [synced + timedelta(minutes=k) for k in range(7)]  # до идущей включительно
+    rest = RestHistory({Timeframe.M1: [_m1(t) for t in minutes]}, [])
+    assert md.resync(["BTCUSDT"], history=rest) == 5
+    asyncio.run(md.flush_once())
+    m1_calls = [c for c in rest.calls if c[1] is Timeframe.M1]
+    assert m1_calls[0][2] == synced + timedelta(minutes=1)  # от точки сверки, не «now − 2 мин»
+    assert _closed_1m(md) == minutes[1:6]  # каждая закрывшаяся — один раз, по порядку
+    assert all(db.rows[(1, "1m", t)] for t in minutes[1:6])
+    assert md.last_closed[(1, "1m")] == minutes[5]
+    # события — после записи строк: в БД они попали раньше публикации
+    assert md.closed_events == [] and md.ready_events == []
+
+
+def test_stream_close_during_resync_waits_for_the_hole_and_both_are_published(
+    monkeypatch: Any,
+) -> None:
+    # MD-GAP-ORDER-TRACKER-SKIP: сверка шла в фоне, а стрим уже писал закрытие следующей минуты —
+    # она попадала в БД раньше пропущенной, трекер (догон от last_candle_time) пропускал дыру
+    # навсегда. MD-HOLE-EVENT-NEVER-PUBLISHED (b): last_closed, сдвинутый стримом, глушил
+    # событие пропущенной минуты. Теперь закрытия ждут сверки пары (hold)
+    md = _md()
+    db = MemDb().install(monkeypatch, md)
+    now = datetime.now(tz=UTC).replace(second=0, microsecond=0)
+    hole, nxt = now - timedelta(minutes=2), now - timedelta(minutes=1)
+    synced = hole - timedelta(minutes=1)
+    db.write("seed", 1, "1m", synced, True)
+    db.write("seed", 1, "1m", hole, False)
+    md.last_closed[(1, "1m")] = synced
+    gen = md.hold(["BTCUSDT"])  # по новому соединению пошли данные
+    # стрим закрывает следующую минуту раньше, чем сверка дошла до инструмента
+    md.on_kline({**KLINE, "i": "1m", "t": int(nxt.timestamp() * 1000), "h": "42600", "x": True})
+    asyncio.run(md.flush_once())
+    assert db.rows.get((1, "1m", nxt)) is None and _closed(md) == []  # ждёт
+    assert md.last_closed[(1, "1m")] == synced
+    rest = RestHistory({Timeframe.M1: [_m1(hole), _m1(nxt, 110), _m1(now)]}, [])
+    md.resync(["BTCUSDT"], history=rest, gen=gen)
+    asyncio.run(md.flush_once())
+    assert db.closed_in_order(1, synced)
+    assert _closed_1m(md) == [hole, nxt]  # дыра — тоже с событием, следующая — без второго
+    assert db.rows[(1, "1m", nxt)] is True and md.held == {}
+
+
+def test_hold_is_released_only_by_its_own_resync_or_after_hold_max(monkeypatch: Any) -> None:
+    md = _md()
+    MemDb().install(monkeypatch, md)
+    now = datetime.now(tz=UTC).replace(second=0, microsecond=0)
+    for tf in mdmod.TIMEFRAMES:
+        md.last_closed[(1, tf.value)] = now - tf.delta * 2
+    first = md.hold(["BTCUSDT"])
+    second = md.hold(["BTCUSDT"])  # новый обрыв, пока шла сверка первого
+    md.resync(["BTCUSDT"], history=RestHistory({}, []), gen=first)
+    assert len(md.held) == len(mdmod.TIMEFRAMES)  # прежняя сверка новое удержание не снимает
+    md.on_kline(
+        {**KLINE, "i": "1m", "t": int((now - timedelta(minutes=1)).timestamp() * 1000), "x": True}
+    )
+    assert md.closed_events == [] and (1, "1m") in md.deferred
+    # сверка не удалась (ошибка REST, пауза 418/429): пара ждёт не дольше HOLD_MAX
+    clock = [time.monotonic() + mdmod.HOLD_MAX + 1]
+    monkeypatch.setattr(mdmod.time, "monotonic", lambda: clock[0])
+    asyncio.run(md.flush_once())
+    assert md.held == {} and md.deferred == {}
+    assert [e["tf"] for e in _closed(md)] == ["1m"]
+    assert second == first + 1
+
+
+def test_startup_publishes_closes_missed_while_down_but_never_replays_old_ones(
+    monkeypatch: Any,
+) -> None:
+    # MD-STARTUP-REPLAYS-OLD-CLOSES: сверка при старте без точки сверки брала последние две свечи
+    # каждого tf и публиковала их снова (недельную — до 7 дней спустя: ключи «сделано» у алертов
+    # уже истекли). Теперь точка сверки при старте — последняя закрытая строка в БД, событие —
+    # только свече новее неё и не старше LATE_CLOSE_MAX
+    md = _md()
+    db = MemDb().install(monkeypatch, md)
+    now = datetime.now(tz=UTC)
+    m = now.replace(second=0, microsecond=0)
+    w1 = [m - timedelta(days=30) + timedelta(weeks=k) for k in range(6)]  # закрытые и идущая
+    w1 = [t for t in w1 if t <= now]
+    d1 = [m - timedelta(days=5) + timedelta(days=k) for k in range(6)]
+    h4 = [m - timedelta(hours=14) + timedelta(hours=4 * k) for k in range(4)]
+    m1 = [m - timedelta(minutes=60 - k) for k in range(61)]
+    closed_db = {
+        Timeframe.W1: [t for t in w1 if t + Timeframe.W1.delta <= now],
+        Timeframe.D1: d1[:5],
+        Timeframe.H4: h4[:2],  # старт после простоя: 4h, закрывшаяся 2 ч назад, — не в БД
+        Timeframe.M1: m1[:5],  # и 55 минут простоя
+    }
+    for tf, ts in closed_db.items():
+        for t in ts:
+            db.write("seed", 1, tf.value, t, True)
+    # старый процесс остановился с идущей минутой — строка незакрытая
+    db.write("seed", 1, "1m", m1[5], False)
+    rest = RestHistory(
+        {
+            Timeframe.W1: [_m1(t) for t in w1],
+            Timeframe.D1: [_m1(t) for t in d1],
+            Timeframe.H4: [_m1(t) for t in h4],
+            Timeframe.M1: [_m1(t) for t in m1],
+        },
+        [],
+    )
+    assert md.backfill(history=rest) is True
+    # первая сверка после старта — по точке сверки, ничего не публикует повторно
+    md.resync(["BTCUSDT"], history=rest, gen=md.hold(["BTCUSDT"]))
+    asyncio.run(md.flush_once())
+    published = [(e["tf"], datetime.fromisoformat(e["open_time"])) for e in _closed(md)]
+    late = now - timedelta(seconds=mdmod.LATE_CLOSE_MAX)
+    # минуты простоя — закрыты в БД все, события — только за последние LATE_CLOSE_MAX
+    assert all(db.rows[(1, "1m", t)] for t in m1[5:-1])
+    expected = [("1m", t) for t in m1[5:-1] if t + timedelta(minutes=1) >= late]
+    assert published == expected and len(expected) >= 29
+    assert md.last_closed[(1, "1m")] == m1[-2]
+    assert md.last_closed[(1, "4h")] == h4[2] and db.rows[(1, "4h", h4[2])]  # без события
+    assert md.last_closed[(1, "1w")] == closed_db[Timeframe.W1][-1]
+    assert md.last_closed[(1, "1d")] == d1[4]
+    # повторный старт (точки сверки нет, БД полна) — ни одного события
+    md2 = _md()
+    db.install(monkeypatch, md2)
+    md2.backfill(history=rest)
+    md2.resync(["BTCUSDT"], history=rest)
+    asyncio.run(md2.flush_once())
+    assert _closed(md2) == []
 
 
 def test_resync_window_rate_limit_and_errors(monkeypatch: Any) -> None:
     md = _md()
     md.symbols = {"BTCUSDT": 1, "ETHUSDT": 2}
+    db = MemDb().install(monkeypatch, md)
     now = datetime.now(tz=UTC)
     m = now.replace(second=0, microsecond=0) - timedelta(minutes=1)
     rest = RestHistory({Timeframe.M1: _minute_candles(m)}, [])
-    # после старта: окно — от стартовой догрузки (её «сейчас»), даже если с неё прошло > 2 свечей
-    md.backfilled_at["BTCUSDT"] = now - timedelta(minutes=5)
-    assert md.resync(["BTCUSDT"], gap=False, history=rest) == 1
+    # без точки сверки — по БД: от последней закрытой строки
+    db.write("seed", 1, "1m", m - timedelta(minutes=5), True)
+    assert md.resync(["BTCUSDT"], history=rest) == 1
     starts = {tf: start for _, tf, start, _ in rest.calls}
     assert set(starts) == set(mdmod.TIMEFRAMES)
-    assert now - starts[Timeframe.M1] >= timedelta(minutes=6)
-    assert now - starts[Timeframe.H4] <= timedelta(hours=8, seconds=5)  # не меньше двух свечей
-    # не больше SWEEP_MAX свечей назад
-    md.backfilled_at["BTCUSDT"] = now - timedelta(days=3)
+    assert starts[Timeframe.M1] == m - timedelta(minutes=4)
+    assert md.last_closed[(1, "1m")] == m
+    # с точкой сверки — от неё, без БД; повторная сверка — без второго события
     rest.calls.clear()
-    md.resync(["BTCUSDT"], gap=False, history=rest)
+    md.resync(["BTCUSDT"], history=rest)
     m1_start = next(s for _, tf, s, _ in rest.calls if tf is Timeframe.M1)
-    assert now - m1_start <= timedelta(minutes=mdmod.SWEEP_MAX, seconds=5)
-    assert len(md.closed_events) == 1  # повторная сверка — без второго события
+    assert m1_start == m + timedelta(minutes=1)
+    assert len(md.closed_events) == 1
 
     class Failing:
         def __init__(self, code: int) -> None:
@@ -676,15 +911,20 @@ def test_resync_window_rate_limit_and_errors(monkeypatch: Any) -> None:
             resp = httpx.Response(self.code, request=req)
             raise httpx.HTTPStatusError(str(self.code), request=req, response=resp)
 
-    # ошибка запроса — инструмент в backfill_needed (догрузит опрос), сверка идёт дальше
+    # ошибка запроса — инструмент в backfill_needed (догрузит опрос), сверка идёт дальше; пары
+    # с ошибкой ждут догрузки (не дольше HOLD_MAX)
     failing = Failing(500)
-    md.resync(["BTCUSDT", "ETHUSDT"], gap=False, history=failing)
+    gen = md.hold(["BTCUSDT", "ETHUSDT"])
+    md.resync(["BTCUSDT", "ETHUSDT"], history=failing, gen=gen)
     assert failing.calls == 2 * len(mdmod.TIMEFRAMES)
-    assert md.backfill_needed == {"BTCUSDT", "ETHUSDT"}
+    assert md.backfill_needed == {"BTCUSDT", "ETHUSDT"} and len(md.held) == 8
+    # догрузка опросом снимает удержание пары
+    md.poll_pause_until = 0.0
+    assert md.backfill(["BTCUSDT"], history=rest) is True and len(md.held) == 4
     # 429 — пауза: больше ни одного запроса, все инструменты соединения — в backfill_needed
     md.backfill_needed.clear()
     limited = Failing(429)
-    md.resync(["BTCUSDT", "ETHUSDT"], gap=False, history=limited)
+    md.resync(["BTCUSDT", "ETHUSDT"], history=limited)
     assert limited.calls == 1 and md.backfill_needed == {"BTCUSDT", "ETHUSDT"}
     assert md.poll_pause_until > time.time()
 
@@ -744,7 +984,8 @@ def test_backfill_starts_from_oldest_unclosed_row_that_should_be_closed(monkeypa
         m,
         m + timedelta(minutes=1),
     ]
-    assert md.backfilled_at["BTCUSDT"] >= now
+    # точка сверки — последняя закрытая; старая дыра (10 мин) — без события (не новее точки)
+    assert md.last_closed[(1, "1m")] == m + timedelta(minutes=1) and md.closed_events == []
 
 
 def test_ws_url_is_binance_market_category() -> None:
