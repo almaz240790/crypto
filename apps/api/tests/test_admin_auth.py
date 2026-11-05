@@ -357,7 +357,7 @@ def test_first_time_setup_then_admin_access(world: World, monkeypatch: pytest.Mo
         "/v1/admin/auth/setup/confirm",
         json={"ticket": step["ticket"], "code": _code(s["secret"], 1)},
     )
-    assert again.status_code == 401
+    assert again.status_code == 410
     me = c.get("/v1/admin/auth/me").json()
     assert me["email"] == u.email and me["backup_codes_left"] == 10 and me["idle_minutes"] == 60
     assert c.get("/v1/admin/audit").status_code == 200
@@ -406,7 +406,7 @@ def test_code_step_wrong_code_backup_code_and_burned_ticket(world: World) -> Non
     assert details[-1] == aa.CODE_LOCKED
     assert s2 is not None
     late = c2.post("/v1/admin/auth/verify", json={"ticket": t2, "code": _code(s2)})
-    assert late.status_code == 401 and late.json()["detail"] == aa.TICKET_FAILED
+    assert late.status_code == 410 and late.json()["detail"] == aa.TICKET_FAILED
 
 
 @db_only

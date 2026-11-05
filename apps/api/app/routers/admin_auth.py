@@ -5,6 +5,9 @@
 ``/setup`` → ``/setup/confirm`` (QR-код, первый код, резервные коды). Только после второго
 фактора выдаётся cookie админки. Ошибки первого шага одинаковые для неизвестного адреса,
 неверного пароля и аккаунта без прав (без перебора адресов). Каждая попытка — строка аудита.
+
+Коды ответов для страницы входа: 401 — неверные данные (можно повторить), 409 — шаг не тот
+(2FA уже включена или ещё нет), 410 — билет недействителен или сгорел (начать вход заново).
 """
 
 from __future__ import annotations
@@ -76,14 +79,14 @@ def _ticket_user(db: Session, raw: str, request: Request) -> tuple[EmailToken, U
     if found is None:
         aa.audit(db, request, "admin_login.ticket_invalid", None)
         db.commit()
-        raise HTTPException(401, aa.TICKET_FAILED)
+        raise HTTPException(410, aa.TICKET_FAILED)
     row, user = found
     problem = aa.account_problem(user)
     if problem is not None:
         row.used_at = datetime.now(tz=UTC)
         aa.audit(db, request, "admin_login.failed", user, reason=problem, stage="code")
         db.commit()
-        raise HTTPException(401, aa.TICKET_FAILED)
+        raise HTTPException(410, aa.TICKET_FAILED)
     return row, user
 
 
@@ -343,7 +346,7 @@ def verify(
 def _wrong_code(
     db: Session, request: Request, ticket_row: EmailToken, user: User, action: str
 ) -> NoReturn:
-    """Неверный код: аудит; после 5 неверных кодов билет сгорает. Всегда бросает 401."""
+    """Неверный код: аудит; 401, а на 5-м неверном коде билет сгорает — 410."""
     # hit пропускает limit попыток; (N - 1) — значит N-я неверная попытка уже сжигает билет
     left = ratelimit.hit(
         f"admin-ticket:{ticket_row.token_hash[:16]}",
@@ -355,7 +358,9 @@ def _wrong_code(
         ticket_row.used_at = datetime.now(tz=UTC)
     aa.audit(db, request, action, user, ticket_burned=not left)
     db.commit()
-    raise HTTPException(401, aa.CODE_FAILED if left else aa.CODE_LOCKED)
+    if not left:
+        raise HTTPException(410, aa.CODE_LOCKED)
+    raise HTTPException(401, aa.CODE_FAILED)
 
 
 @router.get("/me")
