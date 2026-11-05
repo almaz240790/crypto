@@ -70,6 +70,10 @@
   --down-fill: color-mix(in srgb, var(--down) 12%, transparent);
   --warn-fill: color-mix(in srgb, var(--warn) 12%, transparent);
   --focus: var(--accent);
+  /* Подложка под выдвижным меню и листами (одна для обеих тем) */
+  --scrim: rgb(0 0 0 / 40%);
+  /* Плашка подписей поверх графика (только DOM: угол графика, легенда; canvas color-mix не читает) */
+  --legend-bg: color-mix(in srgb, var(--surface) 82%, transparent);
   --shadow: 0 1px 2px rgb(15 23 42 / 6%);
   --shadow-lg: 0 24px 64px rgb(15 23 42 / 12%);
   /* Свечение под скриншотом продукта на главной (бирюзовое, только для маркетинговых страниц) */
@@ -114,6 +118,16 @@
   --gap-4: 16px;
   --gap-5: 24px;
   --gap-6: 32px;
+  /* минимальная зона касания под pointer: coarse (план 2A.7) */
+  --touch-min: 44px;
+
+  /* Слои (z-index) интерфейса терминала: от подписей над графиком до тоста */
+  --z-chart-ui: 5;
+  --z-sheet: 10;
+  --z-drawer: 20;
+  --z-popover: 40;
+  --z-nav: 50;
+  --z-toast: 60;
 
   /* Типографика */
   --fs-caption: 12px;

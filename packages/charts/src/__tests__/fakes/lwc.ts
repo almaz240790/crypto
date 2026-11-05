@@ -187,12 +187,25 @@ export function fakeElement(width = 1000) {
     const d = { style: {} as Record<string, string>, dataset: {} as Record<string, string>, textContent: "", setAttribute() {}, remove() {} };
     return d;
   };
+  const listeners = new Map<string, ((e: unknown) => void)[]>();
   return {
     clientWidth: width,
     children,
     ownerDocument: { createElement: () => mkDiv() },
     appendChild: (c: unknown) => children.push(c),
-    addEventListener() {},
-    removeEventListener() {},
-  } as unknown as HTMLElement & { clientWidth: number; children: unknown[] };
+    getBoundingClientRect: () => ({ left: 0, top: 0, width, height: 400, right: width, bottom: 400 }),
+    addEventListener(type: string, fn: (e: unknown) => void) {
+      listeners.set(type, [...(listeners.get(type) ?? []), fn]);
+    },
+    removeEventListener(type: string, fn: (e: unknown) => void) {
+      listeners.set(
+        type,
+        (listeners.get(type) ?? []).filter((f) => f !== fn),
+      );
+    },
+    /** Для тестов: событие на контейнере графика (dblclick, pointerdown). */
+    fire(type: string, e: unknown = {}) {
+      for (const fn of listeners.get(type) ?? []) fn(e);
+    },
+  } as unknown as HTMLElement & { clientWidth: number; children: unknown[]; fire(type: string, e?: unknown): void };
 }

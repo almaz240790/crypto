@@ -97,8 +97,9 @@ test("телефон: раскрыта одна панель — последн�
   for (const name of [/RSI/, /MACD/, /Stochastic/, /Фандинг/]) await dlg.getByLabel(name).check();
   await page.getByRole("button", { name: "Готово" }).tap();
   await expect(page.getByRole("button", { name: "Индикаторы (5)" })).toBeVisible();
-  const expanded = page.locator('[data-testid^="pane-"] button[aria-expanded="true"]');
-  const collapsed = page.locator('[data-testid^="pane-"] button[aria-expanded="false"]');
+  // переключатель ▾ / ▴ по имени: у меню «⋯» заголовка тоже есть aria-expanded (ADR-0009, «Управление панелями»)
+  const expanded = page.locator('[data-testid^="pane-"] button[aria-expanded="true"][aria-label^="свернуть панель"]');
+  const collapsed = page.locator('[data-testid^="pane-"] button[aria-expanded="false"][aria-label^="развернуть панель"]');
   await expect(expanded).toHaveCount(1);
   await expect(collapsed).toHaveCount(3);
   // свайп вниз по заголовку раскрытой панели сворачивает её

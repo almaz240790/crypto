@@ -144,7 +144,7 @@
   padding: var(--gap-2) var(--gap-3);
 }
 
-@media (max-width: 900px) {
+@media (max-width: 899.98px) {
   .two {
     grid-template-columns: 1fr;
   }

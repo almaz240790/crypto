@@ -5,7 +5,7 @@ import { AppShell } from "@/components/app/AppShell";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { Feed } from "@/components/signals/Feed";
 import { EmptyState, Panel } from "@/components/ui";
-import { api } from "@/lib/auth-client";
+import { getInstruments } from "@/lib/user";
 import { useT } from "@/i18n/client";
 
 export default function SignalsPage() {
@@ -13,7 +13,7 @@ export default function SignalsPage() {
   const { user } = useAuth();
   const [instruments, setInstruments] = useState<{ symbol: string; tick_size: string | null }[]>([]);
   useEffect(() => {
-    api<{ symbol: string; tick_size: string | null }[]>("/v1/instruments", { auth: false })
+    getInstruments()
       .then(setInstruments)
       .catch(() => {});
   }, []);

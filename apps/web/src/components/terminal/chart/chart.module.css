@@ -87,6 +87,11 @@
   z-index: 3;
 }
 
+/* телефон: открытое окно «?» — поверх заголовков панелей */
+.legendBox:has([aria-expanded="true"]) {
+  z-index: 9;
+}
+
 /* пометка «карты ликвидаций нет на этом таймфрейме» — справа от «?», в верхнем отступе панели цены */
 .liqNote {
   position: absolute;
@@ -143,7 +148,9 @@
   left: 0;
   top: 30px;
   width: min(320px, calc(100vw - 32px));
-  max-height: min(420px, 70vh);
+  /* с разделом «Как управлять графиком» — выше; на низком окне — прокрутка в пределах места под кнопкой «?»
+     (--dialog-room ставит LegendChip при открытии: от верха окна до низа экрана) */
+  max-height: min(600px, var(--dialog-room, 75vh));
   overflow-y: auto;
   padding: 10px 12px;
   border: 1px solid var(--border);
@@ -167,7 +174,8 @@
   list-style: none;
 }
 
-.legendRow {
+/* строка окна «?» (своё имя: .legendRow ниже — строка легенды графика, flex — ломала сетку окна) */
+.legendItem {
   display: grid;
   grid-template-columns: 24px 1fr;
   column-gap: 8px;
@@ -190,4 +198,535 @@
   grid-column: 2;
   font-size: 12px;
   color: var(--text-2);
+}
+
+/* ── легенда графика (план 2B.9 §10, C): левый верхний угол панели цены, без рамки ── */
+.legendHost {
+  position: absolute;
+  left: 8px;
+  top: 6px;
+  z-index: var(--z-chart-ui);
+  max-width: 60%;
+  /* график под легендой продолжает получать курсор; кнопки и строки индикаторов — нет */
+  pointer-events: none;
+}
+
+/* открытое окно «?» — поверх заголовков и границ панелей под графиком */
+.legendHost:has([aria-expanded="true"]) {
+  z-index: 9;
+}
+
+.legend {
+  display: grid;
+  justify-items: start;
+  gap: 2px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--text-2);
+}
+
+.legendLine,
+.legendRow,
+.liqNoteInline {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--legend-bg);
+}
+
+.legendLine {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 8px;
+}
+
+.legendSymbol {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.legendOhlc {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0 8px;
+}
+
+.fact {
+  white-space: nowrap;
+}
+
+.factLabel,
+.legendNote {
+  color: var(--text-3);
+}
+
+.legendOhlc :global(.num) {
+  color: var(--text);
+}
+
+.legendOhlc :global(.num.up) {
+  color: var(--up);
+}
+
+.legendOhlc :global(.num.down) {
+  color: var(--down);
+}
+
+.legendRow {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 22px;
+  pointer-events: auto;
+}
+
+.legendDot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.legendName {
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.legendRow[data-hidden] .legendName,
+.legendRow[data-hidden] .legendDot {
+  opacity: 0.5;
+}
+
+/* кнопки строки — при наведении и фокусе; место под них всегда занято, чтобы легенда не прыгала */
+.legendActions {
+  display: inline-flex;
+  gap: 2px;
+  opacity: 0;
+}
+
+.legendRow:hover .legendActions,
+.legendRow:focus-within .legendActions,
+.legendActions[data-open] {
+  opacity: 1;
+}
+
+/* строки индикаторов легенды; раскрытый список длиннее панели — прокрутка в её пределах (legendFit) */
+.legendStack {
+  display: grid;
+  /* строки — своей высоты и в прокрутке (иначе ограниченная высота сжимала их, кнопки 44 px налезали на соседние) */
+  grid-auto-rows: max-content;
+  justify-items: start;
+  gap: 2px;
+}
+
+.legendStackScroll {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  pointer-events: auto;
+}
+
+/* «ещё N» / «свернуть»: строки индикаторов сверх LEGEND_ROWS и места в панели (legendFit) */
+.legendMore {
+  padding: 1px 6px;
+  border: 0;
+  border-radius: 4px;
+  background: var(--legend-bg);
+  color: var(--text-2);
+  font: inherit;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.legendMore:hover {
+  background: var(--row-hover);
+  color: var(--text);
+}
+
+.legendMore:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.paramsPop {
+  display: grid;
+  gap: var(--gap-2);
+  font-size: 13px;
+}
+
+/* «?» и пометка ликвидаций внутри легенды — на своих местах в строке, не поверх графика */
+.legendBoxInline {
+  position: relative;
+  pointer-events: auto;
+}
+
+.liqNoteInline {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+/* значения индикатора в заголовке панели */
+.paneValues {
+  display: inline-flex;
+  gap: 6px;
+  margin-left: 4px;
+}
+
+@media (pointer: coarse) {
+  .legendActions {
+    opacity: 1;
+  }
+
+  .legendMore {
+    min-height: var(--touch-min);
+  }
+
+  /* «ещё N» в строке символа (ни одна строка индикатора не поместилась): строка не растёт до 44 px, область
+     нажатия — 44 px по высоте, как у «?» */
+  .legendMoreInline {
+    position: relative;
+    min-height: 0;
+    min-width: var(--touch-min);
+  }
+
+  .legendMoreInline::before {
+    content: "";
+    position: absolute;
+    inset: -10px 0;
+  }
+}
+
+/* ── управление панелями (ADR-0009, «Управление панелями») ── */
+
+/* заголовок панели (план 2A.7): 24 px, под пальцем 44; свайп вниз сворачивает, вверх — раскрывает */
+.paneHead {
+  position: absolute;
+  left: 4px;
+  min-height: 24px;
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 2px 0 6px;
+  border-radius: 6px;
+  background: var(--legend-bg);
+  color: var(--text-2);
+  font-size: 11px;
+  line-height: 1;
+  touch-action: none;
+}
+
+/* открытое меню «⋯» или окно параметров — поверх соседних заголовков, границ и подсказки */
+.paneHead:focus-within {
+  z-index: 8;
+}
+
+.paneHead[data-collapsed] {
+  right: 4px;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--surface);
+}
+
+.paneTitle {
+  white-space: nowrap;
+}
+
+/* кнопки заголовка — xs (20 px) на десктопе, 44 под пальцем (IconButton) */
+.paneBtn {
+  color: var(--text-2);
+}
+
+.paneBtn:disabled {
+  color: var(--text-3);
+}
+
+/* «выше / ниже / развернуть / настройки / убрать»: при наведении на панель и при фокусе; место не занимают,
+   пока скрыты, — заголовок не закрывает линию индикатора */
+.paneActions {
+  display: none;
+  gap: 2px;
+  margin-left: 2px;
+  padding-left: 4px;
+  border-left: 1px solid var(--border);
+}
+
+.paneHead[data-hover] .paneActions,
+.paneHead:focus-within .paneActions,
+.paneActions[data-open] {
+  display: inline-flex;
+}
+
+/* общая строка свёрнутых панелей «ещё N панелей» (строк на все панели не хватает, planPanes): строка заголовка
+   host во всю ширину, как свёрнутый заголовок; кнопки прокручиваются вбок, справа — место под ручку границы и «A»
+   (padding-right — inline) */
+.paneGroup {
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  box-sizing: border-box;
+  padding-left: 6px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-3);
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.paneGroupLabel {
+  flex: none;
+}
+
+.paneGroupList {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  touch-action: pan-x;
+}
+
+.paneGroupList::-webkit-scrollbar {
+  display: none;
+}
+
+/* кнопки дальше края — правый край тает: видно, что список листается вбок */
+.paneGroupList[data-more] {
+  mask-image: linear-gradient(to right, var(--surface) calc(100% - 24px), transparent);
+}
+
+.paneChip {
+  flex: none;
+  height: 20px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  cursor: pointer;
+}
+
+.paneChip:hover {
+  color: var(--text);
+}
+
+/* заслонка над полосками свёрнутых в общую строку панелей (2 px каждая): цвет фона графика, во всю ширину — без
+   неё видны стопка линий между панелями и обрезки подписей шкалы цены */
+.paneCover {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 5;
+  background: var(--surface);
+}
+
+/* граница панелей (PaneChrome, paneGeo.PANE_UI): зона над линией LWC — в нижней полосе верхней панели (высота
+   и положение — inline), поверх заголовков (5): заголовок панели ниже начинается от линии и зону не закрывает */
+.sep {
+  position: absolute;
+  left: 0;
+  z-index: 6;
+  cursor: row-resize;
+  touch-action: none;
+}
+
+/* граница идёт только вверх / только вниз (пределы доли основной и минимума панели) */
+.sep[data-dir="up"] {
+  cursor: n-resize;
+}
+
+.sep[data-dir="down"] {
+  cursor: s-resize;
+}
+
+/* стоит: основная на своей доле при сжатых окном панелях — без ручки, указатель уходит графику */
+.sep[data-dir="none"] {
+  pointer-events: none;
+}
+
+.sep[data-dir="none"] .sepLine,
+.sep[data-dir="none"] .sepGrip {
+  display: none;
+}
+
+.sep:focus-visible {
+  outline: none;
+}
+
+.sepLine {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--accent);
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* ручка: зона касания — сам элемент (размер и место — inline: у правого края графика, левее «A»), видимая часть —
+   ::before по центру линии */
+.sepGrip {
+  position: absolute;
+  display: grid;
+  place-items: center;
+}
+
+.sepGrip::before {
+  content: "";
+  width: 32px;
+  height: 8px;
+  box-sizing: border-box;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background:
+    linear-gradient(var(--text-3), var(--text-3)) center 2px / 16px 1px no-repeat,
+    linear-gradient(var(--text-3), var(--text-3)) center 4px / 16px 1px no-repeat,
+    var(--surface-raised);
+  opacity: 0;
+}
+
+.sep:hover .sepLine,
+.sep:focus-visible .sepLine,
+.sep[data-active] .sepLine,
+.sep:hover .sepGrip::before,
+.sep:focus-visible .sepGrip::before,
+.sep[data-active] .sepGrip::before {
+  opacity: 1;
+}
+
+.sep:hover .sepGrip::before,
+.sep[data-active] .sepGrip::before {
+  border-color: var(--accent);
+}
+
+/* шкала цены под курсором: её можно тянуть (курсор ns-resize ставит LWC) — полоса --accent по левому краю шкалы,
+   без заливки: метка цены, обратный отсчёт и деления не бледнеют */
+.scaleHover {
+  position: absolute;
+  z-index: 3;
+  box-shadow: inset 2px 0 0 var(--accent);
+  pointer-events: none;
+}
+
+/* «A» (автомасштаб) — правый нижний угол области графика панели, растянутой вручную, вплотную к шкале цены
+   (место и размер — inline, paneGeo.autoBox): не на шкале — не закрывает деления и метку последнего значения */
+.autoHost {
+  position: absolute;
+  z-index: 5;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+
+.autoBtn {
+  border-color: var(--border);
+  background: var(--surface-raised);
+  color: var(--text);
+  font-family: var(--font-mono), monospace;
+  font-weight: 600;
+  pointer-events: auto;
+}
+
+/* однократная подсказка: поверх графика над первой границей, справа над её ручкой; клики проходят на график,
+   кроме «закрыть» */
+.panesHint {
+  position: absolute;
+  z-index: 6;
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  max-width: min(340px, calc(100% - 96px));
+  padding: 8px 6px 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow);
+  color: var(--text);
+  transform: translateY(calc(-100% - 10px));
+  pointer-events: none;
+}
+
+.panesHintText {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.panesHintClose {
+  pointer-events: auto;
+}
+
+/* «Как управлять графиком» в окне «?» */
+.helpList {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.helpRow {
+  display: grid;
+  gap: 1px;
+}
+
+.helpWord {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.helpExplain {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.legendSection {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+@media (pointer: coarse) {
+  .paneHead {
+    min-height: var(--touch-min);
+  }
+
+  /* кнопки общей строки — цели касания во всю строку 44 px */
+  .paneChip {
+    height: auto;
+    min-height: var(--touch-min);
+  }
+
+  /* под пальцем наведения нет: кнопки заголовка и ручка границы видны всегда */
+  .paneActions {
+    display: inline-flex;
+  }
+
+  /* ручка под пальцем видна всегда, крупнее (зона касания 44 × 44 — inline) */
+  .sepGrip::before {
+    width: 40px;
+    height: 10px;
+    opacity: 1;
+  }
+
+  /* :hover под пальцем «залипает» после касания: линия --accent — только пока границу тянут */
+  .sep:hover:not([data-active]) .sepLine {
+    opacity: 0;
+  }
+
+  .sep:hover:not([data-active]) .sepGrip::before {
+    border-color: var(--border);
+  }
 }

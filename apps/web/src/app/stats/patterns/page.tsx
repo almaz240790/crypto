@@ -4,6 +4,7 @@ import { DISCLAIMER, Footer, Header } from "@/components/site";
 import { EmptyState, Panel, Table, Td, Th } from "@/components/ui";
 import { getFigureStats, getPatternStats, type PatternStatItem } from "@/lib/api";
 import { formatTimeUTC } from "@/lib/format";
+import { TF_LABEL, type Timeframe } from "@/lib/timeframes";
 import s from "../page.module.css";
 import { getT } from "@/i18n/server";
 
@@ -17,7 +18,7 @@ export async function generateMetadata(): Promise<Metadata> {
   };
 }
 
-const TFS = ["15m", "1h", "4h", "1d", "1w"];
+const TFS: readonly string[] = ["15m", "1h", "4h", "1d", "1w"] satisfies readonly Timeframe[];
 const HORIZONS = [3, 5, 10];
 type Search = Record<string, string | string[] | undefined>;
 const one = (v: string | string[] | undefined) => (Array.isArray(v) ? (v[0] ?? "") : (v ?? ""));
@@ -89,7 +90,7 @@ export default async function PatternStatsPage({ searchParams }: { searchParams:
             {t("таймфрейм")}{" "}
             {TFS.map((x) => (
               <Link key={x} href={link({ tf: x })} aria-current={x === tf ? "true" : undefined} style={{ marginRight: 8, fontWeight: x === tf ? 600 : 400 }}>
-                {x === "4h" ? "H4" : x.toUpperCase()}
+                {t(TF_LABEL[x as Timeframe])}
               </Link>
             ))}
           </label>
@@ -176,7 +177,7 @@ export default async function PatternStatsPage({ searchParams }: { searchParams:
           <Panel>
             <h2>{t("Графические фигуры")}</h2>
             <p className="caption">
-              {t("Доля подтверждённых фигур, у которых цена дошла до расчётной цели раньше инвалидации за 20 свечей. Только H4, D1 и W1. Фигуры не являются сигналами.")}
+              {t("Доля подтверждённых фигур, у которых цена дошла до расчётной цели раньше инвалидации за 20 свечей. Только 4ч, 1Д и 1Н. Фигуры не являются сигналами.")}
               {figures?.computed_at ? ` ${t("Обновлено {time}.", { time: formatTimeUTC(figures.computed_at) })}` : ""}
             </p>
             {!figItems.some((i) => i.n > 0) ? (

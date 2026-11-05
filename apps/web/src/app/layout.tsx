@@ -37,7 +37,10 @@ export async function generateMetadata(): Promise<Metadata> {
     description: t("Крипто-график для технического анализа: индикаторы, инструменты рисования, автоматическая разметка уровней, зон и ликвидаций."),
     applicationName: "PlatformSol",
     metadataBase: new URL("https://platformsol.com"),
-    appleWebApp: { capable: true, title: "PlatformSol", statusBarStyle: "black-translucent" },
+    // непрозрачный статус-бар: страница начинается под ним, и iOS не размывает под ним верхнюю строку меню
+    // (у black-translucent размытие оставалось даже с отступом safe-area). Уже установленное приложение
+    // берёт стиль при добавлении на экран «Домой» — его нужно добавить заново
+    appleWebApp: { capable: true, title: "PlatformSol", statusBarStyle: "black" },
     icons: { icon: "/icons/icon-192.png", apple: "/icons/apple-touch-icon.png" },
   };
 }

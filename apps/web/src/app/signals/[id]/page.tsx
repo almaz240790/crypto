@@ -12,6 +12,7 @@ import { api, getAccessToken } from "@/lib/auth-client";
 import { getPatterns, type PatternOnChart } from "@/lib/chart";
 import { formatDuration, formatPct, formatPrice, formatR, formatTimeUTC } from "@/lib/format";
 import { journalFromSignal, unrealizedR, type SignalRow } from "@/lib/signals";
+import { TF_LABEL } from "@/lib/timeframes";
 import { useLive } from "@/lib/useLive";
 import s from "./page.module.css";
 import { useT } from "@/i18n/client";
@@ -269,7 +270,7 @@ export default function SignalPage() {
               <div className={s.tfs} role="group" aria-label={t("таймфрейм")}>
                 {(["4h", "1d"] as const).map((x) => (
                   <button key={x} type="button" aria-pressed={tf === x} onClick={() => setTf(x)}>
-                    {x.toUpperCase()}
+                    {t(TF_LABEL[x])}
                   </button>
                 ))}
                 <Link href={`/chart/${d.symbol}/${tf}`} className={s.openTerminal}>{t("Открыть в терминале")}</Link>

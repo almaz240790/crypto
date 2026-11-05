@@ -1,9 +1,10 @@
 import { LAYER_ORDER } from "../scene/build";
 import type { LabelBudget } from "../presets";
+import type { SceneLayer } from "../types";
 import type { CandleBand, DropReason, LabelCandidate, LayoutResult, Obstacles, PlacedLabel, Rect, Viewport } from "./types";
 import { AREA_PAD, LABEL_GAP } from "./types";
 
-const layerRank = new Map(LAYER_ORDER.map((l, i) => [l, i]));
+const layerRank = new Map<string, number>(LAYER_ORDER.map((l, i) => [l, i]));
 
 /** Порядок раскладки: приоритет по убыванию, затем порядок слоёв, затем id — результат детерминирован. */
 export function compareCandidates(a: LabelCandidate, b: LabelCandidate): number {
@@ -29,8 +30,12 @@ export function hitsCandles(r: Rect, band: CandleBand): boolean {
   return false;
 }
 
-/** Внутри области: по горизонтали с отступом, по вертикали между полосой OHLC и объёмом. */
-function inside(r: Rect, vp: Viewport): boolean {
+/**
+ * Внутри области: по горизонтали с отступом, по вертикали между полосой OHLC и объёмом; у подписей рисунков (area
+ * "pane") — вся панель: легенда и кнопки для них — препятствия, а не граница.
+ */
+function inside(r: Rect, vp: Viewport, area?: "pane"): boolean {
+  if (area === "pane") return r.x >= 0 && r.x + r.w <= vp.width && r.y >= 0 && r.y + r.h <= vp.height;
   return r.x >= AREA_PAD && r.x + r.w <= vp.width - AREA_PAD && r.y >= vp.insetTop && r.y + r.h <= vp.volumeTopY;
 }
 
@@ -44,42 +49,58 @@ function inside(r: Rect, vp: Viewport): boolean {
 export function layoutLabels(candidates: readonly LabelCandidate[], obstacles: Obstacles, viewport: Viewport, budget: LabelBudget): LayoutResult {
   const sorted = [...candidates].sort(compareCandidates);
   const placed: PlacedLabel[] = [];
+  const external: PlacedLabel[] = [];
   const dropped: { id: string; reason: DropReason }[] = [];
   const perLayer = new Map<string, number>();
   const perGroup = new Map<string, number>();
   let total = 0;
+  const taken = (big: Rect) => placed.some((p) => intersects(big, p.rect)) || external.some((p) => intersects(big, p.rect));
   for (const c of sorted) {
     if (!c.bypassBudget) {
-      const cap = budget.perLayer[c.layer];
+      const cap = c.layer === "drawings" ? undefined : budget.perLayer[c.layer as SceneLayer];
       if (total >= budget.canvas || (cap !== undefined && (perLayer.get(c.layer) ?? 0) >= cap) || (c.cap && (perGroup.get(c.cap.key) ?? 0) >= c.cap.max)) {
         dropped.push({ id: c.id, reason: "budget" });
         continue;
       }
     }
     let onScreen = false;
-    let at: { rect: Rect; slot: LabelCandidate["slots"][number] } | null = null;
-    for (const s of c.slots) {
+    type At = { rect: Rect; slot: LabelCandidate["slots"][number] };
+    let at: At | null = null;
+    /**
+     * Запасное место (force soft): в области, без препятствий и не на подписи рисунка или ручке (external) — пусть и
+     * поверх подписи разметки старше. Нет такого места — подпись выброшена, а не положена на другую подпись рисунка.
+     */
+    let spare: At | null = null;
+    const first = c.slots[0];
+    if (c.force === "fixed" && first && Number.isFinite(first.x) && Number.isFinite(first.y)) {
+      at = { rect: { x: first.x, y: first.y, w: c.w, h: c.h }, slot: first };
+      onScreen = true;
+    }
+    for (const s of at ? [] : c.slots) {
       const x = s.clampX ? Math.min(Math.max(s.x, AREA_PAD), viewport.width - AREA_PAD - c.w) : s.x;
       const rect = { x, y: s.y, w: c.w, h: c.h };
-      if (!Number.isFinite(x) || !Number.isFinite(s.y) || !inside(rect, viewport)) continue;
+      if (!Number.isFinite(x) || !Number.isFinite(s.y) || !inside(rect, viewport, c.area)) continue;
       onScreen = true;
       const big = inflate(rect, LABEL_GAP);
-      if (hitsCandles(big, obstacles.candles)) continue;
       if (obstacles.rects.some((o) => intersects(big, o.rect))) continue;
-      if (placed.some((p) => intersects(big, p.rect))) continue;
+      if (!spare && c.force === "soft" && !external.some((p) => intersects(big, p.rect))) spare = { rect, slot: s };
+      if (!c.overCandles && hitsCandles(big, obstacles.candles)) continue;
+      if (taken(big)) continue;
       at = { rect, slot: s };
       break;
     }
+    at ??= spare;
     if (!at) {
       dropped.push({ id: c.id, reason: onScreen ? "collision" : "offscreen" });
       continue;
     }
-    placed.push({ id: c.id, objectId: c.objectId, layer: c.layer, text: c.text, rect: at.rect, slot: at.slot.key, tone: c.tone, font: c.font, px: c.px, priority: c.priority, bypassBudget: c.bypassBudget, ...(c.selected ? { selected: true } : {}), ...(c.icon ? { icon: c.icon } : {}) });
+    const out: PlacedLabel = { id: c.id, objectId: c.objectId, layer: c.layer, text: c.text, rect: at.rect, slot: at.slot.key, tone: c.tone, font: c.font, px: c.px, priority: c.priority, bypassBudget: c.bypassBudget, ...(c.selected ? { selected: true } : {}), ...(c.icon ? { icon: c.icon } : {}) };
+    (c.external ? external : placed).push(out);
     if (!c.bypassBudget) {
       total++;
       perLayer.set(c.layer, (perLayer.get(c.layer) ?? 0) + 1);
       if (c.cap) perGroup.set(c.cap.key, (perGroup.get(c.cap.key) ?? 0) + 1);
     }
   }
-  return { placed, dropped };
+  return { placed, dropped, external };
 }

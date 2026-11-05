@@ -1,0 +1,108 @@
+/* Сегментированный переключатель (план 2B.9). Активный сегмент — --row-hover и полоса --accent снизу. */
+.group {
+  display: inline-flex;
+  align-items: stretch;
+  gap: 2px;
+  height: 32px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.sm {
+  height: 28px;
+}
+
+.touch {
+  height: var(--touch-min);
+  padding: 0;
+  gap: 0;
+}
+
+.stretch {
+  display: flex;
+  width: 100%;
+}
+
+.stretch .seg {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.seg {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--gap-1);
+  min-width: 36px;
+  padding: 0 var(--gap-2);
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.seg:hover {
+  background: var(--row-hover);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.seg[aria-current="page"],
+.seg[aria-pressed="true"],
+.seg[aria-selected="true"] {
+  background: var(--row-hover);
+  color: var(--text);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.seg:disabled,
+.seg[aria-disabled="true"] {
+  background: transparent;
+  color: var(--text-3);
+  cursor: default;
+}
+
+.touch .seg {
+  border-radius: 0;
+}
+
+/* Вкладки без рамки: активная — цвет текста и полоса снизу, без заливки. */
+.underline {
+  height: 40px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  gap: 0;
+}
+
+.underline .seg {
+  border-radius: 0;
+  padding: 0 var(--gap-3);
+}
+
+.underline .seg[aria-current="page"],
+.underline .seg[aria-pressed="true"],
+.underline .seg[aria-selected="true"] {
+  background: transparent;
+}
+
+@media (pointer: coarse) {
+  .group {
+    height: auto;
+  }
+
+  .seg {
+    min-width: var(--touch-min);
+    min-height: var(--touch-min);
+  }
+}

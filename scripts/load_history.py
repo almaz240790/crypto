@@ -103,9 +103,19 @@ def upsert_candles(session, instrument_id: int, tf: Timeframe, candles: list[Can
         stmt = insert(CandleRow).values(rows[i : i + 5000])
         stmt = stmt.on_conflict_do_update(
             index_elements=["instrument_id", "timeframe", "open_time"],
+            # строка, записанная сервисом незакрытой, становится закрытой (как в app.forward)
             set_={
                 k: stmt.excluded[k]
-                for k in ("open", "high", "low", "close", "volume", "quote_volume", "trades")
+                for k in (
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                    "volume",
+                    "quote_volume",
+                    "trades",
+                    "is_closed",
+                )
             },
         )
         session.execute(stmt)

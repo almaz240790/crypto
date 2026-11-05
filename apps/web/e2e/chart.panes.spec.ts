@@ -1,0 +1,735 @@
+import { devices, expect, test, type Page } from "@playwright/test";
+import { FIRST_PAGE, H4, T0, mock } from "./helpers/chart";
+
+/**
+ * Управление панелями (ADR-0009, «Управление панелями»; как в TradingView): граница панели с ручкой и курсором
+ * row-resize (перетаскивание — высоты, двойной клик — по умолчанию, высоты в настройках), кнопки заголовка
+ * «выше / ниже / развернуть / настройки / убрать» (порядок в настройках), «A» у шкалы цены, растянутой вручную,
+ * однократная подсказка и цели 44 px под пальцем. Строк на все панели не хватает (телефон, низкое окно) — свёрнутые
+ * в одной строке «ещё N панелей» (планировщик строк PaneManager, перенесён из PR 139).
+ */
+
+type Host = HTMLElement & { __chart: { panes(): { getHeight(): number; getHTMLElement(): HTMLElement; priceScale(id: string): { options(): { autoScale: boolean } } }[]; timeScale(): { width(): number }; options(): { handleScroll: { vertTouchDrag: boolean } } } };
+
+const SAVED = {
+  layers_v: 5,
+  type: "candles",
+  indicators: [
+    { uid: "ema#1", id: "ema", params: { period: 20 } },
+    { uid: "rsi#1", id: "rsi", params: { period: 14 } },
+    { uid: "macd#1", id: "macd", params: {} },
+  ],
+  markup: { preset: "clean", overrides: {} },
+  panels: ["oi"],
+  scale: "linear",
+  overlay: null,
+};
+
+/** Настройки — один раз за тест (перезагрузка читает сохранённое); подсказка уже показана, кроме её теста. */
+async function open(page: Page, o: { hint?: boolean; saved?: Record<string, unknown> } = {}) {
+  await page.addInitScript(
+    ({ saved, hint }) => {
+      if (sessionStorage.getItem("seeded")) return;
+      sessionStorage.setItem("seeded", "1");
+      localStorage.setItem("pl-terminal", JSON.stringify(saved));
+      if (!hint) localStorage.setItem("pl-panes-hint", "1");
+    },
+    { saved: o.saved ?? SAVED, hint: o.hint ?? false },
+  );
+  await mock(page, []);
+  await page.goto("/chart/BTCUSDT/4h");
+  await expect(page.getByTestId("terminal").locator("canvas").first()).toBeVisible();
+  await expect(page.getByTestId("pane-oi")).toBeVisible();
+}
+
+const heights = (page: Page) => page.evaluate(() => (document.querySelector("[data-testid=terminal]") as Host).__chart.panes().map((p) => Math.round(p.getHeight())));
+const saved = (page: Page) => page.evaluate(() => JSON.parse(localStorage.getItem("pl-terminal") ?? "{}") as { paneLayout?: { order: string[]; heights: Record<string, number> }; indicators: { uid: string }[]; panels: string[] });
+/** Заголовки панелей сверху вниз. */
+const order = (page: Page) => page.evaluate(() => [...document.querySelectorAll<HTMLElement>("[data-testid^=pane-]:not([data-testid=pane-separator]):not([data-testid=pane-grip]):not([data-testid=pane-group])")].sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top).map((e) => e.dataset.testid));
+/** Центры ручек границ сверху вниз и что под ними (elementFromPoint): граница или нет. */
+const grips = (page: Page) =>
+  page.evaluate(() =>
+    [...document.querySelectorAll<HTMLElement>("[data-testid=pane-grip]")].map((g) => {
+      const r = g.getBoundingClientRect();
+      const x = r.left + r.width / 2;
+      const y = r.top + r.height / 2;
+      return { x, y, w: r.width, h: r.height, onSep: !!document.elementFromPoint(x, y)?.closest("[data-testid=pane-separator]") };
+    }),
+  );
+/** Правый край области графика (левый край шкалы цены), px окна. */
+const plotRight = (page: Page) => page.evaluate(() => { const h = document.querySelector("[data-testid=terminal]") as Host; return h.getBoundingClientRect().left + h.__chart.timeScale().width(); });
+
+/** Касание с перемещением (CDP, как пальцем): от (x, y) на dy по вертикали. */
+async function touchDrag(page: Page, x: number, y: number, dy: number) {
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
+  for (let i = 1; i <= 6; i++) await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: y + (dy * i) / 6 }] });
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  await cdp.detach();
+}
+
+async function drag(page: Page, x: number, y: number, dy: number) {
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x, y + dy / 2, { steps: 3 });
+  await page.mouse.move(x, y + dy, { steps: 3 });
+  await page.mouse.up();
+}
+
+test.describe("десктоп 1440×900", () => {
+  test.use({ viewport: { width: 1440, height: 900 } });
+
+  test("граница: курсор row-resize, ручка при наведении, перетаскивание меняет пару панелей, высоты сохраняются; двойной клик — по умолчанию", async ({ page }) => {
+    await open(page);
+    await expect.poll(() => heights(page)).toEqual([expect.any(Number), 90, 90, 80]);
+    const seps = page.getByRole("separator", { name: "граница панелей" });
+    await expect(seps).toHaveCount(3);
+    const sep = seps.nth(1); // RSI | MACD
+    expect(await sep.evaluate((el) => getComputedStyle(el).cursor)).toBe("row-resize");
+    const b = (await sep.boundingBox())!;
+    expect(b.height).toBeGreaterThanOrEqual(8);
+    // ручка и линия видны только при наведении; ручка — у правого края графика, левее «A», не на шкале цены
+    const grip = sep.getByTestId("pane-grip");
+    const gripOpacity = () => grip.evaluate((el) => getComputedStyle(el, "::before").opacity);
+    expect(await gripOpacity()).toBe("0");
+    await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
+    await expect.poll(gripOpacity).toBe("1");
+    const gb = (await grip.boundingBox())!;
+    expect(gb.x + gb.width).toBeLessThanOrEqual((await plotRight(page)) - 20);
+    const before = await heights(page);
+    await drag(page, b.x + b.width / 2, b.y + b.height / 2, -30);
+    await expect.poll(async () => (await heights(page))[1]).toBeLessThanOrEqual(62);
+    const after = await heights(page);
+    expect(after[0]).toBe(before[0]);
+    expect(after[1]! + after[2]!).toBe(before[1]! + before[2]!);
+    expect(after[3]).toBe(80);
+    await expect.poll(async () => (await saved(page)).paneLayout?.heights["rsi#1"]).toBe(after[1]);
+    // в раскладке — только пара у границы: OI не трогали, у него и дальше высота по умолчанию
+    expect(Object.keys((await saved(page)).paneLayout!.heights).sort()).toEqual(["macd#1", "rsi#1"]);
+    // после перезагрузки — те же высоты
+    await page.reload();
+    await expect(page.getByTestId("pane-oi")).toBeVisible();
+    await expect.poll(() => heights(page)).toEqual(after);
+    // граница основная | RSI: основная не меньше 55 % (VIEW.desktop.mainMinShare)
+    const first = (await seps.first().boundingBox())!;
+    await drag(page, first.x + 300, first.y + first.height / 2, -700);
+    await expect.poll(async () => (await heights(page))[0]).toBeLessThan(after[0]!);
+    const h = await heights(page);
+    expect(h[0]! / h.reduce((a, x) => a + x, 0)).toBeGreaterThanOrEqual(0.549);
+    // двойной клик — высоты по умолчанию, раскладка без высот
+    const again = (await seps.nth(1).boundingBox())!;
+    await page.mouse.dblclick(again.x + again.width / 2, again.y + again.height / 2);
+    await expect.poll(async () => (await heights(page)).slice(1)).toEqual([90, 90, 80]);
+    await expect.poll(async () => (await saved(page)).paneLayout).toBeUndefined();
+  });
+
+  test("граница у свёрнутой панели: зона над линией не закрыта заголовком, перетаскивание меняет пару раскрытых", async ({ page }) => {
+    await open(page);
+    await page.getByTestId("pane-macd").getByRole("button", { name: "свернуть панель MACD 12 26 9" }).click();
+    await expect.poll(async () => (await heights(page))[2]).toBe(24);
+    // одна граница на пару раскрытых: основная | RSI и RSI | OI (по низу RSI, над заголовком MACD)
+    const seps = page.getByRole("separator", { name: "граница панелей" });
+    await expect(seps).toHaveCount(2);
+    const line = await page.evaluate(() => (document.querySelector("[data-testid=pane-macd]") as HTMLElement).getBoundingClientRect().top);
+    const x = (await plotRight(page)) - 400;
+    const hits = await page.evaluate(({ x, y }) => [-8, -6, -4, -2, -1].map((dy) => !!document.elementFromPoint(x, y + dy)?.closest("[data-testid=pane-separator]")), { x, y: line });
+    expect(hits).toEqual([true, true, true, true, true]);
+    const before = await heights(page);
+    await drag(page, x, line - 1, -30);
+    await expect.poll(async () => (await heights(page))[1]).toBe(before[1]! - 30);
+    const after = await heights(page);
+    expect(after[2]).toBe(24);
+    expect(after[3]).toBe(before[3]! + 30);
+  });
+
+  test("восемь панелей, сжатых окном: граница между панелями двигается, основная на своей доле — граница стоит", async ({ page }) => {
+    const ids = ["rsi", "macd", "stoch", "atr", "cci", "obv"];
+    await open(page, { saved: { ...SAVED, indicators: [SAVED.indicators[0], ...ids.map((id) => ({ uid: `${id}#1`, id, params: {} }))], panels: ["oi", "funding"] } });
+    await expect.poll(async () => (await heights(page)).length).toBe(9);
+    const h = await heights(page);
+    // planPanes сжал панели ниже paneMinPx 48
+    expect(Math.max(...h.slice(1))).toBeLessThan(48);
+    const seps = page.getByRole("separator", { name: "граница панелей" });
+    await expect(seps.first()).toHaveAttribute("data-dir", "none");
+    await expect(seps.nth(1)).toHaveAttribute("data-dir", "both");
+    const g = (await grips(page))[1]!;
+    await drag(page, g.x, g.y, 12);
+    await expect.poll(async () => (await heights(page))[1]).toBe(h[1]! + 12);
+    expect((await heights(page))[2]).toBe(h[2]! - 12);
+    // в раскладке — только пара, в желаемых px (÷ сжатие): больше экранных
+    const l = (await saved(page)).paneLayout!;
+    expect(Object.keys(l.heights).sort()).toEqual(["macd#1", "rsi#1"]);
+    expect(l.heights["rsi#1"]).toBeGreaterThan(h[1]! + 12);
+  });
+
+  test("«выше / ниже»: порядок меняется и переживает перезагрузку; крайние кнопки недоступны", async ({ page }) => {
+    await open(page);
+    await expect.poll(() => order(page)).toEqual(["pane-rsi", "pane-macd", "pane-oi"]);
+    const rsi = page.getByTestId("pane-rsi");
+    // кнопки — при наведении на панель
+    const up = rsi.getByRole("button", { name: "переместить RSI 14 выше" });
+    await expect(up).toBeHidden();
+    await rsi.hover();
+    await expect(up).toBeVisible();
+    await expect(up).toBeDisabled();
+    await expect(up).toHaveAttribute("title", "переместить RSI 14 выше");
+    // кнопки — сразу за именем: перекрестие меняет ширину значений, а кнопки на месте
+    const rb = (await rsi.boundingBox())!;
+    const xs = new Set<number>();
+    for (const x of [200, 400, 600, 800]) {
+      await page.mouse.move(x, rb.y + 40);
+      xs.add(Math.round((await up.boundingBox())!.x));
+    }
+    expect(xs.size).toBe(1);
+    await rsi.getByRole("button", { name: "переместить RSI 14 ниже" }).click();
+    await expect.poll(() => order(page)).toEqual(["pane-macd", "pane-rsi", "pane-oi"]);
+    const oi = page.getByTestId("pane-oi");
+    await oi.hover();
+    await expect(oi.getByRole("button", { name: "переместить Открытый интерес ниже" })).toBeDisabled();
+    await oi.getByRole("button", { name: "переместить Открытый интерес выше" }).click();
+    await expect.poll(() => order(page)).toEqual(["pane-macd", "pane-oi", "pane-rsi"]);
+    await expect.poll(async () => (await saved(page)).paneLayout?.order).toEqual(["macd#1", "oi", "rsi#1"]);
+    await page.reload();
+    await expect(page.getByTestId("pane-oi")).toBeVisible();
+    await expect.poll(() => order(page)).toEqual(["pane-macd", "pane-oi", "pane-rsi"]);
+    // серия RSI — на третьей панели под графиком (порядок самого LWC, не только заголовков)
+    const rsiPane = await page.evaluate(() => {
+      const ch = (document.querySelector("[data-testid=terminal]") as Host).__chart;
+      const head = document.querySelector<HTMLElement>("[data-testid=pane-rsi]")!.getBoundingClientRect().top;
+      return ch.panes().findIndex((p) => Math.abs(p.getHTMLElement().getBoundingClientRect().top - head) < 2);
+    });
+    expect(rsiPane).toBe(3);
+  });
+
+  test("«развернуть»: панель на весь график, остальные и основная — заголовки, легенда скрыта; «вернуть панели»", async ({ page }) => {
+    await open(page);
+    const macd = page.getByTestId("pane-macd");
+    await macd.hover();
+    await macd.getByRole("button", { name: "развернуть MACD 12 26 9 на весь график" }).click();
+    await expect.poll(async () => (await heights(page))[2]).toBeGreaterThan(600);
+    const h = await heights(page);
+    expect([h[0], h[1], h[3]]).toEqual([24, 24, 24]);
+    // легенда (testid «legend», под перекрестием — «ohlc») скрыта
+    const legend = page.locator("[data-testid=legend], [data-testid=ohlc]");
+    await expect(legend).toBeHidden();
+    await expect(page.getByTestId("pane-rsi").getByRole("button", { name: "развернуть панель RSI 14" })).toHaveAttribute("aria-expanded", "false");
+    // нажатая кнопка в заголовке развёрнутой панели — «вернуть панели»
+    await macd.hover();
+    const restore = macd.getByRole("button", { name: "вернуть панели" });
+    await expect(restore).toHaveAttribute("aria-pressed", "true");
+    await restore.click();
+    await expect.poll(async () => (await heights(page)).slice(1)).toEqual([90, 90, 80]);
+    await expect(legend).toBeVisible();
+    // временный вид: в настройках ничего нет
+    expect((await saved(page)).paneLayout).toBeUndefined();
+  });
+
+  test("«убрать» убирает индикатор и панель данных; «настройки» — окно параметров экземпляра", async ({ page }) => {
+    await open(page);
+    const rsi = page.getByTestId("pane-rsi");
+    await rsi.hover();
+    await rsi.getByRole("button", { name: "настроить RSI 14" }).click();
+    const dlg = page.getByRole("dialog", { name: "Параметры RSI 14" });
+    await expect(dlg).toBeVisible();
+    await dlg.getByLabel(/Период/).fill("21");
+    await dlg.getByLabel(/Период/).press("Enter");
+    await expect(page.getByTestId("pane-rsi")).toContainText("RSI 21");
+    await page.keyboard.press("Escape");
+    const oi = page.getByTestId("pane-oi");
+    await oi.hover();
+    await oi.getByRole("button", { name: "убрать Открытый интерес" }).click();
+    await expect(oi).toHaveCount(0);
+    await expect.poll(async () => (await saved(page)).panels).toEqual([]);
+    const macd = page.getByTestId("pane-macd");
+    await macd.hover();
+    await macd.getByRole("button", { name: "убрать MACD 12 26 9" }).click();
+    await expect(macd).toHaveCount(0);
+    await expect.poll(async () => (await saved(page)).indicators.map((i) => i.uid)).toEqual(["ema#1", "rsi#1"]);
+    // оставшаяся панель — высоты по умолчанию, основная — остаток
+    await expect.poll(async () => (await heights(page)).slice(1)).toEqual([90]);
+  });
+
+  test("шкала RSI: курсор ns-resize и подсветка; перетаскивание — «A», клик по «A» — автомасштаб; основная — двойной клик по шкале", async ({ page }) => {
+    await open(page);
+    const geo = () =>
+      page.evaluate(() => {
+        const ch = (document.querySelector("[data-testid=terminal]") as Host).__chart;
+        const r = ch.panes()[1]!.getHTMLElement().getBoundingClientRect();
+        const t = document.querySelector("[data-testid=terminal]")!.getBoundingClientRect();
+        return { x: t.left + ch.timeScale().width() + 20, top: r.top, main: t.top + 200, auto: ch.panes().map((p) => p.priceScale("right").options().autoScale) };
+      });
+    const g = await geo();
+    await page.mouse.move(g.x, g.top + 40);
+    await expect(page.getByTestId("scale-hover")).toBeVisible();
+    // без заливки: метки шкалы не бледнеют — только полоса --accent по левому краю
+    expect(await page.getByTestId("scale-hover").evaluate((el) => getComputedStyle(el).backgroundColor)).toBe("rgba(0, 0, 0, 0)");
+    // курсор ставит сама шкала LWC (холст наследует его); подсветка поверх — без pointer-events
+    const cursor = await page.evaluate(({ x, y }) => getComputedStyle(document.elementFromPoint(x, y)!).cursor, { x: g.x, y: g.top + 40 });
+    expect(cursor).toBe("ns-resize");
+    await drag(page, g.x, g.top + 30, 40);
+    const auto = page.getByRole("button", { name: "автомасштаб: RSI 14" });
+    await expect(auto).toBeVisible();
+    expect((await geo()).auto[1]).toBe(false);
+    // «A» — в углу области графика у шкалы, не на шкале (не закрывает деления и метку значения)
+    const ab = (await auto.boundingBox())!;
+    expect(ab.x + ab.width).toBeLessThanOrEqual(await plotRight(page));
+    await auto.click();
+    await expect(auto).toHaveCount(0);
+    expect((await geo()).auto[1]).toBe(true);
+    // основная панель: растянули — «A»; двойной клик по шкале — автомасштаб, вид по времени не сбрасывается
+    await drag(page, g.x, g.main, 80);
+    const mainAuto = page.getByRole("button", { name: "автомасштаб: цена" });
+    await expect(mainAuto).toBeVisible();
+    await page.mouse.dblclick(g.x, g.main);
+    await expect(mainAuto).toHaveCount(0);
+    expect((await geo()).auto[0]).toBe(true);
+  });
+
+  test("подсказка — один раз: с первой панелью под графиком, закрывается; после перезагрузки её нет", async ({ page }) => {
+    await open(page, { hint: true });
+    const hint = page.getByTestId("panes-hint");
+    await expect(hint).toBeVisible();
+    await expect(hint).toContainText("Потяните границу — высота панели");
+    // на десктопе кнопки — при наведении: подсказка так и говорит, и пока она видна, кнопки первой панели показаны
+    await expect(hint).toContainText("Наведите на панель — в её заголовке кнопки");
+    await expect(page.getByTestId("pane-rsi").getByRole("button", { name: "переместить RSI 14 ниже" })).toBeVisible();
+    // плашка поверх графика: колонка графика той же высоты
+    await hint.getByRole("button", { name: "закрыть подсказку" }).click();
+    await expect(hint).toHaveCount(0);
+    await page.reload();
+    await expect(page.getByTestId("pane-oi")).toBeVisible();
+    await page.waitForTimeout(300);
+    await expect(page.getByTestId("panes-hint")).toHaveCount(0);
+  });
+
+  test("«?»: раздел «Как управлять графиком»", async ({ page }) => {
+    await open(page);
+    await page.getByRole("button", { name: "что на графике" }).click();
+    const help = page.getByRole("dialog", { name: "Что на графике" }).getByRole("region", { name: "Как управлять графиком" });
+    await expect(help).toContainText("Колесо мыши или щипок");
+    await expect(help).toContainText("Шкала цен справа");
+    await expect(help).toContainText("«A» или двойной клик по шкале");
+    await expect(help).toContainText("Граница между панелями");
+    await expect(help).toContainText("Кнопки в заголовке панели (при наведении)");
+    await expect(help).toContainText("Горячие клавиши");
+  });
+});
+
+test.describe("палец: планшет 1024×768", () => {
+  test.use({ hasTouch: true, isMobile: true, viewport: { width: 1024, height: 768 } });
+
+  test("кнопки заголовка видны всегда, все цели панели — не меньше 44 × 44; граница 44 px с ручкой", async ({ page }) => {
+    await open(page);
+    expect(await page.evaluate(() => matchMedia("(pointer: coarse)").matches)).toBe(true);
+    const rsi = page.getByTestId("pane-rsi");
+    await expect(rsi.getByRole("button", { name: "переместить RSI 14 ниже" })).toBeVisible();
+    const sizes = await page.locator("[data-testid^=pane-] button").evaluateAll((els) => els.filter((e) => e.getClientRects().length > 0).map((e) => [e.getAttribute("aria-label"), e.getBoundingClientRect().width, e.getBoundingClientRect().height] as const));
+    expect(sizes.length).toBeGreaterThanOrEqual(15);
+    for (const [name, w, h] of sizes) {
+      expect(w, String(name)).toBeGreaterThanOrEqual(44);
+      expect(h, String(name)).toBeGreaterThanOrEqual(44);
+    }
+    // зона границы во всю ширину — тонкая (палец рядом сдвигает график), ручка 44 × 44 видна всегда
+    const sep = page.getByRole("separator", { name: "граница панелей" }).first();
+    expect((await sep.boundingBox())!.height).toBeLessThanOrEqual(16);
+    expect(await sep.getByTestId("pane-grip").evaluate((el) => getComputedStyle(el, "::before").opacity)).toBe("1");
+    // ручка не под заголовком панели: в её центре — граница (а не «настроить MACD»)
+    const g = await grips(page);
+    expect(g).toHaveLength(3);
+    for (const x of g) {
+      expect(x.onSep).toBe(true);
+      expect(Math.min(x.w, x.h)).toBeGreaterThanOrEqual(44);
+    }
+    // касание ручки ничего не открывает; перетаскивание пальцем меняет пару RSI | MACD (не ниже 72 px под пальцем)
+    await page.touchscreen.tap(g[1]!.x, g[1]!.y);
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    const before = await heights(page);
+    await touchDrag(page, g[1]!.x, g[1]!.y, -30);
+    await expect.poll(async () => (await heights(page))[1]).toBe(72);
+    expect((await heights(page))[2]).toBe(before[2]! + before[1]! - 72);
+    // «A» под пальцем — тоже 44
+    await page.evaluate(() => {
+      const ch = (document.querySelector("[data-testid=terminal]") as HTMLElement & { __chart: { panes(): { priceScale(id: string): { applyOptions(o: object): void } }[] } }).__chart;
+      ch.panes()[1]!.priceScale("right").applyOptions({ autoScale: false });
+      window.dispatchEvent(new PointerEvent("pointerup"));
+    });
+    const auto = page.getByRole("button", { name: "автомасштаб: RSI 14" });
+    await expect(auto).toBeVisible();
+    const ab = (await auto.boundingBox())!;
+    expect(Math.min(ab.width, ab.height)).toBeGreaterThanOrEqual(44);
+    expect(ab.x + ab.width).toBeLessThanOrEqual(await plotRight(page));
+    // смена темы не выключает вертикальный жест пальцем (сдвиг при растянутой шкале)
+    await page.evaluate(() => {
+      const el = document.documentElement;
+      el.dataset.theme = el.dataset.theme === "light" ? "dark" : "light";
+    });
+    await expect.poll(() => page.evaluate(() => (document.querySelector("[data-testid=terminal]") as Host).__chart.options().handleScroll.vertTouchDrag)).toBe(true);
+  });
+});
+
+const { defaultBrowserType: _ignored, ...pixel5 } = devices["Pixel 5"];
+void _ignored;
+
+test.describe("телефон", () => {
+  test.use({ ...pixel5 });
+
+  test("ручка границы — не под заголовками свёрнутых панелей: касание не открывает «⋯», перетаскивание меняет высоты", async ({ page }) => {
+    await open(page);
+    // RSI и MACD свёрнуты: одна граница основная | OI по низу основной
+    const g = await grips(page);
+    expect(g).toHaveLength(1);
+    expect(g[0]!.onSep).toBe(true);
+    await page.touchscreen.tap(g[0]!.x, g[0]!.y);
+    await expect(page.getByRole("menu")).toHaveCount(0);
+    const before = await heights(page);
+    await touchDrag(page, g[0]!.x, g[0]!.y, -30);
+    await expect.poll(async () => (await heights(page))[0]).toBeLessThan(before[0]!);
+    const after = await heights(page);
+    expect(after.slice(1, 3)).toEqual(before.slice(1, 3));
+    // OI растёт на столько же, на сколько сжалась основная (высоты LWC округлены — ±1 px)
+    expect(Math.abs(after[3]! - before[3]! - (before[0]! - after[0]!))).toBeLessThanOrEqual(1);
+    // «?»: кнопки панели на телефоне — в «⋯»
+    await page.getByRole("button", { name: "что на графике" }).click();
+    await expect(page.getByRole("region", { name: "Как управлять графиком" })).toContainText("Кнопка «⋯» в заголовке панели");
+  });
+
+  test("действия панели — в меню «⋯» (44 px): «ниже» меняет порядок", async ({ page }) => {
+    await open(page);
+    const rsi = page.getByTestId("pane-rsi");
+    const more = rsi.getByRole("button", { name: "действия с панелью RSI 14" });
+    const b = (await more.boundingBox())!;
+    expect(Math.min(b.width, b.height)).toBeGreaterThanOrEqual(44);
+    await more.click();
+    await page.getByRole("menuitem", { name: "Ниже" }).click();
+    await expect.poll(() => order(page)).toEqual(["pane-macd", "pane-rsi", "pane-oi"]);
+  });
+});
+
+/**
+ * Нехватка строк (продовый баг из PR 139, телефон с 11 панелями: свёрнутые панели сжимались до 10 px, и их заголовки
+ * налезали друг на друга и на шкалу времени). Под пальцем строка заголовка — 44 px (C1, ADR-0009), а не 24, поэтому
+ * панелей меньше, чем в PR 139: на 390×844 график ≈ 560 px, на панели под ним — 40 % (≈ 220 px) — 5 строк; на 844×390
+ * и 932×430 — 2 строки.
+ */
+test.describe("телефон: нехватка строк — общая строка", () => {
+  test.use({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+
+  const ROW = 44;
+  const settings = (indicators: string[], panels: string[]) =>
+    JSON.stringify({ layers_v: 5, type: "candles", indicators: indicators.map((id) => ({ id, params: {} })), markup: { preset: "clean", overrides: {} }, panels, scale: "linear", overlay: null });
+  async function load(page: Page, indicators: string[], panels: string[], size?: { width: number; height: number }) {
+    if (size) await page.setViewportSize(size);
+    await page.addInitScript(
+      (s) => {
+        if (sessionStorage.getItem("seeded")) return;
+        sessionStorage.setItem("seeded", "1");
+        localStorage.setItem("pl-terminal", s);
+        localStorage.setItem("pl-panes-hint", "1");
+      },
+      settings(indicators, panels),
+    );
+    await mock(page, [], true);
+    await page.goto("/chart/BTCUSDT/4h");
+    await expect(page.getByTestId("terminal").locator("canvas").first()).toBeVisible();
+    await expect(page.getByLabel("состояние").first()).toContainText("цена");
+  }
+
+  /** Заголовки панелей и общая строка: прямоугольники относительно графика, верх шкалы времени, доля основной. */
+  const heads = (page: Page) =>
+    page.evaluate(() => {
+      const el = document.querySelector("[data-testid=terminal]") as Host;
+      const r0 = el.getBoundingClientRect();
+      const rows = [...document.querySelectorAll<HTMLElement>("[data-testid^=pane-]:not([data-testid=pane-separator]):not([data-testid=pane-grip])")].map((x) => {
+        const b = x.getBoundingClientRect();
+        return { id: x.dataset.testid!, top: b.top - r0.top, bottom: b.bottom - r0.top, height: b.height };
+      });
+      const panes = el.__chart.panes();
+      const total = panes.reduce((a, p) => a + p.getHeight(), 0);
+      return { rows, axisTop: panes.at(-1)!.getHTMLElement().getBoundingClientRect().bottom - r0.top, mainShare: panes[0]!.getHeight() / total, total };
+    });
+  const noOverlaps = (m: Awaited<ReturnType<typeof heads>>, share: number) => {
+    const rows = m.rows.slice().sort((a, b) => a.top - b.top);
+    for (let i = 1; i < rows.length; i++) expect(rows[i]!.top, `${rows[i - 1]!.id} и ${rows[i]!.id}`).toBeGreaterThanOrEqual(rows[i - 1]!.bottom - 1);
+    for (const r of rows) expect(r.bottom, `${r.id} и шкала времени`).toBeLessThanOrEqual(m.axisTop + 1);
+    expect(m.mainShare).toBeGreaterThanOrEqual(share - 0.01);
+  };
+  const expanded = (page: Page, key: string) => page.getByTestId(`pane-${key}`).getByRole("button", { name: /свернуть панель/ });
+  const chip = (page: Page, key: string) => page.getByTestId("pane-group").locator(`button[data-pane="${key}"]`);
+  /** Что под пальцем в центре элемента: кнопка общей строки (её data-pane) или чужой элемент. */
+  const hitAt = async (page: Page, x: number, y: number) =>
+    page.evaluate(({ x, y }) => {
+      const el = document.elementFromPoint(x, y);
+      return (el?.closest("button") as HTMLElement | null)?.dataset.pane ?? el?.outerHTML.slice(0, 120) ?? null;
+    }, { x, y });
+
+  test("свёрнутые панели не налезают друг на друга и на шкалу времени; без места — одна строка «ещё N панелей», поворот обратно — раскрыты снова", async ({ page }) => {
+    await load(page, ["rsi", "macd"], ["oi", "funding"]);
+    await expect(page.getByTestId("pane-funding")).toBeVisible();
+    // на телефоне раскрыта последняя добавленная; пользователь раскрывает ещё RSI и MACD
+    for (const k of ["rsi", "macd"]) {
+      const b = page.getByTestId(`pane-${k}`).getByRole("button", { name: /развернуть панель/ });
+      if (await b.count()) await b.tap();
+      await expect(expanded(page, k)).toBeVisible();
+    }
+    await page.waitForTimeout(300);
+    const before = await heads(page);
+    expect(Math.floor(Math.floor(before.total * 0.4) / ROW), "строк хватает на все 4 панели").toBeGreaterThanOrEqual(4);
+    await expect(page.getByTestId("pane-group")).toHaveCount(0);
+    noOverlaps(before, 0.6);
+    const open = [];
+    for (const k of ["rsi", "macd", "oi", "funding"]) if (await expanded(page, k).count()) open.push(k);
+    expect(open).toEqual(expect.arrayContaining(["rsi", "macd"]));
+    // телефон боком: строк на все панели нет — свёрнутые в одной строке, раньше раскрытые свёрнуты раскладкой
+    await page.setViewportSize({ width: 844, height: 390 });
+    const group = page.getByTestId("pane-group");
+    await expect(group).toBeVisible();
+    await expect(group).toContainText(/ещё \d+ панел/);
+    await page.waitForTimeout(300);
+    // доля основной — по классу устройства графика: боком (ширина графика > телефона) — 0.55
+    noOverlaps(await heads(page), 0.55);
+    // последней раскрыта MACD — она и осталась раскрытой; кнопка в общей строке раскрывает свою панель
+    await expect(expanded(page, "macd")).toBeVisible();
+    await chip(page, "oi").tap();
+    await expect(expanded(page, "oi")).toBeVisible();
+    await expect(chip(page, "oi")).toHaveCount(0);
+    await page.waitForTimeout(300);
+    noOverlaps(await heads(page), 0.55);
+    // обратно вертикально: у каждой панели своя строка, свёрнутые раскладкой снова раскрыты — боком их свернула нехватка
+    // строк, а не пользователь; OI раскрыл пользователь — раскрыта и она
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(group).toHaveCount(0);
+    for (const k of [...open, "oi"]) await expect(expanded(page, k), k).toBeVisible();
+    await page.waitForTimeout(300);
+    noOverlaps(await heads(page), 0.6);
+  });
+
+  test("общая строка: ровно строка заголовка (44 px под пальцем), кнопки нажимаются пальцем (ручка границы их не перекрывает), над полосками — заслонка", async ({ page }) => {
+    const ind7 = ["cci", "obv", "volume", "macd", "rsi", "stoch", "atr"];
+    const panels4 = ["funding", "oi", "liq", "ls"];
+    for (const [width, height, key] of [[844, 390, "cci"], [375, 667, "volume"]] as const) {
+      await load(page, ind7, panels4, { width, height });
+      const group = page.getByTestId("pane-group");
+      await expect(group).toBeVisible();
+      await page.waitForTimeout(300);
+      const box = (await group.boundingBox())!;
+      expect(Math.abs(box.height - ROW), `${width}x${height}: высота строки`).toBeLessThanOrEqual(1);
+      // в центре каждой видимой кнопки — она сама, а не ручка границы или «A»
+      const list = (await group.locator("[class*=paneGroupList]").boundingBox())!;
+      const keys = await group.locator("button[data-pane]").evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.pane!));
+      expect(keys.length).toBeGreaterThan(1);
+      let checked = 0;
+      for (const k of keys) {
+        const b = (await chip(page, k).boundingBox())!;
+        if (b.x + b.width > list.x + list.width) continue; // за краем строки (прокрутка вбок)
+        expect(await hitAt(page, b.x + b.width / 2, b.y + b.height / 2), `${width}x${height}: кнопка ${k}`).toBe(k);
+        expect(b.height, `${width}x${height}: кнопка ${k} — цель касания`).toBeGreaterThanOrEqual(ROW - 1);
+        checked++;
+      }
+      expect(checked).toBeGreaterThan(0);
+      // полоски свёрнутых в общую строку панелей закрыты заслонкой во всю ширину (и шкалу цены)
+      const covers = await page.locator("[data-pane-cover]").evaluateAll((els) => els.map((e) => e.getBoundingClientRect().width));
+      expect(covers.length, `${width}x${height}: заслонки`).toBeGreaterThan(0);
+      const tw = (await page.getByTestId("terminal").boundingBox())!.width;
+      for (const w of covers) expect(w).toBeGreaterThanOrEqual(tw - 1);
+      // касание пальцем (без force): панель раскрывается, строки не налезают
+      await chip(page, key).tap();
+      await expect(expanded(page, key), `${width}x${height}: ${key}`).toBeVisible();
+      await page.waitForTimeout(300);
+      noOverlaps(await heads(page), width < height ? 0.6 : 0.55);
+      await page.evaluate(() => sessionStorage.clear());
+    }
+  });
+
+  test("телефон вертикально: в общей строке видно не меньше двух кнопок целиком, правый край тает; «развернуть» — не меньше 60 % высоты", async ({ page }) => {
+    // 16 индикаторов на 390×844: место справа под ручку — только если она на середине строки (раньше 160 px всегда)
+    await load(page, ["ema", "sma", "vwap", "supertrend", "bb", "ichimoku", "keltner", "rsi", "macd", "stoch", "atr", "volume", "cci", "obv"], []);
+    const group = page.getByTestId("pane-group");
+    await expect(group).toBeVisible();
+    await page.waitForTimeout(300);
+    const list = group.locator("[class*=paneGroupList]");
+    const lb = (await list.boundingBox())!;
+    const boxes = await group.locator("button[data-pane]").evaluateAll((els) => els.map((e) => e.getBoundingClientRect()).map((r) => ({ left: r.left, right: r.right })));
+    const full = boxes.filter((b) => b.left >= lb.x - 0.5 && b.right <= lb.x + lb.width + 0.5);
+    expect(full.length, "кнопок целиком").toBeGreaterThanOrEqual(2);
+    if (boxes.length > full.length) await expect(list).toHaveAttribute("data-more", "true");
+    // «⋯ → Развернуть на весь график» у нижней панели: остальные — в общей строке, развёрнутая — не меньше 60 %
+    const obv = page.getByTestId("pane-obv");
+    await obv.getByRole("button", { name: /^действия/ }).tap();
+    await page.getByRole("menuitem", { name: /Развернуть/ }).tap();
+    await expect(group).toBeVisible();
+    await page.waitForTimeout(300);
+    const hs = await page.evaluate(() => (document.querySelector("[data-testid=terminal]") as Host).__chart.panes().map((p) => p.getHeight()));
+    const total = hs.reduce((a, b) => a + b, 0);
+    expect(hs.at(-1)! / total).toBeGreaterThanOrEqual(0.6);
+  });
+
+  test("кнопка общей строки раскрывает и верхнюю панель, когда раскрытые уже заняли все строки; вертикально — все раскрыты", async ({ page }) => {
+    // телефон боком шире 900 px: раскладка десктопа, все панели раскрыты — верхние свёрнуты раскладкой в общую строку
+    await load(page, ["rsi", "macd"], ["oi", "funding"], { width: 932, height: 430 });
+    const group = page.getByTestId("pane-group");
+    await expect(group).toBeVisible();
+    await expect(chip(page, "rsi")).toBeVisible();
+    await page.waitForTimeout(300);
+    const before = await group.locator("button[data-pane]").count();
+    const b = (await chip(page, "rsi").boundingBox())!;
+    expect(await hitAt(page, b.x + b.width / 2, b.y + b.height / 2)).toBe("rsi");
+    await page.touchscreen.tap(b.x + b.width / 2, b.y + b.height / 2);
+    await expect(expanded(page, "rsi")).toBeVisible();
+    // строк не прибавилось: свернулась раньше раскрытая панель, а не та, что нажата
+    await expect(group.locator("button[data-pane]")).toHaveCount(before);
+    await expect(chip(page, "rsi")).toHaveCount(0);
+    await page.waitForTimeout(300);
+    noOverlaps(await heads(page), 0.55);
+    // вертикально место есть — раскрыты все панели, раскладка ничего не свернула; в настройки свёрнутое раскладкой
+    // не попало
+    await page.setViewportSize({ width: 430, height: 932 });
+    await expect(group).toHaveCount(0);
+    for (const k of ["rsi", "macd", "oi", "funding"]) await expect(expanded(page, k), k).toBeVisible();
+    await page.waitForTimeout(300);
+    noOverlaps(await heads(page), 0.6);
+    expect(await page.evaluate(() => localStorage.getItem("pl-terminal") ?? "")).not.toMatch(/collapsed|forced|grouped/);
+  });
+
+  test("убрали панель, в которой лежала общая строка, — строка «ещё N панелей» на месте, свёрнутые не пропадают", async ({ page }) => {
+    await load(page, ["cci", "obv", "volume", "macd", "rsi", "stoch", "atr"], ["funding", "oi", "liq", "ls"], { width: 844, height: 390 });
+    const group = page.getByTestId("pane-group");
+    await expect(chip(page, "liq")).toBeVisible();
+    const before = await group.locator("button[data-pane]").count();
+    // общая строка — у последней свёрнутой («Ликвидации», раскрыта последняя добавленная «Лонг/шорт»): убираем её
+    await page.getByRole("button", { name: /^Индикаторы \(/ }).tap();
+    const sheet = page.getByRole("dialog", { name: "Индикаторы" });
+    const box = sheet.locator("label", { hasText: "Ликвидации" }).locator("input");
+    await box.scrollIntoViewIfNeeded();
+    await box.tap();
+    await expect(box).not.toBeChecked();
+    await expect(chip(page, "liq")).toHaveCount(0);
+    await expect(group).toBeVisible();
+    await expect(group.locator("button[data-pane]")).toHaveCount(before - 1);
+    await expect(chip(page, "oi")).toBeVisible();
+    // ни одной панели-полоски без строки: все полоски ниже 20 px — в общей строке
+    const slivers = await page.evaluate(() => (document.querySelector("[data-testid=terminal]") as Host).__chart.panes().slice(1).filter((p) => p.getHeight() < 20).length);
+    expect(slivers).toBeLessThanOrEqual(before - 1);
+  });
+});
+
+/**
+ * Шкала цены основной панели (масштаб только по ценам из PR 139 вместе с «A» C1): дальние наложенные индикаторы
+ * (SMA 200, Ichimoku, VWAP…) и сравнение с другим инструментом автомасштаб не растягивают — свечи не сжимаются в полосу;
+ * «A», двойной клик по шкале и «показать последние свечи» возвращают масштаб по свечам. Поля шкалы — из её настроек
+ * (верхнее поле C1 — под легенду), а не постоянные 8 % / 20 %.
+ */
+test.describe("шкала цены", () => {
+  test.use({ viewport: { width: 1440, height: 900 } });
+
+  type Bar = { time: number; high?: number; low?: number; value?: number };
+  type El = HTMLElement & {
+    __chart: {
+      panes(): { getHeight(): number; getSeries(): { seriesType(): string; data(): Bar[]; coordinateToPrice(y: number): number | null }[] }[];
+      timeScale(): { getVisibleLogicalRange(): { from: number; to: number } | null; setVisibleLogicalRange(r: { from: number; to: number }): void; width(): number };
+      priceScale(id: string): { options(): { scaleMargins: { top: number; bottom: number } } };
+    };
+  };
+  const far = ["sma:200", "ichimoku", "ema:150", "vwap", "bb", "keltner", "supertrend"].map((x) => {
+    const [id, period] = x.split(":");
+    return { id: id!, params: period ? { period: Number(period) } : {} };
+  });
+  const settings = (extra: Record<string, unknown>) => JSON.stringify({ layers_v: 5, type: "candles", indicators: far, markup: { preset: "clean", overrides: {} }, panels: [], scale: "linear", overlay: null, ...extra });
+
+  /** История: до бара 150 цена около 200, дальше около 100 — SMA 200 и Ichimoku у правого края далеко над свечами; ETHUSDT — около 5000. */
+  async function route(page: Page) {
+    await mock(page, []);
+    await page.route("**/v1/chart/candles?**", (r) => {
+      const u = new URL(r.request().url());
+      const symbol = u.searchParams.get("symbol") ?? "BTCUSDT";
+      const bar = (i: number) => {
+        const base = symbol === "ETHUSDT" ? 5000 : i < 150 ? 200 : 100;
+        const o = base + Math.sin(i / 7) * 2;
+        const c = o + Math.cos(i / 5) * 0.8;
+        return { t: T0 + i * H4, o: o.toFixed(1), h: (Math.max(o, c) + 0.5).toFixed(1), l: (Math.min(o, c) - 0.5).toFixed(1), c: c.toFixed(1), v: "1000", open: false };
+      };
+      const body = u.searchParams.get("before")
+        ? { symbol, tf: "4h", candles: [], current: null, has_older: false, tick_size: "0.1", server_time: "" }
+        : { symbol, tf: "4h", candles: Array.from({ length: FIRST_PAGE }, (_, i) => bar(i)), current: { ...bar(FIRST_PAGE), open: true }, has_older: false, tick_size: "0.1", server_time: "" };
+      return r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+    });
+  }
+
+  /** Шкала цены основной панели (верх и низ по координатам), свечи в кадре, последние значения линий наложения, поля шкалы. */
+  const scaleInfo = (page: Page) =>
+    page.evaluate(() => {
+      const ch = (document.querySelector("[data-testid=terminal]") as El).__chart;
+      const pane = ch.panes()[0]!;
+      const [main, ...rest] = pane.getSeries();
+      const r = ch.timeScale().getVisibleLogicalRange()!;
+      const d = main!.data();
+      let lo = Infinity;
+      let hi = -Infinity;
+      for (let i = Math.max(0, Math.ceil(r.from)); i <= Math.min(d.length - 1, Math.floor(r.to)); i++) {
+        lo = Math.min(lo, d[i]!.low!);
+        hi = Math.max(hi, d[i]!.high!);
+      }
+      // линии индикаторов (наложенный инструмент около 5000 — не в счёт)
+      const lines = rest.filter((x) => x.seriesType() === "Line").map((x) => x.data().at(-1)?.value ?? NaN).filter((v) => v < 1000);
+      return { top: main!.coordinateToPrice(0)!, bottom: main!.coordinateToPrice(pane.getHeight())!, lo, hi, lines, margins: ch.priceScale("right").options().scaleMargins };
+    });
+  /** Свечи в кадре между полями шкалы (с запасом 3 % высоты на округление), дальний индикатор — за верхом шкалы. */
+  const candlesOnly = async (page: Page, what: string) => {
+    const m = await scaleInfo(page);
+    const range = m.top - m.bottom;
+    expect(m.top - m.hi, `${what}: над свечами`).toBeLessThanOrEqual((m.margins.top + 0.03) * range);
+    expect(m.lo - m.bottom, `${what}: под свечами`).toBeLessThanOrEqual((m.margins.bottom + 0.03) * range);
+    expect(m.top, `${what}: свечи в кадре`).toBeGreaterThan(m.hi);
+    expect(m.bottom, `${what}: свечи в кадре`).toBeLessThan(m.lo);
+    expect(Math.max(...m.lines.filter(Number.isFinite)), `${what}: SMA 200 за верхом шкалы`).toBeGreaterThan(m.top);
+  };
+  async function viewAt(page: Page, r: { from: number; to: number }) {
+    await expect.poll(() => page.evaluate(() => (document.querySelector("[data-testid=terminal]") as El).__chart.panes()[0]!.getSeries()[0]!.data().length)).toBe(FIRST_PAGE + 1);
+    await page.waitForTimeout(300);
+    await page.evaluate((r) => (document.querySelector("[data-testid=terminal]") as El).__chart.timeScale().setVisibleLogicalRange(r), r);
+    await expect.poll(async () => (await scaleInfo(page)).lines.length).toBeGreaterThanOrEqual(7);
+    await page.waitForTimeout(300);
+  }
+
+  test("масштаб только по ценам: дальние наложенные индикаторы и сравнение не растягивают шкалу, свечи не сжимаются (линейная и процентная)", async ({ page }) => {
+    await route(page);
+    for (const scale of ["linear", "percent"] as const) {
+      await page.addInitScript((s) => localStorage.setItem("pl-terminal", s), settings({ overlay: "ETHUSDT", scale }));
+      await page.goto("/chart/BTCUSDT/4h");
+      await expect(page.getByTestId("terminal").locator("canvas").first()).toBeVisible();
+      await viewAt(page, { from: 200, to: 300 });
+      await candlesOnly(page, scale);
+    }
+  });
+
+  test("«A», двойной клик по шкале и «показать последние свечи» на основной панели — масштаб снова по свечам, SMA 200 за краем", async ({ page }) => {
+    await route(page);
+    await page.addInitScript((s) => localStorage.setItem("pl-terminal", s), settings({}));
+    await page.goto("/chart/BTCUSDT/4h");
+    await expect(page.getByTestId("terminal").locator("canvas").first()).toBeVisible();
+    await viewAt(page, { from: 200, to: 300 });
+    await candlesOnly(page, "сначала");
+    const t = (await page.getByTestId("terminal").boundingBox())!;
+    const x = t.x + (await page.evaluate(() => (document.querySelector("[data-testid=terminal]") as El).__chart.timeScale().width())) + 20;
+    const y = t.y + 250;
+    const mainAuto = page.getByRole("button", { name: "автомасштаб: цена" });
+    const stretch = async () => {
+      await drag(page, x, y, 120);
+      await expect(mainAuto).toBeVisible();
+    };
+    await stretch();
+    await mainAuto.click();
+    await expect(mainAuto).toHaveCount(0);
+    await page.waitForTimeout(200);
+    await candlesOnly(page, "«A»");
+    await stretch();
+    await page.mouse.dblclick(x, y);
+    await expect(mainAuto).toHaveCount(0);
+    await page.waitForTimeout(200);
+    await candlesOnly(page, "двойной клик");
+    await stretch();
+    await page.getByRole("button", { name: "показать последние свечи" }).click();
+    await expect(mainAuto).toHaveCount(0);
+    await page.waitForTimeout(300);
+    await candlesOnly(page, "показать последние свечи");
+  });
+});

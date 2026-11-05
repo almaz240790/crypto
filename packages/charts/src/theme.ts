@@ -15,6 +15,14 @@ export function alpha(hex: string, a: number): string {
   return `rgba(${parseInt(m[1]!, 16)}, ${parseInt(m[2]!, 16)}, ${parseInt(m[3]!, 16)}, ${a})`;
 }
 
+/** Поля шкалы цены основной панели (доли высоты): сверху — воздух над свечами, снизу — объём. */
+export const PRICE_MARGINS = { top: 0.08, bottom: 0.2 } as const;
+/**
+ * Верхнее поле не больше этой доли панели (план 2B.9 §10): поле растёт под легенду графика, чтобы она не закрывала
+ * свечи, но свечам остаётся не меньше 45 % высоты (с объёмом снизу).
+ */
+export const PRICE_MARGIN_TOP_MAX = 0.35;
+
 /**
  * Настройки LWC из токенов: без градиентов и свечений, сетка — токен границы (план 5.6). Шрифт шкал —
  * из вида устройства (12 / 11 px). Вид шкалы времени (шаг бара, отступ справа) здесь не задаётся: эти настройки
@@ -30,7 +38,9 @@ export function chartOptions(t: ThemeTokens, fontSize: number = DEFAULT_SCALE_FO
       fontSize,
       // логотип TradingView в углу графика выключен; атрибуция по лицензии — ссылкой в подвале сайта
       attributionLogo: false,
-      panes: { separatorColor: t.border, separatorHoverColor: alpha(t.accent, 0.2), enableResize: true },
+      // граница панелей — линия --border; перетаскивание, ручку и двойной клик рисует web поверх (ADR-0009,
+      // «Управление панелями»): у встроенной ручки LWC нет ни видимой ручки, ни доли основной панели, ни сброса
+      panes: { separatorColor: t.border, separatorHoverColor: alpha(t.accent, 0.2), enableResize: false },
     },
     grid: { vertLines: { color: alpha(t.border, 0.6) }, horzLines: { color: alpha(t.border, 0.6) } },
     crosshair: {
@@ -39,12 +49,15 @@ export function chartOptions(t: ThemeTokens, fontSize: number = DEFAULT_SCALE_FO
       horzLine: { color: t.text3, width: 1, style: LineStyle.Dashed, labelBackgroundColor: t.text },
     },
     // минимальная ширина шкалы — страховка: если браузер неверно измерит текст, цены всё равно не обрежутся
-    rightPriceScale: { borderColor: t.border, scaleMargins: { top: 0.08, bottom: 0.2 }, minimumWidth: PRICE_SCALE_MIN_PX },
+    rightPriceScale: { borderColor: t.border, scaleMargins: { ...PRICE_MARGINS }, minimumWidth: PRICE_SCALE_MIN_PX },
     timeScale: { borderColor: t.border, timeVisible: true, secondsVisible: false, minBarSpacing: 2 },
     // колесо и трекпад обрабатывает Terminal сам (см. onWheel): горизонтальный жест — прокрутка,
     // вертикальный и pinch — масштаб вокруг курсора; встроенная обработка слишком резкая на трекпаде
     handleScale: { axisPressedMouseMove: true, pinch: true, mouseWheel: false },
-    handleScroll: { pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false, mouseWheel: false },
+    // вертикальный жест пальцем — сдвиг графика (при растянутой шкале — и по вертикали). С false LWC отдаёт браузеру
+    // любой жест круче ~27°, а колонка графика — touch-action: none, и график «не реагирует». Здесь, а не после
+    // создания: chartOptions применяется заново при каждой смене темы (в том числе системной)
+    handleScroll: { pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true, mouseWheel: false },
     localization: { locale: "ru-RU" },
   };
 }

@@ -7,6 +7,7 @@ import s from "@/components/tools/tools.module.css";
 import { Badge, Button, EmptyState, Panel, Table, Td, Th } from "@/components/ui";
 import { FREQ_LABEL, STATUS_LABEL, TYPE_LABEL, createAlert, deleteAlert, getAlertTriggers, getAlerts, patchAlert, type Alert, type AlertFrequency, type AlertTrigger, type AlertType, type AlertsList } from "@/lib/alerts";
 import { formatTimeUTC } from "@/lib/format";
+import { TF_LABEL, type Timeframe } from "@/lib/timeframes";
 import { getInstruments, type Instrument } from "@/lib/user";
 import { useT } from "@/i18n/client";
 
@@ -14,7 +15,7 @@ const PATTERNS = [
   ["engulfing", "поглощение"], ["pin_bar", "пин-бар"], ["doji", "доджи"], ["star", "звезда"], ["three_line", "три солдата / вороны"],
   ["harami", "харами"], ["inside_bar", "внутренний бар"], ["inside_bar_breakout", "пробой внутреннего бара"], ["marubozu", "марубозу"], ["tweezer", "пинцет"],
 ] as const;
-const TFS = ["15m", "1h", "4h", "1d", "1w"];
+const TFS: readonly Timeframe[] = ["15m", "1h", "4h", "1d", "1w"];
 const FIGURES = [
   ["double_top", "двойная вершина"], ["double_bottom", "двойное дно"], ["head_shoulders", "голова и плечи"], ["inv_head_shoulders", "перевёрнутые голова и плечи"],
   ["triangle_sym", "симметричный треугольник"], ["triangle_asc", "восходящий треугольник"], ["triangle_desc", "нисходящий треугольник"], ["flag", "флаг"], ["pennant", "вымпел"],
@@ -127,9 +128,9 @@ export default function AlertsPage() {
             {d.type !== "price" && (
               <label>{t("таймфрейм")}<select aria-label={t("таймфрейм алерта")} value={d.timeframe} onChange={(e) => set("timeframe", e.target.value)}>
                   {(d.type === "pattern" || d.type === "figure") && <option value="any">{t("любой")}</option>}
-                  {(d.type === "zone" || d.type === "structure" ? ["4h", "1d"] : d.type === "figure" ? ["4h", "1d", "1w"] : TFS).map((t) => (
-                    <option key={t} value={t}>
-                      {t === "4h" ? "H4" : t.toUpperCase()}
+                  {(d.type === "zone" || d.type === "structure" ? (["4h", "1d"] as readonly Timeframe[]) : d.type === "figure" ? (["4h", "1d", "1w"] as readonly Timeframe[]) : TFS).map((x) => (
+                    <option key={x} value={x}>
+                      {t(TF_LABEL[x])}
                     </option>
                   ))}
                 </select>

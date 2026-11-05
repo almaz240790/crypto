@@ -154,6 +154,24 @@ export function formatIndicatorValue(v: number): string {
   return fixed(v, d);
 }
 
+/**
+ * Количество (объём позиции в монетах, риск в $): от тысячи — целым с разрядами («449 438»), меньше — четыре значащие
+ * цифры без лишних нулей («0.1», «12.35», «0.0004213»). Без экспоненты (toPrecision давал «4.494e+5» у дешёвых монет).
+ */
+export function formatQuantity(v: number): string {
+  if (!Number.isFinite(v)) return "—";
+  const a = Math.abs(v);
+  const sign = v < 0 ? "−" : "";
+  const int = () => sign + group(Math.round(a).toFixed(0));
+  if (a >= 1000) return int();
+  if (a === 0) return "0";
+  const d = Math.min(MAX_DECIMALS + 4, Math.max(0, 3 - Math.floor(Math.log10(a))));
+  let s = a.toFixed(d);
+  if (Number(s) >= 1000) return int();
+  if (s.includes(".")) s = s.replace(/0+$/, "").replace(/\.$/, "");
+  return sign + s;
+}
+
 /** Сумма в долларах компактно: «$285M», «$1.24B», «$54.3K» — суммы ликвидаций на графике и в подсказке. */
 export function formatUsd(v: number): string {
   return `${v < 0 ? "−" : ""}$${formatCompactValue(Math.abs(v))}`;

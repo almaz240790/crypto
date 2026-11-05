@@ -57,22 +57,24 @@ export function Input({
   );
 }
 
+/** small — 28 px и 13 px (шапка ячейки мультичарта); под pointer: coarse — не ниже 44 px. */
 export function Select({
   label,
   hint,
   error,
   id: idProp,
   className,
+  small = false,
   children,
   ...rest
-}: SelectHTMLAttributes<HTMLSelectElement> & FieldProps) {
+}: SelectHTMLAttributes<HTMLSelectElement> & FieldProps & { small?: boolean }) {
   const auto = useId();
   const id = idProp ?? auto;
   return (
     <Wrap id={id} label={label} hint={hint} error={error}>
       <select
         id={id}
-        className={[s.control, s.select, className ?? ""].join(" ").trim()}
+        className={[s.control, s.select, small ? s.small : "", className ?? ""].join(" ").trim()}
         aria-invalid={error ? true : undefined}
         {...rest}
       >

@@ -1,11 +1,52 @@
+/*
+ * Страница терминала заполняет остаток высоты каркаса (AppShell rail: flex-колонка) — без calc от высоты
+ * шапки и без «мёртвой» полосы. Телефон: верхняя строка, состояние, график, нижняя строка (PR C2 заменит);
+ * десктоп: шапка 44, тулбар 40, область графика.
+ */
 .page {
+  position: relative;
+  flex: 1 1 auto;
   display: grid;
-  grid-template-rows: auto auto 1fr auto;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
   grid-template-columns: minmax(0, 1fr);
-  height: calc(100dvh - 56px - var(--safe-top));
-  min-height: 480px;
+  min-height: 0;
   min-width: 0;
   overflow: hidden;
+  background: var(--bg);
+}
+
+.page[data-layout="desktop"] {
+  grid-template-rows: 44px 40px minmax(0, 1fr);
+}
+
+@media (pointer: coarse) {
+  .page[data-layout="desktop"] {
+    grid-template-rows: 52px 52px minmax(0, 1fr);
+  }
+}
+
+/* каркас на время загрузки модуля терминала (TerminalClient): строки шапки и тулбара без содержимого; раскладка —
+   медиазапросами (каркас приходит с сервера), правила для ширины ≥ 1280 — в конце файла */
+.skelRow {
+  display: none;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+@media (min-width: 900px) {
+  .page.skeleton {
+    grid-template-rows: 44px 40px minmax(0, 1fr);
+  }
+
+  .skeleton .skelRow {
+    display: block;
+  }
+}
+
+@media (min-width: 900px) and (pointer: coarse) {
+  .page.skeleton {
+    grid-template-rows: 52px 52px minmax(0, 1fr);
+  }
 }
 
 .top {
@@ -80,26 +121,22 @@
   padding: 2px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: var(--bg-2);
+  background: var(--surface);
 }
 
 .tfs a {
   padding: 4px 9px;
   border-radius: 6px;
-  font-family: var(--font-mono);
   font-size: 12px;
+  font-weight: 600;
   color: var(--text-2);
   text-decoration: none;
 }
 
 .tfs a[aria-current="page"] {
-  background: var(--bg);
+  background: var(--row-hover);
   color: var(--text);
-  box-shadow: 0 1px 0 var(--border);
-}
-
-.tfs a[data-primary="true"] {
-  font-weight: 600;
+  box-shadow: inset 0 -2px 0 var(--accent);
 }
 
 .tfs a[aria-disabled="true"] {
@@ -126,6 +163,8 @@
 
 .area {
   position: relative;
+  /* всегда третья строка сетки .page: строки над ней пустые, когда панели скрыты (⤢ на телефоне) */
+  grid-row: 3;
   min-height: 0;
   height: 100%;
   display: grid;
@@ -133,9 +172,26 @@
 }
 
 @media (min-width: 900px) {
+  /* колонка панели рисования: 40 px, под пальцем — 52 (кнопки 44 × 44) */
   .area {
-    /* ширина панели объектов задаётся переменной (перетаскивание разделителя, план 2A.8) */
-    grid-template-columns: 40px minmax(0, 1fr) var(--objects-w, 300px);
+    --draw-col: 40px;
+    grid-template-columns: var(--draw-col) minmax(0, 1fr);
+  }
+
+  /* ≥ 1280: панель встроена в сетку; ширина — переменная (перетаскивание разделителя, план 2A.8) */
+  .area[data-objects="shown"][data-panel="inline"] {
+    grid-template-columns: var(--draw-col) minmax(0, 1fr) var(--objects-w, 300px);
+  }
+
+  /* 900–1279: панель выдвигается поверх графика, ширина графика не меняется */
+  .area[data-panel="overlay"] .objects {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: var(--objects-w, 300px);
+    z-index: var(--z-drawer);
+    box-shadow: var(--shadow-lg);
   }
 
   .objects {
@@ -164,9 +220,6 @@
     outline: none;
   }
 
-  .area[data-objects="hidden"] {
-    grid-template-columns: 40px minmax(0, 1fr);
-  }
 }
 
 .toolbar {
@@ -175,15 +228,48 @@
   gap: 2px;
   padding: 4px;
   border-right: 1px solid var(--border);
-  background: var(--bg-2);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+/* инструменты прокручиваются, отменить/повторить — внизу панели всегда; полосы прокрутки нет (в колонке 40 px она
+   съедала ширину кнопок) — вместо неё затухание снизу и «ещё инструменты» */
+.toolList {
+  display: flex;
+  flex: 0 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+}
+
+.toolList::-webkit-scrollbar {
+  display: none;
+}
+
+.toolList[data-more]::after {
+  content: "";
+  position: sticky;
+  bottom: 0;
+  flex: none;
+  height: 20px;
+  margin-top: -22px;
+  background: linear-gradient(transparent, var(--surface));
+  pointer-events: none;
+}
+
+.tool.toolMore {
+  height: 20px;
+  color: var(--text-3);
 }
 
 .objects {
   display: none;
   flex-direction: column;
   border-left: 1px solid var(--border);
-  background: var(--bg-2);
+  background: var(--surface);
   min-height: 0;
   font-size: 13px;
 }
@@ -200,112 +286,93 @@
 }
 
 .tool {
+  position: relative;
   width: 32px;
-  height: 30px;
+  height: 32px;
+  flex: none;
   border: 1px solid transparent;
   border-radius: 6px;
   background: transparent;
   color: var(--text-2);
   font: inherit;
-  font-family: var(--font-mono);
   font-size: 12px;
   display: grid;
   place-items: center;
+  cursor: pointer;
 }
 
-.tool:hover {
-  border-color: var(--border);
+.tool:hover:not(:disabled) {
+  background: var(--row-hover);
   color: var(--text);
 }
 
+/* нажатый инструмент — как всё активное в терминале: фон --row-hover и полоса --accent 2 px снизу
+   (в светлой теме --surface-raised = --surface, поэтому не он) */
 .tool[aria-pressed="true"] {
-  background: var(--bg);
-  border-color: var(--accent);
+  background: var(--row-hover);
+  box-shadow: inset 0 -2px 0 var(--accent);
   color: var(--text);
+}
+
+/* переключатели (магнит, скрыть рисунки): без полосы акцента — точка в правом верхнем углу */
+.toolSwitch[aria-pressed="true"] {
+  background: transparent;
+  box-shadow: none;
+}
+
+.toolSwitch[aria-pressed="true"]::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
 }
 
 .tool:disabled {
-  opacity: 0.4;
+  color: var(--text-3);
+  cursor: default;
 }
 
 .toolSep {
+  flex: none;
   height: 1px;
   background: var(--border);
-  margin: 4px 2px;
+  margin: 3px 2px;
 }
 
-.objTabs {
-  display: flex;
-  border-bottom: 1px solid var(--border);
-}
+/* палец на десктопной раскладке (iPad от 900 px): кнопки панели рисования 44 × 44, у разделителя панели объектов —
+   полоса касания 44 px (видимая линия — 4 px по центру); в панель заходит на 8 px, остальное — над шкалой цены */
+@media (min-width: 900px) and (pointer: coarse) {
+  .area {
+    --draw-col: 52px;
+  }
 
-.objTab {
-  flex: 1;
-  height: 34px;
-  border: 0;
-  border-bottom: 2px solid transparent;
-  background: transparent;
-  color: var(--text-2);
-  font: inherit;
-  font-size: 12px;
-}
+  .toolbar {
+    padding: 3px;
+  }
 
-.objTab[aria-selected="true"] {
-  color: var(--text);
-  border-bottom-color: var(--accent);
-}
+  .tool {
+    width: var(--touch-min);
+    height: var(--touch-min);
+  }
 
-.objList {
-  list-style: none;
-  margin: 0;
-  padding: 8px;
-  display: grid;
-  /* одна колонка по ширине панели: иначе строки растягиваются по самому длинному заголовку и текст режется */
-  grid-template-columns: minmax(0, 1fr);
-  gap: 4px;
-  overflow: auto;
-  align-content: start;
-}
+  .tool.toolMore {
+    height: var(--touch-min);
+  }
 
-.objList label {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  min-height: 28px;
-}
+  .splitter {
+    left: calc(8px - var(--touch-min));
+    width: var(--touch-min);
+  }
 
-.objRow {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  border-radius: 6px;
-  padding: 2px;
-}
-
-.objRow[data-selected] {
-  background: var(--bg);
-  box-shadow: inset 0 0 0 1px var(--accent);
-}
-
-.objName {
-  flex: 1;
-  min-width: 0;
-  text-align: left;
-  border: 0;
-  background: transparent;
-  color: var(--text);
-  font: inherit;
-  font-size: 13px;
-  padding: 4px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.objRow input {
-  flex: 1;
-  min-width: 0;
-  height: 30px;
+  .splitter:hover,
+  .splitter:focus-visible,
+  .splitter[data-active] {
+    background: linear-gradient(var(--accent), var(--accent)) 36px 0 / 4px 100% no-repeat;
+  }
 }
 
 .chartCol {
@@ -314,31 +381,15 @@
   min-height: 0;
 }
 
-/* короткое сообщение терминала поверх графика по центру сверху */
-.toast {
-  position: absolute;
-  top: 8px;
-  left: 50%;
-  z-index: 6;
-  max-width: min(520px, calc(100% - 24px));
-  margin: 0;
-  padding: 6px 12px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface);
-  color: var(--text);
-  font-size: 13px;
-  line-height: 18px;
-  text-align: center;
-  transform: translateX(-50%);
-  pointer-events: none;
-  box-shadow: 0 4px 16px color-mix(in srgb, var(--bg) 60%, transparent);
+/* угол «− + →|» (ChartCorner) — непрозрачный, пока курсор над колонкой графика (§3.4) */
+.chartCol:hover [data-corner] {
+  opacity: 1;
 }
 
 .chart {
   position: relative;
   height: 100%;
-  min-height: 300px;
+  min-height: 160px;
   touch-action: none;
   overscroll-behavior: contain;
   /* внутренние слои LWC с большими z-index не должны перекрывать листы и тулбары */
@@ -351,49 +402,48 @@
   inset: 0;
 }
 
-/* заголовок панели индикатора (план 2A.7): 24 px, свайп вниз сворачивает, вверх — раскрывает */
-.paneHead {
+/* основная панель (без шкалы цены): в ней — угол с кнопками масштаба (десктоп) */
+.cornerHost {
   position: absolute;
-  left: 4px;
-  height: 24px;
-  z-index: 5;
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  padding: 0 2px 0 6px;
-  border-radius: 6px;
-  background: var(--bg);
-  color: var(--text-2);
-  font-size: 11px;
-  line-height: 1;
-  opacity: 0.9;
-  touch-action: none;
+  left: 0;
+  top: 0;
+  z-index: var(--z-chart-ui);
+  pointer-events: none;
 }
 
-.paneHead[data-collapsed] {
-  right: 4px;
-  border-bottom: 1px solid var(--border);
-  border-radius: 0;
+/* правый верхний угол основной панели (левее шкалы цены): чип режима рисования — не поверх легенды слева */
+.topRightHost {
+  position: absolute;
+  left: 0;
+  top: 8px;
+  z-index: var(--z-chart-ui);
+  display: flex;
+  justify-content: flex-end;
+  padding-right: 8px;
+  pointer-events: none;
 }
 
-.paneTitle {
-  white-space: nowrap;
+.topRightHost > * {
+  pointer-events: auto;
 }
 
-.paneToggle {
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--text-3);
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.paneToggle:hover {
+/* тост: поверх колонки графика по центру снизу, раскладку не сдвигает */
+.toast {
+  position: absolute;
+  left: 50%;
+  bottom: 48px;
+  z-index: var(--z-toast);
+  transform: translateX(-50%);
+  max-width: min(560px, calc(100% - 32px));
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-raised);
   color: var(--text);
+  font-size: 13px;
+  box-shadow: var(--shadow-lg);
+  pointer-events: none;
 }
 
 .bottom {
@@ -537,12 +587,11 @@
 }
 
 /* на телефоне значения индикаторов скрыты, пока не нажать «индикаторы (n)» */
-@media (max-width: 899px) {
+@media (max-width: 899.98px) {
   .ohlc:not([data-more]) .ohlcVal {
     display: none;
   }
 }
-
 
 .indDot {
   display: inline-block;
@@ -550,9 +599,6 @@
   height: 10px;
   border-radius: 50%;
 }
-
-
-
 
 .ohlc strong {
   color: var(--text);
@@ -574,8 +620,9 @@
     display: none;
   }
 
-  .page[data-bars="hidden"] {
-    height: calc(100dvh - var(--safe-top));
+  /* ландшафт телефона с панелями: как раньше, страница не ниже 480 px и прокручивается (раскладка — PR C2) */
+  .page[data-layout="phone"]:not([data-bars="hidden"]) {
+    min-height: 480px;
   }
 
   .fsBtn {
@@ -592,11 +639,7 @@
   font-size: 13px;
 }
 
-@media (max-width: 640px) {
-  .page {
-    height: calc(100dvh - 48px - var(--safe-top));
-  }
-
+@media (max-width: 639.98px) {
   .top {
     flex-wrap: nowrap;
     overflow-x: auto;
@@ -619,11 +662,24 @@
   }
 }
 
-.card {
+/* карточки снизу колонки графика (выбранный рисунок, лимит рисунков) — одной стопкой: вместе не перекрываются */
+.cards {
   position: absolute;
   left: 8px;
   right: 8px;
   bottom: 8px;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.cards > * {
+  pointer-events: auto;
+}
+
+.card {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -633,83 +689,125 @@
   border-radius: 10px;
   background: var(--surface);
   font-size: 13px;
-  z-index: 10;
 }
 
-.card input[type="text"],
-.card input:not([type]) {
-  flex: 1 1 160px;
-  height: 32px;
+/* карточка выбранного рисунка (SelectedDrawingCard): поля и кнопки ui в одну строку с переносом */
+.cardTitle {
+  flex: none;
+}
+
+.cardText {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+
+.cardSelect {
+  flex: 0 1 180px;
+  min-width: 0;
+}
+
+.cardCheck {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+.cardCheck input {
+  accent-color: var(--accent);
+}
+
+.cardClose {
+  margin-left: auto;
+}
+
+/* телефон: карточка позиции одной строкой, пока её не раскрыли («параметры ▾») — свечи, ручки и плашки позиции над
+   ней видны (раскрытая закрывала половину области свечей) */
+.cardBar {
+  flex-wrap: nowrap;
+}
+
+.cardBar .cardTitle {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cardBar > button {
+  flex: none;
+}
+
+.limitCard p {
+  margin: 0;
+  flex: 1 1 240px;
+}
+
+@media (pointer: coarse) {
+  .card button,
+  .card select,
+  .card input:not([type="checkbox"]),
+  .card a,
+  .cardCheck {
+    min-height: var(--touch-min);
+  }
+}
+
+/* поля позиции: вход, стоп, цель, R:R, риск и «перевернуть» — сеткой во всю ширину карточки (телефон — по три в ряд) */
+.posFields {
+  flex: 1 1 100%;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+  gap: 6px;
+  align-items: start;
+}
+
+/* подпись поля — внутри рамки сверху слева, значение — справа ниже: одна строка высотой с кнопку */
+.posField {
+  position: relative;
+  min-width: 0;
+}
+
+.posCaption {
+  position: absolute;
+  left: 8px;
+  top: 4px;
+  z-index: 1;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--text-3);
+  pointer-events: none;
+}
+
+.posField input {
+  height: 40px;
+  padding-top: 12px;
+  min-width: 0;
+}
+
+.posFlip {
+  height: 40px;
+  white-space: nowrap;
+}
+
+@media (pointer: coarse) {
+  .posField input,
+  .posFlip {
+    height: var(--touch-min);
+  }
 }
 
 .posStats {
   display: inline-flex;
+  flex: 1 1 100%;
   flex-wrap: wrap;
-  gap: 6px;
+  column-gap: 10px;
+  row-gap: 0;
   align-items: center;
   font-family: var(--font-mono);
   font-size: 12px;
-}
-
-.inline {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.desktopOnly {
-  display: none;
-}
-
-@media (min-width: 900px) {
-  .desktopOnly {
-    display: inline-flex;
-  }
-}
-
-@media (min-width: 900px) {
-  .mobileOnly {
-    display: none;
-  }
-}
-
-.found {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 4px 0;
-  border-bottom: 1px solid var(--border);
-  min-width: 0;
-}
-
-.found[data-selected] {
-  background: var(--bg-2);
-}
-
-.foundDetails {
-  padding: 4px 8px 6px;
-  font-size: 12px;
-  color: var(--text-2);
-  display: grid;
-  gap: 2px;
-  overflow-wrap: anywhere;
-}
-
-.explain {
-  margin-top: 4px;
-  display: grid;
-  gap: 4px;
-}
-
-.explain p {
-  margin: 0;
-}
-
-.objHead {
-  display: block;
-  padding: 6px 8px 2px;
-  font-size: 12px;
-  color: var(--text-2);
 }
 
 .ask {
@@ -729,13 +827,6 @@
   background: var(--bg);
   color: var(--text);
   resize: vertical;
-}
-
-.askRow {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
 }
 
 .ask p {
@@ -815,26 +906,34 @@
   font-size: 14px;
 }
 
-/* мультичарт (план 3.17 v2): 2 или 4 графика, десктоп */
+/* мультичарт (план 3.17 v2): 2 или 4 графика, десктоп; заполняет остаток высоты каркаса */
 .multi {
+  flex: 1 1 auto;
   display: grid;
-  grid-template-rows: auto 1fr;
-  height: calc(100dvh - 56px - var(--safe-top));
-  min-height: 480px;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
 }
 
 .multiBar {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
+  gap: var(--gap-2);
+  min-height: 44px;
+  padding: 0 12px;
   border-bottom: 1px solid var(--border);
+  background: var(--surface);
   flex-wrap: wrap;
+}
+
+.multiLabel {
+  color: var(--text-2);
+  font-size: 13px;
 }
 
 .multiGrid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  /* minmax(0, …): шапка ячейки с ценой под курсором не раздвигает колонку и не двигает соседний график */
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   grid-auto-rows: minmax(0, 1fr);
   gap: 1px;
   background: var(--border);
@@ -851,20 +950,43 @@
 .multiHead {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 4px 8px;
+  gap: var(--gap-2);
+  min-width: 0;
+  overflow: hidden;
+  min-height: 36px;
+  padding: 0 8px;
   border-bottom: 1px solid var(--border);
+  background: var(--surface);
   font-size: 13px;
 }
 
-.multiHead select {
-  font: inherit;
+/* таймфрейм ячейки — ui Select small: ширина по подписи */
+.multiTf {
+  flex: none;
+  width: 72px;
+}
+
+.multiPrice {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text);
   font-size: 13px;
+  white-space: nowrap;
 }
 
 .multiOpen {
+  display: inline-flex;
+  align-items: center;
   margin-left: auto;
   font-size: 12px;
+  white-space: nowrap;
+}
+
+@media (pointer: coarse) {
+  .multiOpen {
+    min-height: var(--touch-min);
+  }
 }
 
 .multiChart {
@@ -875,109 +997,6 @@
 .multiChart > div {
   height: 100%;
   min-height: 0;
-}
-
-/* Ссылка-кнопка под списками «Найдено»: показать всё / только значимые */
-.linkBtn {
-  margin: 6px 8px 2px;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--accent);
-  font: inherit;
-  font-size: 13px;
-  cursor: pointer;
-  text-align: left;
-}
-
-.linkBtn:hover {
-  text-decoration: underline;
-}
-
-/* в строке состояния скрытые на телефоне пункты остаются строчными, чтобы не терять пробелы */
-.strip .desktopOnly {
-  display: none;
-}
-
-@media (min-width: 900px) {
-  .strip .desktopOnly {
-    display: inline;
-  }
-}
-
-/* список уровней в «Найдено»: от верхних к нижним, как на шкале */
-.levelList {
-  display: grid;
-  gap: 2px;
-  margin: 0;
-  padding: 0 8px 4px;
-  list-style: none;
-  font-size: 13px;
-}
-
-.levelList li {
-  border-bottom: 1px solid var(--border);
-}
-
-/* строка уровня — кнопка: выбор объекта на графике (план 2B.2, §10.4) */
-.levelBtn {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  align-items: baseline;
-  width: 100%;
-  padding: 3px 4px;
-  border: 0;
-  border-radius: 4px;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.levelBtn:hover:not(:disabled) {
-  background: var(--row-hover);
-}
-
-.levelBtn:disabled {
-  cursor: default;
-}
-
-.levelList li[data-selected] .levelBtn {
-  box-shadow: inset 2px 0 0 var(--accent);
-  background: var(--row-hover);
-}
-
-@media (pointer: coarse) {
-  .levelBtn {
-    min-height: 44px;
-    align-items: center;
-  }
-}
-
-.levelLiq {
-  color: var(--warn);
-}
-
-/* диапазон зоны переносится после тире, а не обрезается краем панели */
-.levelList .levelRange {
-  white-space: normal;
-}
-
-.levelNote {
-  margin: 4px 8px 8px;
-}
-
-/* вкладка «Найдено» прокручивается целиком: вопрос, уровни, фигуры и паттерны не сжимают друг друга */
-.objScroll {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow-y: auto;
-}
-
-.objScroll .objList {
-  overflow: visible;
 }
 
 /* выбор разметки графика (план 2B.2): пресеты сверху вкладки «Слои», пояснение — одной строкой под названием */
@@ -1010,6 +1029,12 @@
   font-weight: 600;
 }
 
+@media (pointer: coarse) {
+  .markupItem label {
+    min-height: var(--touch-min);
+  }
+}
+
 .markupNote {
   font-size: 12px;
   line-height: 16px;
@@ -1019,4 +1044,52 @@
 
 .markupWarn {
   color: var(--warn);
+}
+
+/* на десктопе стопка — над шкалой времени (даты видны); карточка рисунка — слева, не шире 720 px */
+.page[data-layout="desktop"] .cards {
+  bottom: calc(var(--time-scale-h, 28px) + 8px);
+  align-items: flex-start;
+}
+
+/* телефон: ссылки «в журнал», «в калькулятор» — одной строкой, риск или подсказка — под ними (карточка ниже) */
+.page:not([data-layout="desktop"]) .posHint {
+  order: 1;
+  flex-basis: 100%;
+}
+
+.posStats a {
+  display: inline-flex;
+  align-items: center;
+}
+
+/* телефон: карточка не выше 60 % колонки графика — рисунок над ней виден; остальное — прокруткой карточки */
+.page:not([data-layout="desktop"]) .cards {
+  max-height: 60%;
+}
+
+.page:not([data-layout="desktop"]) .card {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.page[data-layout="desktop"] .card {
+  max-width: min(720px, 100%);
+}
+
+/* карточка лимита рисунков — по центру, на месте угла «− + →|» (он на это время скрыт), над карточкой рисунка */
+.page[data-layout="desktop"] .limitCard {
+  align-self: center;
+  max-width: min(560px, 100%);
+}
+
+/* каркас загрузки от 1280 px: правая панель встроена, как у терминала по умолчанию */
+@media (min-width: 1280px) {
+  .skeleton .area {
+    grid-template-columns: var(--draw-col) minmax(0, 1fr) var(--objects-w, 300px);
+  }
+
+  .skeleton .area .objects {
+    display: flex;
+  }
 }

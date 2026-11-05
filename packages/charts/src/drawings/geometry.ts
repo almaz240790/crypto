@@ -1,5 +1,6 @@
 import type { Candle } from "../types";
-import { FIB_LEVELS, type Drawing, type Point } from "./types";
+import { POSITION_PARTS, positionParts, type PositionPart } from "./position";
+import { FIB_LEVELS, POSITION_EDGE_PX, POSITION_MIN_PX, isPosition, type Drawing, type Point } from "./types";
 
 /** Магнит к OHLC: ближайшая из цен свечи, если она в пределах tolerance (в единицах цены). */
 export function magnetSnap(candle: Candle | undefined, price: number, tolerance: number): number {
@@ -99,14 +100,85 @@ export function distToSegment(px: number, py: number, x1: number, y1: number, x2
   return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
 }
 
+/**
+ * Попадание по рисунку: хэндл точки (index — номер точки) или тело. У позиции index — часть (POSITION_PART_INDEX):
+ * 0 — вход, 1 — стоп, 2 — цель, 3 — правый край.
+ */
 export type Hit = { id: string; part: "point" | "body"; index: number };
 
 export type Projector = { x: (time: number) => number | null; y: (price: number) => number | null; width: number; height: number };
 
-/** Что под курсором: сначала хэндлы точек, затем тело. tolerance — в пикселях. */
-export function hitTest(drawings: Drawing[], px: number, py: number, proj: Projector, tolerance: number): Hit | null {
+/** Полоса попадания линии позиции не уже этого (px), даже у очень тонкой зоны. */
+const LINE_MIN_TOL = 3;
+
+/** Позиция на экране: левый и правый край (не уже POSITION_MIN_PX), середина, y входа, стопа и цели. */
+export type PositionScreen = { xL: number; xR: number; xC: number; yE: number; yS: number; yT: number };
+
+/**
+ * Позиция на экране. Узкая позиция (уже POSITION_MIN_PX: отдалили график) рисуется шириной POSITION_MIN_PX, но этот
+ * запас не уводит правый край и его ручку за правый край области свечей (width − POSITION_EDGE_PX): там нажатие —
+ * жест шкалы цены. Позиция, которая сама тянется за край (прокрутили график), — как есть.
+ */
+export function positionScreen(d: Pick<Drawing, "type" | "points">, proj: Pick<Projector, "x" | "y"> & { width?: number }): PositionScreen | null {
+  const p = positionParts(d);
+  if (!p) return null;
+  const x1 = proj.x(p.start), x2 = proj.x(p.end);
+  const yE = proj.y(p.entry), yS = proj.y(p.stop), yT = proj.y(p.target);
+  if (x1 === null || x2 === null || yE === null || yS === null || yT === null) return null;
+  const xL = Math.min(x1, x2);
+  const cap = proj.width !== undefined ? Math.max(xL, proj.width - POSITION_EDGE_PX) : Infinity;
+  const xR = Math.max(x1, x2, Math.min(xL + POSITION_MIN_PX, cap));
+  return { xL, xR, xC: (xL + xR) / 2, yE, yS, yT };
+}
+
+/**
+ * Ручки позиции (как в TradingView): вход, стоп и цель — у левого края своих линий, правый край — на линии входа
+ * справа. Середина линий свободна: там плашки цели, стопа и входа.
+ */
+export function positionKnobs(s: PositionScreen): Readonly<Record<PositionPart, { x: number; y: number }>> {
+  return { entry: { x: s.xL, y: s.yE }, stop: { x: s.xL, y: s.yS }, target: { x: s.xL, y: s.yT }, end: { x: s.xR, y: s.yE } };
+}
+
+/**
+ * Что у позиции под точкой: ручка (в пределах knobTol — 22 px под пальцем, цель 44 px), линия входа, стопа или цели
+ * по всей длине и правый край (в пределах tol; из нескольких — ближайшая), иначе тело — весь прямоугольник.
+ */
+export function positionHit(s: PositionScreen, px: number, py: number, tol: number, knobTol: number): PositionPart | "body" | null {
+  const knobs = positionKnobs(s);
+  let best: { part: PositionPart; d: number } | null = null;
+  for (const part of POSITION_PARTS) {
+    const k = knobs[part];
+    const dist = Math.hypot(px - k.x, py - k.y);
+    if (dist <= knobTol && (!best || dist < best.d)) best = { part, d: dist };
+  }
+  if (best) return best.part;
+  const top = Math.min(s.yE, s.yS, s.yT), bottom = Math.max(s.yE, s.yS, s.yT);
+  if (px >= s.xL - tol && px <= s.xR + tol) {
+    const lines: [PositionPart, number][] = [["entry", s.yE], ["stop", s.yS], ["target", s.yT]];
+    for (const [part, y] of lines) {
+      // у тонкой зоны полоса линии не шире трети зоны: середина остаётся телом (сдвиг всей позиции)
+      const gap = Math.min(...lines.filter(([p]) => p !== part).map(([, o]) => Math.abs(o - y)));
+      const dist = Math.abs(py - y);
+      if (dist <= Math.min(tol, Math.max(LINE_MIN_TOL, gap / 3)) && (!best || dist < best.d)) best = { part, d: dist };
+    }
+    if (best) return best.part;
+  }
+  if (Math.abs(px - s.xR) <= tol && py >= top && py <= bottom) return "end";
+  if (px >= s.xL - tol && px <= s.xR + tol && py >= top - tol && py <= bottom + tol) return "body";
+  return null;
+}
+
+/** Что под курсором: сначала хэндлы точек, затем тело. tolerance — в пикселях; knob — ручки позиции (палец — 22). */
+export function hitTest(drawings: Drawing[], px: number, py: number, proj: Projector, tolerance: number, knob = tolerance): Hit | null {
   for (let k = drawings.length - 1; k >= 0; k--) {
     const d = drawings[k]!;
+    if (isPosition(d.type)) {
+      const s = positionScreen(d, proj);
+      const part = s ? positionHit(s, px, py, tolerance, knob) : null;
+      if (part === "body") return { id: d.id, part: "body", index: -1 };
+      if (part) return { id: d.id, part: "point", index: POSITION_PARTS.indexOf(part) };
+      continue;
+    }
     const pts = d.points.map((p) => ({ x: proj.x(p.time), y: proj.y(p.price) }));
     for (let i = 0; i < pts.length; i++) {
       const q = pts[i]!;
@@ -150,13 +222,10 @@ function bodyHit(d: Drawing, pts: { x: number | null; y: number | null }[], px: 
       }
       return false;
     }
-    case "rect":
-    case "position-long":
-    case "position-short": {
+    case "rect": {
       if (!a || !b || a.x === null || a.y === null || b.x === null || b.y === null) return false;
-      const ys = [a.y, b.y, ...(c && c.y !== null ? [c.y] : [])];
       const left = Math.min(a.x, b.x) - tol, right = Math.max(a.x, b.x) + tol;
-      return px >= left && px <= right && py >= Math.min(...ys) - tol && py <= Math.max(...ys) + tol;
+      return px >= left && px <= right && py >= Math.min(a.y, b.y) - tol && py <= Math.max(a.y, b.y) + tol;
     }
     default:
       return false;

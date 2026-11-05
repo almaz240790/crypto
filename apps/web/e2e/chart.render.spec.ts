@@ -35,8 +35,20 @@ async function open(page: Page, o: { symbol?: string; fixture?: "default" | "ric
   return calls;
 }
 
-/** Лист «Слои» (кнопка внизу есть и на десктопе, и на телефоне). */
+const isDesktop = (page: Page) => (page.viewportSize()?.width ?? 0) >= 900;
+
+/**
+ * Слои: на десктопе — вкладка «Слои» правой панели (нижней строки там нет, план 2B.9), на телефоне — лист
+ * «Слои» из нижней строки (до раскладки телефона, PR C2).
+ */
 async function layersSheet(page: Page) {
+  if (isDesktop(page)) {
+    const panel = page.getByRole("complementary", { name: "панель объектов" });
+    const tab = panel.getByRole("tab", { name: "Слои" });
+    if ((await tab.getAttribute("aria-selected")) !== "true") await tab.click();
+    await expect(panel.getByRole("radiogroup", { name: "Разметка" })).toBeVisible();
+    return panel;
+  }
   const sheet = page.getByRole("dialog", { name: "Слои" });
   if (!(await sheet.isVisible())) await page.getByRole("button", { name: "Слои", exact: true }).click();
   await expect(sheet).toBeVisible();
@@ -44,6 +56,7 @@ async function layersSheet(page: Page) {
 }
 
 async function closeSheets(page: Page) {
+  if (isDesktop(page)) return;
   const btn = page.getByRole("button", { name: "Слои", exact: true });
   if (await page.getByRole("dialog", { name: "Слои" }).isVisible()) await btn.click();
 }
@@ -202,7 +215,9 @@ test.describe("перепись подписей: десктоп 1440×900", () 
     await open(page);
     await setState(page, "levels");
     await closeSheets(page);
-    await page.getByLabel("шкала").selectOption("percent");
+    await page.getByRole("button", { name: "Вид", exact: true }).click();
+    await page.getByRole("dialog", { name: "Вид" }).getByLabel("шкала").selectOption("percent");
+    await page.keyboard.press("Escape");
     // деления процентной шкалы подписаны в процентах; метки уровней — ценой (решение ADR-0008)
     await expect.poll(async () => tickTexts(await census(page)).some((t) => /%$/.test(t))).toBe(true);
     const c = await census(page);
@@ -318,7 +333,7 @@ test.describe("перепись подписей: десктоп 1440×900", () 
     await page.mouse.click(off.x, off.y);
     await expect(levels.locator("li[data-selected]")).toHaveCount(0);
     // строка списка выбирает объект на графике; Esc снимает
-    await levels.getByRole("button").filter({ hasText: "сопротивление" }).first().click();
+    await levels.getByRole("button").filter({ hasText: "Сопротивление" }).first().click();
     await expect(levels.locator("li[data-selected]")).toHaveCount(1);
     await expect.poll(async () => (await overlayOf(page))!.objects.some((o) => o.emphasis === "selected" && o.layer === "sr")).toBe(true);
     await page.keyboard.press("Escape");

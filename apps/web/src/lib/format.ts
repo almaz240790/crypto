@@ -37,6 +37,26 @@ export function formatPrice(
   return sign + group(i) + (f ? "." + f : "");
 }
 
+/** Сколько знаков после запятой без шага инструмента: у цены меньше 1 — четыре значащие цифры, у остальных — два. */
+function sigDecimals(n: number): number {
+  const a = Math.abs(n);
+  if (a === 0 || a >= 1) return 2;
+  return Math.min(10, 3 - Math.floor(Math.log10(a)));
+}
+
+/**
+ * Цена в списке инструментов (скринер, «Мои монеты»; план 5.4 — с точностью инструмента): с шагом цены инструмента;
+ * шаг ещё неизвестен (список инструментов не пришёл или инструмента в нём нет) — по значащим цифрам: «0.004748»,
+ * «0.07691». Без этого цена с двумя знаками превращала 1000SHIB и 1000PEPE в «0.00», DOGE — в «0.08».
+ */
+export function formatListPrice(value: string | number | null | undefined, tick?: string | null): string {
+  if (tick) return formatPrice(value, tick);
+  if (value === null || value === undefined || value === "") return "—";
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(n)) return "—";
+  return formatPrice(n, (10 ** -sigDecimals(n)).toFixed(sigDecimals(n)));
+}
+
 /** Значение со знаком: +0.62 / −1.00 / 0.00. */
 export function formatSigned(n: number, digits = 2): string {
   if (!Number.isFinite(n)) return "—";

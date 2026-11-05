@@ -1,0 +1,523 @@
+/* Правая панель десктопа (план 2B.9 §8): вкладки, «Найдено» по разделам, рисунки, слои, раскладки. Только токены. */
+
+/* ── ряд вкладок, 40 px ── */
+.tabs {
+  display: flex;
+  align-items: center;
+  flex: none;
+  height: 40px;
+  border-bottom: 1px solid var(--border);
+}
+
+.tabRow {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.tabRow::-webkit-scrollbar {
+  display: none;
+}
+
+.tabRow > [role="tab"] {
+  flex: none;
+  padding: 0 7px;
+}
+
+.tabIcon {
+  display: none;
+}
+
+.tabRow > [data-compact] .tabIcon {
+  display: inline-grid;
+}
+
+.tabRow > [data-compact] .tabText {
+  display: none;
+}
+
+.close {
+  flex: none;
+  margin: 0 4px;
+}
+
+.body {
+  container: panel / inline-size;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.tab {
+  display: grid;
+  gap: var(--gap-3);
+  padding: var(--gap-3);
+  align-content: start;
+}
+
+.tabHead {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--gap-2);
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.headAction {
+  margin-left: auto;
+}
+
+.sync {
+  color: var(--text-3);
+}
+
+.empty,
+.note {
+  margin: 0;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.empty {
+  padding: var(--gap-2) 0;
+}
+
+/* ── «Найдено» ── */
+.found {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+/* разделы на всю ширину: ширина сегмента — по подписи (счётчики разной длины не обрезаются) */
+.sections {
+  display: flex;
+  margin: var(--gap-2) var(--gap-3) 0;
+}
+
+.sections > [role="tab"] {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0 6px;
+  font-size: 12px;
+}
+
+.section {
+  display: grid;
+  gap: var(--gap-2);
+  padding: var(--gap-2) var(--gap-3);
+  align-content: start;
+}
+
+.signals {
+  display: block;
+  padding: var(--gap-1) 0;
+  font-size: 12px;
+}
+
+/* вопрос о графике — свой небольшой блок в конце прокрутки */
+.askHost {
+  margin-top: auto;
+  padding: var(--gap-2) var(--gap-3) var(--gap-3);
+  border-top: 1px solid var(--border);
+}
+
+.askCompact textarea {
+  min-height: 0;
+}
+
+.askLine {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.askExamples summary {
+  color: var(--text-2);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.askExamples[open] summary {
+  margin-bottom: var(--gap-1);
+}
+
+/* ── уровни: таблица с выровненными колонками (тип | цена | расстояние | подробности) ── */
+.levels {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  column-gap: var(--gap-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.levels > li {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+}
+
+.level {
+  position: relative;
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+  align-items: baseline;
+  row-gap: 1px;
+  min-height: 40px;
+  padding: 4px 6px 4px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* полоса тона слева: поддержка и спрос — зелёная, сопротивление и предложение — красная, ликвидации — охра */
+.level::before {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: 6px;
+  bottom: 6px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--border);
+}
+
+.level[data-tone="up"]::before {
+  background: var(--chart-up);
+}
+
+.level[data-tone="down"]::before {
+  background: var(--chart-down);
+}
+
+.level[data-tone="liq"]::before {
+  background: var(--chart-liq);
+}
+
+.level:hover {
+  background: var(--row-hover);
+}
+
+.level[aria-pressed="true"] {
+  background: var(--row-hover);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+/* объекта нет на графике (отрезан пресетом или бюджетом): строка приглушена; выбор покажет его */
+.level[data-off] .levelWord,
+.level[data-off] .levelPrice {
+  color: var(--text-2);
+}
+
+.levelWord {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.levelPrice {
+  display: grid;
+  justify-items: end;
+  font-size: 13px;
+}
+
+.pct {
+  font-family: var(--font-mono), monospace;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-2);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.levelDetail {
+  grid-column: 1 / -1;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.offChart[data-sep]::before {
+  content: " · ";
+}
+
+.amount {
+  font-family: var(--font-mono), monospace;
+  font-variant-numeric: tabular-nums;
+  color: var(--chart-liq);
+}
+
+.levels > .divider {
+  display: flex;
+  align-items: baseline;
+  gap: var(--gap-2);
+  margin: 4px 0;
+  padding: 3px 10px;
+  border-radius: 4px;
+  background: var(--row-hover);
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.divider :global(.num) {
+  margin-left: auto;
+  color: var(--text);
+}
+
+.levels > .liqGroup {
+  display: block;
+  margin-top: var(--gap-2);
+}
+
+.liqGroup summary {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-2);
+  min-height: 32px;
+  padding: 0 6px;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/* широкая панель: подробности — четвёртой колонкой в той же строке */
+@container panel (min-width: 420px) {
+  .levels {
+    grid-template-columns: minmax(0, 1fr) auto auto minmax(0, 1.2fr);
+  }
+
+  .levelDetail {
+    grid-column: auto;
+  }
+}
+
+/* ── фигуры и паттерны: строки в две строки без многоточия ── */
+.items {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.item {
+  border-radius: 6px;
+}
+
+.item[data-selected] {
+  background: var(--row-hover);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.itemBtn {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.itemBtn:hover {
+  background: var(--row-hover);
+}
+
+.itemHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px var(--gap-2);
+  font-size: 13px;
+}
+
+.itemHead strong {
+  font-weight: 600;
+}
+
+.chip {
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-2);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.meta {
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.details {
+  display: grid;
+  gap: 2px;
+  padding: 0 8px 8px;
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.explain {
+  margin-top: var(--gap-1);
+}
+
+.explain p {
+  margin: 0 0 4px;
+}
+
+.more {
+  justify-self: start;
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 12px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* ── рисунки и раскладки ── */
+.rows {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border-radius: 6px;
+}
+
+.row[data-selected] {
+  background: var(--row-hover);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.rowMain {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-2);
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 32px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.rowMain:hover {
+  background: var(--row-hover);
+}
+
+.rowIcon {
+  display: inline-grid;
+  flex: none;
+  color: var(--text-2);
+}
+
+.rowText {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.rowTf {
+  flex: none;
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.group {
+  display: grid;
+  gap: var(--gap-2);
+}
+
+.groupHead {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gap-1);
+}
+
+.save {
+  display: flex;
+  gap: var(--gap-2);
+  align-items: flex-end;
+}
+
+.save > :first-child {
+  flex: 1 1 auto;
+}
+
+/* ── слои ── */
+.checks {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.checks legend {
+  margin-bottom: 4px;
+  padding: 0;
+  color: var(--text-3);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.check {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px var(--gap-2);
+  min-height: 28px;
+  font-size: 13px;
+}
+
+.check input {
+  accent-color: var(--accent);
+}
+
+@media (pointer: coarse) {
+  .level,
+  .itemBtn,
+  .rowMain,
+  .check,
+  .more,
+  .liqGroup summary {
+    min-height: var(--touch-min);
+  }
+}

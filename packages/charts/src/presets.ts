@@ -107,6 +107,15 @@ export interface ViewPreset {
   paneIndicatorPx: number;
   paneDerivPx: number;
   paneCollapsedPx: number;
+  /** Раскрытая панель не ниже этого при перетаскивании границы (ADR-0009 «Управление панелями»). */
+  paneMinPx: number;
+  /**
+   * То же под пальцем (pointer: coarse): заголовок там 44 px, и панели на 48 px пальцу почти негде коснуться
+   * графика — не ниже заголовка и полосы графика под ним.
+   */
+  paneMinTouchPx: number;
+  /** Свёрнутая панель под пальцем — заголовок 44 px (цель касания). */
+  paneCollapsedTouchPx: number;
   maxExpandedPanes: number;
   labels: LabelBudget;
   axis: AxisBudget;
@@ -180,7 +189,12 @@ export const PRESETS: Readonly<Record<PresetId, LayerPreset>> = {
 /** Пресет по умолчанию — «Чистый»; утверждает владелец (ADR-0008). */
 export const DEFAULT_PRESET: PresetId = "clean";
 
-const PANES = { mainMinShare: 0.5, paneIndicatorPx: 90, paneDerivPx: 80, paneCollapsedPx: 24 } as const;
+/**
+ * Панели под графиком; доля основной панели — у устройства: десктоп 0.55, телефон и ячейка 0.6 (M19, PaneManager).
+ * paneMinPx — нижний предел раскрытой панели при перетаскивании границы: заголовок 24 px и пара делений шкалы;
+ * под пальцем — paneMinTouchPx: заголовок 44 px и полоса графика под ним (меньше — пальцу негде сдвинуть график).
+ */
+const PANES = { paneIndicatorPx: 90, paneDerivPx: 80, paneCollapsedPx: 24, paneMinPx: 48, paneMinTouchPx: 72, paneCollapsedTouchPx: 44 } as const;
 
 export const VIEW: Readonly<Record<Device, ViewPreset>> = {
   desktop: {
@@ -199,6 +213,7 @@ export const VIEW: Readonly<Record<Device, ViewPreset>> = {
     touchTolerancePx: 12,
     insetTopPx: 32,
     volumeTop: 0.86,
+    mainMinShare: 0.55,
     ...PANES,
     maxExpandedPanes: 99,
     labels: { canvas: 8, perLayer: { sr: 4, zones: 2, structure: 2, levels: 2, liq_map: 2, figures: 3, signals: 3, alerts: 3, volume_profile: 1, topdown: 2, patterns: 0 } },
@@ -220,6 +235,7 @@ export const VIEW: Readonly<Record<Device, ViewPreset>> = {
     touchTolerancePx: 12,
     insetTopPx: 32,
     volumeTop: 0.86,
+    mainMinShare: 0.6,
     ...PANES,
     maxExpandedPanes: 1,
     labels: { canvas: 4, perLayer: { sr: 2, zones: 1, structure: 1, levels: 1, liq_map: 1, figures: 1, signals: 2, alerts: 2, volume_profile: 0, topdown: 1, patterns: 0 } },
@@ -241,6 +257,7 @@ export const VIEW: Readonly<Record<Device, ViewPreset>> = {
     touchTolerancePx: 12,
     insetTopPx: 24,
     volumeTop: 0.86,
+    mainMinShare: 0.6,
     ...PANES,
     maxExpandedPanes: 0,
     labels: { canvas: 3, perLayer: { sr: 2, zones: 1, structure: 1, levels: 0, liq_map: 0, figures: 0, signals: 0, alerts: 1, volume_profile: 0, topdown: 0, patterns: 0 } },

@@ -10,7 +10,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
-from dataclasses import asdict
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -140,21 +140,89 @@ def bucket_start(tf: Timeframe, now: datetime) -> datetime:
     return datetime.fromtimestamp((int(now.timestamp()) // size) * size, tz=UTC)
 
 
-def current_candle(db: Session, instrument_id: int, tf: Timeframe, now: datetime) -> Candle | None:
-    """Незакрытая свеча tf из минутных свечей текущего интервала (для tf ≥ 5m)."""
+THROUGH_LOOKBACK = timedelta(hours=1)
+"""Насколько назад от начала интервала искать последнюю закрытую минуту, если в интервале их нет."""
+
+
+@dataclass(frozen=True)
+class LiveBucket:
+    """Идущий интервал tf, свёрнутый только из закрытых минут (план 2A.3).
+
+    Идущую минуту market-data переписывает каждую секунду с ``is_closed = false``; она придёт по
+    WebSocket закрытой, и клиент свернёт её сам. Взятая в текущую свечу, она считалась бы дважды
+    (объём), а минута, закрытая перед самым ответом, но ещё не записанная, — терялась бы.
+    """
+
+    candle: Candle | None
+    """Свёртка закрытых минут интервала; None — закрытых минут в интервале ещё нет."""
+    first: datetime | None
+    """Первая учтённая минута (не начало интервала — у минутной истории пропуск)."""
+    through: datetime | None
+    """Последняя закрытая минута в БД на момент запроса (в интервале, иначе — перед ним): минуты
+    WebSocket не позже неё уже учтены ответом. None — закрытых минут рядом нет."""
+
+
+def current_candle(
+    db: Session, instrument_id: int, tf: Timeframe, now: datetime
+) -> LiveBucket | None:
+    """Незакрытая свеча tf из закрытых минутных свечей текущего интервала (для tf ≥ 5m)."""
     if tf is Timeframe.M1:
         return None
     start = bucket_start(tf, now)
     rows = db.execute(
         text(
             "select open_time, open, high, low, close, volume, quote_volume, trades from candles "
-            "where instrument_id=:i and timeframe='1m' and open_time >= :s order by open_time"
+            "where instrument_id=:i and timeframe='1m' and open_time >= :s and is_closed "
+            "order by open_time"
         ),
         {"i": instrument_id, "s": start},
     ).all()
-    if not rows:
-        return None
-    return fold(_rows_to_candles(list(rows)), start)
+    if rows:
+        m1 = _rows_to_candles(list(rows))
+        return LiveBucket(fold(m1, start), m1[0].open_time, m1[-1].open_time)
+    last = db.execute(
+        text(
+            "select max(open_time) from candles where instrument_id=:i and timeframe='1m' "
+            "and open_time >= :w and open_time < :s and is_closed"
+        ),
+        {"i": instrument_id, "w": start - THROUGH_LOOKBACK, "s": start},
+    ).scalar()
+    return LiveBucket(None, None, last.astimezone(UTC) if last is not None else None)
+
+
+def open_minutes(
+    db: Session, instrument_id: int, after: datetime, start: datetime
+) -> tuple[Decimal, Decimal, int]:
+    """Объём, объём в котируемой и сделки недописанных минут интервала после ``after`` (идущая
+    минута и закрытая на бирже, но ещё не записанная закрытой) — хранимая свеча Binance их
+    уже содержит."""
+    row = db.execute(
+        text(
+            "select coalesce(sum(volume), 0), coalesce(sum(quote_volume), 0), "
+            "coalesce(sum(trades), 0) from candles where instrument_id=:i and timeframe='1m' "
+            "and open_time > :a and open_time >= :s and not is_closed"
+        ),
+        {"i": instrument_id, "a": after, "s": start},
+    ).one()
+    return Decimal(row[0]), Decimal(row[1]), int(row[2])
+
+
+def without_open_minutes(
+    stored: Candle, folded: Candle, open_part: tuple[Decimal, Decimal, int]
+) -> Candle:
+    """Хранимая свеча Binance идущего интервала, когда минутная история начинается позже начала
+    интервала: объём — без недописанных минут после through (клиент досворачивает их сам, не
+    дважды), но не меньше свёртки закрытых минут; цены — как есть (high/low тех минут —
+    объединение, close уточнят тики). Свеча и минута пишутся из разных потоков Binance, а
+    незакрытая 4h/1d/1w — не чаще раза в ``FORMING_HTF_EVERY`` (5 с): объём точен до нескольких
+    секунд торгов между их снимками."""
+    v, q, n = open_part
+    return replace(
+        stored,
+        volume=max(stored.volume - v, folded.volume),
+        quote_volume=max(stored.quote_volume - q, folded.quote_volume),
+        trades=max(stored.trades - n, folded.trades),
+    )
 
 
 def fold(m1: list[Candle], start: datetime) -> Candle:

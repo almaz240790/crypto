@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { channelOffset, distToSegment, extend, fibLevels, hitTest, lineAt, magnetSnap, positionStats, rulerInfo, type Projector } from "../drawings/geometry";
-import { addDrawing, alive, canRedo, canUndo, clearDrawings, createState, mergeRemote, redo, removeDrawing, resolve, toggleLock, undo, updateDrawing, visibleOn } from "../drawings/store";
+import { addDrawing, alive, canRedo, canUndo, clearDrawings, commitMove, createState, mergeRemote, redo, removeDrawing, resolve, toggleLock, undo, updateDrawing, visibleOn } from "../drawings/store";
 import { HANDLE_TOUCH_PX, UNDO_STEPS, pointsNeeded, type Drawing } from "../drawings/types";
-import { formatDrawingPrice } from "../drawings/primitive";
+import { DrawingsPrimitive, formatDrawingPrice } from "../drawings/primitive";
 import type { Candle } from "../types";
+import { H, T0, TOKENS, bars, makeEnv } from "./fakes/lwc";
+import { alpha } from "../theme";
 
 const d = (id: string, type: Drawing["type"] = "trend", points = [{ time: 0, price: 100 }, { time: 60, price: 110 }]): Drawing => ({ id, type, points, style: { color: "accent", width: 1, dashed: false }, locked: false, timeframe: null, updated_at: 0 });
 
@@ -43,6 +45,23 @@ describe("хранилище рисунков", () => {
     expect(s.past.length).toBe(before);
   });
 
+  it("отмена после перетаскивания возвращает рисунок на место до него, а не в последнее промежуточное", () => {
+    const origin = [{ time: 0, price: 100 }, { time: 60, price: 110 }];
+    let s = addDrawing(createState(), d("a", "trend", origin));
+    const steps = s.past.length;
+    // перетаскивание: промежуточные положения без записи, конец — с положением до перетаскивания
+    s = updateDrawing(s, "a", { points: [{ time: 0, price: 100 }, { time: 60, price: 95 }] }, false);
+    s = updateDrawing(s, "a", { points: [{ time: 0, price: 100 }, { time: 60, price: 90 }] }, false);
+    s = commitMove(s, "a", [{ time: 0, price: 100 }, { time: 60, price: 90 }], origin);
+    expect(s.past.length).toBe(steps + 1);
+    expect(s.items[0]!.points[1]!.price).toBe(90);
+    s = undo(s);
+    expect(alive(s)).toHaveLength(1);
+    expect(s.items[0]!.points).toEqual(origin);
+    s = redo(s);
+    expect(s.items[0]!.points[1]!.price).toBe(90);
+  });
+
   it("видимость по таймфрейму и «скрыть все»", () => {
     let s = addDrawing(createState(), { ...d("a"), timeframe: "4h" });
     s = addDrawing(s, { ...d("b"), timeframe: null });
@@ -56,7 +75,8 @@ describe("геометрия", () => {
   it("число точек по типу и зона касания на телефоне", () => {
     expect(pointsNeeded("hline")).toBe(1);
     expect(pointsNeeded("trend")).toBe(2);
-    expect(pointsNeeded("position-long")).toBe(3);
+    expect(pointsNeeded("position-long")).toBe(1);
+    expect(pointsNeeded("channel")).toBe(3);
     expect(HANDLE_TOUCH_PX).toBe(28);
   });
 
@@ -128,5 +148,125 @@ describe("цены в подписях рисунков", () => {
   it("шаг цены ещё неизвестен — прежняя запись", () => {
     expect(formatDrawingPrice(80432.61, null)).toBe("80432.6");
     expect(formatDrawingPrice(0.0046999, null)).toBe("0.004700");
+  });
+});
+
+describe("автомасштаб цены", () => {
+  it("рисунки пользователя не растягивают шкалу цены: у примитива нет autoscaleInfo (масштаб только по ценам)", () => {
+    const prim = new DrawingsPrimitive(TOKENS) as DrawingsPrimitive & { autoscaleInfo?: unknown };
+    expect(prim.autoscaleInfo).toBeUndefined();
+  });
+});
+
+/** Холст-подделка: записывает линии (цвет, прозрачность, толщина, пунктир), подписи и плашки. */
+function canvas() {
+  const strokes: { style: string; alpha: number; width: number; dash: number[]; y0: number; y1: number }[] = [];
+  const texts: { text: string; fill: string; font: string; x: number; w: number }[] = [];
+  const rects: string[] = [];
+  const boxes: { fill: string; x: number; w: number }[] = [];
+  let path: { x: number; y: number }[] = [];
+  let dash: number[] = [];
+  const st = { strokeStyle: "", fillStyle: "", lineWidth: 1, globalAlpha: 1, font: "", textBaseline: "" };
+  const stack: (typeof st & { dash: number[] })[] = [];
+  const ctx = Object.assign(st, {
+    save: () => stack.push({ ...st, dash }),
+    restore: () => {
+      const s0 = stack.pop()!;
+      dash = s0.dash;
+      Object.assign(st, s0);
+    },
+    setLineDash: (d: number[]) => (dash = d),
+    beginPath: () => (path = []),
+    moveTo: (x: number, y: number) => path.push({ x, y }),
+    lineTo: (x: number, y: number) => path.push({ x, y }),
+    stroke: () => strokes.push({ style: st.strokeStyle, alpha: st.globalAlpha, width: st.lineWidth, dash: [...dash], y0: path[0]?.y ?? NaN, y1: path[1]?.y ?? NaN }),
+    fillText: (text: string, x: number) => texts.push({ text, fill: st.fillStyle, font: st.font, x, w: text.length * 6 }),
+    fillRect: (x: number, _y: number, w: number) => {
+      rects.push(st.fillStyle);
+      boxes.push({ fill: st.fillStyle, x, w });
+    },
+    strokeRect: () => undefined,
+    measureText: (t: string) => ({ width: t.length * 6 }),
+    arc: () => undefined,
+    fill: () => undefined,
+    closePath: () => undefined,
+  });
+  return { ctx, strokes, texts, rects, boxes };
+}
+
+const PANE_W = 800;
+
+function render(drawings: Drawing[]) {
+  const candles = bars(60);
+  // шкала цены 150…70: все уровни Фибоначчи 120 → 80 (и 1.618 = 144.7) — в панели, подписи на экране
+  const env = makeEnv(() => candles, { top: 150, bottom: 70 });
+  const prim = new DrawingsPrimitive(TOKENS);
+  prim.attached({ chart: env.chart, series: env.series, requestUpdate: () => undefined } as never);
+  prim.projector!.setBars(candles.map((c) => c.time), H);
+  prim.update({ drawings });
+  const c = canvas();
+  prim.paneViews()[0]!.renderer()!.draw({ useMediaCoordinateSpace: (cb: (s: unknown) => void) => cb({ context: c.ctx, mediaSize: { width: PANE_W, height: 400 } }) } as never);
+  return c;
+}
+
+describe("Фибоначчи и цвет рисунков по умолчанию", () => {
+  const fib = (color: Drawing["style"]["color"]): Drawing => ({ ...d("f", "fib", [{ time: T0 + 10 * H, price: 120 }, { time: T0 + 40 * H, price: 80 }]), style: { color, width: 1, dashed: false }, levels: [0, 0.236, 0.382, 0.5, 0.618, 0.705, 0.786, 1, 1.272, 1.618] });
+
+  it("уровни — нейтральный --text-2, без салатового, охры и заливки; 0.5 и 0.618 выделены толщиной и непрозрачностью", () => {
+    const c = render([fib("text2")]);
+    const levels = c.strokes.filter((s) => s.y0 === s.y1);
+    expect(levels).toHaveLength(10);
+    expect(new Set(levels.map((s) => s.style))).toEqual(new Set([TOKENS.text2]));
+    for (const s of c.strokes) expect([TOKENS.accent, TOKENS.warn]).not.toContain(s.style);
+    const byY = new Map(levels.map((s) => [Math.round(s.y0), s]));
+    // та же шкала цены, что у render(): уровень → y
+    const { series } = makeEnv(() => bars(60), { top: 150, bottom: 70 });
+    const yOf = (level: number) => Math.round(series.priceToCoordinate(80 - (80 - 120) * level));
+    const key = [0.5, 0.618].map((l) => byY.get(yOf(l))!);
+    const minor = [0.236, 0.382, 0.705, 0.786, 1.272, 1.618].map((l) => byY.get(yOf(l))!);
+    const edge = [0, 1].map((l) => byY.get(yOf(l))!);
+    for (const s of key) expect(s).toMatchObject({ alpha: 1, width: 1.5, dash: [] });
+    for (const s of edge) expect(s).toMatchObject({ alpha: 1, width: 1, dash: [] });
+    for (const s of minor) expect(s).toMatchObject({ alpha: 0.6, width: 1, dash: [4, 3] });
+    // подписи — тем же нейтральным цветом на плашке цвета фона; ключевые — полужирные
+    const labels = c.texts.filter((t) => / · /.test(t.text));
+    expect(labels).toHaveLength(10);
+    expect(new Set(labels.map((t) => t.fill))).toEqual(new Set([TOKENS.text2]));
+    expect(labels.find((t) => t.text.startsWith("0.618 · "))!.font).toMatch(/^600 /);
+    expect(labels.find((t) => t.text.startsWith("0.236 · "))!.font).not.toMatch(/^600 /);
+    expect(new Set(c.rects)).toEqual(new Set([alpha(TOKENS.surface, 0.85)]));
+  });
+
+  it("подписи уровней не уходят под шкалу цены: правый конец у края панели — подпись внутри рисунка, узкий — слева", () => {
+    // шкала времени подделки: 0…110 логических на 800 px — свеча 108 у самого правого края
+    const at = (i: number) => T0 + i * H;
+    const inside = (c: ReturnType<typeof canvas>) => {
+      const labels = c.texts.filter((t) => / · /.test(t.text));
+      expect(labels).toHaveLength(10);
+      for (const t of labels) {
+        expect(t.x, t.text).toBeGreaterThanOrEqual(0);
+        expect(t.x + t.w, t.text).toBeLessThanOrEqual(PANE_W);
+      }
+      for (const b of c.boxes) expect(b.x + b.w).toBeLessThanOrEqual(PANE_W);
+      return labels;
+    };
+    const wide = inside(render([{ ...fib("text2"), points: [{ time: at(60), price: 120 }, { time: at(108), price: 80 }] }]));
+    // внутри рисунка: конец подписи — левее правого конца
+    const series = makeEnv(() => bars(60)).chart.timeScale();
+    const right = series.logicalToCoordinate(108);
+    for (const t of wide) expect(t.x + t.w).toBeLessThanOrEqual(right);
+    // узкий у края: подписи слева от левого конца
+    const narrow = inside(render([{ ...fib("text2"), points: [{ time: at(104), price: 120 }, { time: at(108), price: 80 }] }]));
+    const left = series.logicalToCoordinate(104);
+    for (const t of narrow) expect(t.x + t.w).toBeLessThanOrEqual(left);
+    // место справа есть — подписи справа, как раньше
+    const free = render([fib("text2")]).texts.filter((t) => / · /.test(t.text));
+    for (const t of free) expect(t.x).toBeGreaterThan(series.logicalToCoordinate(40));
+  });
+
+  it("прежний цвет по умолчанию (accent) рисуется нейтральным; выбранный цвет — как есть", () => {
+    expect(new Set(render([fib("accent")]).strokes.map((s) => s.style))).toEqual(new Set([TOKENS.text2]));
+    const line = { ...d("t", "trend", [{ time: T0 + 10 * H, price: 120 }, { time: T0 + 40 * H, price: 80 }]), style: { color: "down" as const, width: 1 as const, dashed: false } };
+    expect(render([line]).strokes[0]!.style).toBe(TOKENS.down);
   });
 });

@@ -1,5 +1,5 @@
 /** Пакет графика (план 2B): обёртка LWC v5, буфер свечей, тема, слои, Heikin Ashi. */
-export { createBuffer, EDGE, MAX_CANDLES, needsNewer, needsOlder, PAGE, prependOlder, pushLatest, replaceNewest } from "./buffer";
+export { createBuffer, EDGE, firstChange, MAX_CANDLES, needsNewer, needsOlder, PAGE, prependOlder, pushLatest, replaceAt, replaceNewest, replaceTail } from "./buffer";
 export type { BufferState } from "./buffer";
 export { heikinAshi, heikinNext } from "./heikin";
 export { LayerManager } from "./layers";
@@ -8,7 +8,7 @@ export { createTerminal, Terminal } from "./terminal";
 export type { PaneSeries, ScaleMode, TerminalOptions } from "./terminal";
 export { LIQ_DEFAULTS, LIQ_MIN_OI_COVERAGE, liquidationMap, oiCoverage, SR_DEFAULTS, supportResistance } from "./levels";
 export type { LiqBucket, LiqMap, LiqOptions, SrLevel, SrOptions } from "./levels";
-export { DEFAULT_PRECISION, formatCompactValue, formatCountdown, formatSignedPercent, formatUsd, formatIndicatorValue, formatPercentValue, formatPriceLabel, formatPriceShort, formatTicks, tickDecimals, tickFormat, tickPrecision } from "./format";
+export { DEFAULT_PRECISION, formatCompactValue, formatCountdown, formatSignedPercent, formatUsd, formatIndicatorValue, formatPercentValue, formatPriceLabel, formatPriceShort, formatQuantity, formatTicks, tickDecimals, tickFormat, tickPrecision } from "./format";
 export type { TickFormat } from "./format";
 export { COMPACT_FORMAT, instrumentPriceFormat, PERCENT_FORMAT, priceFormatter, VALUE_FORMAT, withHiddenTicks } from "./priceFormat";
 export type { InstrumentPriceFormat, PriceFormatter } from "./priceFormat";
@@ -18,7 +18,8 @@ export type { CanvasType, ChartAlphas, ChartPalette, ChartTheme } from "./theme"
 export { CHART_TYPES, LAYER_KEYS, TF_SECONDS, TONES } from "./types";
 export type { Candle, ChartType, Device, LayerKey, PanelKey, SceneLayer, ThemeTokens, Timeframe, Tone } from "./types";
 export * from "./indicators";
-export { bucketStart, foldMinute, isClosed, secondsToClose } from "./live";
+export { bucketStart, catchUpLive, countdownSeconds, foldMinute, isClosed, LIVE_PENDING_MINUTES, liveCandle, liveDueAt, liveForming, liveRestart, liveStart, liveTick, mergeLive, nextBucket, restThrough, secondsToClose } from "./live";
+export type { LiveBars, LiveBarState, LiveStep } from "./live";
 export * from "./drawings";
 // Разметка (PR B, план 2B.2): пресеты, сцена, раскладка подписей и шкалы — чистые модули.
 export { barsForWidth, cleanOverrides, DEFAULT_LIMITS, DEFAULT_PRESET, deviceFor, hitTolerance, INDEX_LIMITS, INTERACTION, LAYERS_VERSION, normalizeMarkup, PHONE_MAX_WIDTH, PRESET_IDS, PRESETS, resolvePreset, SELECTABLE_PRESETS, selectPreset, setLayerOverride, VIEW } from "./presets";
@@ -35,11 +36,13 @@ export type { FrameProjector } from "./render/projector";
 export { OverlayPrimitive } from "./render/OverlayPrimitive";
 export type { OverlayDebug, OverlayOptions } from "./render/OverlayPrimitive";
 export { createChartStore, INITIAL_STATE } from "./store/chartStore";
-export type { ChartState, ChartStatus, ChartStore, HoverSnapshot, VisibleSnapshot } from "./store/chartStore";
+export type { ChartState, ChartStatus, ChartStore, CrosshairSnapshot, HoverSnapshot, IndicatorValue, VisibleSnapshot } from "./store/chartStore";
 export { Dirty } from "./controller/stages";
 export type { DirtyMask } from "./controller/stages";
 export { AxisCountdown } from "./controller/axisCountdown";
 export { composeSnapshot } from "./controller/snapshot";
 export type { SnapshotStyle } from "./controller/snapshot";
 export { ChartController, createChartController } from "./controller/ChartController";
+export { commitPaneHeights, dragSeparator, EMPTY_PANE_LAYOUT, fitHeights, GROUPED_PX, isEmptyPaneLayout, mainMinShareFor, MAXIMIZED_MIN_SHARE, movePaneKey, normalizePaneLayout, orderPaneKeys, PANE_MAX_PX, planMaximized, planPanes, prunePaneLayout, separatorRange, type SepLimits } from "./controller/paneManager";
+export type { PaneLayout, PanePlan, PaneWant } from "./controller/paneManager";
 export type { ChartControllerOptions, ChartHandle, ChartInputs, FocusTarget } from "./controller/ChartController";

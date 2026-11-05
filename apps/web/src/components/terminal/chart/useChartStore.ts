@@ -3,7 +3,7 @@
 import type { ChartState, ChartStore } from "@platform/charts";
 import { createContext, useCallback, useContext, useSyncExternalStore } from "react";
 
-/** Хранилище графика для листовых компонентов (план 2B.2): создаёт владелец — TerminalPage или ячейка мультичарта. */
+/** Хранилище графика для листовых компонентов (план 2B.2): создаёт владелец — TerminalShell или ячейка мультичарта. */
 export const ChartStoreContext = createContext<ChartStore | null>(null);
 
 /**

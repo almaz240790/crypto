@@ -16,7 +16,8 @@
   text-decoration: none;
 }
 
-.btn:hover {
+.btn:hover,
+.btn:not(.primary)[aria-expanded="true"] {
   background: var(--row-hover);
   text-decoration: none;
 }
@@ -51,6 +52,14 @@
   height: 26px;
   padding: 0 var(--gap-2);
   font-size: var(--fs-caption);
+}
+
+/* под пальцем цель не меньше 44 px (ADR-0009); вид кнопки прежний, растёт только высота */
+@media (pointer: coarse) {
+  .btn {
+    height: auto;
+    min-height: var(--touch-min);
+  }
 }
 
 .lg {

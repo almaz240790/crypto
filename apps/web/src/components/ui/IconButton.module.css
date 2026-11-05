@@ -1,0 +1,72 @@
+/* Кнопка-иконка (план 2B.9): 32 / 28 / 20 px, под pointer: coarse — зона касания 44 px. */
+.btn {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-2);
+  font-size: var(--fs-table);
+  line-height: 1;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.btn:hover {
+  background: var(--row-hover);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.btn[aria-pressed="true"] {
+  background: var(--row-hover);
+  color: var(--text);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+/* недоступна: приглушённый цвет без прозрачности (≥ 4.5:1 на --surface) */
+.btn:disabled {
+  background: transparent;
+  color: var(--text-3);
+  cursor: default;
+}
+
+.btn svg {
+  width: 18px;
+  height: 18px;
+  flex: none;
+}
+
+.sm {
+  width: 28px;
+  height: 28px;
+}
+
+.sm svg {
+  width: 16px;
+  height: 16px;
+}
+
+.xs {
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  font-size: var(--fs-caption);
+}
+
+.xs svg {
+  width: 14px;
+  height: 14px;
+}
+
+@media (pointer: coarse) {
+  .btn {
+    min-width: var(--touch-min);
+    min-height: var(--touch-min);
+  }
+}

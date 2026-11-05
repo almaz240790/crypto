@@ -33,7 +33,7 @@ const ENDPOINTS: { path: string; what: string; params: string }[] = [
   { path: "/v1/chart/derivatives", what: "Funding, OI, ликвидации, L/S ratio по корзинам таймфрейма", params: "symbol, tf, before, limit" },
   { path: "/v1/screener", what: "Скринер по всем инструментам", params: "symbols" },
   { path: "/v1/screener/export.csv", what: "Скринер в CSV", params: "symbols" },
-  { path: "/v1/instruments", what: "Список инструментов", params: "—" },
+  { path: "/v1/instruments", what: "Список инструментов по капитализации (поле rank)", params: "—" },
   { path: "/v1/prices", what: "Последние цены", params: "symbols" },
   { path: "/v1/journal", what: "Ваш журнал сделок", params: "limit, offset" },
   { path: "/v1/journal/analytics", what: "Аналитика вашего журнала", params: "—" },

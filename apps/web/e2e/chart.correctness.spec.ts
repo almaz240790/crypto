@@ -1,5 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { FIRST_PAGE, H4, SUBCENT, T0, mock } from "./helpers/chart";
+import { liveSocket } from "./helpers/live";
+import { VIEW, barsForWidth } from "../../../packages/charts/src/presets";
 
 /**
  * Корректность графика (ADR-0006, PR «График: корректность»): формат цен по шагу инструмента, история слева
@@ -72,6 +74,12 @@ function newCoin(page: Page) {
     return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ symbol: NEW_COIN, tf: "4h", candles: items, current: before ? null : { ...candle(FIRST_PAGE), open: true }, has_older: false, tick_size: "0.01", server_time: "" }) });
   });
 }
+/** Наложение второго инструмента — в окне «Вид» тулбара (план 2B.9); окно закрывается Esc. */
+async function overlayTo(page: Page, symbol: string) {
+  await page.getByRole("button", { name: "Вид", exact: true }).click();
+  await page.getByRole("dialog", { name: "Вид" }).getByLabel("наложение").selectOption(symbol);
+  await page.keyboard.press("Escape");
+}
 const olderCalls = (calls: string[]) => calls.filter((c) => c.startsWith("/v1/chart/candles") && c.includes("before=")).length;
 
 test("монета дешевле цента (шаг 1e-7): деления шкалы, цена в шапке, уровни и перекрестие — не «0.00»", async ({ page }) => {
@@ -88,14 +96,14 @@ test("монета дешевле цента (шаг 1e-7): деления шк�
   expect(await formatWith(page, 0, 0, 0.004928)).toBe("0.0049280");
   // уровни в «Найдено» — с точностью инструмента
   const levels = page.getByRole("complementary", { name: "панель объектов" }).getByRole("list", { name: "уровни поддержки и сопротивления" });
-  await expect(levels).toContainText("сопротивление");
+  await expect(levels).toContainText("Сопротивление");
   const prices = await levels.locator("span.num").allTextContents();
   expect(prices.length).toBeGreaterThan(0);
   for (const p of prices) expect(p).toMatch(/^0\.00\d{5}(–0\.00\d{5})?$/);
   // карточка перекрестия
   const box = (await page.getByTestId("terminal").boundingBox())!;
   await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.4);
-  await expect(page.getByTestId("ohlc")).toContainText(/O\s0\.00\d{5}/);
+  await expect(page.getByTestId("ohlc")).toContainText(/Откр\s0\.00\d{5}/);
 });
 
 test("панели: фандинг в процентах с 4 знаками, OI компактно; общий для графика priceFormatter не задан", async ({ page }) => {
@@ -168,14 +176,14 @@ test("история слева: один запрос на подход к кр
 
 test("закрытие свечи по WebSocket: масштаб, прокрутка и подгруженная история сохраняются", async ({ page }) => {
   const calls: string[] = [];
-  const sockets: { send(m: string): void }[] = [];
-  await page.routeWebSocket(/\/v1\/ws/, (ws) => {
-    sockets.push(ws);
-    ws.onMessage(() => {});
-  });
+  // заглушка сокета — общая (отвечает на ping: иначе сторож соединения переподключался бы и добавлял запросы истории)
+  const live = await liveSocket(page, { ticks: false, at: () => 0 });
   await mock(page, calls);
   await page.goto("/chart/BTCUSDT/4h");
   await ready(page);
+  // «онлайн» — по тику (ADR-0010); тик внутри текущей свечи нового бара не добавляет
+  await expect.poll(() => live.subs.length).toBe(1);
+  live.send({ t: "tick", s: "BTCUSDT", p: "101.2", at: new Date((T0 + FIRST_PAGE * H4 + 60) * 1000).toISOString() });
   await expect(page.getByLabel("состояние")).toContainText("онлайн");
   // подгрузили историю и встали в середину
   await setLogical(page, { from: 30, to: 130 });
@@ -185,7 +193,7 @@ test("закрытие свечи по WebSocket: масштаб, прокрут
   const view = (await timeRange(page))!;
   // минутная свеча из следующего интервала H4: текущая закрывается, начинается новая
   const t = T0 + (FIRST_PAGE + 1) * H4;
-  sockets[0]!.send(JSON.stringify({ t: "candle", s: "BTCUSDT", tf: "1m", c: { t, o: "101", h: "102", l: "100", c: "101.5", v: "5" } }));
+  live.send({ t: "candle", s: "BTCUSDT", tf: "1m", c: { t, o: "101", h: "102", l: "100", c: "101.5", v: "5" } });
   await expect.poll(() => mainLen(page)).toBe(FIRST_PAGE + 2 + 500);
   await page.waitForTimeout(300);
   expect(await timeRange(page)).toEqual(view);
@@ -195,27 +203,42 @@ test("закрытие свечи по WebSocket: масштаб, прокрут
   const main = (await seriesOf(page))[0]!;
   expect(main.first).toBe(T0 - 500 * H4);
   expect(main.last).toBe(t);
+  live.dispose();
 });
 
-test("сброс вида: число свечей от ширины (около 8 px на свечу), а не 150 — при загрузке, кнопкой и двойным кликом", async ({ page }) => {
+/**
+ * Шаг свечи после сброса вида — по формуле контроллера (presets.barsForWidth): последние n свечей
+ * и свободная зона справа rightOffsetPx, шаг (W − R) / n, но не шире maxBarPx. Ширина области от
+ * раскладки (рейка, панели) — здесь не число из головы, а то, что показывает сам график.
+ */
+async function expectedSpacing(page: Page): Promise<number> {
+  const w = await page.evaluate(() => (document.querySelector('[data-testid="terminal"]') as HTMLElement & { __chart: { timeScale(): { width(): number } } }).__chart.timeScale().width());
+  const view = VIEW.desktop;
+  return (w - view.rightOffsetPx) / barsForWidth(w, view, "4h");
+}
+
+test("сброс вида: число свечей от ширины (по формуле barsForWidth, не шире maxBarPx), а не 150 — при загрузке, кнопкой и двойным кликом", async ({ page }) => {
   const calls: string[] = [];
   await mock(page, calls);
   await page.goto("/chart/BTCUSDT/4h");
   await ready(page);
-  await expect.poll(() => barSpacing(page)).toBeGreaterThan(7);
-  expect(await barSpacing(page)).toBeLessThan(9);
+  // ширина области известна, когда шкала цены размечена: ожидание пересчитывается в каждой попытке
+  const near = async () => Math.abs((await barSpacing(page)) - (await expectedSpacing(page)));
+  await expect.poll(near).toBeLessThanOrEqual(0.5);
+  const want = await expectedSpacing(page);
+  expect(want).toBeLessThanOrEqual(VIEW.desktop.maxBarPx);
   await page.getByRole("button", { name: "отдалить" }).click();
   await page.getByRole("button", { name: "отдалить" }).click();
-  await expect.poll(() => barSpacing(page)).toBeLessThan(6);
+  await expect.poll(() => barSpacing(page)).toBeLessThan(want * 0.8);
   await page.getByRole("button", { name: "показать последние свечи" }).click();
-  await expect.poll(() => barSpacing(page)).toBeGreaterThan(7);
+  await expect.poll(near).toBeLessThanOrEqual(0.5);
   await page.getByRole("button", { name: "приблизить" }).click();
   await page.getByRole("button", { name: "приблизить" }).click();
-  await expect.poll(() => barSpacing(page)).toBeGreaterThan(10);
+  await expect.poll(() => barSpacing(page)).toBeGreaterThan(want * 1.2);
   const box = (await page.getByTestId("terminal").boundingBox())!;
   await page.mouse.dblclick(box.x + box.width * 0.5, box.y + box.height * 0.5);
-  await expect.poll(() => barSpacing(page)).toBeLessThan(9);
-  expect(await barSpacing(page)).toBeGreaterThan(7);
+  await expect.poll(near).toBeLessThanOrEqual(0.5);
+  expect(await barSpacing(page)).toBeLessThanOrEqual(VIEW.desktop.maxBarPx + 0.5);
 });
 
 test("1W: открытый интерес не совпадает со свечами — карты ликвидаций нет, вместо неё короткое пояснение", async ({ page }) => {
@@ -278,22 +301,24 @@ test("светлая тема: индикаторы и разметка пере
   expect((await overlay()).sceneVersion).toBe(version);
 });
 
-test("светлая тема: линия наложенного инструмента перекрашивается сразу, тёмной охры на белом нет", async ({ page }) => {
+test("светлая тема: линия наложенного инструмента (--text-2) перекрашивается сразу, тёмного оттенка на белом нет", async ({ page }) => {
   const calls: string[] = [];
   await mock(page, calls);
   await page.goto("/chart/BTCUSDT/4h");
   await ready(page);
-  await page.getByLabel("наложение").selectOption("ETHUSDT");
-  const darkWarn = await token(page, "--warn");
+  await overlayTo(page, "ETHUSDT");
+  // цвет наложения — нейтральный --text-2 (замечание критика, M19): охра — только ликвидации
+  const dark = await token(page, "--text-2");
   const lineColors = async () => (await seriesOf(page)).filter((s) => s.type === "Line" && s.len > 0).map((s) => (s.color ?? "").toLowerCase());
-  await expect.poll(lineColors).toContain(darkWarn);
+  await expect.poll(lineColors).toContain(dark);
+  expect(await lineColors()).not.toContain(await token(page, "--warn"));
   await page.evaluate(() => {
     document.documentElement.dataset.theme = "light";
   });
-  const lightWarn = await token(page, "--warn");
-  expect(lightWarn).not.toBe(darkWarn);
-  await expect.poll(lineColors).toContain(lightWarn);
-  expect(await lineColors()).not.toContain(darkWarn);
+  const light = await token(page, "--text-2");
+  expect(light).not.toBe(dark);
+  await expect.poll(lineColors).toContain(light);
+  expect(await lineColors()).not.toContain(dark);
 });
 
 test("наложение с более длинной историей: точки только на свечах монеты, сброс вида — на её последних свечах", async ({ page }) => {
@@ -302,9 +327,9 @@ test("наложение с более длинной историей: точк
   await newCoin(page);
   await page.goto(`/chart/${NEW_COIN}/4h`);
   await ready(page);
-  await page.getByLabel("наложение").selectOption("ETHUSDT");
-  const warn = await token(page, "--warn");
-  const overlay = async () => (await seriesOf(page)).find((s) => s.type === "Line" && (s.color ?? "").toLowerCase() === warn && s.len > 0) ?? null;
+  await overlayTo(page, "ETHUSDT");
+  const neutral = await token(page, "--text-2");
+  const overlay = async () => (await seriesOf(page)).find((s) => s.type === "Line" && (s.color ?? "").toLowerCase() === neutral && s.len > 0) ?? null;
   await expect.poll(async () => (await overlay())?.len ?? 0).toBeGreaterThan(0);
   // у ETHUSDT в заглушке 300 закрытых свечей, у монеты — 100: левее её первой свечи точек наложения нет
   expect((await overlay())!.first).toBe(T0 + NEW_FIRST * H4);
@@ -368,4 +393,37 @@ test("подпись горизонтальной линии — с точнос
   await expect.poll(async () => (await labels()).length).toBeGreaterThan(0);
   // раньше — четыре значащие цифры: «0.004700» вместо семи знаков шага
   for (const l of await labels()) expect(l).toMatch(/^0\.00\d{5}$/);
+});
+
+test("панели данных фьючерсов и ATR: линии — нейтральные --ind-*/--text-2, не охра и не салатовый; у ATR одна линия", async ({ page }) => {
+  const calls: string[] = [];
+  await mock(page, calls);
+  await page.addInitScript(() => {
+    localStorage.setItem("pl-terminal", JSON.stringify({ layers_v: 5, type: "candles", indicators: [{ id: "atr", params: {} }], markup: { preset: "clean", overrides: {} }, panels: ["funding", "oi", "ls"], scale: "linear", overlay: null }));
+  });
+  await page.goto("/chart/BTCUSDT/4h");
+  await ready(page);
+  const warn = await token(page, "--warn");
+  const accent = await token(page, "--accent");
+  type Pane = { color: string; type: string; len: number }[];
+  const panes = () =>
+    page.evaluate(() => {
+      type S = { seriesType(): string; data(): unknown[]; options(): { color?: string } };
+      const ch = (document.querySelector('[data-testid="terminal"]') as HTMLElement & { __chart: { panes(): { getSeries(): S[] }[] } }).__chart;
+      return ch.panes().slice(1).map((p) => p.getSeries().map((s) => ({ color: (s.options().color ?? "").toLowerCase(), type: s.seriesType(), len: s.data().length })));
+    }) as Promise<Pane[]>;
+  // ATR и три панели фьючерсов
+  await expect.poll(async () => (await panes()).filter((p) => p.some((s) => s.len > 0)).length).toBeGreaterThanOrEqual(4);
+  const lines = (await panes()).flat().filter((s) => s.type === "Line");
+  expect(lines.length).toBe(5);
+  for (const s of lines) {
+    expect(s.color).not.toBe(warn);
+    expect(s.color).not.toBe(accent);
+  }
+  const neutral = await Promise.all(["--ind-1", "--ind-5", "--text-2"].map((n) => token(page, n)));
+  expect(lines.map((s) => s.color)).toEqual(expect.arrayContaining(neutral));
+  // ATR — одна линия и одно значение в заголовке (прежняя «% от цены» на шкале ATR — плоская у нуля, «0.953» без подписи)
+  const atr = page.getByTestId("pane-atr");
+  await expect(atr.locator(".num")).toHaveCount(1);
+  await expect(atr).toContainText(/^ATR 14/);
 });

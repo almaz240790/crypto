@@ -1,0 +1,25 @@
+/* Всплывающее окно и меню (план 2B.9): position: fixed у якоря, слой --z-popover. */
+.popover {
+  position: fixed;
+  z-index: var(--z-popover);
+  left: 0;
+  top: 0;
+  max-width: calc(100vw - 16px);
+  overflow: auto;
+  padding: var(--gap-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--fs-table);
+  box-shadow: var(--shadow-lg);
+  overscroll-behavior: contain;
+}
+
+.popover:focus {
+  outline: none;
+}
+
+.popover:focus-visible {
+  outline: 2px solid var(--focus);
+}

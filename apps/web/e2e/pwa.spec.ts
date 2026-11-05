@@ -18,6 +18,9 @@ test("манифест и service worker отдаются, офлайн-стра
   await page.goto("/");
   await expect(page.locator('link[rel="manifest"]')).toHaveAttribute("href", /manifest/);
   await expect(page.locator('link[rel="apple-touch-icon"]')).toHaveCount(1);
+  // iPhone: непрозрачный статус-бар — страница под ним, верхняя строка меню не размыта; cover — ради нижнего отступа
+  await expect(page.locator('meta[name="apple-mobile-web-app-status-bar-style"]')).toHaveAttribute("content", "black");
+  await expect(page.locator('meta[name="viewport"]')).toHaveAttribute("content", /viewport-fit=cover/);
 });
 
 test("настройки: кнопки push и тестовый push", async ({ page }) => {

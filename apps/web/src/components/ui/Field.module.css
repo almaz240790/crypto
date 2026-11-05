@@ -51,6 +51,24 @@
   background-repeat: no-repeat;
 }
 
+.small {
+  height: 28px;
+  padding: 0 24px 0 6px;
+  font-size: 13px;
+  background-position:
+    calc(100% - 13px) 11px,
+    calc(100% - 9px) 11px;
+}
+
+@media (pointer: coarse) {
+  .small {
+    min-height: var(--touch-min);
+    background-position:
+      calc(100% - 13px) 50%,
+      calc(100% - 9px) 50%;
+  }
+}
+
 .hint {
   font-size: var(--fs-caption);
   color: var(--text-3);

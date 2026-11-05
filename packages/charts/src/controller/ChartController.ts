@@ -1,14 +1,14 @@
 import type { IChartApi, LogicalRange, MouseEventParams, PriceFormat, Time } from "lightweight-charts";
 import { formatCountdown } from "../format";
 import type { Layer, LayerContext } from "../layers";
-import type { Rect } from "../layout/types";
+import type { PlacedLabel, Rect } from "../layout/types";
 import type { TextMeasurer } from "../layout/measure";
 import type { ScreenScene } from "../layout/project";
-import { secondsToClose } from "../live";
+import { countdownSeconds } from "../live";
 import { barsForWidth, DEFAULT_PRESET, deviceFor, INTERACTION, resolvePreset, VIEW, type MarkupSettings, type ResolvedPreset, type ViewPreset } from "../presets";
 import { instrumentPriceFormat, priceFormatter, withHiddenTicks, type PriceFormatter } from "../priceFormat";
 import { timeToIndex } from "../render/projector";
-import { OverlayPrimitive } from "../render/OverlayPrimitive";
+import { OverlayPrimitive, type ExternalLabels } from "../render/OverlayPrimitive";
 import { buildScene, sceneHover, selectionId } from "../scene/build";
 import { deriveAnalytics, NONE, type AlertLine, type Analytics, type ExternalObject, type SceneInput, type SceneSelection } from "../scene/input";
 import type { SceneText } from "../scene/text";
@@ -299,6 +299,19 @@ export class ChartController {
     this.hitGate = gate;
   }
 
+  /**
+   * Подписи рисунков пользователя — в раскладке разметки (ADR-0009, «Рисование»): подписи разметки ниже их приоритета
+   * обходят их; места подписей — drawingLabels().
+   */
+  setDrawingLabels(provider: ExternalLabels | null): void {
+    this.overlay.setExternalLabels(provider);
+  }
+
+  /** Места подписей рисунков в текущем кадре; null — кадра раскладки ещё нет. */
+  drawingLabels(): readonly PlacedLabel[] | null {
+    return this.overlay.externalPlaced();
+  }
+
   // ── кадр стадий ──
 
   private mark(bits: number): void {
@@ -416,6 +429,12 @@ export class ChartController {
   }
 
   // ── вид ──
+
+  /** Точка (clientX) — над правой шкалой цены (правее области свечей). */
+  private overPriceScale(clientX: number): boolean {
+    const w = this.terminal.chart.timeScale().width();
+    return w > 0 && clientX - this.el.getBoundingClientRect().left > w;
+  }
 
   private plotWidth(): number {
     return this.terminal.chart.timeScale().width() || this.el.clientWidth;
@@ -549,7 +568,7 @@ export class ChartController {
   private updateCountdown(): void {
     const last = this.terminal.candles[this.terminal.candles.length - 1];
     const days = this.inputs.text?.["countdown.days"];
-    const text = last && this.view.axis.countdown ? formatCountdown(secondsToClose(this.inputs.tf, last.time, Math.floor(Date.now() / 1000)), days) : "";
+    const text = last && this.view.axis.countdown ? formatCountdown(countdownSeconds(this.inputs.tf, last.time, Math.floor(Date.now() / 1000)), days) : "";
     this.countdown.setText(text);
     this.placeCountdown();
   }
@@ -741,7 +760,11 @@ export class ChartController {
     };
     ts.subscribeSizeChange?.(onSize);
     this.cleanups.push(() => ts.unsubscribeSizeChange?.(onSize));
-    const onDbl = () => this.reset();
+    // двойной клик по шкале цены — автомасштаб этой шкалы (axisDoubleClickReset LWC), вид по времени не сбрасывается
+    const onDbl = (e: MouseEvent) => {
+      if (this.overPriceScale(e.clientX)) return;
+      this.reset();
+    };
     // вид двигал пользователь (перетаскивание, колесо, щипок): сброс при смене ширины его не трогает
     const onUser = () => {
       this.userMoved = true;

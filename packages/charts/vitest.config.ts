@@ -11,7 +11,7 @@ export default defineConfig({
     include: ["src/**/*.test.ts"],
     coverage: {
       provider: "v8",
-      include: ["src/presets.ts", "src/scene/**/*.ts", "src/layout/**/*.ts", "src/store/**/*.ts", "src/render/**/*.ts", "src/controller/**/*.ts"],
+      include: ["src/presets.ts", "src/indicators/instances.ts", "src/scene/**/*.ts", "src/layout/**/*.ts", "src/store/**/*.ts", "src/render/**/*.ts", "src/controller/**/*.ts"],
       exclude: ["src/**/index.ts", "src/**/__tests__/**"],
       reporter: ["text-summary", "text"],
       thresholds: {
@@ -19,6 +19,8 @@ export default defineConfig({
         "src/scene/**/*.ts": STRICT,
         "src/layout/**/*.ts": STRICT,
         "src/store/**/*.ts": STRICT,
+        "src/indicators/instances.ts": STRICT,
+        "src/controller/paneManager.ts": STRICT,
         // попадание и пул меток шкалы — в OverlayPrimitive и axisViews
         "src/render/{OverlayPrimitive,axisViews,projector}.ts": { lines: 90, branches: 80, functions: 85, statements: 90 },
       },

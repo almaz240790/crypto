@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createBuffer, EDGE, MAX_CANDLES, needsNewer, needsOlder, prependOlder, pushLatest, replaceNewest } from "../buffer";
+import { createBuffer, EDGE, firstChange, MAX_CANDLES, needsNewer, needsOlder, prependOlder, pushLatest, replaceNewest, replaceTail } from "../buffer";
 import type { Candle } from "../types";
 
 const mk = (from: number, n: number): Candle[] => Array.from({ length: n }, (_, i) => ({ time: from + i * 60, open: 1, high: 2, low: 0.5, close: 1.5, volume: 1, open_: false }));
@@ -62,5 +62,42 @@ describe("буфер свечей", () => {
     expect(needsOlder(b, EDGE - 1)).toBe(true);
     expect(needsOlder(b, EDGE + 1)).toBe(false);
     expect(needsOlder({ ...b, hasOlder: false }, 0)).toBe(false);
+  });
+});
+
+describe("догон правого края", () => {
+  it("свечи с from заменяются порцией, история слева остаётся, времена не повторяются", () => {
+    const b = createBuffer(mk(0, 10), true);
+    const fresh = [...mk(8 * 60, 5).map((c) => ({ ...c, close: 7 })), { ...mk(12 * 60, 1)[0]!, close: 8 }, ...mk(0, 1)];
+    const r = replaceTail(b, 8 * 60, fresh);
+    expect(r.candles.map((c) => c.time / 60)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    expect(r.candles[0]).toBe(b.candles[0]);
+    expect(r.candles[8]!.close).toBe(7);
+    // одна свеча на время — последняя из порции
+    expect(r.candles[12]!.close).toBe(8);
+    expect(r.hasOlder).toBe(true);
+    expect(r.trimmedRight).toBe(0);
+  });
+
+  it("порция короче хвоста — лишние старые свечи справа уходят; полный буфер выгружает лишнее слева", () => {
+    const b = createBuffer(mk(0, 10), false);
+    expect(replaceTail(b, 5 * 60, mk(5 * 60, 2)).candles).toHaveLength(7);
+    const full = createBuffer(mk(0, MAX_CANDLES), false);
+    const r = replaceTail(full, (MAX_CANDLES - 1) * 60, mk((MAX_CANDLES - 1) * 60, 11));
+    expect(r.candles).toHaveLength(MAX_CANDLES);
+    expect(r.candles[0]!.time).toBe(10 * 60);
+    expect(r.hasOlder).toBe(true);
+  });
+});
+
+describe("первое отличие свечей", () => {
+  it("дописывание — длина старых; правка хвоста — индекс первой изменённой; новые объекты с теми же значениями — не отличие", () => {
+    const a = mk(0, 5);
+    expect(firstChange(a, [...a, ...mk(300, 2)])).toBe(5);
+    expect(firstChange(a, a.map((c) => ({ ...c })))).toBe(5);
+    expect(firstChange(a, [...a.slice(0, 3), { ...a[3]!, close: 9 }, a[4]!])).toBe(3);
+    expect(firstChange(a, [...a.slice(0, 4), { ...a[4]!, open_: true }])).toBe(4);
+    expect(firstChange(a, [{ ...a[0]!, time: 1 }])).toBe(0);
+    expect(firstChange(a, a.slice(0, 2))).toBe(2);
   });
 });

@@ -90,7 +90,7 @@ test("карточка: график, параметры, подсветка ф�
   await expect(page.getByTestId("signal-patterns")).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByRole("link", { name: "Открыть в терминале" })).toHaveAttribute("href", "/chart/BTCUSDT/4h");
   // переключение на D1 запрашивает свечи D1
-  await page.getByRole("button", { name: "1D" }).click();
+  await page.getByRole("button", { name: "1Д" }).click();
   await expect.poll(() => calls.some((c) => c.includes("/candles?tf=1d"))).toBe(true);
   // действие
   await page.getByRole("button", { name: "Я вошёл" }).click();

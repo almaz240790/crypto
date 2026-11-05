@@ -103,7 +103,9 @@ export function Feed({ instruments }: { instruments: { symbol: string; tick_size
 
   const symbols = useMemo(() => Array.from(new Set((data?.items ?? []).map((i) => i.symbol))), [data]);
   const onSignal = useCallback(() => setTick((t) => t + 1), []);
-  const { prices: livePrices, connected } = useLive(symbols, getAccessToken(), onSignal);
+  const { prices: livePrices, connected, online } = useLive(symbols, getAccessToken(), { onSignal });
+  // «live» — тики идут; без строк в ленте цены не нужны, достаточно открытого соединения
+  const live = online || (connected && symbols.length === 0);
 
   const priceOf = (row: SignalRow): string | undefined =>
     livePrices[row.symbol]?.p ?? data?.prices[String(row.instrument_id)]?.p;
@@ -143,8 +145,8 @@ export function Feed({ instruments }: { instruments: { symbol: string; tick_size
         </span>
         <span>{t("следующая свеча H4 через")}{" "}<Countdown until={summary?.next_h4_close ?? null} onZero={onZero} />
         </span>
-        <span className={s.live} title={connected ? t("живые цены по WebSocket") : t("нет соединения, цены по последней минуте")}>
-          <i data-on={connected} /> {connected ? "live" : "offline"}
+        <span className={s.live} title={live ? t("живые цены по WebSocket") : t("нет соединения, цены по последней минуте")}>
+          <i data-on={live} /> {live ? "live" : "offline"}
         </span>
       </div>
 

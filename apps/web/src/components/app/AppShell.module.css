@@ -190,13 +190,182 @@
   display: none;
 }
 
-@media (max-width: 900px) {
+/* Страница-инструмент (план 2B.9): рейка 56 px, страница ровно в окно, содержимое заполняет остаток. Окно — без
+   отступа под статус-бар iPhone (--safe-top, globals.css: body сдвинут на него вниз), иначе страница прокручивается */
+.shell[data-rail] {
+  grid-template-columns: var(--sidebar-w-collapsed) minmax(0, 1fr);
+  height: calc(100vh - var(--safe-top));
+  height: calc(100dvh - var(--safe-top));
+  min-height: 0;
+  overflow: hidden;
+}
+
+.shell[data-rail] .body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+}
+
+.shell[data-rail] .mobileBar {
+  flex: none;
+}
+
+.shell[data-rail] .content {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 0;
+  /* страница-инструмент помещается в окно; прокрутка — только если содержимому нужна минимальная высота */
+  overflow-y: auto;
+}
+
+.rail {
+  position: relative;
+  z-index: var(--z-chart-ui);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  height: 100%;
+  min-height: 0;
+  border-right: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.railBrand {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  flex: none;
+  color: var(--text);
+}
+
+.railBrand:hover {
+  text-decoration: none;
+}
+
+.railNav {
+  display: grid;
+  gap: var(--gap-1);
+  padding: var(--gap-1) 0;
+}
+
+.railLink,
+.avatar {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius);
+  color: var(--text-2);
+}
+
+.railLink:hover,
+.avatar:hover {
+  background: var(--row-hover);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.railLink[aria-current="page"],
+.avatar[aria-current="page"] {
+  background: var(--row-hover);
+  color: var(--text);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+/* подсказка раздела справа от иконки: только CSS, по наведению и фокусу с клавиатуры */
+.railLink[data-tip]:hover::after,
+.railLink[data-tip]:focus-visible::after {
+  content: attr(data-tip);
+  position: absolute;
+  left: calc(100% + 8px);
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-raised);
+  color: var(--text);
+  font-size: var(--fs-caption);
+  font-weight: 600;
+  white-space: nowrap;
+  box-shadow: var(--shadow);
+  pointer-events: none;
+}
+
+.railFoot {
+  margin-top: auto;
+  display: grid;
+  justify-items: center;
+  gap: var(--gap-2);
+  padding: var(--gap-2) 0 var(--gap-3);
+}
+
+.avatar span {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface-raised);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-nav);
+  background: var(--scrim);
+}
+
+.drawer {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: var(--z-nav);
+  display: flex;
+  flex-direction: column;
+  width: var(--sidebar-w);
+  max-width: 85vw;
+  overflow-y: auto;
+  border-right: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+}
+
+.drawerClose {
+  position: absolute;
+  top: 12px;
+  right: 8px;
+}
+
+@media (max-width: 899.98px) {
   .shell {
     grid-template-columns: minmax(0, 1fr);
   }
 
   .side {
     display: none;
+  }
+
+  .shell[data-rail] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .rail {
+    display: none;
+  }
+
+  .drawer {
+    width: min(300px, 85vw);
   }
 
   .mobileBar {
@@ -235,5 +404,14 @@
 
   .mobileAccount {
     margin-left: auto;
+  }
+}
+
+/* палец: разделы рейки и аккаунт — зона касания 44 px */
+@media (pointer: coarse) {
+  .railLink,
+  .avatar {
+    width: var(--touch-min);
+    height: var(--touch-min);
   }
 }

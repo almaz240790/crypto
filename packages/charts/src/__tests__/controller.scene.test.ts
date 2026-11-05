@@ -460,3 +460,17 @@ describe("ChartController: стадии сцены", () => {
     expect(term.calls).toContain("destroy");
   });
 });
+
+describe("ChartController: двойной клик (ADR-0009, «Управление панелями»)", () => {
+  it("по области свечей — сброс вида; по шкале цены — только автомасштаб шкалы (LWC), вид по времени не трогается", () => {
+    const { el, term } = setup();
+    const fire = (el as unknown as { fire(type: string, e: unknown): void }).fire;
+    const resets = () => term.calls.filter((c) => c.startsWith("resetView")).length;
+    const before = resets();
+    fire("dblclick", { clientX: 200 });
+    expect(resets()).toBe(before + 1);
+    // ширина области свечей у подделки — 940 px, правее — шкала цены
+    fire("dblclick", { clientX: 960 });
+    expect(resets()).toBe(before + 1);
+  });
+});
