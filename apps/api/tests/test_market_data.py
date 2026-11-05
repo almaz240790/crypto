@@ -1312,3 +1312,51 @@ def test_stop_during_resync_writes_and_publishes_what_it_found(monkeypatch: Any)
     assert written and published == written  # всё, что сверка записала, — опубликовано
     assert md.closed_events == [] and md.ready_events == [] and md.candle_buffer == {}
     assert md.held == {} and md.deferred == {}
+
+
+def test_events_over_cap_after_db_outage_drop_oldest_minutes_first_and_are_logged(
+    monkeypatch: Any, caplog: Any
+) -> None:
+    # MD-EVENTS-MAX-AFTER-DB-OUTAGE: события ждут свои строки, поэтому после долгого сбоя БД все
+    # приходили разом и молча обрезались до последних EVENTS_MAX — 4h-закрытие из начала сбоя не
+    # доходило до планировщика и алертов, хотя строка записана
+    monkeypatch.setattr(mdmod, "EVENTS_MAX", 5)
+    md = _md()
+    down = [True]
+
+    def flush(candles: Any, liqs: Any) -> None:
+        if down[0]:
+            raise OSError("db down")
+
+    monkeypatch.setattr(md, "_flush_sync", flush)
+    t0 = datetime(2026, 11, 5, 7, 55, tzinfo=UTC)
+    for k in range(6):
+        m = t0 + timedelta(minutes=k)
+        md._put_candle("BTCUSDT", 1, "1m", _m1(m), closed=True)
+        if k == 0:  # 4h и 1d закрылись в начале сбоя
+            h4 = datetime(2026, 11, 5, 4, tzinfo=UTC)
+            md._put_candle("BTCUSDT", 1, "4h", _m1(h4), closed=True)
+            md._put_candle("BTCUSDT", 1, "1d", _m1(h4 - timedelta(hours=4)), closed=True)
+        asyncio.run(md.flush_once())
+    assert md.n_flush_errors == 6 and len(md.closed_events) == 8
+    down[0] = False
+    with caplog.at_level("WARNING", logger="market_data"):
+        asyncio.run(md.flush_once())
+    pub = [(e["tf"], e["open_time"][11:16]) for e in _closed(md)]
+    assert pub == [
+        ("4h", "04:00"),
+        ("1d", "00:00"),
+        ("1m", "07:58"),
+        ("1m", "07:59"),
+        ("1m", "08:00"),
+    ]
+    assert md.status()["events_dropped"] == 3
+    assert "отброшено 3 старых (1m: 3)" in caplog.text
+    # Redis недоступен: очередь та же — без 4h/1d не остаётся, пока есть минутные
+    md.redis.fail = True
+    for k in range(6, 12):
+        md._put_candle("BTCUSDT", 1, "1m", _m1(t0 + timedelta(minutes=k)), closed=True)
+        if k == 6:
+            md._put_candle("BTCUSDT", 1, "4h", _m1(h4 + timedelta(hours=4)), closed=True)
+        asyncio.run(md.flush_once())
+    assert [e["tf"] for e in md.ready_events] == ["4h", "1m", "1m", "1m", "1m"]

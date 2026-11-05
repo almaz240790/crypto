@@ -125,7 +125,11 @@ STATUS_KEY = "market_data:status"
 REPORT_EVERY = 60
 CHANNEL_CLOSED = "candles.closed"
 EVENTS_MAX = 10_000
-"""Закрытые свечи, не ушедшие в Redis (он недоступен), ждут следующей записи — не больше этого."""
+"""Очередь ``candles.closed`` на публикацию (Redis недоступен; после долгого сбоя БД — события всех
+записанных строк сразу) — не больше стольких событий. Сверх — отбрасываются самые старые
+минутные (трекер догоняет по БД, ценовой алерт по старой минуте не срабатывает — проверяет
+последнюю), и только потом самые старые остальные: закрытия 4h/1d/1w ждут планировщик и алерты;
+в лог — сколько."""
 REDIS_LOG_EVERY = 60
 """Ошибки Redis у записи (при сбое — каждую секунду) пишутся в лог только первая и каждая 60-я."""
 
@@ -249,6 +253,8 @@ class MarketData:
         self.n_published = 0
         self.n_flush_errors = 0
         self.n_redis_errors = 0
+        self.n_events_dropped = 0  # событий candles.closed сверх EVENTS_MAX
+        self.n_event_caps = 0
         self.n_resynced = 0  # закрытых свечей, взятых сверкой соединения
         # REST-резерв: Binance может держать WebSocket открытым и не слать данные (так было со
         # старым адресом ``/ws`` после переноса рыночных потоков на ``/market``, см. WS_URL; так же
@@ -902,7 +908,7 @@ class MarketData:
                     )
             else:
                 self.n_flushed += len(candles)
-        self.ready_events = (self.ready_events + events)[-EVENTS_MAX:]
+        self.ready_events = self._cap_events(self.ready_events + events)
         try:
             await self.publish_closed()
             # после закрытых: клиент сначала закрывает минуту, затем видит следующую
@@ -921,15 +927,40 @@ class MarketData:
                     len(self.ready_events),
                 )
 
+    def _cap_events(self, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Не больше ``EVENTS_MAX`` событий: сверх — самые старые минутные, затем самые старые
+        остальные (порядок оставшихся прежний). В лог — первый и каждый ``REDIS_LOG_EVERY``-й
+        раз."""
+        over = len(events) - EVENTS_MAX
+        if over <= 0:
+            return events
+        m1 = [i for i, e in enumerate(events) if e["tf"] == Timeframe.M1.value][:over]
+        drop = set(m1)
+        if len(drop) < over:
+            rest = (i for i in range(len(events)) if i not in drop)
+            drop.update(next(rest) for _ in range(over - len(drop)))
+        self.n_events_dropped += len(drop)
+        self.n_event_caps += 1
+        if self.n_event_caps % REDIS_LOG_EVERY == 1:
+            log.warning(
+                "candles.closed: в очереди больше %d событий — отброшено %d старых (1m: %d), "
+                "всего отброшено %d",
+                EVENTS_MAX,
+                len(drop),
+                len(m1),
+                self.n_events_dropped,
+            )
+        return [e for i, e in enumerate(events) if i not in drop]
+
     async def publish_closed(self) -> None:
         """Записанные закрытые свечи в ``candles.closed`` по порядку; не ушедшие (Redis
-        недоступен) остаются в очереди — не больше ``EVENTS_MAX`` последних."""
+        недоступен) остаются в очереди (``_cap_events``)."""
         events, self.ready_events = self.ready_events, []
         for i, e in enumerate(events):
             try:
                 await self.redis.publish(CHANNEL_CLOSED, json.dumps(e))
             except Exception:
-                self.ready_events = (events[i:] + self.ready_events)[-EVENTS_MAX:]
+                self.ready_events = self._cap_events(events[i:] + self.ready_events)
                 raise
             self.n_published += 1
 
@@ -946,6 +977,7 @@ class MarketData:
             "buffer": len(self.candle_buffer),
             "pending_closed": len(self.closed_events) + len(self.ready_events),
             "resynced": self.n_resynced,
+            "events_dropped": self.n_events_dropped,
             "ticks": self.n_ticks,
             "tick_prices": self.n_tick_prices,
             "ticks_full": self.n_full,
