@@ -33,7 +33,7 @@ from app.models import Signal, SignalEvent, SignalResult, SignalTracking, Strate
 from app.workers.market_data import CHANNEL_CLOSED
 from engine.candles import Candle, Timeframe
 from engine.strategies import STRATEGIES
-from engine.tracker import SignalStatus, SignalTracker, TrackerEvent, TrackerState
+from engine.tracker import EventType, SignalStatus, SignalTracker, TrackerEvent, TrackerState
 
 log = logging.getLogger("tracker")
 OPEN = ("pending", "active", "tp1_hit", "tp2_hit")
@@ -54,21 +54,34 @@ EVENT_TYPE = {
 # --- сериализация состояния --------------------------------------------------------------------
 
 
+def _dt(x: object) -> datetime | None:
+    return None if x is None else datetime.fromisoformat(str(x)).astimezone(UTC)
+
+
 def state_to_json(state: TrackerState) -> dict[str, Any]:
     d = asdict(state)
     d["events"] = [
-        {"type": e.type.value, "price": str(e.price), "candle_index": e.candle_index}
+        {
+            "type": e.type.value,
+            "price": str(e.price),
+            "candle_index": e.candle_index,
+            "at": None if e.at is None else e.at.isoformat(),
+        }
         for e in state.events
     ]
     for k, v in d.items():
         if isinstance(v, Decimal):
             d[k] = str(v)
+        elif isinstance(v, datetime):
+            d[k] = v.isoformat()
     d["status"] = state.status.value
     return d
 
 
 def state_from_json(d: dict[str, Any]) -> TrackerState:
-    from engine.tracker import EventType
+    """Читает и новое состояние, и сохранённое до сроков по времени (без ``activated_at``,
+    ``deadline_at``, ``last_candle_at`` и времени событий): недостающий срок трекер
+    восстанавливает из ``signals.candle_close_time`` при первом шаге."""
 
     def dec(x: object) -> Decimal | None:
         return None if x is None else Decimal(str(x))
@@ -87,9 +100,17 @@ def state_from_json(d: dict[str, Any]) -> TrackerState:
         r_if_tp1_only=dec(d.get("r_if_tp1_only")),
         r_if_full_tp2=dec(d.get("r_if_full_tp2")),
         events=tuple(
-            TrackerEvent(EventType(e["type"]), Decimal(e["price"]), int(e["candle_index"]))
+            TrackerEvent(
+                EventType(e["type"]),
+                Decimal(e["price"]),
+                int(e["candle_index"]),
+                _dt(e.get("at")),
+            )
             for e in d.get("events", [])
         ),
+        activated_at=_dt(d.get("activated_at")),
+        deadline_at=_dt(d.get("deadline_at")),
+        last_candle_at=_dt(d.get("last_candle_at")),
     )
 
 
