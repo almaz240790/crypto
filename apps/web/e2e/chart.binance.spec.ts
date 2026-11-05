@@ -1,5 +1,5 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
-import { binanceSocket } from "./helpers/binance";
+import { BINANCE_MARKET, binanceSocket } from "./helpers/binance";
 import { FIRST_PAGE, H4, RICH_C0, T0, mock } from "./helpers/chart";
 import { liveSocket } from "./helpers/live";
 
@@ -7,7 +7,8 @@ import { liveSocket } from "./helpers/live";
  * Цена с биржи напрямую (ADR-0010, дополнение): браузер держит одно соединение с Binance USDⓈ-M Futures на все
  * показанные символы; пока биржа свежа, её сделки и минуты — основной источник цены и свечи, тики сервера по символу
  * пропускаются; биржа недоступна (геоблок) или молчит — цена с сервера, попытки биржи — с паузой 5 → 60 с.
- * Биржа здесь — заглушка page.routeWebSocket (helpers/binance): настоящая из контейнера и CI недоступна.
+ * Биржа здесь — заглушка page.routeWebSocket (helpers/binance): настоящие цены не должны смешиваться с фикстурами; как и
+ * настоящая Binance, заглушка шлёт kline и сделки только на рыночный адрес /market/.
  */
 
 type Bar = { time: number; open: number; high: number; low: number; close: number; value?: number };
@@ -61,7 +62,7 @@ test("биржа напрямую: цена и текущая свеча дви�
     await expect(strip.locator(BINANCE_TITLE)).toHaveCount(1);
     // одно соединение с биржей; потоки символа — в адресе
     expect(bn.sockets).toHaveLength(1);
-    expect(bn.sockets[0]!.url).toBe("wss://fstream.binance.com/stream?streams=btcusdt@kline_1m/btcusdt@aggTrade");
+    expect(bn.sockets[0]!.url).toBe(`${BINANCE_MARKET}?streams=btcusdt@kline_1m/btcusdt@aggTrade`);
     // тики сервера идут, пока биржа свежа, — мимо свечи и шапки
     server.state.ticks = true;
     await expect.poll(() => headerPrice(page)).toBeGreaterThan(RICH_C0 + 10);

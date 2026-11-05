@@ -1,19 +1,26 @@
 import type { BrowserContext, Page, WebSocketRoute } from "@playwright/test";
 
 /**
- * Заглушка прямого потока Binance USDⓈ-M Futures (wss://fstream.binance.com/stream?streams=…) для e2e (ADR-0010,
- * дополнение «цена с биржи»). Настоящая биржа из контейнера и CI недоступна (геоблок 451), а где доступна — давала бы
- * настоящие цены поверх фикстур: поэтому mock() из helpers/chart закрывает её для всех спеков (blockBinance), а спеки
- * прямого потока ставят эту заглушку на страницу (маршрут страницы важнее маршрута контекста).
+ * Заглушка прямого потока Binance USDⓈ-M Futures (wss://fstream.binance.com/market/stream?streams=…) для e2e (ADR-0010,
+ * дополнение «цена с биржи»). Настоящая биржа давала бы настоящие цены поверх фикстур (и CI без сети к ней): поэтому
+ * mock() из helpers/chart закрывает её для всех спеков (blockBinance), а спеки прямого потока ставят эту заглушку на
+ * страницу (маршрут страницы важнее маршрута контекста).
+ *
+ * Как настоящая Binance после переноса рыночных потоков: kline и сделки — только на адресах `/market/…`; старый адрес
+ * (`/stream`, `/ws`) соединение принимает и на управляющие сообщения отвечает, но рыночных данных не шлёт — откат адреса
+ * в BinanceFeed роняет спеки, а не проходит незамеченным.
  *
  * Умеет: поток по подписанным символам — сделки каждые `every` мс и kline 1m каждые 250 мс (o/h/l/c/v идущей минуты из
  * этих сделок, при смене минуты — закрытая минута x = true); ответы на SUBSCRIBE/UNSUBSCRIBE/LIST_SUBSCRIPTIONS (потоки
  * соединения меняются); отказ в соединении (state.refuse — как геоблок); полная тишина (state.silent — ни данных, ни
- * ответов, как полуоткрытый сокет); пауза данных при живых ответах (state.data = false); ручные kline и сделки.
+ * ответов, как полуоткрытый сокет); тихий рынок — сделок нет, ответы есть (state.data = false); ручные kline и сделки.
  * Пишет соединения (sockets: адрес и потоки) и все управляющие сообщения (control).
  */
 
+/** Любой адрес fstream: и рыночный, и старый (заглушка отвечает на оба, данные — только рыночному). */
 export const BINANCE_RE = /^wss:\/\/fstream\.binance\.com\//;
+/** Адрес рыночных потоков (kline, aggTrade). */
+export const BINANCE_MARKET = "wss://fstream.binance.com/market/stream";
 
 /** Биржа недоступна (как из контейнера и CI): соединение закрывается сразу. Для всех спеков — через mock(). */
 export async function blockBinance(ctx: BrowserContext): Promise<void> {
@@ -21,7 +28,8 @@ export async function blockBinance(ctx: BrowserContext): Promise<void> {
 }
 
 type Control = { method: string; params?: string[]; id: number };
-type Conn = { ws: WebSocketRoute; url: string; streams: Set<string>; open: boolean };
+/** legacy — старый адрес: управляющие ответы есть, рыночных данных нет. */
+type Conn = { ws: WebSocketRoute; url: string; streams: Set<string>; open: boolean; legacy: boolean };
 type Minute = { t: number; o: number; h: number; l: number; c: number; v: number };
 
 export type BinanceMock = {
@@ -60,8 +68,9 @@ export async function binanceSocket(page: Page, o: BinanceMockOptions): Promise<
   const digits = o.digits ?? 2;
   const every = o.every ?? 100;
   const live = () => sockets.filter((c) => c.open);
+  const market = () => live().filter((c) => !c.legacy);
   const send = (sym: string, stream: string, data: unknown) => {
-    for (const c of live()) if (c.streams.has(`${sym.toLowerCase()}@${stream}`)) c.ws.send(JSON.stringify({ stream: `${sym.toLowerCase()}@${stream}`, data }));
+    for (const c of market()) if (c.streams.has(`${sym.toLowerCase()}@${stream}`)) c.ws.send(JSON.stringify({ stream: `${sym.toLowerCase()}@${stream}`, data }));
   };
   const kline = (symbol: string, k: { t: number; o: string; h: string; l: string; c: string; v: string; x?: boolean }, E: number) =>
     send(symbol, "kline_1m", { e: "kline", E: Math.round(E * 1000), s: symbol, k: { t: k.t * 1000, T: k.t * 1000 + 59_999, s: symbol, i: "1m", o: k.o, h: k.h, l: k.l, c: k.c, v: k.v, x: k.x ?? false, n: 1, q: "0", V: "0", Q: "0", B: "0" } });
@@ -76,8 +85,9 @@ export async function binanceSocket(page: Page, o: BinanceMockOptions): Promise<
       void ws.close();
       return;
     }
-    const streams = new Set((new URL(url).searchParams.get("streams") ?? "").split("/").filter(Boolean));
-    const conn: Conn = { ws, url, streams, open: true };
+    const u = new URL(url);
+    const streams = new Set((u.searchParams.get("streams") ?? "").split("/").filter(Boolean));
+    const conn: Conn = { ws, url, streams, open: true, legacy: !u.pathname.startsWith("/market/") };
     sockets.push(conn);
     ws.onClose(() => {
       conn.open = false;
@@ -92,15 +102,15 @@ export async function binanceSocket(page: Page, o: BinanceMockOptions): Promise<
     });
   });
 
-  // символы, на которые подписано хоть одно соединение
+  // символы, на которые подписано хоть одно рыночное соединение
   const symbols = () => {
     const out = new Set<string>();
-    for (const c of live()) for (const s of c.streams) if (s.endsWith("@aggTrade")) out.add(s.slice(0, -"@aggTrade".length).toUpperCase());
+    for (const c of market()) for (const s of c.streams) if (s.endsWith("@aggTrade")) out.add(s.slice(0, -"@aggTrade".length).toUpperCase());
     return [...out];
   };
   let ticks = 0;
   const timer = setInterval(() => {
-    if (!state.data || state.silent || !live().length) return;
+    if (!state.data || state.silent || !market().length) return;
     const k = ++state.k;
     const T = o.at(k);
     const t = Math.floor(T / 60) * 60;

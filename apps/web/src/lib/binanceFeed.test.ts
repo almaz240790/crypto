@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   BATCH_MS,
+  BINANCE_WS,
   BinanceFeed,
   CONNECT_TIMEOUT_MS,
   CONTROL_GAP_MS,
@@ -124,9 +125,10 @@ describe("разбор сообщений Binance", () => {
     expect(parseAggTrade(undefined)).toBeNull();
   });
 
-  it("имена потоков — строчными, адрес combined stream", () => {
+  it("адрес — рыночные потоки (/market): старый /stream kline и сделок больше не шлёт; имена потоков — строчными", () => {
+    expect(BINANCE_WS).toBe("wss://fstream.binance.com/market/stream");
     expect(streamsOf("BTCUSDT")).toEqual(["btcusdt@kline_1m", "btcusdt@aggTrade"]);
-    expect(streamUrl("wss://fstream.binance.com/stream", ["a@kline_1m", "a@aggTrade"])).toBe("wss://fstream.binance.com/stream?streams=a@kline_1m/a@aggTrade");
+    expect(streamUrl(BINANCE_WS, ["a@kline_1m", "a@aggTrade"])).toBe("wss://fstream.binance.com/market/stream?streams=a@kline_1m/a@aggTrade");
   });
 });
 
