@@ -1,8 +1,9 @@
 """/v1/instruments, /v1/signals, /v1/stats — публичные данные (план 3.4, 3.5, 3.10).
 
-Видны только сигналы версий стратегии в статусе ``live``. Задержка для Free и доступ к
-активным сигналам — этап 3 (тарифы); сейчас все эндпоинты без ограничений для залогиненных,
-а без логина — только закрытые сигналы и агрегированная статистика.
+Видны только live-сигналы: ``signals.scope = 'live'``, область зафиксирована при публикации
+(``app.signal_scope``, план 2.11, правило 5); форвард — по правам (Premium, admin/owner).
+Задержка для Free и доступ к активным сигналам — этап 3 (тарифы); сейчас все эндпоинты без
+ограничений для залогиненных, а без логина — только закрытые сигналы и агрегированная статистика.
 """
 
 from __future__ import annotations
@@ -39,6 +40,7 @@ from app.models import (
     User,
 )
 from app.screener import CSV_COLUMNS, csv_rows, screener_cached
+from app.signal_scope import scope_filter
 from app.snapshots import find as find_snapshot
 from app.stats import filter_trades, load_trades, stats_payload, trade_rows, trades_from_run
 from engine.backtest import BacktestTrade
@@ -60,6 +62,16 @@ def _scope(scope: str, user: User | None, ent: Entitlements | None = None) -> st
         if not allowed:
             raise HTTPException(403, "форвард-сигналы доступны на тарифе Premium")
     return scope
+
+
+def _version_id(
+    db: Session, scope: str, strategy_version_id: int | None, version: str | None
+) -> int | None:
+    """Явная версия для live/forward: id или номер (``1.2.0``). Для backtest номер версии выбирает
+    прогон (``_latest_run``), поэтому здесь не разрешается."""
+    if strategy_version_id is None and version and scope != "backtest":
+        return db.scalar(select(StrategyVersion.id).where(StrategyVersion.version == version))
+    return strategy_version_id
 
 
 def _apply_entitlements(
@@ -164,6 +176,7 @@ def _signal_dict(
         "symbol": symbol,
         "instrument_id": s.instrument_id,
         "strategy_version": version,
+        "scope": s.scope,
         "last_event_at": last_event_at.isoformat() if last_event_at else None,
         "direction": s.direction,
         "candle_close_time": s.candle_close_time.isoformat(),
@@ -208,6 +221,7 @@ def signals(
     grade: str | None = None,
     direction: str | None = None,
     scope: str = Query("live", pattern="^(live|forward)$"),
+    version: str | None = Query(None, max_length=32),
     days: int | None = Query(None, ge=1, le=3650),
     sort: str = Query("time", pattern="^(time|symbol|grade|score|rr|status)$"),
     order: str = Query("desc", pattern="^(asc|desc)$"),
@@ -219,11 +233,14 @@ def signals(
     now = datetime.now(tz=UTC)
     ent = entitlements_for(db, user, now)
     scope = _scope(scope, user, ent)
+    version_id = _version_id(db, scope, None, version)
+    if version and version_id is None:
+        raise HTTPException(404, "версия не найдена")
     q = (
         select(Signal, Instrument.symbol, StrategyVersion.version)
         .join(Instrument, Instrument.id == Signal.instrument_id)
         .join(StrategyVersion, StrategyVersion.id == Signal.strategy_version_id)
-        .where(StrategyVersion.status == scope)
+        .where(scope_filter(scope, version_id))
     )
     if user is None:
         q = q.where(Signal.status.not_in(OPEN_STATUSES))  # без логина — только закрытые
@@ -294,12 +311,7 @@ def signals_summary(
     """Счётчики для шапки ленты: активных, новых сегодня, следующее закрытие H4 (план 3.4)."""
     now = datetime.now(tz=UTC)
     scope = _scope(scope, user, entitlements_for(db, user, now))
-    base = (
-        select(func.count())
-        .select_from(Signal)
-        .join(StrategyVersion, StrategyVersion.id == Signal.strategy_version_id)
-        .where(StrategyVersion.status == scope)
-    )
+    base = select(func.count()).select_from(Signal).where(scope_filter(scope))
     active = db.scalar(base.where(Signal.status.in_(OPEN_STATUSES))) or 0
     today = (
         db.scalar(
@@ -342,20 +354,21 @@ def signal_detail(
     db: Session = Depends(auth.get_db),
 ) -> dict[str, Any]:
     row = db.execute(
-        select(Signal, Instrument.symbol, StrategyVersion.version, StrategyVersion.status)
+        select(Signal, Instrument.symbol, StrategyVersion.version)
         .join(Instrument, Instrument.id == Signal.instrument_id)
         .join(StrategyVersion, StrategyVersion.id == Signal.strategy_version_id)
         .where(Signal.public_id == public_id)
     ).first()
-    if row is None or row[3] not in ("live", "forward"):
+    if row is None:
         raise HTTPException(404)
+    s, symbol, version = row
     now = datetime.now(tz=UTC)
     ent = entitlements_for(db, user, now)
-    if row[3] == "forward" and (
+    # область — на момент публикации: форвард-сигнал версии, ставшей live, остаётся форвардом
+    if s.scope == "forward" and (
         user is None or (user.role not in ("admin", "owner") and not ent.forward_scope)
     ):
         raise HTTPException(404)
-    s, symbol, version, _ = row
     if user is None and s.status in OPEN_STATUSES:
         raise HTTPException(403, "активные сигналы доступны после входа")
     if user is not None and not signal_visible(ent, s.grade, s.candle_close_time, now):
@@ -395,16 +408,15 @@ def signal_analysis(
 ) -> dict[str, Any]:
     """Структура, зоны и уровни на момент сигнала — для отрисовки на графике карточки."""
     row = db.execute(
-        select(Signal, Instrument, StrategyVersion.status)
+        select(Signal, Instrument)
         .join(Instrument, Instrument.id == Signal.instrument_id)
-        .join(StrategyVersion, StrategyVersion.id == Signal.strategy_version_id)
         .where(Signal.public_id == public_id)
     ).first()
-    if row is None or row[2] not in ("live", "forward"):
+    if row is None:
         raise HTTPException(404)
-    if row[2] == "forward" and (user is None or user.role not in ("admin", "owner")):
+    s, inst = row
+    if s.scope == "forward" and (user is None or user.role not in ("admin", "owner")):
         raise HTTPException(404)
-    s, inst, _ = row
     if user is None and s.status in OPEN_STATUSES:
         raise HTTPException(403)
     return analyze_signal(db, s, inst)
@@ -543,10 +555,7 @@ def stats(
     ``live`` — опубликованные сигналы, ``forward`` — форвард-тест на живых данных,
     ``backtest`` — сохранённый прогон бэктеста. Ручного ввода нет."""
     s, u = _since_until(days, since, until)
-    if strategy_version_id is None and version and scope != "backtest":
-        strategy_version_id = db.scalar(
-            select(StrategyVersion.id).where(StrategyVersion.version == version)
-        )
+    strategy_version_id = _version_id(db, scope, strategy_version_id, version)
     if scope != "backtest" and not (entry_type or s or u):
         snap = find_snapshot(db, scope, strategy_version_id, symbol, grade)
         if snap is not None:
@@ -636,6 +645,7 @@ def stats_trades(
     if scope == "forward" and (user is None or user.role not in ("admin", "owner")):
         raise HTTPException(403, "построчная история форварда не публикуется")
     s, u = _since_until(days, None, None)
+    strategy_version_id = _version_id(db, scope, strategy_version_id, version)
     trades, meta = _collect_trades(
         db, scope, strategy_version_id, run_id, version, symbol, grade, entry_type, s, u
     )
@@ -665,7 +675,18 @@ def stats_export(
         raise HTTPException(403, "экспорт CSV доступен на тарифе Pro")
     if scope == "forward" and user.role not in ("admin", "owner") and not ent.forward_scope:
         raise HTTPException(403, "форвард в CSV не публикуется")
-    trades, _ = _collect_trades(db, scope, None, run_id, version, symbol, None, None, None, None)
+    trades, _ = _collect_trades(
+        db,
+        scope,
+        _version_id(db, scope, None, version),
+        run_id,
+        version,
+        symbol,
+        None,
+        None,
+        None,
+        None,
+    )
     rows = trade_rows(sorted(trades, key=lambda t: t.signal_time))
     cols = [
         "id",

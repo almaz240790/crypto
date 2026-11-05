@@ -15,11 +15,12 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select, text
+from sqlalchemy import or_, select, text
 from sqlalchemy.orm import Session
 
 from app.analysis import params_for_version
 from app.models import Instrument, Signal, SignalEvent, StrategyVersion
+from app.signal_scope import scope_filter
 from engine.bias import context_at
 from engine.candles import Candle, Timeframe, closed_only
 from engine.indicators import atr
@@ -355,13 +356,17 @@ def layers_cached(
 
 
 def signal_layer(
-    db: Session, inst: Instrument, scope_statuses: list[str], limit: int = 50
+    db: Session, inst: Instrument, scopes: list[str], limit: int = 50
 ) -> list[dict[str, Any]]:
-    """Сигналы инструмента для слоя: вход, стоп, цели, статус, события на шкале времени."""
+    """Сигналы инструмента для слоя: вход, стоп, цели, статус, события на шкале времени.
+
+    ``scopes`` — области сигналов (``signals.scope`` на момент публикации, ``app.signal_scope``):
+    live — все live-сигналы, forward — форвард-сигналы версий, которые сейчас в forward или live.
+    """
     rows = db.execute(
         select(Signal, StrategyVersion.version)
         .join(StrategyVersion, StrategyVersion.id == Signal.strategy_version_id)
-        .where(Signal.instrument_id == inst.id, StrategyVersion.status.in_(scope_statuses))
+        .where(Signal.instrument_id == inst.id, or_(*(scope_filter(s) for s in scopes)))
         .order_by(Signal.candle_close_time.desc())
         .limit(limit)
     ).all()
