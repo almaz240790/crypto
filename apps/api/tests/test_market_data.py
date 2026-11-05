@@ -1504,3 +1504,54 @@ def test_liquidation_buffer_is_capped_during_db_outage(monkeypatch: Any, caplog:
             asyncio.run(md.flush_once())
     assert sorted(t for _, t in md.liq_buffer) == [t0 + timedelta(minutes=k) for k in (2, 3, 4)]
     assert md.n_liq_dropped == 2 and "буфер ликвидаций переполнен" in caplog.text
+
+
+def test_backfill_keeps_symbol_whose_rest_request_failed_until_it_succeeds(
+    monkeypatch: Any,
+) -> None:
+    # BACKFILL-COUNTS-FAILED-REST-AS-DONE: догрузка опросом считала инструмент сделанным, даже
+    # если запрос его tf не удался (5xx, таймаут), и убирала его из backfill_needed. Сверка после
+    # переподключения и повтор опросом — оба с ошибкой REST: минута, закрывшаяся без соединения,
+    # оставалась в БД незакрытой и без candles.closed навсегда, а следующая (из стрима) уходила
+    # после HOLD_MAX без неё
+    md = _md()
+    db = MemDb().install(monkeypatch, md)
+    now = datetime.now(tz=UTC).replace(second=0, microsecond=0)
+    hole, nxt = now - timedelta(minutes=2), now - timedelta(minutes=1)
+    synced = hole - timedelta(minutes=1)
+    db.write("seed", 1, "1m", synced, True)
+    db.write("seed", 1, "1m", hole, False)  # шла при обрыве
+    md.last_closed[(1, "1m")] = synced
+    gen = md.hold(["BTCUSDT"])  # по новому соединению пошли данные
+    md.on_kline({**KLINE, "i": "1m", "t": int(nxt.timestamp() * 1000), "x": True})
+
+    class Flaky:
+        """Первые ``fail`` запросов — 503, дальше — REST как есть."""
+
+        def __init__(self, rest: RestHistory, fail: int) -> None:
+            self.rest = rest
+            self.fail = fail
+
+        def fetch_rest(self, *a: Any) -> list[Candle]:
+            if self.fail > 0:
+                self.fail -= 1
+                req = httpx.Request("GET", "https://fapi.binance.com/fapi/v1/klines")
+                resp = httpx.Response(503, request=req)
+                raise httpx.HTTPStatusError("503", request=req, response=resp)
+            return self.rest.fetch_rest(*a)
+
+    rest = RestHistory({Timeframe.M1: [_m1(hole), _m1(nxt, 110), _m1(now)]}, [])
+    flaky = Flaky(rest, fail=2 * len(mdmod.TIMEFRAMES))  # сверка и первый повтор опросом
+    md.resync(["BTCUSDT"], history=flaky, gen=gen)
+    assert md.backfill_needed == {"BTCUSDT"}
+    assert md.backfill(sorted(md.backfill_needed), history=flaky) is False
+    assert md.backfill_needed == {"BTCUSDT"}  # раньше: True и пустой список — повтора не было
+    assert len(md.held) == len(mdmod.TIMEFRAMES)  # пары по-прежнему ждут догрузки
+    asyncio.run(md.flush_once())
+    assert db.rows.get((1, "1m", nxt)) is None and _closed(md) == []
+    # следующий цикл опроса: REST ответил — дыра закрыта, события по порядку
+    assert md.backfill(sorted(md.backfill_needed), history=flaky) is True
+    asyncio.run(md.flush_once())
+    assert md.backfill_needed == set() and md.held == {}
+    assert db.rows[(1, "1m", hole)] is True and db.closed_in_order(1, synced)
+    assert _closed_1m(md)[:2] == [hole, nxt]

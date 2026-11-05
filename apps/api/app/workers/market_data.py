@@ -306,8 +306,10 @@ class MarketData:
 
         ``symbols`` — только эти инструменты (догрузка, прерванная паузой), иначе все. На паузе
         после 418/429 запросы не идут: недогруженные инструменты остаются в ``backfill_needed``, их
-        догрузит опрос после паузы. Догруженная пара больше не ждёт сверки (``release``). На
-        остановке — выход после текущего запроса. Возвращает ``True``, если догружено всё."""
+        догрузит опрос после паузы; так же — инструмент, у которого запрос хоть одного tf не удался
+        (5xx, таймаут): опрос повторит его догрузку, а не сочтёт сделанной. Догруженная пара больше
+        не ждёт сверки (``release``). На остановке — выход после текущего запроса. Возвращает
+        ``True``, если догружено всё."""
         history = history if history is not None else BinanceHistory("futures")
         todo = list(symbols) if symbols is not None else list(self.symbols)
         done: list[str] = []
@@ -319,18 +321,24 @@ class MarketData:
                     continue
                 if self._interrupted():
                     break
+                synced = 0
                 for tf in TIMEFRAMES:
                     if self._interrupted():
                         break
                     if self._sync_key(s, history, symbol, inst_id, tf, from_db=True) is not None:
                         self.release([(inst_id, tf.value)])
-                else:
+                        synced += 1
+                if synced == len(TIMEFRAMES):
                     done.append(symbol)
         left = [x for x in todo if x not in done]
         if left:
             self.backfill_needed.update(left)
             if not self.stop.is_set():
-                log.warning("догрузка прервана паузой 418/429: осталось %d инструментов", len(left))
+                log.warning(
+                    "догрузка не завершена (ошибка REST или пауза 418/429): осталось %d "
+                    "инструментов, повторит опрос",
+                    len(left),
+                )
             return False
         self.backfill_needed.difference_update(todo)
         log.info("догрузка завершена (%d инструментов)", len(todo))
