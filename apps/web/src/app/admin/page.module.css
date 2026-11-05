@@ -1,9 +1,14 @@
 .tabs {
   display: inline-flex;
+  max-width: 100%;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  overflow: hidden;
+  overflow-x: auto;
   margin-bottom: var(--gap-4);
+}
+
+.tabs button {
+  flex: none;
 }
 
 .tabs button {

@@ -16,13 +16,13 @@ import { formatPrice } from "@/lib/format";
 /**
  * Меню кабинета (ADR-0006): только инструменты анализа. Сигналы, статистика, журнал и калькулятор
  * убраны из меню (страницы доступны по ссылкам); тариф, настройки и поддержка — в блоке аккаунта.
+ * Ссылки на админку здесь нет и не должно быть: у неё свой вход по адресу /admin/login (ADR-0011).
  */
 const NAV: { href: string; label: string; icon: string }[] = [
   { href: "/chart", label: "График", icon: "M4 17l5-5 4 4 7-8M4 21h16" },
   { href: "/screener", label: "Скринер", icon: "M4 5h16l-6 7v6l-4 2v-8z" },
   { href: "/alerts", label: "Алерты", icon: "M6 16V11a6 6 0 0 1 12 0v5l2 2H4zM10 20a2 2 0 0 0 4 0" },
 ];
-const ADMIN = { href: "/admin", label: "Админка", icon: "M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z" };
 const ACCOUNT: { href: string; label: string }[] = [
   { href: "/billing", label: "Подписка" },
   { href: "/settings", label: "Настройки" },
@@ -97,8 +97,7 @@ function MyCoins() {
 
 function useNav() {
   const path = usePathname();
-  const { user } = useAuth();
-  const nav = user && (user.role === "admin" || user.role === "owner") ? [...NAV, ADMIN] : NAV;
+  const nav = NAV;
   const isCurrent = useCallback((href: string) => path === href || path.startsWith(href + "/"), [path]);
   return { nav, isCurrent, path };
 }

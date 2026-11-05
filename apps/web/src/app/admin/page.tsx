@@ -2,8 +2,7 @@
 
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useState } from "react";
-import { AppShell } from "@/components/app/AppShell";
-import { useAuth } from "@/components/auth/AuthProvider";
+import { AdminShell, useAdminMe } from "@/components/admin/AdminShell";
 import t from "@/components/tools/tools.module.css";
 import { Badge, Button, EmptyState, Input, Panel, Select, StatusBadge, Table, Td, Th } from "@/components/ui";
 import * as A from "@/lib/admin";
@@ -819,11 +818,9 @@ function Audit() {
 function AdminInner() {
   const sp = useSearchParams();
   const router = useRouter();
-  const { user, loading } = useAuth();
+  const me = useAdminMe();
   const tab = (TABS.find(([k]) => k === sp.get("tab"))?.[0] ?? "strategies") as Tab;
   const { msg, run } = useToast();
-  if (loading) return <EmptyState text="Загрузка…" />;
-  if (!user || (user.role !== "admin" && user.role !== "owner")) return <EmptyState text="Раздел доступен только администраторам." />;
   return (
     <>
       <div className={s.tabs} role="tablist">
@@ -841,7 +838,7 @@ function AdminInner() {
       {tab === "strategies" && <Strategies run={run} />}
       {tab === "instruments" && <Instruments run={run} />}
       {tab === "signals" && <Signals run={run} />}
-      {tab === "users" && <Users run={run} me={{ id: user.id, role: user.role }} />}
+      {tab === "users" && <Users run={run} me={{ id: me.id, role: me.role }} />}
       {tab === "billing" && <Billing run={run} />}
       {tab === "tickets" && <Tickets run={run} />}
       {tab === "labeling" && <Labeling run={run} />}
@@ -851,12 +848,13 @@ function AdminInner() {
   );
 }
 
+/** Админка (ADR-0011): только по сеансу админки — вход /admin/login, своя шапка, без меню сайта. */
 export default function AdminPage() {
   return (
-    <AppShell title="Админка">
+    <AdminShell>
       <Suspense fallback={<EmptyState text="Загрузка…" />}>
         <AdminInner />
       </Suspense>
-    </AppShell>
+    </AdminShell>
   );
 }
