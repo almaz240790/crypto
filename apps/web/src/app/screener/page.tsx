@@ -10,8 +10,8 @@ import { Badge, Button, EmptyState, Panel, Table, Td, Th } from "@/components/ui
 import { createAlert } from "@/lib/alerts";
 import { capPlaces } from "@/lib/coinRank";
 import { getAccessToken } from "@/lib/auth-client";
-import { formatPct, formatPrice, formatTimeUTC } from "@/lib/format";
-import { EMPTY_FILTERS, deleteScreen, getScreener, getScreens, putScreen, type SavedScreen, type ScreenerFilters, type ScreenerRow } from "@/lib/user";
+import { formatListPrice, formatPct, formatTimeUTC } from "@/lib/format";
+import { EMPTY_FILTERS, deleteScreen, getInstruments, getScreener, getScreens, putScreen, type SavedScreen, type ScreenerFilters, type ScreenerRow } from "@/lib/user";
 import { DEFAULT_SCREENER_SORT, firstDirection, sortScreenerRows, type ScreenerSort, type ScreenerSortKey } from "@/lib/screenerSort";
 import { useT } from "@/i18n/client";
 import type { T } from "@/i18n";
@@ -59,6 +59,8 @@ export default function ScreenerPage() {
   const [rows, setRows] = useState<ScreenerRow[] | null>(null);
   const [at, setAt] = useState<string | null>(null);
   const [sparks, setSparks] = useState<Record<string, string[]>>({});
+  /** Шаг цены инструмента: цена — с его точностью (план 5.4). */
+  const [ticks, setTicks] = useState<Map<string, string | null>>(() => new Map());
   const [error, setError] = useState<string | null>(null);
   const [sort, setSort] = useState<ScreenerSort>(DEFAULT_SCREENER_SORT);
   const [f, setF] = useState<ScreenerFilters>(EMPTY_FILTERS);
@@ -81,6 +83,9 @@ export default function ScreenerPage() {
         setSparks(r.sparklines ?? {});
       })
       .catch((e: Error) => setError(e.message));
+    getInstruments()
+      .then((list) => setTicks(new Map(list.map((i) => [i.symbol, i.tick_size]))))
+      .catch(() => {}); // без списка — цена по значащим цифрам
   }, []);
   useEffect(() => {
     if (!user) return;
@@ -271,7 +276,7 @@ export default function ScreenerPage() {
                         <strong>{r.symbol}</strong>
                       </Link>
                     </Td>
-                    <Td num mobile="right">{formatPrice(r.price ?? null)}</Td>
+                    <Td num mobile="right">{formatListPrice(r.price ?? null, ticks.get(r.symbol))}</Td>
                     <Td mobile="hidden">
                       <Sparkline values={sparks[String(r.instrument_id)] ?? []} up={(n(r.change_24h) ?? 0) >= 0} width={56} height={18} />
                     </Td>

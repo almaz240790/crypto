@@ -5,7 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import { AppShell } from "@/components/app/AppShell";
 import s from "@/components/tools/tools.module.css";
 import { Badge, Button, EmptyState, Panel, Table, Td, Th } from "@/components/ui";
-import { formatPct, formatPrice } from "@/lib/format";
+import { formatListPrice, formatPct } from "@/lib/format";
 import { fetchFeed, DEFAULT_FILTERS } from "@/lib/signals";
 import { addWatch, getInstruments, getScreener, getWatchlist, removeWatch, type Instrument, type ScreenerRow } from "@/lib/user";
 import { useT } from "@/i18n/client";
@@ -108,7 +108,7 @@ export default function WatchlistPage() {
                           <strong>{sym}</strong>
                         </Link>
                       </Td>
-                      <Td num mobile="right">{formatPrice(r?.price ?? null)}</Td>
+                      <Td num mobile="right">{formatListPrice(r?.price ?? null, instruments.find((i) => i.symbol === sym)?.tick_size)}</Td>
                       <Td num mobile="right" className={ch && ch > 0 ? "up" : ch && ch < 0 ? "down" : ""}>
                         {formatPct(ch)}
                       </Td>

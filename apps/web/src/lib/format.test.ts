@@ -3,6 +3,7 @@ import {
   decimalsFromTick,
   formatDuration,
   formatPct,
+  formatListPrice,
   formatPrice,
   formatR,
   formatTimeUTC,
@@ -46,6 +47,27 @@ describe("formatPrice", () => {
   it("BTC, шаг 0.1", () => {
     expect(formatPrice(77365.12, "0.1")).toBe(`77${NB}365.1`);
     expect(formatPrice("1113.3", "0.1")).toBe(`1${NB}113.3`);
+  });
+});
+
+describe("formatListPrice (скринер, «Мои монеты»)", () => {
+  it("с шагом инструмента — как formatPrice: дешёвые монеты не «0.00»", () => {
+    expect(formatListPrice("0.004748", "0.000001")).toBe("0.004748");
+    expect(formatListPrice("0.0049925", "0.0000001")).toBe("0.0049925");
+    expect(formatListPrice("0.07691", "0.00001")).toBe("0.07691");
+    expect(formatListPrice("0.31953", "0.00001")).toBe("0.31953");
+    expect(formatListPrice("80492.2", "0.1")).toBe(`80${NB}492.2`);
+  });
+  it("шаг неизвестен — четыре значащие цифры у цены меньше 1, два знака у остальных", () => {
+    expect(formatListPrice("0.004748")).toBe("0.004748");
+    expect(formatListPrice("0.07691", null)).toBe("0.07691");
+    expect(formatListPrice("0.31953")).toBe("0.3195");
+    expect(formatListPrice("0.0000123")).toBe("0.00001230");
+    expect(formatListPrice("80492.2")).toBe(`80${NB}492.20`);
+    expect(formatListPrice("0")).toBe("0.00");
+    expect(formatListPrice(-0.5)).toBe(`${MINUS}0.5000`);
+    expect(formatListPrice(null)).toBe("—");
+    expect(formatListPrice("abc")).toBe("—");
   });
 });
 

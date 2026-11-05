@@ -118,6 +118,32 @@ test("скринер: по умолчанию по капитализации, �
   await expect.poll(() => firstCells(page)).toEqual(BY_CAP);
 });
 
+test("скринер и «Мои монеты»: цена — с точностью инструмента (1000PEPE — «0.0049925», а не «0.00»)", async ({ page }) => {
+  const tick: Record<string, string> = { BTCUSDT: "0.1", "1000PEPEUSDT": "0.0000001", "1000BONKUSDT": "0.0000001", ADAUSDT: "0.0001" };
+  const price: Record<string, string> = { BTCUSDT: "80492.2", "1000PEPEUSDT": "0.0049925", "1000BONKUSDT": "0.0000123", ADAUSDT: "0.2012" };
+  await mockCabinet(page, ALPHA.map((s, i) => ({ ...inst(s, i), tick_size: tick[s] ?? "0.01" })));
+  const json = (body: unknown) => ({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+  await page.route(
+    (url) => url.pathname === "/v1/screener",
+    (route) => route.fulfill(json({ items: ALPHA.map((s, i) => ({ ...SCREEN(s, i, "0"), price: price[s] ?? "1" })), generated_at: new Date().toISOString(), sparklines: {} })),
+  );
+  await page.route("**/v1/watchlist", (route) => route.fulfill(json({ id: 1, name: "Основной", items: [{ symbol: "1000PEPEUSDT" }, { symbol: "BTCUSDT" }] })));
+  // цена строки: цифры и точка (разряды — тонкий пробел)
+  const priceOf = (sym: string, col: number) =>
+    page.locator("tbody tr", { hasText: sym }).first().locator(`td:nth-child(${col})`).evaluate((td) => (td.textContent ?? "").replace(/[^0-9.]/g, ""));
+  await page.goto("/screener");
+  await expect(page.locator("tbody tr")).toHaveCount(ALPHA.length);
+  // раньше без шага — два знака: «0.00», «0.20», «80 492.20»
+  await expect.poll(() => priceOf("1000PEPEUSDT", 3)).toBe("0.0049925");
+  expect(await priceOf("1000BONKUSDT", 3)).toBe("0.0000123");
+  expect(await priceOf("ADAUSDT", 3)).toBe("0.2012");
+  expect(await priceOf("BTCUSDT", 3)).toBe("80492.2");
+  await page.goto("/watchlist");
+  await expect(page.locator("tbody tr")).toHaveCount(2);
+  await expect.poll(() => priceOf("1000PEPEUSDT", 2)).toBe("0.0049925");
+  expect(await priceOf("BTCUSDT", 2)).toBe("80492.2");
+});
+
 test("«Мои монеты» и алерты: списки инструментов — по капитализации", async ({ page }) => {
   await mockCabinet(page, OLD_API);
   await page.goto("/watchlist");
