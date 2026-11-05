@@ -735,6 +735,139 @@ test.describe("позиция Long/Short, мышь", () => {
     await expect.poll(async () => (await position(page)).points).toEqual(d0.points);
   });
 
+  test("карточка: ввод по одной цифре — неверное итоговое значение не оставляет на графике начало числа; уход из поля с ошибкой — как Esc", async ({ page }) => {
+    const { X, Y } = await open(page);
+    const tools = page.getByRole("toolbar", { name: "панель рисования" });
+    await tools.getByRole("button", { name: "Позиция Long" }).click();
+    await page.mouse.click(X(0.4), Y(0.45));
+    const card = page.getByRole("region", { name: "выбранный рисунок" });
+    const count = page.getByTestId("drawings-count");
+    const d0 = await position(page);
+    const entry = d0.points[0]!.price;
+    // стоп выше входа, набранный по цифре (так вводит клавиатура телефона): «8», «80», «803», «8038» — верные стопы
+    // ниже входа, раньше последнее из них оставалось на графике и сохранялось по Enter
+    const bad = String(Math.round(entry) + 500);
+    const stop = card.getByLabel("цена стопа");
+    await stop.fill("");
+    await stop.pressSequentially(bad, { delay: 20 });
+    await expect(card.getByRole("alert")).toHaveText("у Long стоп ниже входа");
+    await expect.poll(async () => (await position(page)).points).toEqual(d0.points);
+    await stop.press("Enter");
+    await expect(card.getByRole("alert")).toHaveCount(0);
+    await expect(stop).toHaveValue(d0.points[1]!.price.toFixed(1));
+    expect((await position(page)).points).toEqual(d0.points);
+    // R:R 150 по цифре: «R:R от 0 до 100», уход Tab — R:R прежний (раньше оставалось 15)
+    const rr = card.getByLabel("отношение прибыли к риску");
+    await rr.fill("");
+    await rr.pressSequentially("150", { delay: 20 });
+    await expect(card.getByRole("alert")).toHaveText("R:R от 0 до 100");
+    await rr.press("Tab");
+    await expect(rr).toHaveValue("2");
+    await expect.poll(async () => (await position(page)).points).toEqual(d0.points);
+    // риск 100 % по цифре — ошибка, риск прежний (раньше оставалось 10 %)
+    const risk = card.getByLabel("риск, % от цены входа");
+    await risk.fill("");
+    await risk.pressSequentially("100", { delay: 20 });
+    await expect(card.getByRole("alert")).toHaveText("риск от 0 до 100 %");
+    await risk.press("Enter");
+    await expect.poll(async () => (await position(page)).points).toEqual(d0.points);
+    // верное значение по цифре — сохраняется одним шагом отмены
+    const good = (entry - 3).toFixed(1);
+    await stop.fill("");
+    await stop.pressSequentially(good, { delay: 20 });
+    await stop.press("Enter");
+    await expect.poll(async () => (await position(page)).points[1]!.price).toBeCloseTo(Number(good), 6);
+    const undo = tools.getByRole("button", { name: "отменить", exact: true });
+    await undo.click();
+    await expect.poll(async () => (await position(page)).points).toEqual(d0.points);
+    // неверные правки шагов отмены не оставили: следующая отмена — уже сама позиция
+    await undo.click();
+    await expect(count).toHaveText("рисунков: 0");
+  });
+
+  test("у правого края: позиция не уходит под шкалу цены, ручку края хватает мышь — длительность, а не масштаб шкалы", async ({ page }) => {
+    const { Y } = await open(page);
+    const term = (await page.getByTestId("terminal").boundingBox())!;
+    const p0 = await plot(page);
+    await page.getByRole("toolbar", { name: "панель рисования" }).getByRole("button", { name: "Позиция Short" }).click();
+    await page.mouse.click(term.x + p0.w * 0.985, Y(0.5));
+    const d0 = await position(page);
+    expect(d0.points[1]!.time).toBeGreaterThan(d0.points[0]!.time);
+    const k = await knobs(page);
+    // ручка края — в области свечей, не дальше width − 8 (раньше — под шкалой цены, x ≈ 992 из 964)
+    expect(k.end.x - term.x).toBeLessThanOrEqual(p0.w - 8 + 0.5);
+    const zones = await page.evaluate(() => (document.querySelector('[data-testid="terminal"]') as HTMLElement & { __overlay: () => { drawingLabels: { text: string; rect: { x: number; w: number } }[] } }).__overlay().drawingLabels.filter((l) => l.text));
+    for (const l of zones) expect(l.rect.x + l.rect.w, l.text).toBeLessThanOrEqual(p0.w);
+    // протянуть ручку края вправо: длительность больше, шкала цены та же (раньше нажатие масштабировало шкалу)
+    await page.mouse.move(k.end.x, k.end.y);
+    await page.mouse.down();
+    await page.mouse.move(k.end.x + 20, k.end.y, { steps: 4 });
+    await page.mouse.move(k.end.x + 40, k.end.y, { steps: 4 });
+    await page.mouse.up();
+    await expect.poll(async () => (await position(page)).points[1]!.time).toBeGreaterThan(d0.points[1]!.time);
+    const p1 = await plot(page);
+    expect(p1.price).toEqual(p0.price);
+    expect(p1.auto).toBe(true);
+    expect((await position(page)).points[0]).toEqual(d0.points[0]);
+  });
+
+  test("Фибоначчи за экраном (график прокрутили) — без подписей у края панели", async ({ page }) => {
+    const { X, Y } = await open(page);
+    await page.getByRole("toolbar", { name: "панель рисования" }).getByRole("button", { name: "Фибоначчи" }).click();
+    await page.mouse.click(X(0.5), Y(0.3));
+    await page.mouse.click(X(0.7), Y(0.6));
+    await page.keyboard.press("Escape");
+    const fibLabels = () =>
+      page.evaluate(() => (document.querySelector('[data-testid="terminal"]') as HTMLElement & { __overlay: () => { drawingLabels: { id: string; text: string }[] } }).__overlay().drawingLabels.filter((l) => /#L/.test(l.id)).length);
+    await expect.poll(fibLabels).toBeGreaterThan(3);
+    // в прошлое на две ширины: Фибоначчи правее экрана — его уровней у правого края нет
+    await page.evaluate(() => {
+      const ts = (document.querySelector('[data-testid="terminal"]') as HTMLElement & { __chart: { timeScale(): { scrollToPosition(p: number, a: boolean): void } } }).__chart.timeScale();
+      ts.scrollToPosition(-300, false);
+    });
+    await expect.poll(fibLabels).toBe(0);
+  });
+
+  test("две позиции и выбранный Фибоначчи у цены: подписи рисунков не друг на друге и не на подписях разметки (перепись холста)", async ({ page }) => {
+    await installCensus(page);
+    await page.addInitScript(() => localStorage.setItem("pl-markup-notice", "1"));
+    await mock(page, [], true, undefined, { fixture: "rich" });
+    await page.goto("/chart/BTCUSDT/4h");
+    const term = page.getByTestId("terminal");
+    await expect(term.locator("canvas").first()).toBeVisible();
+    const panel = page.getByRole("complementary", { name: "панель объектов" });
+    await panel.getByRole("tab", { name: "Слои" }).click();
+    await panel.getByRole("radio", { name: "Подробный", exact: true }).check();
+    await expect.poll(async () => (await census(page)).overlay.labels.length).toBeGreaterThan(3);
+    const b = (await term.boundingBox())!;
+    const { w, h } = await plot(page);
+    const tools = page.getByRole("toolbar", { name: "панель рисования" });
+    await tools.getByRole("button", { name: "Позиция Long" }).click();
+    await page.mouse.click(b.x + w * 0.8, b.y + h * 0.45);
+    await tools.getByRole("button", { name: "Позиция Short" }).click();
+    await page.mouse.click(b.x + w * 0.86, b.y + h * 0.5);
+    await tools.getByRole("button", { name: "Фибоначчи" }).click();
+    await page.mouse.click(b.x + w * 0.55, b.y + h * 0.25);
+    await page.mouse.click(b.x + w * 0.92, b.y + h * 0.7);
+    await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 3");
+    // Фибоначчи выбран (карточка открыта, ручки на месте); курсор — за графиком
+    await expect(page.getByRole("region", { name: "выбранный рисунок" })).toContainText("Фибоначчи");
+    await page.mouse.move(b.x + w / 2, b.y - 30);
+    const c = await census(page);
+    const drawn = c.overlay.drawingLabels.filter((l) => l.text !== "");
+    expect(drawn.filter((l) => /#entry$/.test(l.id)).length).toBe(2);
+    for (let i = 0; i < drawn.length; i++) for (let j = i + 1; j < drawn.length; j++) expect(intersects(drawn[i]!.rect, drawn[j]!.rect), `«${drawn[i]!.text}» и «${drawn[j]!.text}»`).toBe(false);
+    for (const d of drawn) {
+      for (const l of c.overlay.labels) expect(intersects(d.rect, l.rect), `«${d.text}» на «${l.text}»`).toBe(false);
+      if (c.overlay.lastPrice) expect(intersects(d.rect, c.overlay.lastPrice), `«${d.text}» на полосе цены`).toBe(false);
+    }
+    // карточка выбранного рисунка — препятствие: подписи не под ней
+    const card = (await page.getByRole("region", { name: "выбранный рисунок" }).boundingBox())!;
+    const cardRect = { x: card.x - c.plot.left, y: card.y - c.plot.top, w: card.width, h: card.height };
+    for (const d of [...drawn, ...c.overlay.labels]) expect(intersects(d.rect, cardRect), `«${d.text}» под карточкой`).toBe(false);
+    expect(violations(c)).toEqual([]);
+  });
+
   test("подписи позиции и Фибоначчи не ложатся на подписи разметки, друг на друга и на полосу цены (перепись холста)", async ({ page }) => {
     await installCensus(page);
     await page.addInitScript(() => localStorage.setItem("pl-markup-notice", "1"));
@@ -824,5 +957,64 @@ test.describe("позиция, палец", () => {
     await page.waitForTimeout(500);
     await page.getByRole("button", { name: "отменить", exact: true }).tap();
     await expect.poll(async () => (await position(page)).points).toEqual(d0.points);
+  });
+
+  test("карточка позиции — одна строка: ручка и плашка цели Short не под ней; «параметры» раскрывают поля", async ({ page }) => {
+    const { X, Y } = await open(page);
+    const f = await finger(page);
+    await page.getByRole("button", { name: "Рисовать" }).tap();
+    await page.getByRole("dialog", { name: "Рисование" }).getByRole("button", { name: "Позиция Short" }).tap();
+    await f.tap(X(0.3), Y(0.35));
+    const card = page.getByRole("region", { name: "выбранный рисунок" });
+    await expect(card).toContainText("Позиция Short");
+    // одна строка (раньше — поля, ссылки, флажок, список, кнопки: половина области свечей)
+    const cb = (await card.boundingBox())!;
+    expect(cb.height).toBeLessThanOrEqual(72);
+    await expect(card.getByLabel("цена стопа")).toHaveCount(0);
+    await expect(card.getByRole("button", { name: "перевернуть в Long" })).toBeVisible();
+    const d0 = await position(page);
+    const k = await knobs(page);
+    expect(k.target.y + 22).toBeLessThanOrEqual(cb.y);
+    // под пальцем у ручки цели — график, а не карточка
+    expect(await page.evaluate(({ x, y }) => !!document.elementFromPoint(x, y)?.closest('[role="region"]'), k.target)).toBe(false);
+    // плашки — не под карточкой
+    const term = (await page.getByTestId("terminal").boundingBox())!;
+    const labels = await page.evaluate(() => ((document.querySelector('[data-testid="terminal"]') as HTMLElement & { __overlay: () => { drawingLabels: { text: string; rect: { x: number; y: number; w: number; h: number } }[] } }).__overlay().drawingLabels).filter((l) => l.text));
+    expect(labels.map((l) => l.text.split(" ")[0]).sort()).toEqual(["Вход", "Стоп", "Цель"]);
+    for (const l of labels) expect(term.y + l.rect.y + l.rect.h, l.text).toBeLessThanOrEqual(cb.y);
+    // ручка цели пальцем: цель ниже (у Short цель под входом), вход и стоп на месте
+    await f.drag(k.target.x + 6, k.target.y, k.target.x + 6, k.target.y + 30);
+    await expect.poll(async () => (await position(page)).points[2]!.price).toBeLessThan(d0.points[2]!.price);
+    expect((await position(page)).points[0]).toEqual(d0.points[0]);
+    // «параметры» — поля входа, стопа, цели; ещё раз — снова строка
+    await page.waitForTimeout(500);
+    const more = card.getByRole("button", { name: /параметры/ });
+    await expect(more).toHaveAttribute("aria-expanded", "false");
+    await more.tap();
+    await expect(more).toHaveAttribute("aria-expanded", "true");
+    await expect(card.getByLabel("цена стопа")).toBeVisible();
+    await expect(card.getByRole("button", { name: "удалить" })).toBeVisible();
+    await more.tap();
+    await expect(card.getByLabel("цена стопа")).toHaveCount(0);
+  });
+
+  test("касание у правого края: край позиции и его ручка в области свечей, палец тянет длительность, шкала цены стоит", async ({ page }) => {
+    const { Y } = await open(page);
+    const f = await finger(page);
+    const term = (await page.getByTestId("terminal").boundingBox())!;
+    const p0 = await plot(page);
+    await page.getByRole("button", { name: "Рисовать" }).tap();
+    await page.getByRole("dialog", { name: "Рисование" }).getByRole("button", { name: "Позиция Long" }).tap();
+    await f.tap(term.x + p0.w * 0.9, Y(0.3));
+    await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 1");
+    const d0 = await position(page);
+    const k = await knobs(page);
+    expect(k.end.x - term.x).toBeLessThanOrEqual(p0.w - 8 + 0.5);
+    // ручка края пальцем влево: позиция короче (не меньше свечи), шкала цены та же (раньше — масштаб шкалы)
+    await f.drag(k.end.x, k.end.y, k.end.x - 60, k.end.y);
+    await expect.poll(async () => (await position(page)).points[1]!.time).toBeLessThan(d0.points[1]!.time);
+    const d1 = await position(page);
+    expect(d1.points[1]!.time).toBeGreaterThan(d1.points[0]!.time);
+    expect((await plot(page)).price).toEqual(p0.price);
   });
 });
