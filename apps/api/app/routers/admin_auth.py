@@ -73,8 +73,26 @@ def _me_out(user: User, row: AdminSession, db: Session) -> dict[str, Any]:
     }
 
 
+def _guard_ip(request: Request) -> None:
+    """Лимит второго шага с IP — до поиска билета: мусорные билеты не раздувают аудит."""
+    ratelimit.guard(
+        request,
+        "admin-code",
+        None,
+        ratelimit.ADMIN_CODE_PER_IP,
+        ratelimit.ADMIN_CODE_PER_IP,
+        strict=True,
+    )
+
+
+def _guard_user(request: Request, user: User) -> None:
+    ratelimit.guard(
+        request, "admin-code", str(user.id), ratelimit.ADMIN_CODE_PER_USER, None, strict=True
+    )
+
+
 def _ticket_user(db: Session, raw: str, request: Request) -> tuple[EmailToken, User]:
-    """Билет второго шага → (строка билета, админ). Иначе — 401 «начните заново»."""
+    """Билет второго шага → (строка билета, админ). Иначе — 410 «начните заново»."""
     found = aa.find_email_token(db, raw, set(aa.TICKET_PURPOSES))
     if found is None:
         aa.audit(db, request, "admin_login.ticket_invalid", None)
@@ -97,8 +115,8 @@ def _notice(email: str, request: Request, what: str) -> tuple[str, str, str]:
     ip = ratelimit.client_ip(request)
     text = (
         f"{what}: {now}, IP {ip}, {device}.\n\n"
-        "Если это были не вы — смените пароль на сайте (Настройки → Пароль): "
-        "это сразу закроет все сеансы админки."
+        "Если это были не вы — задайте новый пароль через «Забыли пароль?» на странице входа "
+        "сайта: это сразу закроет все сеансы админки."
     )
     return email, f"PlatformSol: {what.lower()}", text
 
@@ -250,6 +268,7 @@ def setup_start(
     body: TicketIn, request: Request, db: Session = Depends(auth.get_db)
 ) -> dict[str, Any]:
     """Первая настройка 2FA: новый секрет (всегда новый — не берём чужой незавершённый)."""
+    _guard_ip(request)
     _, user = _ticket_user(db, body.ticket, request)
     row = db.get(TwoFactor, user.id)
     if twofactor.is_enabled(row):
@@ -274,15 +293,9 @@ def setup_confirm(
     db: Session = Depends(auth.get_db),
 ) -> dict[str, Any]:
     """Первый верный код включает 2FA, выдаёт резервные коды (один раз) и открывает сеанс."""
+    _guard_ip(request)
     ticket_row, user = _ticket_user(db, body.ticket, request)
-    ratelimit.guard(
-        request,
-        "admin-code",
-        str(user.id),
-        ratelimit.ADMIN_CODE_PER_USER,
-        ratelimit.ADMIN_CODE_PER_IP,
-        strict=True,
-    )
+    _guard_user(request, user)
     row = db.get(TwoFactor, user.id)
     if row is None or twofactor.is_enabled(row):
         raise HTTPException(409, "Начните настройку заново.")
@@ -314,15 +327,9 @@ def verify(
     db: Session = Depends(auth.get_db),
 ) -> dict[str, Any]:
     """Второй шаг обычного входа: код из приложения или резервный код."""
+    _guard_ip(request)
     ticket_row, user = _ticket_user(db, body.ticket, request)
-    ratelimit.guard(
-        request,
-        "admin-code",
-        str(user.id),
-        ratelimit.ADMIN_CODE_PER_USER,
-        ratelimit.ADMIN_CODE_PER_IP,
-        strict=True,
-    )
+    _guard_user(request, user)
     row = db.get(TwoFactor, user.id)
     if row is None or not twofactor.is_enabled(row):
         raise HTTPException(409, "Защита кодом ещё не настроена — начните вход заново.")

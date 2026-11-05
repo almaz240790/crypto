@@ -592,6 +592,17 @@ def test_rate_limits_per_email_ip_and_code(world: World) -> None:
         for i in range(ratelimit.ADMIN_CODE_PER_USER[0] + 1)
     ]
     assert statuses[-1] == 429 and set(statuses[:-1]) == {401}
+    # мусорные билеты с одного IP: лимит срабатывает до поиска билета, аудит не раздувается
+    ratelimit._memory.values.clear()
+    junk = [
+        c.post(
+            "/v1/admin/auth/verify", json={"ticket": f"junk-ticket-{i:04d}", "code": "123456"}
+        ).status_code
+        for i in range(ratelimit.ADMIN_CODE_PER_IP[0] + 1)
+    ]
+    assert set(junk[:-1]) == {410} and junk[-1] == 429
+    invalid = [a for a, _ in world.audit(None) if a == "admin_login.ticket_invalid"]
+    assert len(invalid) == ratelimit.ADMIN_CODE_PER_IP[0]
 
 
 @db_only
