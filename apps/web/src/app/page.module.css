@@ -141,10 +141,6 @@
   margin-top: 0 !important;
 }
 
-.copy .pill {
-  margin-top: 32px;
-}
-
 .copy .fine {
   margin-top: auto !important;
   font-size: 12px;
@@ -348,42 +344,9 @@
   }
 }
 
-/* 3. «Рассвет»: горизонт, салатовое солнце и телефон */
+/* 3. Телефон на тёмном градиенте */
 .dawn {
   background: linear-gradient(180deg, var(--lp-black) 0%, var(--lp-black) 38%, var(--lp-forest) 70%, var(--lp-dawn-3) 100%);
-}
-
-.horizon {
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 74%;
-  height: 1px;
-  background: color-mix(in srgb, var(--lp-mute) 22%, transparent);
-}
-
-.sun {
-  position: absolute;
-  /* на 110 px левее телефона; на узких экранах сдвигается вместе с ним */
-  left: min(calc(50% + 120px), calc(100% - 464px));
-  top: calc(74% - 22px);
-  width: 44px;
-  height: 22px;
-  border-radius: 44px 44px 0 0;
-  background: var(--lp-lime);
-  box-shadow: 0 0 40px 10px var(--lp-glow);
-}
-
-.glint {
-  position: absolute;
-  left: min(calc(50% + 70px), calc(100% - 514px));
-  top: calc(74% + 14px);
-  width: 144px;
-  height: 2px;
-  border-radius: 2px;
-  background: var(--lp-lime);
-  opacity: 0.6;
-  box-shadow: 0 0 12px var(--lp-glow);
 }
 
 .phoneWrap {
@@ -417,15 +380,11 @@
   .copy.left > p + p {
     margin-top: 25px !important;
   }
-
-  .copy.left .pill {
-    margin-top: 25px;
-  }
 }
 
-/* ── 4. Доверие: глубокий зелёно-чёрный, 2×2 ─────────────── */
+/* ── 5. Доверие: глубокий зелёно-чёрный, 2×2; последний блок перед подвалом ─ */
 .trust {
-  padding: 74px 24px 196px;
+  padding: 74px 24px 144px;
   background: var(--lp-forest);
   text-align: center;
 }
@@ -467,7 +426,7 @@
   display: none;
 }
 
-/* ── 5. Основы: салатовый, карточка обрезана снизу ────────── */
+/* ── 4. Основы: салатовый, низ карточки обрезан краем блока ─ */
 .learn {
   --focus: var(--lp-ink);
   overflow: hidden;
@@ -537,118 +496,6 @@
   color: var(--lp-card-2);
 }
 
-/* ── 6. Призыв: «Восход» ─────────────────────────────────── */
-.final {
-  position: relative;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  padding: 218px 24px 255px;
-  background: var(--lp-black);
-  text-align: center;
-}
-
-.final .h1 {
-  position: relative;
-  z-index: 1;
-  font-size: 72px;
-  line-height: 78px;
-  letter-spacing: -1px;
-}
-
-.final .pill {
-  position: relative;
-  z-index: 1;
-  margin-top: 32px;
-}
-
-/* Восход: салатовое солнце встаёт из-за горизонта, в небе проявляются линии уровней */
-.rise {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-}
-
-.rise .line {
-  position: absolute;
-  left: 0;
-  right: 0;
-  height: 1px;
-  background: color-mix(in srgb, var(--lp-lime) 40%, transparent);
-  opacity: 0;
-  animation: level 9s ease-in-out infinite;
-}
-
-.rise .ground {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 90px;
-  height: 1px;
-  background: color-mix(in srgb, var(--lp-mute) 30%, transparent);
-}
-
-.rise .halo {
-  position: absolute;
-  left: 50%;
-  bottom: 91px;
-  width: 900px;
-  height: 300px;
-  margin-left: -450px;
-  background: radial-gradient(ellipse 50% 100% at 50% 100%, var(--lp-glow), transparent 70%);
-}
-
-.rise .disc {
-  position: absolute;
-  left: 50%;
-  bottom: 91px;
-  width: 200px;
-  height: 100px;
-  margin-left: -100px;
-  overflow: hidden;
-}
-
-.rise .disc::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 0;
-  width: 200px;
-  height: 200px;
-  border-radius: 50%;
-  background: var(--lp-lime);
-  animation: rise 9s ease-in-out infinite alternate;
-}
-
-@keyframes rise {
-  from {
-    transform: translateY(60px);
-  }
-
-  to {
-    transform: translateY(0);
-  }
-}
-
-@keyframes level {
-  40%,
-  60% {
-    opacity: 1;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .rise .line,
-  .rise .disc::before {
-    animation: none;
-  }
-
-  .rise .line {
-    opacity: 0.5;
-  }
-}
-
 /* ── Телефон и узкие экраны: текст сверху, картинка снизу ─ */
 @media (max-width: 900px) {
   .hero {
@@ -703,10 +550,6 @@
     order: 1;
     width: auto;
     padding: 48px 20px 0;
-  }
-
-  .copy .pill {
-    margin-top: 24px;
   }
 
   .copy .fine {
@@ -765,25 +608,6 @@
 
   .beam {
     left: 30%;
-  }
-
-  /* горизонт и солнце — фоном за телефоном, а не отдельным блоком */
-  .band > .deco {
-    position: absolute;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    height: 560px;
-  }
-
-  /* солнце справа от телефона (250 px по центру; правая рамка у горизонта ≈ 50% + 116 px) */
-  .sun {
-    left: calc(50% + 128px);
-  }
-
-  .glint {
-    left: calc(50% + 120px);
-    width: 96px;
   }
 
   .cardLiq {
@@ -878,24 +702,6 @@
   .card li span {
     margin-top: 2px;
     line-height: 18px;
-  }
-
-  .final {
-    padding: 200px 24px 300px;
-  }
-
-  .rise .ground {
-    bottom: 120px;
-  }
-
-  .rise .halo,
-  .rise .disc {
-    bottom: 121px;
-  }
-
-  .final .h1 {
-    font-size: 44px;
-    line-height: 48px;
   }
 }
 

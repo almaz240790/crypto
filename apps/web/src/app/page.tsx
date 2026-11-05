@@ -47,7 +47,7 @@ export default async function Home() {
 
   return (
     <>
-      <Header />
+      <Header chartCta={false} />
       <main className={s.page}>
         {/* Полоса-объявление */}
         <p className={s.promo}>
@@ -92,9 +92,6 @@ export default async function Home() {
               {nb(t("Разметка, индикаторы и рынок — в одном окне"))}
             </h2>
             <p>{nb(t("{i} индикаторов, {d} инструментов рисования, мультичарт на 4 графика и алерты прямо с графика.", { i: COUNTS.indicators, d: COUNTS.tools }))}</p>
-            <Link href="/chart/BTCUSDT/4h" className={`${s.pill} ${s.lime}`}>
-              {t("Открыть график")}
-            </Link>
             <p className={s.fine}>{t("Данные: Binance Futures. Информация не является инвестиционной рекомендацией.")}</p>
           </div>
         </section>
@@ -121,14 +118,11 @@ export default async function Home() {
               <span aria-hidden="true">i</span>
               {nb(t("Карта ликвидаций — расчётная оценка, а не данные биржи"))}
             </p>
-            <Link href="/chart/BTCUSDT/4h" className={`${s.pill} ${s.ink}`}>
-              {t("Посмотреть на BTC")}
-            </Link>
             <p className={s.fine}>{t("Структура и зоны строятся только по закрытым свечам.")}</p>
           </div>
         </section>
 
-        {/* 3. «Рассвет» с телефоном — текст слева */}
+        {/* 3. Телефон на тёмном градиенте — текст слева */}
         <section className={`${s.band} ${s.dawn}`} aria-labelledby="h-phone">
           <div className={`${s.copy} ${s.left}`}>
             <p className={s.lockup}>
@@ -140,15 +134,7 @@ export default async function Home() {
             </h2>
             <p>{nb(t("Масштаб двумя пальцами, перекрестие по удержанию пальца, рисование и индикаторы из нижней панели. Ничего не нужно устанавливать — сайт можно добавить на главный экран."))}</p>
             <p>{t("Работает в любом современном браузере.")}</p>
-            <Link href="/chart/BTCUSDT/4h" className={`${s.pill} ${s.lime}`}>
-              {t("Открыть график")}
-            </Link>
             <p className={s.fine}>{t("На скриншоте — BTCUSDT, 4 часа, с картой ликвидаций и структурой рынка.")}</p>
-          </div>
-          <div className={`${s.visual} ${s.deco}`} aria-hidden="true">
-            <span className={s.horizon} />
-            <span className={s.sun} />
-            <span className={s.glint} />
           </div>
           <div className={`${s.visual} ${s.phoneWrap}`}>
             <div className={s.phone}>
@@ -158,24 +144,7 @@ export default async function Home() {
           </div>
         </section>
 
-        {/* 4. Доверие — тёмный блок, 2×2 */}
-        <section className={s.trust} aria-labelledby="h-trust">
-          <h2 id="h-trust" className={s.h2c}>
-            {nb(t("Честный инструмент —"))}
-            <br />
-            {t("структура без перерисовки")}
-          </h2>
-          <TrustCarousel dotsClassName={s.dots} labelledBy="h-trust">
-            {TRUST.map((i) => (
-              <li key={i.art}>
-                <LineArt name={i.art} />
-                <p>{nb(t(i.t))}</p>
-              </li>
-            ))}
-          </TrustCarousel>
-        </section>
-
-        {/* 5. Основы — салатовый блок с карточкой */}
+        {/* 4. Основы — салатовый блок с карточкой; низ карточки уходит под тёмный блок «доверия» */}
         <section className={s.learn} aria-labelledby="h-learn">
           <h2 id="h-learn" className={s.h2c}>
             {nb(t("Читайте график увереннее —"))}
@@ -202,25 +171,23 @@ export default async function Home() {
           </div>
         </section>
 
-        {/* 6. Призыв — «Восход»: солнце встаёт из-за горизонта, проявляются линии уровней */}
-        <section className={s.final} aria-labelledby="h-final">
-          <div className={s.rise} aria-hidden="true">
-            {[12, 22, 71, 79].map((top, i) => (
-              <span key={top} className={s.line} style={{ top: `${top}%`, animationDelay: `${i * 1.6}s` }} />
-            ))}
-            <span className={s.ground} />
-            <span className={s.halo} />
-            <span className={s.disc} />
-          </div>
-          <h2 id="h-final" className={s.h1}>
-            {t("Откройте график")}
+        {/* 5. Доверие — тёмный блок перед подвалом, 2×2 */}
+        <section className={s.trust} aria-labelledby="h-trust">
+          <h2 id="h-trust" className={s.h2c}>
+            {nb(t("Честный инструмент —"))}
             <br />
-            {t("прямо сейчас")}
+            {t("структура без перерисовки")}
           </h2>
-          <Link href="/chart/BTCUSDT/4h" className={`${s.pill} ${s.lime}`}>
-            {t("Открыть график")}
-          </Link>
+          <TrustCarousel dotsClassName={s.dots} labelledBy="h-trust">
+            {TRUST.map((i) => (
+              <li key={i.art}>
+                <LineArt name={i.art} />
+                <p>{nb(t(i.t))}</p>
+              </li>
+            ))}
+          </TrustCarousel>
         </section>
+
       </main>
       <Footer
         status={
