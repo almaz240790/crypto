@@ -8,9 +8,11 @@ import { useAuth } from "@/components/auth/AuthProvider";
 import s from "@/components/tools/tools.module.css";
 import { Badge, Button, EmptyState, Panel, Table, Td, Th } from "@/components/ui";
 import { createAlert } from "@/lib/alerts";
+import { capPlaces } from "@/lib/coinRank";
 import { getAccessToken } from "@/lib/auth-client";
 import { formatPct, formatPrice, formatTimeUTC } from "@/lib/format";
 import { EMPTY_FILTERS, deleteScreen, getScreener, getScreens, putScreen, type SavedScreen, type ScreenerFilters, type ScreenerRow } from "@/lib/user";
+import { DEFAULT_SCREENER_SORT, firstDirection, sortScreenerRows, type ScreenerSort, type ScreenerSortKey } from "@/lib/screenerSort";
 import { useT } from "@/i18n/client";
 import type { T } from "@/i18n";
 
@@ -31,8 +33,6 @@ export function applyFilters(rows: ScreenerRow[], f: ScreenerFilters): ScreenerR
   if (f.zone_kind) out = out.filter((r) => r.zone?.kind === f.zone_kind);
   return out;
 }
-
-type SortKey = "symbol" | "change_24h" | "volume_24h" | "zone" | "atr_percentile" | "funding" | "oi_change_24h" | "ls_ratio" | "beta_btc";
 
 function n(x: string | null | undefined): number | null {
   if (x === null || x === undefined) return null;
@@ -60,7 +60,7 @@ export default function ScreenerPage() {
   const [at, setAt] = useState<string | null>(null);
   const [sparks, setSparks] = useState<Record<string, string[]>>({});
   const [error, setError] = useState<string | null>(null);
-  const [sort, setSort] = useState<{ k: SortKey; d: 1 | -1 }>({ k: "zone", d: 1 });
+  const [sort, setSort] = useState<ScreenerSort>(DEFAULT_SCREENER_SORT);
   const [f, setF] = useState<ScreenerFilters>(EMPTY_FILTERS);
   const { user } = useAuth();
   const [screens, setScreens] = useState<SavedScreen[]>([]);
@@ -126,31 +126,12 @@ export default function ScreenerPage() {
     }
   }
 
-  const list = useMemo(() => {
-    if (!rows) return [];
-    const out = applyFilters(rows, f);
-    const key = (r: ScreenerRow): number | string | null => {
-      switch (sort.k) {
-        case "symbol":
-          return r.symbol;
-        case "zone":
-          return r.zone ? n(r.zone.distance_atr) : null;
-        default:
-          return n(r[sort.k] as string | null | undefined);
-      }
-    };
-    return out.sort((a, b) => {
-      const x = key(a);
-      const y = key(b);
-      if (x === null && y === null) return 0;
-      if (x === null) return 1;
-      if (y === null) return -1;
-      return (x < y ? -1 : x > y ? 1 : 0) * sort.d;
-    });
-  }, [rows, sort, f]);
+  const list = useMemo(() => (rows ? sortScreenerRows(applyFilters(rows, f), sort) : []), [rows, sort, f]);
+  // «#» — место по капитализации среди всех монет скринера (1…N), а не rank из API: тот с пропусками. Фильтры место не меняют.
+  const places = useMemo(() => capPlaces(rows ?? []), [rows]);
 
-  const sortBtn = (k: SortKey, label: string) => (
-    <button type="button" className={s.sortBtn} data-active={sort.k === k} onClick={() => setSort({ k, d: sort.k === k ? ((sort.d * -1) as 1 | -1) : k === "symbol" ? 1 : -1 })} aria-label={t("сортировать по: {label}", { label })}>
+  const sortBtn = (k: ScreenerSortKey, label: string, name = label) => (
+    <button type="button" className={s.sortBtn} data-active={sort.k === k} onClick={() => setSort({ k, d: sort.k === k ? ((sort.d * -1) as 1 | -1) : firstDirection(k) })} aria-label={t("сортировать по: {label}", { label: name })}>
       {label}
       {sort.k === k ? (sort.d === 1 ? " ↑" : " ↓") : ""}
     </button>
@@ -261,6 +242,7 @@ export default function ScreenerPage() {
             <Table compact clickable>
               <thead>
                 <tr>
+                  <Th num title={t("Место по капитализации среди монет скринера: 1 — самая крупная")}>{sortBtn("rank", "#", t("место по капитализации"))}</Th>
                   <Th>{sortBtn("symbol", t("Инструмент"))}</Th>
                   <Th num>{t("Цена")}</Th>
                   <Th>{t("24 свечи H4")}</Th>
@@ -281,6 +263,9 @@ export default function ScreenerPage() {
               <tbody>
                 {list.map((r) => (
                   <tr key={r.symbol}>
+                    <Td num mobile="hidden" className="text-3">
+                      {places.get(r.symbol) ?? "—"}
+                    </Td>
                     <Td>
                       <Link href={`/signals?symbol=${r.symbol}&tab=all`}>
                         <strong>{r.symbol}</strong>

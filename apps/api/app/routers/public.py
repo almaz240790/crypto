@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 
 from app import auth
 from app.analysis import analyze_signal
+from app.coin_rank import current_ranks, rank_of, rank_sort_key
 from app.entitlements import (
     Entitlements,
     allowed_instrument_ids,
@@ -126,9 +127,15 @@ def _dec(x: Decimal | None) -> str | None:
 
 @router.get("/instruments")
 def instruments(db: Session = Depends(auth.get_db)) -> list[dict[str, Any]]:
+    """Активные инструменты по капитализации монеты: BTC, ETH, BNB… (``rank`` — место, 1 — BTC);
+    монеты без места (``rank: null``) — в конце по алфавиту. Порядок — ``app.coin_rank``."""
     rows = db.scalars(
         select(Instrument).where(Instrument.is_active).order_by(Instrument.symbol)
     ).all()
+    ranks = current_ranks()
+    ranked = sorted(
+        ((i, rank_of(i.base, ranks)) for i in rows), key=lambda x: rank_sort_key(x[1], x[0].symbol)
+    )
     return [
         {
             "id": i.id,
@@ -139,8 +146,9 @@ def instruments(db: Session = Depends(auth.get_db)) -> list[dict[str, Any]]:
             "market_type": i.market_type,
             "tick_size": _dec(i.tick_size),
             "lot_size": _dec(i.lot_size),
+            "rank": rank,
         }
-        for i in rows
+        for i, rank in ranked
     ]
 
 

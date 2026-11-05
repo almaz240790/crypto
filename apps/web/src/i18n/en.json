@@ -1079,7 +1079,7 @@
   "Funding, OI, ликвидации, L/S ratio по корзинам таймфрейма": "Funding, OI, liquidations and L/S ratio in timeframe buckets",
   "Скринер по всем инструментам": "Screener across all instruments",
   "Скринер в CSV": "Screener as CSV",
-  "Список инструментов": "List of instruments",
+  "Список инструментов по капитализации (поле rank)": "Instruments by market cap (rank field)",
   "Последние цены": "Latest prices",
   "Ваш журнал сделок": "Your trade journal",
   "Аналитика вашего журнала": "Your journal analytics",
@@ -1461,5 +1461,7 @@
   "меньше шага цены": "smaller than the price tick",
   "стоп — ноль или ниже": "stop is zero or below",
   "цель — ноль или ниже": "target is zero or below",
-  "параметры": "parameters"
+  "параметры": "parameters",
+  "Место по капитализации среди монет скринера: 1 — самая крупная": "Market cap rank among screener coins: 1 is the largest",
+  "место по капитализации": "market cap rank"
 }

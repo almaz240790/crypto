@@ -2,11 +2,14 @@
 
 /** Клиентские вызовы пользовательских разделов (план 3.6–3.9, 3.12). */
 import { api, type Me } from "./auth-client";
+import { sortByRank } from "./coinRank";
 
 export type ScreenerRow = {
   symbol: string;
   instrument_id: number;
   exchange: string;
+  /** Место по капитализации, как у /v1/instruments (нет поля — старый API, место по статическому снимку). */
+  rank?: number | null;
   error?: string;
   price?: string;
   change_24h?: string | null;
@@ -76,7 +79,8 @@ export type JournalIn = {
   signal_id?: string | null;
 };
 
-export type Instrument = { id: number; symbol: string; base: string; quote: string; tick_size: string | null; lot_size: string | null };
+/** rank — место монеты по капитализации (1 — BTC), null — без капитализации; нет поля — API до этой правки. */
+export type Instrument = { id: number; symbol: string; base: string; quote: string; tick_size: string | null; lot_size: string | null; rank?: number | null };
 
 export const getScreener = (symbols?: string[]) =>
   api<{ items: ScreenerRow[]; generated_at: string; sparklines?: Record<string, string[]> }>(`/v1/screener${symbols?.length ? `?symbols=${symbols.join(",")}` : ""}`, { auth: false });
@@ -89,7 +93,8 @@ export const getScreens = () => api<SavedScreen[]>("/v1/screener/screens");
 export const putScreen = (name: string, filters: Partial<ScreenerFilters>) => api<SavedScreen>("/v1/screener/screens", { method: "PUT", json: { name, filters } });
 export const deleteScreen = (name: string) => api<void>(`/v1/screener/screens?name=${encodeURIComponent(name)}`, { method: "DELETE" });
 
-export const getInstruments = () => api<Instrument[]>("/v1/instruments", { auth: false });
+/** Инструменты по капитализации (BTC, ETH, BNB…) — порядок всех списков монет; без поля rank — по статическому снимку. */
+export const getInstruments = () => api<Instrument[]>("/v1/instruments", { auth: false }).then(sortByRank);
 
 export const getWatchlist = () => api<{ id: number; name: string; items: { symbol: string; instrument_id: number; added_at: string }[] }>("/v1/watchlist");
 export const addWatch = (symbol: string) => api("/v1/watchlist/items", { method: "POST", json: { symbol } });

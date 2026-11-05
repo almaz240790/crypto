@@ -17,6 +17,7 @@ from typing import Any
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
+from app.coin_rank import current_ranks, rank_of, rank_sort_key
 from app.forward import _candles
 from app.models import Instrument
 from engine.bias import context_at
@@ -154,7 +155,11 @@ def _derivatives(session: Session, inst_id: int, now: datetime) -> dict[str, Any
 
 
 def build_row(
-    session: Session, inst: Instrument, btc_d1: list[Candle], now: datetime
+    session: Session,
+    inst: Instrument,
+    btc_d1: list[Candle],
+    now: datetime,
+    rank: int | None = None,
 ) -> dict[str, Any]:
     h4 = closed_only(_candles(session, inst.id, Timeframe.H4, H4_N), Timeframe.H4, now)
     d1 = closed_only(_candles(session, inst.id, Timeframe.D1, D1_N), Timeframe.D1, now)
@@ -163,6 +168,7 @@ def build_row(
         "symbol": inst.symbol,
         "instrument_id": inst.id,
         "exchange": inst.exchange,
+        "rank": rank,
     }
     if len(h4) < 50:
         row["error"] = "мало истории"
@@ -202,6 +208,7 @@ def build_row(
 
 
 def build_screener(session: Session, now: datetime | None = None) -> list[dict[str, Any]]:
+    """Строки скринера по капитализации монеты (``rank``, как в /v1/instruments)."""
     now = now or datetime.now(tz=UTC)
     instruments = list(
         session.scalars(
@@ -210,11 +217,16 @@ def build_screener(session: Session, now: datetime | None = None) -> list[dict[s
             .order_by(Instrument.symbol)
         ).all()
     )
+    ranks = current_ranks()
+    ranked = sorted(
+        ((inst, rank_of(inst.base, ranks)) for inst in instruments),
+        key=lambda x: rank_sort_key(x[1], x[0].symbol),
+    )
     btc = next((i for i in instruments if i.symbol == "BTCUSDT"), None)
     btc_d1 = (
         closed_only(_candles(session, btc.id, Timeframe.D1, D1_N), Timeframe.D1, now) if btc else []
     )
-    return [build_row(session, inst, btc_d1, now) for inst in instruments]
+    return [build_row(session, inst, btc_d1, now, rank) for inst, rank in ranked]
 
 
 def screener_cached(session: Session) -> tuple[list[dict[str, Any]], datetime]:
