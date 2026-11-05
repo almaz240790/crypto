@@ -1,24 +1,27 @@
 import { expect, test, type Page } from "@playwright/test";
 
-/** Админка (план 3.15): заявка на смену статуса и четырёхглазое подтверждение, отмена сигнала, аудит. */
+/** Админка (план 3.15): заявка на смену статуса и четырёхглазое подтверждение, отмена сигнала, аудит.
+ * Сеанс — отдельный вход админки (ADR-0011): подсказка pl_admin_hint и /v1/admin/auth/me; вход сайта не нужен. */
 
-const OWNER = { id: 1, email: "owner@example.com", name: null, email_verified: true, role: "owner", locale: "ru", timezone: "UTC", theme: "system", risk: {} };
+const OWNER = { id: 1, email: "owner@example.com", name: null, role: "owner", method: "password", started_at: "2026-11-05T10:00:00Z", expires_at: "2026-11-05T18:00:00Z", idle_minutes: 60, backup_codes_left: 10 };
 const VERSIONS = [
   { id: 1, strategy: "trend-ob-retest", name: "Trend OB retest", version: "1.0.0", status: "forward", params: { a: 1 }, created_by: null, approved_by: null, activated_at: null, signals: 3 },
   { id: 2, strategy: "trend-ob-retest", name: "Trend OB retest", version: "1.1.0", status: "forward", params: { a: 2 }, created_by: null, approved_by: null, activated_at: null, signals: 1 },
 ];
 
 async function mock(page: Page, calls: string[]) {
-  await page.context().addCookies([{ name: "pl_auth", value: "1", url: "http://localhost:3101" }]);
+  await page.context().addCookies([{ name: "pl_admin_hint", value: "1", domain: "localhost", path: "/admin" }]);
   const state = { labels: [] as Record<string, unknown>[], requests: [] as Record<string, unknown>[], audit: [] as Record<string, unknown>[], versions: VERSIONS.map((v) => ({ ...v })), promos: [] as Record<string, unknown>[], users: <Record<string, unknown>[]>[{ id: 1, email: OWNER.email, name: null, role: "owner", country: "RU", verified: true, created_at: "2026-10-25T10:00:00Z", blocked_at: null, blocked_reason: null, deleted: false, plan: "pro", plan_until: "2026-11-01T10:00:00Z", plan_status: "trialing" }, { id: 2, email: "beta@example.com", name: "Beta", role: "user", country: null, verified: true, created_at: "2026-10-26T10:00:00Z", blocked_at: null, blocked_reason: null, deleted: false, plan: "free", plan_until: null, plan_status: null }] };
   await page.route("**/v1/**", (route) => {
     const req = route.request();
     const u = new URL(req.url());
     const p = u.pathname;
     calls.push(`${req.method()} ${p}`);
+    // изменяющие запросы админки — только с заголовком против CSRF; токена сайта в админке нет
+    if (req.method() !== "GET" && req.headers()["x-requested-with"] !== "platformsol-admin") calls.push(`NO-CSRF ${p}`);
+    if (req.headers()["authorization"]) calls.push(`SITE-TOKEN ${p}`);
     const json = (status: number, body: unknown) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
-    if (p === "/v1/auth/refresh") return json(200, { access_token: "t" });
-    if (p === "/v1/auth/me") return json(200, OWNER);
+    if (p === "/v1/admin/auth/me") return json(200, OWNER);
     if (p === "/v1/admin/strategies") return json(200, { versions: state.versions, runs: [], requests: state.requests, me: { id: 1, role: "owner" } });
     if (p === "/v1/admin/strategies/status-requests" && req.method() === "POST") {
       const b = req.postDataJSON() as { strategy_version_id: number; to_status: string; reason: string };
@@ -92,6 +95,7 @@ test("админка: заявка, отказ без обоснования, п
   await page.getByRole("tab", { name: "Аудит" }).click();
   await expect(page.getByText("version.status")).toBeVisible();
   await expect(page.getByText(/owner-override/)).toBeVisible();
+  expect(calls.filter((c) => c.startsWith("NO-CSRF") || c.startsWith("SITE-TOKEN"))).toEqual([]);
 });
 
 test("админка: отмена сигнала с публичной причиной", async ({ page }) => {
