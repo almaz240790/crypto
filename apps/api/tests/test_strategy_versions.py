@@ -1,13 +1,14 @@
 """Новые версии стратегии из кода создаются со статусом backtest и не оцениваются (план 2.9, 3.15).
 
-Чистые части — без БД. Создание строк и прогон forward — на реальной БД (нужен
+Чистые части — без БД. Создание строк и прогон scheduler/forward — на реальной БД (нужен
 DATABASE_URL с применёнными миграциями); без неё эти тесты пропускаются, а не падают. Каждый
 тест идёт во внешней транзакции, которая в конце откатывается: ``commit`` внутри
-``sync_strategy_versions`` и ``run_forward`` закрывает только точку сохранения.
+``sync_strategy_versions`` и ``process_symbol`` закрывает только точку сохранения.
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -19,6 +20,7 @@ from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.orm import Session
 
 import app.forward as forward
+import app.workers.scheduler as scheduler
 from app.admin_rules import transition_allowed
 from app.db import engine
 from app.models import Instrument, Strategy, StrategyVersion
@@ -56,6 +58,25 @@ def test_new_version_reaches_forward_only_by_admin_request() -> None:
     assert forward.NEW_VERSION_STATUS == "backtest"
     assert transition_allowed(forward.NEW_VERSION_STATUS, "forward")
     assert not transition_allowed(forward.NEW_VERSION_STATUS, "live")
+
+
+def test_skipped_version_logged_once_per_process(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(scheduler, "_reported_skips", set())
+    caplog.set_level(logging.INFO, logger="scheduler")
+    rows = {"s@1.2.0": _row("backtest"), "s@1.0.0": _row("forward")}
+    for _ in range(3):  # scheduler зовёт это на каждый инструмент
+        scheduler.report_skipped_versions(rows)
+    assert [r.getMessage() for r in caplog.records] == [
+        "версия s@1.2.0 в статусе backtest — не оценивается"
+    ]
+    # статус сменился (backtest → archived) — об этом одна новая строка
+    scheduler.report_skipped_versions({"s@1.2.0": _row("archived")})
+    scheduler.report_skipped_versions({"s@1.2.0": _row("archived")})
+    assert [r.getMessage() for r in caplog.records][1:] == [
+        "версия s@1.2.0 в статусе archived — не оценивается"
+    ]
 
 
 # --- на БД --------------------------------------------------------------------------------------
@@ -99,6 +120,8 @@ def code_versions(monkeypatch: pytest.MonkeyPatch) -> dict[str, StrategyParams]:
     strategies = {KEY_OLD: PARAMS_OLD, KEY_NEW: PARAMS_NEW}
     monkeypatch.setattr(forward, "STRATEGY_SLUG", SLUG)
     monkeypatch.setattr(forward, "STRATEGIES", strategies)
+    monkeypatch.setattr(scheduler, "STRATEGIES", strategies)
+    monkeypatch.setattr(scheduler, "_reported_skips", set())
     return strategies
 
 
@@ -167,6 +190,41 @@ def test_new_version_created_as_backtest_existing_untouched(
         again = forward.sync_strategy_versions(s)
         assert {k: v.status for k, v in again.items()} == {KEY_OLD: "forward", KEY_NEW: "backtest"}
         assert _versions(s, old.strategy_id) == {"9.0.0": "forward", "9.1.0": "backtest"}
+
+
+@db_only
+def test_scheduler_does_not_evaluate_backtest_version(
+    monkeypatch: pytest.MonkeyPatch,
+    make_session: Callable[[], Session],
+    code_versions: dict[str, StrategyParams],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with make_session() as s:
+        old, inst = _seed(s)
+        symbol, old_id, strategy_id = inst.symbol, old.id, old.strategy_id
+        before = _columns(old)
+
+    evaluated: list[StrategyParams] = []
+
+    def fake_evaluate(inputs: MarketInputs, at: datetime, params: StrategyParams) -> NoSignal:
+        evaluated.append(params)
+        return NoSignal("trigger", "нет слома структуры")
+
+    monkeypatch.setattr(scheduler, "SessionLocal", make_session)
+    monkeypatch.setattr(scheduler, "load_inputs", lambda *_: None)
+    monkeypatch.setattr(scheduler, "evaluate", fake_evaluate)
+    caplog.set_level(logging.INFO, logger="scheduler")
+
+    for _ in range(2):  # два закрытия H4 в одном процессе
+        assert scheduler.process_symbol(symbol, AT) == {"signals": 0, "no_signal": 0}
+
+    assert evaluated == [PARAMS_OLD, PARAMS_OLD]  # 9.1.0 (backtest) ни разу не оценена
+    skipped = [r.getMessage() for r in caplog.records if "не оценивается" in r.getMessage()]
+    assert skipped == [f"версия {KEY_NEW} в статусе backtest — не оценивается"]
+
+    with make_session() as s:
+        assert _versions(s, strategy_id) == {"9.0.0": "forward", "9.1.0": "backtest"}
+        assert _columns(s.get_one(StrategyVersion, old_id)) == before
 
 
 @db_only

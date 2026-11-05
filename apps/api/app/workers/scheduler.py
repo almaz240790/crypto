@@ -5,7 +5,9 @@
 - Fallback: раз в 30 с проверяем, что для последнего закрытия H4 (+90 с) по каждому инструменту
   запуск был; если нет — догружаем свечу по REST и запускаем.
 - Сам запуск — ``evaluate`` по версиям стратегии в статусе ``forward``/``live`` (как в форварде),
-  кандидат пишется в ``signals``; уведомления — отдельный сервис (этап 3).
+  кандидат пишется в ``signals``; уведомления — отдельный сервис (этап 3). Версии в других
+  статусах (новая из кода создаётся в ``backtest``) не оцениваются; об этом одна строка INFO
+  на версию и статус за запуск процесса.
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ import asyncio
 import json
 import logging
 import signal as os_signal
+import threading
 import time
 from datetime import UTC, datetime, timedelta
 
@@ -23,13 +26,16 @@ from sqlalchemy import select
 from app.config import settings
 from app.db import SessionLocal
 from app.forward import (
-    ensure_strategy_versions,
+    SKIPPED_VERSION_LOG,
+    evaluated_versions,
     last_h4_close,
     load_inputs,
+    skipped_versions,
+    sync_strategy_versions,
     upsert_candles,
     write_candidate,
 )
-from app.models import Instrument
+from app.models import Instrument, StrategyVersion
 from app.workers.market_data import CHANNEL_CLOSED
 from engine.candles import Timeframe
 from engine.data.binance import BinanceHistory
@@ -41,6 +47,24 @@ DONE_TTL = 2 * 24 * 3600
 FALLBACK_DELAY = timedelta(seconds=90)
 FALLBACK_EVERY = 30
 HEARTBEAT_KEY = "scheduler:heartbeat"
+
+# (версия, статус), о которых уже написали «не оценивается»: process_symbol идёт в потоках
+_reported_skips: set[tuple[str, str]] = set()
+_reported_lock = threading.Lock()
+
+
+def report_skipped_versions(rows: dict[str, StrategyVersion]) -> None:
+    """Один раз за запуск процесса на пару (версия, статус) пишет, что версия не оценивается.
+
+    Вызывается на каждый инструмент, поэтому без памяти строка повторялась бы десятки раз за
+    закрытие H4. Если статус версии сменится (например, backtest → archived), строка будет снова.
+    """
+    for key, status in skipped_versions(rows).items():
+        with _reported_lock:
+            if (key, status) in _reported_skips:
+                continue
+            _reported_skips.add((key, status))
+        log.info(SKIPPED_VERSION_LOG, key, status)
 
 
 def done_key(symbol: str, close_time: datetime) -> str:
@@ -58,7 +82,9 @@ def process_symbol(symbol: str, at: datetime) -> dict[str, int]:
         )
         if inst is None:
             return stats
-        versions = ensure_strategy_versions(session)
+        rows = sync_strategy_versions(session)
+        report_skipped_versions(rows)
+        versions = evaluated_versions(rows)
         inputs = load_inputs(session, inst, at)
         for key, version in versions.items():
             res = evaluate(inputs, at, STRATEGIES[key])
