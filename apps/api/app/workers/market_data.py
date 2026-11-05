@@ -105,8 +105,10 @@ FINAL_FLUSH_TIMEOUT = 10.0
 FLUSH_LOG_EVERY = 60
 """Ошибки записи в БД (при сбое — каждую секунду) пишутся в лог только первая и каждая 60-я."""
 BUFFER_MAX = 50_000
-"""Строк в буфере записи, пока БД недоступна (≈ 14 ч минут на 59 инструментов); сверх — самые
-старые отбрасываются вместе с событиями, их догрузит ``backfill`` после переподключения."""
+"""Строк в буфере записи, пока БД недоступна (≈ 14 ч минут на 59 инструментов); сверх —
+отбрасываются закрывшиеся раньше всех (по времени закрытия, не открытия: закрытая 4h новее
+минут, закрывшихся до неё; идущие свечи — последними) вместе с событиями. Строки догрузит опрос
+по REST (``refill_from``, ``backfill_needed``), когда БД вернётся; их событий уже не будет."""
 REPAIR_WINDOW = 1500
 """Догрузка смотрит назад на столько свечей tf в поисках незакрытой строки, которой пора быть
 закрытой (её закрытие не пришло — например, свеча закрылась, пока не было соединения)."""
@@ -244,6 +246,9 @@ class MarketData:
         конца). Закрытия из стрима и опроса — в ``deferred``, не в буфер и не в ``last_closed``."""
         self.deferred: dict[tuple[int, str], dict[datetime, tuple[str, Candle]]] = {}
         self._hold_gen = 0
+        self.refill_from: dict[tuple[int, str], datetime] = {}
+        """Пары, чьи закрытые строки отброшены из переполненного буфера: догрузка — с этой свечи."""
+        self.n_backfill_errors = 0
         self._resyncs: set[asyncio.Future[int]] = set()
         """Сверки в потоках: отмена задачи соединения поток не прерывает — остановка ждёт их."""
         self.stop = asyncio.Event()
@@ -343,7 +348,10 @@ class MarketData:
         key = (inst_id, tf.value)
         with self._lock:
             synced: datetime | None = self.last_closed.get(key)
+            refill = self.refill_from.get(key)
         start = synced + tf.delta if synced is not None else now
+        if refill is not None:
+            start = min(start, refill)
         if from_db or synced is None:
             last = s.execute(
                 text(
@@ -394,7 +402,7 @@ class MarketData:
             if closed:
                 upsert_candles(s, inst_id, tf, closed)
                 s.commit()
-        self._written(symbol, inst_id, tf, closed, synced)
+        self._written(symbol, inst_id, tf, closed, synced, refill)
         return len(closed)
 
     def _written(
@@ -404,17 +412,21 @@ class MarketData:
         tf: Timeframe,
         closed: list[Candle],
         synced: datetime | None,
+        refill: datetime | None = None,
     ) -> None:
         """Закрытые свечи пары записаны в БД мимо буфера (догрузка, сверка).
 
         ``candles.closed`` — тем, о которых его ещё не было: новее точки сверки ``synced`` (её нет —
         история, событий нет) и новее нынешней ``last_closed`` (свечу мог закрыть стрим, пока шёл
         запрос), если закрылись не раньше ``LATE_CLOSE_MAX`` назад; события — в очередь записи
-        (уйдут со следующей). Точка сверки сдвигается на последнюю закрытую. Незакрытый снимок той
+        (уйдут со следующей). Точка сверки сдвигается на последнюю закрытую; отброшенные из буфера
+        строки (``refill`` — откуда) догружены. Незакрытый снимок той
         же свечи в буфере (стрим до закрытия) заменяется закрытой строкой: запись не откатит её."""
         key = (inst_id, tf.value)
         fresh = datetime.now(tz=UTC) - timedelta(seconds=LATE_CLOSE_MAX)
         with self._lock:
+            if refill is not None and self.refill_from.get(key) == refill:
+                del self.refill_from[key]
             mark = self.last_closed.get(key)
             if synced is not None:
                 mark = synced if mark is None else max(mark, synced)
@@ -610,7 +622,8 @@ class MarketData:
 
     async def poller(self) -> None:
         """REST-опрос инструментов, у которых стрим молчит дольше ``SILENCE_TIMEOUT``: 1m каждый
-        цикл, старшие tf — каждый 4-й цикл. Сначала — догрузка, прерванная паузой 418/429."""
+        цикл, старшие tf — каждый 4-й цикл. Сначала — догрузка, прерванная паузой 418/429, ошибкой
+        сверки или переполнением буфера записи (``backfill_needed``)."""
         history = BinanceHistory("futures")
         cycle = 0
         loop = asyncio.get_running_loop()
@@ -625,7 +638,12 @@ class MarketData:
                             pool, self.backfill, sorted(self.backfill_needed), history
                         )
                     except Exception:
-                        log.exception("догрузка после паузы не удалась")
+                        # БД недоступна — каждые POLL_EVERY секунд: в лог первая и каждая 60-я
+                        self.n_backfill_errors += 1
+                        if self.n_backfill_errors % FLUSH_LOG_EVERY == 1:
+                            log.exception(
+                                "догрузка по опросу не удалась (всего %d)", self.n_backfill_errors
+                            )
                 fresh = self.ws_fresh(SILENCE_TIMEOUT)
                 targets = [s for s in self.symbols if s not in fresh]
                 if not targets:
@@ -849,8 +867,9 @@ class MarketData:
     ) -> None:
         """Запись не удалась: строки, события и ликвидации — обратно в буфер, к следующей записи.
         Строка, пришедшая во время записи, новее — она и остаётся. Сверх ``BUFFER_MAX`` строк
-        отбрасываются самые старые вместе со своими событиями. Незакрытые 4h/1d/1w — со следующей
-        записью, без ожидания ``FORMING_HTF_EVERY``."""
+        отбрасываются закрывшиеся раньше всех вместе со своими событиями; их пары — в
+        ``refill_from``, инструменты — в ``backfill_needed``: строки догрузит опрос. Незакрытые
+        4h/1d/1w — со следующей записью, без ожидания ``FORMING_HTF_EVERY``."""
         with self._lock:
             buffer = {(r["instrument_id"], r["timeframe"], r["open_time"]): r for r in candles}
             for r in candles:
@@ -858,9 +877,16 @@ class MarketData:
             buffer.update(self.candle_buffer)
             queued = events + self.closed_events
             if len(buffer) > BUFFER_MAX:
-                dropped = sorted(buffer, key=lambda key: key[2])[: len(buffer) - BUFFER_MAX]
+                dropped = sorted(buffer, key=lambda key: key[2] + Timeframe(key[1]).delta)
+                dropped = dropped[: len(buffer) - BUFFER_MAX]
+                symbol_of = {i: symbol for symbol, i in self.symbols.items()}
                 for key in dropped:
-                    del buffer[key]
+                    if buffer.pop(key)["is_closed"]:
+                        pair = (key[0], key[1])
+                        self.refill_from[pair] = min(self.refill_from.get(pair, key[2]), key[2])
+                        if key[0] in symbol_of:
+                            self.backfill_needed.add(symbol_of[key[0]])
+                n_events = len(queued)
                 queued = [
                     e
                     for e in queued
@@ -871,7 +897,12 @@ class MarketData:
                     )
                     in buffer
                 ]
-                log.error("буфер записи переполнен: отброшено %d строк", len(dropped))
+                log.error(
+                    "буфер записи переполнен: отброшено %d строк и %d событий; строки догрузит "
+                    "опрос, когда БД вернётся",
+                    len(dropped),
+                    n_events - len(queued),
+                )
             self.candle_buffer = buffer
             self.closed_events = queued
         for liq_key, (long_usd, short_usd) in liqs.items():

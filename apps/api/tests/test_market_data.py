@@ -1360,3 +1360,45 @@ def test_events_over_cap_after_db_outage_drop_oldest_minutes_first_and_are_logge
             md._put_candle("BTCUSDT", 1, "4h", _m1(h4 + timedelta(hours=4)), closed=True)
         asyncio.run(md.flush_once())
     assert [e["tf"] for e in md.ready_events] == ["4h", "1m", "1m", "1m", "1m"]
+
+
+def test_buffer_overflow_drops_earliest_closes_and_poller_refills_them(monkeypatch: Any) -> None:
+    # MD-BUFFER-MAX-DROP-ORDER: сверх BUFFER_MAX отбрасывались «самые старые» по времени открытия
+    # всех tf — дневная свеча, закрывшаяся последней, уходила вместе с событием раньше минут,
+    # закрывшихся до неё, идущие 1w/1d — на каждой записи; «догрузит backfill после
+    # переподключения» не происходило (переподключения при сбое БД нет)
+    monkeypatch.setattr(mdmod, "BUFFER_MAX", 4)
+    md = _md()
+    db = MemDb().install(monkeypatch, md)
+    day = datetime(2026, 11, 5, tzinfo=UTC)
+    minutes = [day - timedelta(minutes=4 - k) for k in range(4)]  # 23:56..23:59
+    db.write("seed", 1, "1m", minutes[0] - timedelta(minutes=1), True)
+    for t in minutes:
+        md._put_candle("BTCUSDT", 1, "1m", _m1(t), closed=True)
+    md._put_candle(
+        "BTCUSDT", 1, "1d", _m1(day - timedelta(days=1)), closed=True
+    )  # закрылась в 00:00
+    md._put_candle("BTCUSDT", 1, "1w", _m1(day - timedelta(days=3)), closed=False)  # идёт
+    rows, events = md._take_rows(final=True)
+    md._requeue(rows, events, {})
+    kept = sorted((tf, t) for _, tf, t in md.candle_buffer)
+    assert kept == [
+        ("1d", day - timedelta(days=1)),
+        ("1m", minutes[2]),
+        ("1m", minutes[3]),
+        ("1w", day - timedelta(days=3)),
+    ]
+    assert [(e["tf"], e["open_time"]) for e in md.closed_events] == [
+        ("1m", minutes[2].isoformat()),
+        ("1m", minutes[3].isoformat()),
+        ("1d", (day - timedelta(days=1)).isoformat()),
+    ]
+    assert md.refill_from == {(1, "1m"): minutes[0]} and md.backfill_needed == {"BTCUSDT"}
+    # БД вернулась: запись буфера, затем опрос догружает отброшенное по REST
+    asyncio.run(md.flush_once())
+    rest = RestHistory({Timeframe.M1: [_m1(t) for t in minutes]}, [])
+    assert md.backfill(["BTCUSDT"], history=rest) is True
+    assert next(s for _, tf, s, _ in rest.calls if tf is Timeframe.M1) == minutes[0]
+    assert all(db.rows[(1, "1m", t)] for t in minutes)
+    assert md.refill_from == {} and md.backfill_needed == set()
+    assert [e["tf"] for e in _closed(md)] == ["1m", "1m", "1d"]  # без повторов
