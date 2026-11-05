@@ -5,12 +5,18 @@
   инструментам; до ``STREAMS_PER_CONNECTION`` потоков на соединение.
 - Свечи пишутся батчами раз в секунду (upsert); текущая незакрытая свеча хранится с
   ``is_closed = false``, на закрытии перезаписывается с ``true`` и публикуется в Redis
-  канал ``candles.closed`` (планировщик слушает 4h, трекер — 1m).
+  канал ``candles.closed`` (планировщик слушает 4h, трекер — 1m) — только после того, как
+  закрытая строка записана в БД. Незакрытые 4h/1d/1w пишутся не чаще раза в
+  ``FORMING_HTF_EVERY`` секунд (Binance шлёт их на каждой сделке), 1m и закрытые — сразу. Ошибка
+  записи возвращает строки, события и ликвидации в буфер; на остановке — последняя запись всего.
 - Ликвидации агрегируются по минутам: SELL = ликвидация лонга, BUY = шорта; сумма в USDT.
 - Раз в ``DERIVATIVES_EVERY`` секунд — REST: funding, OI (1h), long/short (1h).
-- При старте и после обрыва соединения, по которому шли данные, — догрузка пропусков по REST от
-  последней закрытой свечи в БД (после обрыва — только инструменты этого соединения). Молчащий стрим
-  не догружается: его инструменты держит в БД REST-опрос.
+- При старте — догрузка пропусков по REST от последней закрытой свечи в БД (или от самой старой
+  незакрытой, которой пора быть закрытой). Когда по соединению пошли данные (после старта и после
+  обрыва), — сверка его инструментов (``resync``): после обрыва с данными — та же догрузка, затем
+  последние свечи каждого tf по REST через буфер записи. Binance после подписки шлёт только текущую
+  свечу: закрытая, пока соединения не было, иначе осталась бы незакрытой и без ``candles.closed``.
+  Молчащий стрим не догружается: его инструменты держит в БД REST-опрос.
 - Живые цены (план 2A.3, ADR-0010): раз в ``TICKER_EVERY`` секунд — одно сообщение в Redis канал
   ``prices.live`` с изменившимися ценами ``{"at": ISO, "p": {SYMBOL: "цена"}}``, каждое
   ``TICKER_FULL_EVERY``-е — со всеми (``"full": true``); все цены — ещё и в ключ ``prices:last``.
@@ -26,10 +32,12 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import signal as os_signal
 import sys
+import threading
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
@@ -79,6 +87,23 @@ POLL_WORKERS = 2
 RATE_LIMIT_PAUSE = 120
 TIMEFRAMES = (Timeframe.M1, Timeframe.H4, Timeframe.D1, Timeframe.W1)
 FLUSH_EVERY = 1.0
+FORMING_HTF_EVERY = 5.0
+"""Незакрытая 4h/1d/1w инструмента пишется не чаще раза в столько секунд: Binance шлёт все четыре
+kline на каждой сделке, и раньше 3/4 записей (около 70 строк в секунду на 59 инструментов) были
+перезаписью этих строк. Терминал берёт идущий интервал из закрытых минут; хранимая свеча нужна
+ему, только когда минут с начала интервала нет. Минутные и закрытые строки — каждую запись."""
+FINAL_FLUSH_TIMEOUT = 10.0
+"""Остановка: столько ждём последнюю запись (буфер, ликвидации текущей минуты, закрытые)."""
+FLUSH_LOG_EVERY = 60
+"""Ошибки записи в БД (при сбое — каждую секунду) пишутся в лог только первая и каждая 60-я."""
+BUFFER_MAX = 50_000
+"""Строк в буфере записи, пока БД недоступна (≈ 14 ч минут на 59 инструментов); сверх — самые
+старые отбрасываются вместе с событиями, их догрузит ``backfill`` после переподключения."""
+REPAIR_WINDOW = 1500
+"""Догрузка смотрит назад на столько свечей tf в поисках незакрытой строки, которой пора быть
+закрытой (её закрытие не пришло — например, свеча закрылась, пока не было соединения)."""
+SWEEP_MAX = 30
+"""Сверка соединения: не больше стольких последних свечей tf (один запрос веса 1)."""
 DERIVATIVES_EVERY = 300
 HEARTBEAT_KEY = "market_data:heartbeat"
 STATUS_KEY = "market_data:status"
@@ -156,6 +181,13 @@ class MarketData:
             lambda: [Decimal(0), Decimal(0)]
         )
         self.closed_events: list[dict[str, Any]] = []
+        """Закрытые свечи, чьи строки ещё в буфере записи: в ``candles.closed`` — после записи."""
+        self.ready_events: list[dict[str, Any]] = []
+        """Закрытые свечи, уже записанные в БД, ждут публикации (Redis недоступен — копятся)."""
+        self._lock = threading.Lock()
+        """Буфер записи и ``closed_events`` меняют поток событий и потоки REST (опрос, сверка)."""
+        self.htf_written: dict[tuple[int, str], float] = {}  # (инструмент, tf) → monotonic записи
+        self.backfilled_at: dict[str, datetime] = {}  # до этого момента закрытые свечи уже в БД
         self.stop = asyncio.Event()
         # счётчики для ежеминутной сводки в лог и ключа статуса в Redis (план 2.16)
         self.n_klines = 0
@@ -163,6 +195,7 @@ class MarketData:
         self.n_published = 0
         self.n_flush_errors = 0
         self.n_redis_errors = 0
+        self.n_resynced = 0  # закрытых свечей, взятых сверкой соединения
         # REST-резерв: Binance может держать WebSocket открытым и не слать данные (так было со
         # старым адресом ``/ws`` после переноса рыночных потоков на ``/market``, см. WS_URL; так же
         # будет, если адрес сменится снова). Свежесть — по инструменту: соединений несколько, одно
@@ -194,7 +227,9 @@ class MarketData:
         log.info("инструментов: %d", len(self.symbols))
 
     def backfill(self, symbols: list[str] | None = None, history: Any = None) -> bool:
-        """REST-догрузка от последней закрытой свечи в БД до сейчас, по каждому tf.
+        """REST-догрузка от последней закрытой свечи в БД до сейчас, по каждому tf; если раньше
+        неё (в пределах ``REPAIR_WINDOW`` свечей) есть незакрытая строка, которой пора быть
+        закрытой, — от неё: такая дыра иначе не чинилась бы никогда.
 
         ``symbols`` — только эти инструменты (после обрыва одного соединения), иначе все. На паузе
         после 418/429 запросы не идут: недогруженные инструменты остаются в ``backfill_needed``, их
@@ -224,6 +259,21 @@ class MarketData:
                     start = (last.astimezone(UTC) + tf.delta) if last else now - tf.delta * 1500
                     if tf is Timeframe.M1 and not last:
                         start = now - timedelta(days=7)
+                    stale = s.execute(
+                        text(
+                            "select min(open_time) from candles where instrument_id=:i "
+                            "and timeframe=:tf and open_time >= :w and open_time <= :due "
+                            "and not is_closed"
+                        ),
+                        {
+                            "i": inst_id,
+                            "tf": tf.value,
+                            "w": now - tf.delta * REPAIR_WINDOW,
+                            "due": now - tf.delta,
+                        },
+                    ).scalar()
+                    if stale is not None and stale.astimezone(UTC) < start:
+                        start = stale.astimezone(UTC)
                     if start >= now:
                         continue
                     try:
@@ -241,6 +291,7 @@ class MarketData:
                         upsert_candles(s, inst_id, tf, closed)
                 else:
                     done.append(symbol)
+                    self.backfilled_at[symbol] = now
                 s.commit()
         left = [x for x in todo if x not in done]
         if left:
@@ -281,24 +332,28 @@ class MarketData:
                 self.forming[symbol] = _forming(candle, _now_iso())
 
     def _put_candle(self, symbol: str, inst_id: int, tf: str, c: Candle, closed: bool) -> None:
-        """Свеча в буфер записи; закрытая — ещё и событие ``candles.closed`` (один раз)."""
-        self.candle_buffer[(inst_id, tf, c.open_time)] = {
-            "instrument_id": inst_id,
-            "timeframe": tf,
-            "open_time": c.open_time,
-            "open": c.open,
-            "high": c.high,
-            "low": c.low,
-            "close": c.close,
-            "volume": c.volume,
-            "quote_volume": c.quote_volume,
-            "trades": c.trades,
-            "is_closed": closed,
-        }
-        if closed:
-            key = (inst_id, tf)
+        """Свеча в буфер записи; закрытая — ещё и событие ``candles.closed`` (один раз), оно уйдёт
+        после записи этой строки. Снимок незакрытой свечи, которая уже закрылась (ответ REST,
+        пришедший после закрытия по стриму), устарел — не пишется."""
+        key = (inst_id, tf)
+        with self._lock:
             prev = self.last_closed.get(key)
-            if prev is not None and c.open_time <= prev:
+            if not closed and prev is not None and c.open_time <= prev:
+                return
+            self.candle_buffer[(inst_id, tf, c.open_time)] = {
+                "instrument_id": inst_id,
+                "timeframe": tf,
+                "open_time": c.open_time,
+                "open": c.open,
+                "high": c.high,
+                "low": c.low,
+                "close": c.close,
+                "volume": c.volume,
+                "quote_volume": c.quote_volume,
+                "trades": c.trades,
+                "is_closed": closed,
+            }
+            if not closed or (prev is not None and c.open_time <= prev):
                 return
             self.last_closed[key] = c.open_time
             event: dict[str, Any] = {
@@ -350,6 +405,52 @@ class MarketData:
                     # уйдёт в prices.live со следующей записью
                     self.forming[symbol] = _forming(c, polled_at)
                 n += 1
+        return n
+
+    def resync(self, symbols: list[str], gap: bool, history: Any = None) -> int:
+        """Сверка соединения, когда по нему пошли данные (после старта и после обрыва).
+
+        Binance после подписки шлёт только текущую свечу: свеча, закрывшаяся, пока соединения не
+        было (обрыв, переподключение раз в 24 ч, перезапуск сервиса), иначе осталась бы в БД
+        незакрытой и без ``candles.closed`` — опрос живые по стриму инструменты не трогает. После
+        обрыва с данными (``gap``) — сначала догрузка пропуска (``backfill``), затем последние
+        свечи каждого tf по REST (от ``backfilled_at``, не меньше двух, не больше ``SWEEP_MAX``):
+        закрытые идут через буфер записи — записываются закрытыми и публикуются (уже
+        опубликованные — без второго события), идущую свечу пишет стрим. Сначала 1m: закрытия
+        минут ждут трекер и алерты. На паузе 418/429 и при ошибке запроса инструменты уходят в
+        ``backfill_needed`` — их догрузит опрос. Возвращает число взятых закрытых свечей."""
+        history = history if history is not None else BinanceHistory("futures")
+        if gap:
+            self.backfill(symbols, history)
+        now = datetime.now(tz=UTC)
+        n = 0
+        for tf in TIMEFRAMES:
+            for symbol in symbols:
+                inst_id = self.symbols.get(symbol)
+                if inst_id is None:
+                    continue
+                if time.time() < self.poll_pause_until:
+                    self.backfill_needed.update(symbols)
+                    log.warning("сверка прервана паузой 418/429: %d инструментов", len(symbols))
+                    return n
+                synced = self.backfilled_at.get(symbol, now) - tf.delta
+                start = max(now - tf.delta * SWEEP_MAX, min(now - tf.delta * 2, synced))
+                try:
+                    candles = history.fetch_rest(symbol, tf, start, now)
+                except httpx.HTTPStatusError as exc:
+                    if not self._rate_limited(exc.response):
+                        log.warning("%s %s: сверка не удалась: %s", symbol, tf.value, exc)
+                    self.backfill_needed.add(symbol)
+                    continue
+                except Exception as exc:
+                    log.warning("%s %s: сверка не удалась: %s", symbol, tf.value, exc)
+                    self.backfill_needed.add(symbol)
+                    continue
+                for c in candles:
+                    if c.close_time(tf) <= now:
+                        self._put_candle(symbol, inst_id, tf.value, c, closed=True)
+                        n += 1
+        self.n_resynced += n
         return n
 
     def ws_fresh(self, within: float, now: float | None = None) -> set[str]:
@@ -562,49 +663,130 @@ class MarketData:
             s.commit()
 
     async def flusher(self) -> None:
-        while not self.stop.is_set():
-            await asyncio.sleep(FLUSH_EVERY)
-            candles = list(self.candle_buffer.values())
-            self.candle_buffer.clear()
-            # минутные агрегаты ликвидаций отдаём только за завершённые минуты
-            cutoff = datetime.now(tz=UTC).replace(second=0, microsecond=0)
-            liqs = {k: v for k, v in self.liq_buffer.items() if k[1] < cutoff}
-            for k in liqs:
-                del self.liq_buffer[k]
-            if candles or liqs:
-                try:
-                    await asyncio.to_thread(self._flush_sync, candles, liqs)
-                    self.n_flushed += len(candles)
-                except Exception:
-                    self.n_flush_errors += 1
-                    log.exception("ошибка записи в БД; данные будут догружены по REST")
-            try:
-                await self.publish_closed()
-                # после закрытых: клиент сначала закрывает минуту, затем видит следующую
-                await self.publish_forming()
-                await self.redis.set(HEARTBEAT_KEY, int(time.time()))
-                await self.redis.set(STATUS_KEY, json.dumps(self.status()))
-            except Exception as exc:
-                # Redis недоступен: запись и опрос идут дальше, закрытые свечи уйдут потом
-                self.n_redis_errors += 1
-                if self.n_redis_errors % REDIS_LOG_EVERY == 1:
-                    log.warning(
-                        "Redis: %s: %s (ошибок всего %d, ждут публикации %d)",
-                        type(exc).__name__,
-                        exc,
-                        self.n_redis_errors,
-                        len(self.closed_events),
+        """Раз в ``FLUSH_EVERY`` секунд — запись; на остановке — последняя, всего буфера."""
+        while True:
+            if not self.stop.is_set():
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(self.stop.wait(), FLUSH_EVERY)
+            final = self.stop.is_set()
+            await self.flush_once(final=final)
+            if final:
+                return
+
+    def _take_rows(self, final: bool) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Строки для записи и события их закрытых свечей — одним снимком под замком: событие,
+        пришедшее во время записи, уйдёт со следующей записью вместе со своей строкой. Незакрытая
+        4h/1d/1w остаётся в буфере, если её (инструмента и tf) писали меньше
+        ``FORMING_HTF_EVERY`` секунд назад (``final`` — пишется всё)."""
+        now = time.monotonic()
+        take: list[dict[str, Any]] = []
+        keep: dict[tuple[int, str, datetime], dict[str, Any]] = {}
+        with self._lock:
+            events, self.closed_events = self.closed_events, []
+            for key, row in self.candle_buffer.items():
+                if final or row["is_closed"] or row["timeframe"] == Timeframe.M1.value:
+                    take.append(row)
+                    continue
+                tf_key = (row["instrument_id"], row["timeframe"])
+                if now - self.htf_written.get(tf_key, -FORMING_HTF_EVERY) >= FORMING_HTF_EVERY:
+                    self.htf_written[tf_key] = now
+                    take.append(row)
+                else:
+                    keep[key] = row
+            self.candle_buffer = keep
+        return take, events
+
+    def _requeue(
+        self,
+        candles: list[dict[str, Any]],
+        events: list[dict[str, Any]],
+        liqs: dict[tuple[int, datetime], list[Decimal]],
+    ) -> None:
+        """Запись не удалась: строки, события и ликвидации — обратно в буфер, к следующей записи.
+        Строка, пришедшая во время записи, новее — она и остаётся. Сверх ``BUFFER_MAX`` строк
+        отбрасываются самые старые вместе со своими событиями. Незакрытые 4h/1d/1w — со следующей
+        записью, без ожидания ``FORMING_HTF_EVERY``."""
+        with self._lock:
+            buffer = {(r["instrument_id"], r["timeframe"], r["open_time"]): r for r in candles}
+            for r in candles:
+                self.htf_written.pop((r["instrument_id"], r["timeframe"]), None)
+            buffer.update(self.candle_buffer)
+            queued = events + self.closed_events
+            if len(buffer) > BUFFER_MAX:
+                dropped = sorted(buffer, key=lambda key: key[2])[: len(buffer) - BUFFER_MAX]
+                for key in dropped:
+                    del buffer[key]
+                queued = [
+                    e
+                    for e in queued
+                    if (
+                        e["instrument_id"],
+                        e["tf"],
+                        datetime.fromisoformat(e["open_time"]),
                     )
+                    in buffer
+                ]
+                log.error("буфер записи переполнен: отброшено %d строк", len(dropped))
+            self.candle_buffer = buffer
+            self.closed_events = queued
+        for liq_key, (long_usd, short_usd) in liqs.items():
+            bucket = self.liq_buffer[liq_key]
+            bucket[0] += long_usd
+            bucket[1] += short_usd
+
+    async def flush_once(self, final: bool = False) -> None:
+        """Запись буфера в БД, затем закрытые свечи этой записи — в ``candles.closed`` (не раньше
+        их строк: планировщик и алерты читают свечу из БД), формирующиеся минуты — в
+        ``prices.live``, heartbeat и статус. Ликвидации — за завершённые минуты (``final`` — и за
+        текущую: строка ликвидаций складывается с уже записанной)."""
+        candles, events = self._take_rows(final)
+        cutoff = datetime.now(tz=UTC).replace(second=0, microsecond=0)
+        liqs = {k: v for k, v in self.liq_buffer.items() if final or k[1] < cutoff}
+        for k in liqs:
+            del self.liq_buffer[k]
+        if candles or liqs:
+            try:
+                await asyncio.to_thread(self._flush_sync, candles, liqs)
+            except Exception:
+                self.n_flush_errors += 1
+                self._requeue(candles, events, liqs)
+                events = []
+                if self.n_flush_errors % FLUSH_LOG_EVERY == 1:
+                    log.exception(
+                        "ошибка записи в БД (всего %d); данные остаются в буфере до следующей "
+                        "записи",
+                        self.n_flush_errors,
+                    )
+            else:
+                self.n_flushed += len(candles)
+        self.ready_events = (self.ready_events + events)[-EVENTS_MAX:]
+        try:
+            await self.publish_closed()
+            # после закрытых: клиент сначала закрывает минуту, затем видит следующую
+            await self.publish_forming()
+            await self.redis.set(HEARTBEAT_KEY, int(time.time()))
+            await self.redis.set(STATUS_KEY, json.dumps(self.status()))
+        except Exception as exc:
+            # Redis недоступен: запись и опрос идут дальше, закрытые свечи уйдут потом
+            self.n_redis_errors += 1
+            if self.n_redis_errors % REDIS_LOG_EVERY == 1:
+                log.warning(
+                    "Redis: %s: %s (ошибок всего %d, ждут публикации %d)",
+                    type(exc).__name__,
+                    exc,
+                    self.n_redis_errors,
+                    len(self.ready_events),
+                )
 
     async def publish_closed(self) -> None:
-        """Закрытые свечи в ``candles.closed`` по порядку; не ушедшие (Redis недоступен) остаются
-        в очереди — не больше ``EVENTS_MAX`` последних."""
-        events, self.closed_events = self.closed_events, []
+        """Записанные закрытые свечи в ``candles.closed`` по порядку; не ушедшие (Redis
+        недоступен) остаются в очереди — не больше ``EVENTS_MAX`` последних."""
+        events, self.ready_events = self.ready_events, []
         for i, e in enumerate(events):
             try:
                 await self.redis.publish(CHANNEL_CLOSED, json.dumps(e))
             except Exception:
-                self.closed_events = (events[i:] + self.closed_events)[-EVENTS_MAX:]
+                self.ready_events = (events[i:] + self.ready_events)[-EVENTS_MAX:]
                 raise
             self.n_published += 1
 
@@ -619,7 +801,8 @@ class MarketData:
             "flush_errors": self.n_flush_errors,
             "redis_errors": self.n_redis_errors,
             "buffer": len(self.candle_buffer),
-            "pending_closed": len(self.closed_events),
+            "pending_closed": len(self.closed_events) + len(self.ready_events),
+            "resynced": self.n_resynced,
             "ticks": self.n_ticks,
             "tick_prices": self.n_tick_prices,
             "ticks_full": self.n_full,
@@ -687,78 +870,107 @@ class MarketData:
         ]
 
     async def connection(self, streams: list[str], idx: int) -> None:
-        """Одно WebSocket-соединение Binance. Обрыв после данных — догрузка пропуска по REST только
-        инструментов этого соединения. Молчащий стрим (подписка подтверждена, данных нет — так
-        молчал в production старый адрес ``/ws``, см. ``WS_URL``) переподключается без догрузки —
-        его инструменты держит REST-опрос — и с растущей до 60 с задержкой."""
+        """Одно WebSocket-соединение Binance. Когда по нему пошли данные — сверка его инструментов
+        (``resync``, в фоне: приём не ждёт REST); после обрыва с данными — с догрузкой пропуска.
+        Сверки не перекрываются: данные, пошедшие во время сверки, — ровно одна следующая.
+        Молчащий стрим (подписка подтверждена, данных нет — так молчал в production старый адрес
+        ``/ws``, см. ``WS_URL``) переподключается без сверки — его инструменты держит REST-опрос —
+        и с растущей до 60 с задержкой."""
         backoff = RECONNECT_MIN
         symbols = sorted({name.split("@", 1)[0].upper() for name in streams})
-        while not self.stop.is_set():
-            got_data = False
-            try:
-                async with connect(WS_URL, ping_interval=20, ping_timeout=20, max_size=2**22) as ws:
-                    await ws.send(
-                        json.dumps({"method": "SUBSCRIBE", "params": streams, "id": idx + 1})
+        wanted = asyncio.Event()
+        gap = False  # был обрыв после данных: следующая сверка — с догрузкой пропуска
+
+        async def resyncer() -> None:
+            nonlocal gap
+            history = BinanceHistory("futures")
+            while True:
+                await wanted.wait()
+                wanted.clear()
+                with_gap, gap = gap, False
+                try:
+                    n = await asyncio.to_thread(self.resync, symbols, with_gap, history)
+                    log.info("соединение %d: сверка — закрытых свечей %d", idx, n)
+                except Exception:
+                    if with_gap:
+                        self.backfill_needed.update(symbols)
+                    log.exception("соединение %d: сверка не удалась", idx)
+
+        worker = asyncio.create_task(resyncer(), name=f"resync-{idx}")
+        try:
+            while not self.stop.is_set():
+                got_data = False
+                try:
+                    async with connect(
+                        WS_URL, ping_interval=20, ping_timeout=20, max_size=2**22
+                    ) as ws:
+                        await ws.send(
+                            json.dumps({"method": "SUBSCRIBE", "params": streams, "id": idx + 1})
+                        )
+                        log.info("соединение %d: подписка на %d потоков", idx, len(streams))
+                        received = 0
+                        while not self.stop.is_set():
+                            try:
+                                raw = await asyncio.wait_for(ws.recv(), timeout=SILENCE_TIMEOUT)
+                            except TimeoutError:
+                                # Binance шлёт kline каждые ~250 мс: тишина = мёртвое соединение
+                                log.warning(
+                                    "соединение %d: нет данных %d с (получено %d), переподключаюсь",
+                                    idx,
+                                    SILENCE_TIMEOUT,
+                                    received,
+                                )
+                                break
+                            received += 1
+                            msg = json.loads(raw)
+                            # raw-стрим отдаёт событие как есть; combined — в поле "data"
+                            data = msg.get("data", msg) if isinstance(msg, dict) else {}
+                            event = data.get("e")
+                            if received == 1:
+                                log.info("соединение %d: первое сообщение: %s", idx, str(raw)[:200])
+                            if event == "kline":
+                                self.on_kline(data["k"])
+                            elif event == "forceOrder":
+                                self.on_force_order(data["o"])
+                            elif "error" in msg or received <= 3:
+                                log.warning(
+                                    "соединение %d: сообщение без данных: %s", idx, str(raw)[:300]
+                                )
+                                continue
+                            else:
+                                continue
+                            if not got_data:
+                                got_data = True
+                                # стрим ожил — следующий обрыв снова с короткой паузы; закрытое,
+                                # пока соединения не было, Binance не пришлёт — сверка по REST
+                                backoff = RECONNECT_MIN
+                                wanted.set()
+                except (ConnectionClosed, OSError) as exc:
+                    log.warning(
+                        "соединение %d разорвано: %s; повтор через %.0f с", idx, exc, backoff
                     )
-                    log.info("соединение %d: подписка на %d потоков", idx, len(streams))
-                    received = 0
-                    while not self.stop.is_set():
-                        try:
-                            raw = await asyncio.wait_for(ws.recv(), timeout=SILENCE_TIMEOUT)
-                        except TimeoutError:
-                            # Binance шлёт kline каждые ~250 мс: тишина = мёртвое соединение
-                            log.warning(
-                                "соединение %d: нет данных %d с (получено %d), переподключаюсь",
-                                idx,
-                                SILENCE_TIMEOUT,
-                                received,
-                            )
-                            break
-                        received += 1
-                        msg = json.loads(raw)
-                        # raw-стрим отдаёт событие как есть; combined — в поле "data"
-                        data = msg.get("data", msg) if isinstance(msg, dict) else {}
-                        event = data.get("e")
-                        if received == 1:
-                            log.info("соединение %d: первое сообщение: %s", idx, str(raw)[:200])
-                        if event == "kline":
-                            self.on_kline(data["k"])
-                        elif event == "forceOrder":
-                            self.on_force_order(data["o"])
-                        elif "error" in msg or received <= 3:
-                            log.warning(
-                                "соединение %d: сообщение без данных: %s", idx, str(raw)[:300]
-                            )
-                            continue
-                        else:
-                            continue
-                        if not got_data:
-                            got_data = True
-                            # стрим ожил — следующий обрыв снова с короткой паузы
-                            backoff = RECONNECT_MIN
-            except (ConnectionClosed, OSError) as exc:
-                log.warning("соединение %d разорвано: %s; повтор через %.0f с", idx, exc, backoff)
-            except Exception:
-                log.exception("соединение %d: ошибка", idx)
-            if self.stop.is_set():
-                break
-            await asyncio.sleep(backoff)
-            backoff = min(backoff * 2, RECONNECT_MAX)
-            if not got_data:
-                continue
-            try:
-                await asyncio.to_thread(self.backfill, symbols)
-            except Exception:
-                log.exception("догрузка после переподключения не удалась")
+                except Exception:
+                    log.exception("соединение %d: ошибка", idx)
+                if self.stop.is_set():
+                    break
+                if got_data:
+                    gap = True
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, RECONNECT_MAX)
+        finally:
+            worker.cancel()
 
     async def run(self) -> bool:
         """Задачи сервиса до сигнала остановки. Тикер цен и запись (heartbeat) — до стартовой
         догрузки: она идёт десятки секунд, а цены и «жив» нужны сразу. Основная задача, вышедшая
-        без остановки, останавливает сервис (``False``): хостинг перезапустит процесс."""
+        без остановки, останавливает сервис (``False``): хостинг перезапустит процесс. Запись
+        останавливается последней: после источников данных она пишет весь буфер (и ликвидации
+        текущей минуты) и публикует закрытые — деплой их не теряет."""
         self.load_symbols()
+        flusher = asyncio.create_task(self.flusher(), name="flusher")
         tasks = [
             asyncio.create_task(self.ticker(), name="ticker"),
-            asyncio.create_task(self.flusher(), name="flusher"),
+            flusher,
             asyncio.create_task(self.reporter(), name="reporter"),
         ]
         try:
@@ -780,9 +992,17 @@ class MarketData:
             exc = None if t.cancelled() else t.exception()
             log.error("задача %s остановилась: %r — останавливаю сервис", t.get_name(), exc)
         self.stop.set()
-        for t in [stop, *tasks]:
+        sources = [t for t in [stop, *tasks] if t is not flusher]
+        for t in sources:
             t.cancel()
-        await asyncio.gather(stop, *tasks, return_exceptions=True)
+        await asyncio.gather(*sources, return_exceptions=True)
+        try:
+            if flusher.done():  # запись упала сама — последняя запись здесь
+                await self.flush_once(final=True)
+            else:
+                await asyncio.wait_for(flusher, FINAL_FLUSH_TIMEOUT)
+        except Exception:
+            log.exception("последняя запись не удалась")
         await self.redis.aclose()
         return not failed
 

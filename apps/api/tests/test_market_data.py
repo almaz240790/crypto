@@ -113,6 +113,8 @@ def test_put_candle_rest_fallback_publishes_closed_once() -> None:
     md._put_candle("BTCUSDT", 1, "1m", c, closed=True)
     md._put_candle("BTCUSDT", 1, "1m", c, closed=True)  # повторный опрос той же свечи
     assert len(md.closed_events) == 1 and md.closed_events[0]["close"] == "1.5"
+    # снимок незакрытой свечи, пришедший после её закрытия (ответ REST отстал от стрима), устарел:
+    # раньше он перезаписывал закрытую строку незакрытой, а событие уже стояло в очереди
     md._put_candle(
         "BTCUSDT",
         1,
@@ -120,7 +122,10 @@ def test_put_candle_rest_fallback_publishes_closed_once() -> None:
         Candle(t0, Decimal(1), Decimal(2), Decimal(1), Decimal(1), Decimal(1)),
         closed=False,
     )
-    assert len(md.closed_events) == 1 and md.candle_buffer[(1, "1m", t0)]["is_closed"] is False
+    row = md.candle_buffer[(1, "1m", t0)]
+    assert (
+        len(md.closed_events) == 1 and row["is_closed"] is True and row["close"] == Decimal("1.5")
+    )
 
 
 # --- живые цены (план 2A.3, ADR-0010) ---------------------------------------------------------
@@ -488,7 +493,8 @@ def test_backfill_stops_on_rate_limit_and_resumes_after_pause(monkeypatch: Any) 
 
 
 class FakeBinanceWs:
-    """Соединение Binance: подтверждение подписки, затем сообщения сценария, затем тишина."""
+    """Соединение Binance: подтверждение подписки, затем сообщения сценария, затем тишина.
+    Число в сценарии — пауза (секунды) перед следующим сообщением."""
 
     def __init__(self, script: list[Any]) -> None:
         self.script = [json.dumps({"result": None, "id": 1}), *script]
@@ -503,6 +509,8 @@ class FakeBinanceWs:
         return None
 
     async def recv(self) -> str:
+        while self.script and isinstance(self.script[0], float):
+            await asyncio.sleep(self.script.pop(0))
         if not self.script:
             await asyncio.sleep(3600)
         item = self.script.pop(0)
@@ -511,18 +519,42 @@ class FakeBinanceWs:
         return str(item)
 
 
+class RestHistory:
+    """REST Binance для сверки и догрузки: свечи по tf в окне запроса; ``log`` — порядок."""
+
+    def __init__(self, candles: dict[Timeframe, list[Candle]], log: list[Any]) -> None:
+        self.candles = candles
+        self.log = log
+        self.calls: list[tuple[str, Timeframe, datetime, datetime]] = []
+
+    def fetch_rest(
+        self, symbol: str, tf: Timeframe, start: datetime, end: datetime
+    ) -> list[Candle]:
+        self.calls.append((symbol, tf, start, end))
+        self.log.append(("fetch", tf.value))
+        return [c for c in self.candles.get(tf, []) if start <= c.open_time <= end]
+
+
 def _run_connection(
-    md: MarketData, monkeypatch: Any, scripts: list[list[Any]], seconds: float
+    md: MarketData,
+    monkeypatch: Any,
+    scripts: list[list[Any]],
+    seconds: float,
+    rest: RestHistory | None = None,
 ) -> list[Any]:
-    """Соединение по сценариям (по одному на подключение); возвращает вызовы догрузки."""
+    """Соединение по сценариям (по одному на подключение); возвращает вызовы догрузки. REST —
+    ``rest`` (по умолчанию без свечей): сеть в тестах не трогаем."""
     backfills: list[Any] = []
+    rest = rest if rest is not None else RestHistory({}, [])
 
     def backfill(symbols: Any = None, history: Any = None) -> bool:
         backfills.append(symbols)
+        rest.log.append(("backfill", symbols))
         return True
 
     connects = iter(scripts)
     monkeypatch.setattr(md, "backfill", backfill)
+    monkeypatch.setattr(mdmod, "BinanceHistory", lambda *a, **k: rest)
     monkeypatch.setattr(mdmod, "connect", lambda *a, **k: FakeBinanceWs(next(connects, [])))
 
     async def run() -> None:
@@ -544,8 +576,9 @@ def test_silent_stream_reconnects_without_backfill(monkeypatch: Any) -> None:
     md = _md()
     md.symbols = {"BTCUSDT": 1, "ETHUSDT": 2}
     # production: подписка подтверждена, данных нет — раньше каждые ~61 с догрузка (236 запросов)
-    backfills = _run_connection(md, monkeypatch, [[] for _ in range(50)], 0.3)
-    assert backfills == []
+    rest = RestHistory({}, [])
+    backfills = _run_connection(md, monkeypatch, [[] for _ in range(50)], 0.3, rest)
+    assert backfills == [] and rest.calls == []  # ни догрузки, ни сверки
 
 
 def test_dropped_stream_with_data_backfills_only_its_symbols(monkeypatch: Any) -> None:
@@ -553,8 +586,165 @@ def test_dropped_stream_with_data_backfills_only_its_symbols(monkeypatch: Any) -
     md = _md()
     md.symbols = {"BTCUSDT": 1}
     kline = json.dumps({"e": "kline", "k": {**KLINE, "i": "1m"}})
-    backfills = _run_connection(md, monkeypatch, [[kline, OSError("reset")]], 0.1)
-    assert backfills == [["BTCUSDT"]] and md.n_klines == 1
+    # обрыв после данных — догрузка, когда по новому соединению снова пошли данные (раньше — до
+    # подключения: свеча, закрывшаяся между догрузкой и данными, терялась); без данных — без неё
+    scripts = [[kline, 0.05, OSError("reset")], [], [kline]]
+    monkeypatch.setattr(mdmod, "SILENCE_TIMEOUT", 0.05)
+    backfills = _run_connection(md, monkeypatch, scripts, 0.3)
+    assert backfills == [["BTCUSDT"]] and md.n_klines == 2
+
+
+def _minute_candles(m: datetime) -> list[Candle]:
+    """Минута ``m`` закрыта (high 105 — после обрыва), ``m + 1`` идёт."""
+    return [
+        Candle(m, Decimal(100), Decimal(105), Decimal(99), Decimal(104), Decimal(7)),
+        Candle(
+            m + timedelta(minutes=1),
+            Decimal(104),
+            Decimal(106),
+            Decimal(103),
+            Decimal(105),
+            Decimal(1),
+        ),
+    ]
+
+
+def test_candle_closed_while_disconnected_is_written_closed_and_published(
+    monkeypatch: Any,
+) -> None:
+    # MD-WS-HOLE: Binance после подписки шлёт только текущую свечу. Раньше минута, закрывшаяся
+    # без соединения, оставалась в БД незакрытой (high со снимка до обрыва), без candles.closed,
+    # и её не чинили ни опрос (стрим жив), ни следующая догрузка (начинает после последней
+    # закрытой)
+    monkeypatch.setattr(mdmod, "RECONNECT_MIN", 0.01)
+    md = _md()
+    m = datetime.now(tz=UTC).replace(second=0, microsecond=0) - timedelta(minutes=1)
+    ohlc = {"o": "100", "h": "101", "l": "99", "c": "100"}
+    before = {**KLINE, **ohlc, "i": "1m", "t": int(m.timestamp() * 1000)}
+    after = {**before, "t": int((m + timedelta(minutes=1)).timestamp() * 1000), "h": "106"}
+    log: list[Any] = []
+    rest = RestHistory({Timeframe.M1: _minute_candles(m)}, log)
+    scripts = [
+        [json.dumps({"e": "kline", "k": before}), 0.05, OSError("reset")],
+        [json.dumps({"e": "kline", "k": after})],
+    ]
+    backfills = _run_connection(md, monkeypatch, scripts, 0.3, rest)
+    row = md.candle_buffer[(1, "1m", m)]
+    assert row["is_closed"] is True and row["high"] == Decimal(105)
+    events = [e for e in md.closed_events if e["tf"] == "1m"]
+    assert [e["open_time"] for e in events] == [m.isoformat()]  # одно событие на две сверки
+    # идущую минуту сверка не трогает — её пишет стрим
+    assert md.candle_buffer[(1, "1m", m + timedelta(minutes=1))]["high"] == Decimal(106)
+    # две сверки: после первых данных и после переподключения; вторая — с догрузкой пропуска
+    # перед REST-свечами (событие уходит, когда БД уже полна)
+    assert backfills == [["BTCUSDT"]]
+    second = log[log.index(("backfill", ["BTCUSDT"])) :]
+    assert second[0] == ("backfill", ["BTCUSDT"]) and second[1] == ("fetch", "1m")
+    assert len([x for x in log if x == ("fetch", "1m")]) == 2
+    assert md.status()["resynced"] == 2
+
+
+def test_resync_window_rate_limit_and_errors(monkeypatch: Any) -> None:
+    md = _md()
+    md.symbols = {"BTCUSDT": 1, "ETHUSDT": 2}
+    now = datetime.now(tz=UTC)
+    m = now.replace(second=0, microsecond=0) - timedelta(minutes=1)
+    rest = RestHistory({Timeframe.M1: _minute_candles(m)}, [])
+    # после старта: окно — от стартовой догрузки (её «сейчас»), даже если с неё прошло > 2 свечей
+    md.backfilled_at["BTCUSDT"] = now - timedelta(minutes=5)
+    assert md.resync(["BTCUSDT"], gap=False, history=rest) == 1
+    starts = {tf: start for _, tf, start, _ in rest.calls}
+    assert set(starts) == set(mdmod.TIMEFRAMES)
+    assert now - starts[Timeframe.M1] >= timedelta(minutes=6)
+    assert now - starts[Timeframe.H4] <= timedelta(hours=8, seconds=5)  # не меньше двух свечей
+    # не больше SWEEP_MAX свечей назад
+    md.backfilled_at["BTCUSDT"] = now - timedelta(days=3)
+    rest.calls.clear()
+    md.resync(["BTCUSDT"], gap=False, history=rest)
+    m1_start = next(s for _, tf, s, _ in rest.calls if tf is Timeframe.M1)
+    assert now - m1_start <= timedelta(minutes=mdmod.SWEEP_MAX, seconds=5)
+    assert len(md.closed_events) == 1  # повторная сверка — без второго события
+
+    class Failing:
+        def __init__(self, code: int) -> None:
+            self.code = code
+            self.calls = 0
+
+        def fetch_rest(self, *a: Any) -> list[Candle]:
+            self.calls += 1
+            req = httpx.Request("GET", "https://fapi.binance.com/fapi/v1/klines")
+            resp = httpx.Response(self.code, request=req)
+            raise httpx.HTTPStatusError(str(self.code), request=req, response=resp)
+
+    # ошибка запроса — инструмент в backfill_needed (догрузит опрос), сверка идёт дальше
+    failing = Failing(500)
+    md.resync(["BTCUSDT", "ETHUSDT"], gap=False, history=failing)
+    assert failing.calls == 2 * len(mdmod.TIMEFRAMES)
+    assert md.backfill_needed == {"BTCUSDT", "ETHUSDT"}
+    # 429 — пауза: больше ни одного запроса, все инструменты соединения — в backfill_needed
+    md.backfill_needed.clear()
+    limited = Failing(429)
+    md.resync(["BTCUSDT", "ETHUSDT"], gap=False, history=limited)
+    assert limited.calls == 1 and md.backfill_needed == {"BTCUSDT", "ETHUSDT"}
+    assert md.poll_pause_until > time.time()
+
+
+def test_upsert_of_closed_candles_closes_a_row_written_unclosed() -> None:
+    # догрузка поверх незакрытой строки раньше обновляла цены, но is_closed оставался false — свеча
+    # так и не становилась закрытой (проверено на Postgres: PGlite)
+    from sqlalchemy.dialects import postgresql
+
+    from app.forward import upsert_candles
+
+    sql: list[str] = []
+
+    class Session:
+        def execute(self, stmt: Any) -> None:
+            sql.append(str(stmt.compile(dialect=postgresql.dialect())))
+
+    t0 = datetime(2026, 11, 5, 12, 0, tzinfo=UTC)
+    c = Candle(t0, Decimal(100), Decimal(110), Decimal(99), Decimal(104), Decimal(7))
+    upsert_candles(Session(), 1, Timeframe.M1, [c])  # type: ignore[arg-type]
+    conflict = sql[0].split("ON CONFLICT", 1)[1]
+    assert "is_closed = excluded.is_closed" in conflict and "high = excluded.high" in conflict
+
+
+def test_backfill_starts_from_oldest_unclosed_row_that_should_be_closed(monkeypatch: Any) -> None:
+    # минута m не закрылась в БД, а m + 1 закрыта: раньше догрузка начинала после m + 1 — дыра
+    # оставалась навсегда
+    now = datetime.now(tz=UTC)
+    m = now.replace(second=0, microsecond=0) - timedelta(minutes=10)
+
+    class Session(FakeSession):
+        def execute(self, sql: Any, params: dict[str, Any]) -> Any:
+            stale = "not is_closed" in str(sql)
+            value = None
+            if params["tf"] == "1m":
+                value = m if stale else m + timedelta(minutes=1)
+                if stale:
+                    at = datetime.now(tz=UTC)
+                    assert at - timedelta(minutes=1, seconds=5) <= params["due"]
+                    assert params["due"] <= at - timedelta(minutes=1)
+                    assert params["w"] <= at - timedelta(minutes=mdmod.REPAIR_WINDOW)
+
+            class Result:
+                def scalar(self) -> Any:
+                    return value
+
+            return Result()
+
+    monkeypatch.setattr(mdmod, "SessionLocal", Session)
+    upserts: list[Any] = []
+    monkeypatch.setattr(mdmod, "upsert_candles", lambda s, i, tf, cs: upserts.append((tf, cs)))
+    md = _md()
+    rest = RestHistory({Timeframe.M1: _minute_candles(m)}, [])
+    assert md.backfill(["BTCUSDT"], history=rest) is True
+    assert next(s for _, tf, s, _ in rest.calls if tf is Timeframe.M1) == m
+    assert [c.open_time for tf, cs in upserts if tf is Timeframe.M1 for c in cs] == [
+        m,
+        m + timedelta(minutes=1),
+    ]
+    assert md.backfilled_at["BTCUSDT"] >= now
 
 
 def test_ws_url_is_binance_market_category() -> None:
@@ -634,8 +824,125 @@ def test_flusher_survives_redis_outage_and_republishes_closed(monkeypatch: Any) 
         t0.isoformat(),
         (t0 + timedelta(minutes=1)).isoformat(),
     ]
-    assert md.closed_events == [] and md.n_redis_errors >= 1
+    assert md.closed_events == [] and md.ready_events == [] and md.n_redis_errors >= 1
     assert mdmod.HEARTBEAT_KEY in md.redis.keys and mdmod.STATUS_KEY in md.redis.keys
+
+
+def _closed(md: MarketData) -> list[dict[str, Any]]:
+    return [m for ch, m in md.redis.published if ch == mdmod.CHANNEL_CLOSED]
+
+
+def test_closed_candle_is_published_only_after_its_row_is_written(monkeypatch: Any) -> None:
+    # MD-CLOSED-BEFORE-FLUSH: закрытие, пришедшее во время записи, раньше публиковалось в конце
+    # этой записи — а строка шла следующей; планировщик и алерты читали из БД незакрытую свечу
+    md = _md()
+    writes: list[list[tuple[str, bool, Decimal]]] = []
+
+    def flush_sync(candles: list[dict[str, Any]], liqs: Any) -> None:
+        writes.append([(c["timeframe"], c["is_closed"], c["high"]) for c in candles])
+        if len(writes) == 1:
+            md.on_kline({**KLINE, "h": "42600", "x": True})  # 4h закрылась, пока шла запись
+
+    monkeypatch.setattr(md, "_flush_sync", flush_sync)
+    md.on_kline(KLINE)
+    asyncio.run(md.flush_once())
+    assert writes == [[("4h", False, Decimal("42500"))]]
+    assert _closed(md) == [] and len(md.closed_events) == 1
+    asyncio.run(md.flush_once())
+    assert writes[1] == [("4h", True, Decimal("42600"))]  # закрытая — без задержки 4h
+    assert [e["tf"] for e in _closed(md)] == ["4h"] and md.closed_events == []
+
+
+def test_flush_error_keeps_rows_events_and_liquidations(monkeypatch: Any) -> None:
+    # MD-LIQ-LOSS: раньше ошибка записи теряла строки, ликвидации (их по REST нет) и публиковала
+    # закрытые свечи без строк; в лог — «будут догружены по REST»
+    md = _md()
+    writes: list[tuple[list[dict[str, Any]], dict[Any, list[Decimal]]]] = []
+    t = 1704067230000  # 00:00:30 — минута давно завершена
+
+    def flush_sync(candles: list[dict[str, Any]], liqs: dict[Any, list[Decimal]]) -> None:
+        if not writes and md.n_flush_errors == 0:
+            md.on_kline({**KLINE, "c": "42450"})  # снимок новее — во время неудачной записи
+            md.on_force_order({"s": "BTCUSDT", "S": "SELL", "q": "1", "ap": "100", "T": t + 1})
+            raise OSError("db down")
+        writes.append((candles, {k: list(v) for k, v in liqs.items()}))
+
+    monkeypatch.setattr(md, "_flush_sync", flush_sync)
+    m0 = datetime(2026, 10, 25, 12, 0, tzinfo=UTC)
+    md._put_candle(
+        "BTCUSDT", 1, "1m", Candle(m0, *(Decimal(x) for x in (1, 2, 1, 1, 3))), closed=True
+    )
+    md.on_kline(KLINE)
+    md.on_force_order({"s": "BTCUSDT", "S": "SELL", "q": "2", "ap": "100", "T": t})
+    asyncio.run(md.flush_once())
+    assert md.n_flush_errors == 1 and _closed(md) == [] and len(md.closed_events) == 1
+    assert md.candle_buffer[(1, "4h", datetime(2024, 1, 1, tzinfo=UTC))]["close"] == Decimal(42450)
+    asyncio.run(md.flush_once())
+    candles, liqs = writes[0]
+    assert {(c["timeframe"], c["close"]) for c in candles} == {
+        ("1m", Decimal(1)),
+        ("4h", Decimal(42450)),  # повтор — без задержки 4h, строка новее
+    }
+    minute = datetime(2024, 1, 1, 0, 0, tzinfo=UTC)
+    assert liqs == {(1, minute): [Decimal(300), Decimal(0)]}  # обе ликвидации, без потерь
+    assert [e["tf"] for e in _closed(md)] == ["1m"]
+
+
+def test_forming_higher_tf_rows_are_written_every_few_seconds(monkeypatch: Any) -> None:
+    # MD-WRITE-AMP: Binance шлёт 4h/1d/1w на каждой сделке — раньше каждая перезапись шла в БД
+    clock = [100.0]
+    monkeypatch.setattr(mdmod.time, "monotonic", lambda: clock[0])
+    md = _md()
+    m1 = {**KLINE, "i": "1m"}
+
+    def take(final: bool = False) -> dict[str, Decimal]:
+        rows, _ = md._take_rows(final)
+        return {r["timeframe"]: r["close"] for r in rows}
+
+    md.on_kline(KLINE)
+    md.on_kline(m1)
+    assert take() == {"4h": Decimal(42300), "1m": Decimal(42300)}
+    md.on_kline({**KLINE, "c": "42410"})
+    md.on_kline({**m1, "c": "42410"})
+    clock[0] += 1
+    assert take() == {"1m": Decimal(42410)}  # 4h ждёт в буфере
+    assert md.candle_buffer[(1, "4h", datetime(2024, 1, 1, tzinfo=UTC))]["close"] == 42410
+    clock[0] += mdmod.FORMING_HTF_EVERY
+    assert take() == {"4h": Decimal(42410)}
+    md.on_kline({**KLINE, "c": "42420"})
+    assert take() == {}
+    md.on_kline({**KLINE, "c": "42430", "x": True})  # закрытие — сразу
+    rows, events = md._take_rows(False)
+    assert [(r["close"], r["is_closed"]) for r in rows] == [(Decimal(42430), True)]
+    assert [e["tf"] for e in events] == ["4h"]
+    md.on_kline({**KLINE, "t": 1704081600000})  # следующая 4h
+    assert take() == {}
+    assert take(final=True) == {"4h": Decimal(42300)}  # остановка — пишется всё
+
+
+def test_stop_writes_buffer_and_current_minute_liquidations(monkeypatch: Any) -> None:
+    # MD-LIQ-LOSS: на остановке (деплой) запись раньше просто отменялась — ликвидации текущей
+    # минуты и неписаный буфер терялись
+    md = _md()
+    writes: list[tuple[list[dict[str, Any]], dict[Any, list[Decimal]]]] = []
+    monkeypatch.setattr(
+        md, "_flush_sync", lambda c, liqs: writes.append((c, {k: list(v) for k, v in liqs.items()}))
+    )
+    now_ms = int(time.time() * 1000)
+
+    async def connection(streams: list[str], idx: int) -> None:
+        md.on_force_order({"s": "BTCUSDT", "S": "BUY", "q": "3", "ap": "10", "T": now_ms})
+        md.on_kline(KLINE)
+        await asyncio.sleep(0.1)  # 4h записана, следующий снимок ждёт FORMING_HTF_EVERY
+        md.on_kline({**KLINE, "c": "42999", "h": "43000"})
+        md.stop.set()
+
+    ok, _ = _run_service(md, monkeypatch, connection)
+    assert ok is True
+    liq = [v for _, liqs in writes for v in liqs.values()]
+    assert liq == [[Decimal(0), Decimal(30)]]
+    last = [c["close"] for c in writes[-1][0] if c["timeframe"] == "4h"]
+    assert last == [Decimal(42999)]
 
 
 def _run_service(md: MarketData, monkeypatch: Any, connection: Any) -> tuple[bool, list[Any]]:

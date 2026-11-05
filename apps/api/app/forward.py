@@ -105,6 +105,9 @@ UPSERT_CHUNK = 2000
 def upsert_candles(
     session: Session, instrument_id: int, tf: Timeframe, candles: list[Candle]
 ) -> None:
+    """Закрытые свечи в БД (upsert). Строка, записанная раньше незакрытой (market-data пишет идущую
+    свечу с ``is_closed = false``), становится закрытой: иначе догрузка исправляла бы цены, а свеча
+    оставалась бы «незакрытой» — без неё трекер, алерты и текущая свеча графика."""
     rows = [
         {
             "instrument_id": instrument_id,
@@ -128,7 +131,16 @@ def upsert_candles(
                 index_elements=["instrument_id", "timeframe", "open_time"],
                 set_={
                     k: stmt.excluded[k]
-                    for k in ("open", "high", "low", "close", "volume", "quote_volume", "trades")
+                    for k in (
+                        "open",
+                        "high",
+                        "low",
+                        "close",
+                        "volume",
+                        "quote_volume",
+                        "trades",
+                        "is_closed",
+                    )
                 },
             )
         )
