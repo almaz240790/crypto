@@ -4,8 +4,10 @@
 1. догружает свежие свечи H4/D1/W1 и деривативы по REST Binance в БД (временная замена
    сервиса market-data этапа 2);
 2. для каждого инструмента вызывает ``evaluate`` на момент последнего закрытия H4 по каждой
-   версии стратегии в статусе ``forward``; кандидат записывается в ``signals`` (статус pending,
-   событие created), повторный запуск ничего не дублирует (уникальный индекс);
+   версии стратегии в статусе ``forward`` или ``live``; кандидат записывается в ``signals``
+   (статус pending, событие created), повторный запуск ничего не дублирует (уникальный индекс).
+   Версия, которой ещё нет в БД, создаётся в статусе ``backtest`` и не оценивается, пока её
+   не переведут в forward заявкой в админке;
 3. ведёт открытые форвард-сигналы по свечам H4 тем же кодом, что бэктест (``simulate_trade``):
    меняет статус через ``signal_events``, закрытые — в ``signal_results``.
 
@@ -52,6 +54,10 @@ from engine.trade import TradeSetup
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts"))
 
 STRATEGY_SLUG = "trend-ob-retest"
+# Новая версия из кода не оценивается сама: в forward её переводят заявкой в админке (план 2.9).
+NEW_VERSION_STATUS = "backtest"
+EVALUATED_STATUSES = ("forward", "live")
+SKIPPED_VERSION_LOG = "версия %s в статусе %s — не оценивается"
 H4_WINDOW = 700
 STATUS_BY_RESULT = {
     TradeStatus.EXPIRED: "expired",
@@ -286,8 +292,13 @@ def load_inputs(session: Session, inst: Instrument, at: datetime) -> MarketInput
 # --- версии стратегий -------------------------------------------------------------------------
 
 
-def ensure_strategy_versions(session: Session) -> dict[str, StrategyVersion]:
-    """Создаёт strategies/strategy_versions для версий из engine.strategies (статус forward)."""
+def sync_strategy_versions(session: Session) -> dict[str, StrategyVersion]:
+    """Строки strategy_versions для всех версий из engine.strategies, в любом статусе.
+
+    Отсутствующая версия создаётся в статусе ``backtest`` (план 2.9, 3.15): в forward её
+    переводят только заявкой в админке с подтверждением второго админа. Существующие строки
+    не меняются.
+    """
     strat = session.scalar(select(Strategy).where(Strategy.slug == STRATEGY_SLUG))
     if strat is None:
         strat = Strategy(
@@ -310,15 +321,30 @@ def ensure_strategy_versions(session: Session) -> dict[str, StrategyVersion]:
                 strategy_id=strat.id,
                 version=version,
                 params=json.loads(json.dumps(asdict(params), default=str)),
-                status="forward",
+                status=NEW_VERSION_STATUS,
                 created_by="forward.py",
-                changelog="автоматически из engine.strategies",
+                changelog="автоматически из engine.strategies; в forward — заявкой в админке",
             )
             session.add(row)
             session.flush()
         out[key] = row
     session.commit()
-    return {k: v for k, v in out.items() if v.status in ("forward", "live")}
+    return out
+
+
+def evaluated_versions(rows: dict[str, StrategyVersion]) -> dict[str, StrategyVersion]:
+    """Версии, которые scheduler и forward оценивают: только в статусах forward и live."""
+    return {k: v for k, v in rows.items() if v.status in EVALUATED_STATUSES}
+
+
+def skipped_versions(rows: dict[str, StrategyVersion]) -> dict[str, str]:
+    """Версии вне оценки (backtest, archived): ключ версии → статус, для строки в журнале."""
+    return {k: v.status for k, v in rows.items() if v.status not in EVALUATED_STATUSES}
+
+
+def ensure_strategy_versions(session: Session) -> dict[str, StrategyVersion]:
+    """Создаёт недостающие версии (в статусе backtest) и возвращает оцениваемые."""
+    return evaluated_versions(sync_strategy_versions(session))
 
 
 # --- сигналы ----------------------------------------------------------------------------------
@@ -492,7 +518,10 @@ def run_forward(
         stats["instruments"] = len(instruments)
         if refresh:
             refresh_market_data(session, instruments, now)
-        versions = ensure_strategy_versions(session)
+        rows = sync_strategy_versions(session)
+        for key, status in skipped_versions(rows).items():
+            print(SKIPPED_VERSION_LOG % (key, status), flush=True)
+        versions = evaluated_versions(rows)
         for inst in instruments:
             inputs = load_inputs(session, inst, at)
             for key, version in versions.items():
