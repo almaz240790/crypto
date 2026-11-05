@@ -1425,3 +1425,82 @@ def test_resync_row_is_not_rolled_back_by_a_write_already_in_flight(monkeypatch:
     asyncio.run(md.flush_once())
     assert db.rows[(1, "1m", m)] is True
     assert [datetime.fromisoformat(e["open_time"]) for e in _closed(md)] == [m]
+
+
+def test_flush_after_long_db_outage_writes_liquidations_in_chunks(monkeypatch: Any) -> None:
+    # LIQ-REQUEUE-PARAM-LIMIT-POISON: ликвидации, возвращённые в буфер после неудачных записей,
+    # уходили одним INSERT (5 параметров на строку) в одной транзакции со свечами. После сбоя БД
+    # на несколько часов (> 13 107 минут с ликвидациями) libpq отказывался его отправлять
+    # («number of parameters must be between 0 and 65535») на каждой записи: ни одна закрытая свеча
+    # не записывалась и не публиковалась, heartbeat шёл, буфер ликвидаций рос
+    from sqlalchemy.dialects.postgresql import psycopg as pg_dialect
+
+    dialect = pg_dialect.dialect()
+    db: dict[str, Any] = {"down": True, "stmts": [], "liq": {}, "commits": 0}
+
+    class Session:
+        def __enter__(self) -> Session:
+            return self
+
+        def __exit__(self, *a: Any) -> None:
+            return None
+
+        def execute(self, stmt: Any) -> None:
+            if db["down"]:
+                raise OSError("db down")
+            params = stmt.compile(dialect=dialect).params
+            if len(params) > 65_535:  # как libpq: запрос не уходит, транзакция откатывается
+                raise OSError("number of parameters must be between 0 and 65535")
+            db["stmts"].append((stmt.table.name, len(params)))
+            if stmt.table.name == "liquidations":
+                for j in range(len(params) // 5):
+                    key = (params[f"instrument_id_m{j}"], params[f"time_m{j}"])
+                    db["liq"][key] = params[f"long_usd_m{j}"]
+
+        def commit(self) -> None:
+            db["commits"] += 1
+
+    monkeypatch.setattr(mdmod, "SessionLocal", Session)
+    md = _md()
+    start = datetime(2026, 11, 5, tzinfo=UTC)
+    for inst in range(1, 60):  # 59 инструментов × 225 минут = 13 275 минут с ликвидациями
+        for k in range(225):
+            md.liq_buffer[(inst, start + timedelta(minutes=k))] = [Decimal(inst), Decimal(0)]
+    m = datetime.now(tz=UTC).replace(second=0, microsecond=0) - timedelta(minutes=1)
+    md._put_candle("BTCUSDT", 1, "1m", _m1(m), closed=True)
+    asyncio.run(md.flush_once())  # БД недоступна: всё — обратно в буфер
+    assert md.n_flush_errors == 1 and len(md.liq_buffer) == 59 * 225 and _closed(md) == []
+    db["down"] = False
+    asyncio.run(md.flush_once())
+    assert md.n_flush_errors == 1 and db["commits"] == 1  # одна транзакция, без ошибки
+    assert max(n for _, n in db["stmts"]) <= 65_535
+    assert sum(1 for table, _ in db["stmts"] if table == "liquidations") == 7  # по 2000 строк
+    assert len(db["liq"]) == 59 * 225 and md.liq_buffer == {}
+    assert [datetime.fromisoformat(e["open_time"]) for e in _closed(md)] == [m]
+
+
+def test_liquidation_buffer_is_capped_during_db_outage(monkeypatch: Any, caplog: Any) -> None:
+    # сбой БД дольше LIQ_BUFFER_MAX минут с ликвидациями: буфер не растёт без предела — самые
+    # старые минуты отбрасываются (по REST ликвидаций нет), в лог — сколько
+    monkeypatch.setattr(mdmod, "LIQ_BUFFER_MAX", 3)
+    md = _md()
+
+    def flush(candles: Any, liqs: Any) -> None:
+        raise OSError("db down")
+
+    monkeypatch.setattr(md, "_flush_sync", flush)
+    t0 = datetime(2026, 11, 5, 8, 0, tzinfo=UTC)
+    with caplog.at_level("ERROR", logger="market_data"):
+        for k in range(5):
+            md.on_force_order(
+                {
+                    "s": "BTCUSDT",
+                    "S": "SELL",
+                    "q": "1",
+                    "ap": "10",
+                    "T": int((t0 + timedelta(minutes=k)).timestamp() * 1000),
+                }
+            )
+            asyncio.run(md.flush_once())
+    assert sorted(t for _, t in md.liq_buffer) == [t0 + timedelta(minutes=k) for k in (2, 3, 4)]
+    assert md.n_liq_dropped == 2 and "буфер ликвидаций переполнен" in caplog.text

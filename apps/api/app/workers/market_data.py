@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import heapq
 import json
 import logging
 import signal as os_signal
@@ -109,6 +110,9 @@ BUFFER_MAX = 50_000
 отбрасываются закрывшиеся раньше всех (по времени закрытия, не открытия: закрытая 4h новее
 минут, закрывшихся до неё; идущие свечи — последними) вместе с событиями. Строки догрузит опрос
 по REST (``refill_from``, ``backfill_needed``), когда БД вернётся; их событий уже не будет."""
+LIQ_BUFFER_MAX = BUFFER_MAX
+"""Минут ликвидаций (инструмент, минута) в буфере, пока БД недоступна (≥ 14 ч и при ликвидациях
+у всех 59 инструментов каждую минуту); сверх — отбрасываются самые старые (по REST их нет)."""
 REPAIR_WINDOW = 1500
 """Догрузка смотрит назад на столько свечей tf в поисках незакрытой строки, которой пора быть
 закрытой (её закрытие не пришло — например, свеча закрылась, пока не было соединения)."""
@@ -259,6 +263,8 @@ class MarketData:
         self.n_flush_errors = 0
         self.n_redis_errors = 0
         self.n_events_dropped = 0  # событий candles.closed сверх EVENTS_MAX
+        self.n_liq_dropped = 0  # минут ликвидаций сверх LIQ_BUFFER_MAX
+        self.n_liq_caps = 0
         self.n_event_caps = 0
         self.n_resynced = 0  # закрытых свечей, взятых сверкой соединения
         # REST-резерв: Binance может держать WebSocket открытым и не слать данные (так было со
@@ -805,19 +811,21 @@ class MarketData:
                         },
                     )
                 )
-            if liqs:
-                stmt2 = insert(LiquidationRow).values(
-                    [
-                        {
-                            "instrument_id": i,
-                            "time": t,
-                            "long_usd": v[0],
-                            "short_usd": v[1],
-                            "source": "stream",
-                        }
-                        for (i, t), v in liqs.items()
-                    ]
-                )
+            liq_rows = [
+                {
+                    "instrument_id": inst_id,
+                    "time": minute,
+                    "long_usd": v[0],
+                    "short_usd": v[1],
+                    "source": "stream",
+                }
+                for (inst_id, minute), v in liqs.items()
+            ]
+            # тоже по UPSERT_CHUNK строк (5 параметров на строку): после долгого сбоя БД ликвидаций
+            # в буфере десятки тысяч минут, а один INSERT больше 65 535 параметров libpq не отправит
+            # никогда — не записалась бы ни одна свеча
+            for i in range(0, len(liq_rows), UPSERT_CHUNK):
+                stmt2 = insert(LiquidationRow).values(liq_rows[i : i + UPSERT_CHUNK])
                 s.execute(
                     stmt2.on_conflict_do_update(
                         index_elements=["instrument_id", "time"],
@@ -873,7 +881,8 @@ class MarketData:
         Строка, пришедшая во время записи, новее — она и остаётся. Сверх ``BUFFER_MAX`` строк
         отбрасываются закрывшиеся раньше всех вместе со своими событиями; их пары — в
         ``refill_from``, инструменты — в ``backfill_needed``: строки догрузит опрос. Незакрытые
-        4h/1d/1w — со следующей записью, без ожидания ``FORMING_HTF_EVERY``."""
+        4h/1d/1w — со следующей записью, без ожидания ``FORMING_HTF_EVERY``. Ликвидаций — не больше
+        ``LIQ_BUFFER_MAX`` минут, сверх — самые старые отбрасываются."""
         with self._lock:
             buffer = {(r["instrument_id"], r["timeframe"], r["open_time"]): r for r in candles}
             for r in candles:
@@ -914,6 +923,18 @@ class MarketData:
             bucket = self.liq_buffer[liq_key]
             bucket[0] += long_usd
             bucket[1] += short_usd
+        over = len(self.liq_buffer) - LIQ_BUFFER_MAX
+        if over > 0:
+            for liq_key in heapq.nsmallest(over, self.liq_buffer, key=lambda k: k[1]):
+                del self.liq_buffer[liq_key]
+            self.n_liq_dropped += over
+            self.n_liq_caps += 1
+            if self.n_liq_caps % FLUSH_LOG_EVERY == 1:
+                log.error(
+                    "буфер ликвидаций переполнен: отброшено %d самых старых минут (всего %d)",
+                    over,
+                    self.n_liq_dropped,
+                )
 
     async def flush_once(self, final: bool = False) -> None:
         """Запись буфера в БД, затем закрытые свечи этой записи — в ``candles.closed`` (не раньше
