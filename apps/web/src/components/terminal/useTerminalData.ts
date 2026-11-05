@@ -34,7 +34,7 @@ const mergePatterns = (prev: PatternsResponse | null, next: PatternsResponse): P
 /**
  * Свечи инструмента/таймфрейма: первая порция, подгрузка влево и живая свеча (план 2A.3, 2A.7; ADR-0003, ADR-0010).
  * Единственный источник правды — LiveBar: сделки и минуты с биржи напрямую (BinanceFeed) или, пока биржа недоступна
- * или молчит, тики раз в секунду и минуты сервера (выбор — LiveMux) сворачиваются его автоматом и сразу уходят графику;
+ * или отстала, тики раз в секунду и минуты сервера (выбор — LiveMux) сворачиваются его автоматом и сразу уходят графику;
  * история React — его закрытые свечи, цена шапки — HeaderPrice (шапка подписана сама). Догон правого края — одна очередь
  * (CatchUpGate) на все поводы: сокет открыт заново, вкладка видна при неоткрытом сокете (useLive), пропуск в
  * событиях (gap автомата), просрочка (новой свечи нет дольше закрытия + LIVE_GRACE_S — продовый баг: после фона на
@@ -212,7 +212,8 @@ export function useTerminalData(symbol: string, tf: Timeframe, token: string | n
   );
 
   // источник событий символа: биржа, пока свежа, иначе сервер — в тот же LiveBar (ADR-0010, дополнение)
-  const mux = useMemo(() => new LiveMux(symbol, live, () => binanceFeed()?.isFresh(symbol) ?? false), [symbol, live]);
+  // тик сервера, пока биржа свежа, — улика её отставания (BinanceFeed.server): новая цена, которой у биржи нет
+  const mux = useMemo(() => new LiveMux(symbol, live, () => binanceFeed()?.isFresh(symbol) ?? false, (t) => binanceFeed()?.server(t)), [symbol, live]);
   useEffect(() => {
     mux.attach({ step: onStep, price: (p) => prices.push(p), source: (s) => setBinanceOn(s === "binance") });
     return () => mux.attach(null);

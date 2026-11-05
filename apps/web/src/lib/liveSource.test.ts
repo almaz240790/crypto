@@ -1,6 +1,6 @@
 import type { LiveStep } from "@platform/charts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { BATCH_MS, BinanceFeed, FRESH_MS, RETRY_MIN_MS } from "./binanceFeed";
+import { BATCH_MS, BEHIND_MS, BinanceFeed, RETRY_MIN_MS } from "./binanceFeed";
 import { LiveBar } from "./liveBar";
 import { HEADER_PRICE_MS, HeaderPrice, LiveMux, type PriceSource } from "./liveSource";
 import type { LiveCandle, LivePrice } from "./useLive";
@@ -194,14 +194,15 @@ describe("цепочка: BinanceFeed → LiveMux → LiveBar", () => {
   });
 
   it("kline и сделки двигают свечу графика несколько раз в секунду; закрытая минута — в свечу; биржа недоступна — тики сервера; вернулась — снова биржа", async () => {
-    const feed = new BinanceFeed({ url: "wss://x/stream", WebSocketImpl: FakeWS as unknown as typeof WebSocket, raf: (fn) => void frames.push(fn), random: () => 0, doc: null, win: null });
+    const feed = new BinanceFeed({ url: "wss://x/stream", WebSocketImpl: FakeWS as unknown as typeof WebSocket, raf: (fn) => void frames.push(fn), random: () => 0, doc: null, win: null, store: null });
     const live = new LiveBar("BTCUSDT", "1m");
     live.start({ time: M, open: 100.5, high: 100.6, low: 100.4, close: 100.5, volume: 1, open_: true }, [{ ...current, time: M - 60, open_: false }]);
     const chart: LiveStep[] = [];
     live.subscribe((s) => chart.push(s));
     const sources: PriceSource[] = [];
-    const mux = new LiveMux("BTCUSDT", live, () => feed.isFresh("BTCUSDT"));
-    mux.attach({ step: () => {}, price: () => {}, source: (s) => sources.push(s) });
+    const prices: string[] = [];
+    const mux = new LiveMux("BTCUSDT", live, () => feed.isFresh("BTCUSDT"), (t) => feed.server(t));
+    mux.attach({ step: () => {}, price: (p) => prices.push(p.p), source: (s) => sources.push(s) });
     feed.subscribe("BTCUSDT", mux.binance);
     await vi.advanceTimersByTimeAsync(BATCH_MS);
     const ws = FakeWS.all[0]!;
@@ -243,9 +244,24 @@ describe("цепочка: BinanceFeed → LiveMux → LiveBar", () => {
     ws2.kline(M + 60, { o: "100.8", h: "100.95", l: "100.7", c: "100.92", v: "4" }, Date.now() / 1000);
     expect(sources.at(-1)).toBe("binance");
     expect(live.bar).toMatchObject({ time: M + 60, close: 100.92, high: 100.95, low: 100.7, volume: 4 });
-    // биржа замолчала дольше FRESH_MS — сервер
-    await vi.advanceTimersByTimeAsync(FRESH_MS + 1000);
+    // тихий рынок: сделок нет 30 с, сервер повторяет ту же цену — биржа остаётся основной (соединение отвечает)
+    for (let i = 0; i < 30; i++) {
+      await vi.advanceTimersByTimeAsync(1000);
+      for (const c of ws2.sent.splice(0)) ws2.onmessage?.({ data: JSON.stringify({ result: [], id: (JSON.parse(c) as { id: number }).id }) });
+      mux.serverTick({ s: "BTCUSDT", p: "100.92", at: iso(Date.now() / 1000 - 1) });
+    }
+    expect(sources.at(-1)).toBe("binance");
+    expect(FakeWS.all).toHaveLength(2);
+    // сервер видит новую цену, а биржа её не принесла дольше BEHIND_MS — улика: этот же тик сразу в свечу и шапку
+    const at = Date.now() / 1000 - 1;
+    mux.serverTick({ s: "BTCUSDT", p: "101.1", at: iso(at) });
+    expect(at * 1000 - (M + 60) * 1000).toBeGreaterThan(BEHIND_MS);
     expect(sources.at(-1)).toBe("server");
+    expect(live.bar).toMatchObject({ close: 101.1, high: 101.1 });
+    expect(prices.at(-1)).toBe("101.1");
+    // биржа догнала — снова основная
+    ws2.trade("101.15", Date.now() / 1000);
+    expect(sources.at(-1)).toBe("binance");
     feed.dispose();
   });
 });

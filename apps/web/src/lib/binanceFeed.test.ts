@@ -1,19 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   BATCH_MS,
+  BEHIND_MS,
   BINANCE_WS,
   BinanceFeed,
+  BLOCKED_AFTER,
   CONNECT_TIMEOUT_MS,
   CONTROL_GAP_MS,
-  FIRST_DATA_MS,
-  FRESH_MS,
+  COOL_MS,
   LINGER_MS,
-  NO_DATA_MS,
   parseAggTrade,
   parseKline,
   PROBE_TIMEOUT_MS,
+  RETRY_KEY,
   RETRY_MAX_MS,
   RETRY_MIN_MS,
+  retryWait,
   ROTATE_MS,
   SILENCE_MS,
   streamsOf,
@@ -27,6 +29,8 @@ import type { LiveCandle, LiveTick } from "./useLive";
 /** WebSocket браузера: close() не доставляет onclose сам (полуоткрытое соединение) — только finishClose(). */
 class FakeWS {
   static all: FakeWS[] = [];
+  /** Отвечать на управляющие сообщения, как Binance (по умолчанию — нет: ответы — вручную). */
+  static answer = false;
   readyState = 0;
   sent: string[] = [];
   closed = false;
@@ -34,11 +38,19 @@ class FakeWS {
   onmessage: ((ev: { data: string }) => void) | null = null;
   onclose: (() => void) | null = null;
   onerror: (() => void) | null = null;
+  /** Время отправки каждого управляющего сообщения. */
+  sentAt: number[] = [];
   constructor(readonly url: string) {
     FakeWS.all.push(this);
   }
   send(m: string) {
     this.sent.push(m);
+    this.sentAt.push(Date.now());
+    if (!FakeWS.answer) return;
+    const c = JSON.parse(m) as { method: string; id: number };
+    queueMicrotask(() => {
+      if (!this.closed) this.raw({ result: c.method === "LIST_SUBSCRIPTIONS" ? [] : null, id: c.id });
+    });
   }
   close() {
     this.closed = true;
@@ -64,6 +76,11 @@ class FakeWS {
   /** Управляющие сообщения клиента. */
   get control(): { method: string; params?: string[]; id: number }[] {
     return this.sent.map((m) => JSON.parse(m) as { method: string; params?: string[]; id: number });
+  }
+  /** Ответить на последнее управляющее сообщение. */
+  reply() {
+    const c = this.control.at(-1);
+    if (c) this.raw({ result: c.method === "LIST_SUBSCRIPTIONS" ? [] : null, id: c.id });
   }
   error() {
     this.onerror?.();
@@ -91,15 +108,59 @@ const runFrame = () => {
 };
 
 function feed(extra: Partial<ConstructorParameters<typeof BinanceFeed>[0]> = {}) {
-  return new BinanceFeed({ url: "wss://x/stream", WebSocketImpl: FakeWS as unknown as typeof WebSocket, raf: (fn) => void frames.push(fn), random: () => 0, doc: null, win: null, ...extra });
+  return new BinanceFeed({ url: "wss://x/stream", WebSocketImpl: FakeWS as unknown as typeof WebSocket, raf: (fn) => void frames.push(fn), random: () => 0, doc: null, win: null, store: null, ...extra });
+}
+
+/** Событийные цели: документ (видимость) и окно (pageshow, online). */
+function targets(visible = true) {
+  const fns = new Map<string, Set<(e: unknown) => void>>();
+  const on = (type: string, fn: (e: unknown) => void) => {
+    let set = fns.get(type);
+    if (!set) fns.set(type, (set = new Set()));
+    set.add(fn);
+  };
+  const off = (type: string, fn: (e: unknown) => void) => void fns.get(type)?.delete(fn);
+  const doc = { visibilityState: visible ? "visible" : "hidden", addEventListener: on, removeEventListener: off };
+  const win = { addEventListener: on, removeEventListener: off };
+  const fire = (type: string, e: unknown = {}) => fns.get(type)?.forEach((fn) => fn(e));
+  return {
+    doc: doc as unknown as Document,
+    win: win as unknown as Window,
+    hide: () => {
+      doc.visibilityState = "hidden";
+      fire("visibilitychange");
+    },
+    show: () => {
+      doc.visibilityState = "visible";
+      fire("visibilitychange");
+    },
+    online: () => fire("online"),
+    pageshow: () => fire("pageshow", { persisted: true }),
+    count: () => [...fns.values()].reduce((n, s) => n + s.size, 0),
+  };
+}
+
+/** sessionStorage вкладки. */
+function memoryStore() {
+  const m = new Map<string, string>();
+  return { getItem: (k: string) => m.get(k) ?? null, setItem: (k: string, v: string) => void m.set(k, v), map: m };
 }
 
 const last = () => FakeWS.all.at(-1)!;
+
+/** Ждать новое соединение (шаг 100 мс), не дольше limit; вернуть, сколько ждали. */
+async function waitDial(limit: number): Promise<number> {
+  const n = FakeWS.all.length;
+  const from = Date.now();
+  while (FakeWS.all.length === n && Date.now() - from < limit) await vi.advanceTimersByTimeAsync(100);
+  return Date.now() - from;
+}
 
 beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(MIN * 1000 + 10_000);
   FakeWS.all = [];
+  FakeWS.answer = false;
   frames = [];
 });
 afterEach(() => {
@@ -129,10 +190,15 @@ describe("разбор сообщений Binance", () => {
     expect(BINANCE_WS).toBe("wss://fstream.binance.com/market/stream");
     expect(streamsOf("BTCUSDT")).toEqual(["btcusdt@kline_1m", "btcusdt@aggTrade"]);
     expect(streamUrl(BINANCE_WS, ["a@kline_1m", "a@aggTrade"])).toBe("wss://fstream.binance.com/market/stream?streams=a@kline_1m/a@aggTrade");
+    const f = new BinanceFeed({ WebSocketImpl: FakeWS as unknown as typeof WebSocket, doc: null, win: null, store: null });
+    f.subscribe("BTCUSDT", listener());
+    vi.advanceTimersByTime(BATCH_MS);
+    expect(last().url).toBe("wss://fstream.binance.com/market/stream?streams=btcusdt@kline_1m/btcusdt@aggTrade");
+    f.dispose();
   });
 });
 
-describe("подписка: одно соединение, SUBSCRIBE/UNSUBSCRIBE пачкой", () => {
+describe("подписка: одно соединение, SUBSCRIBE/UNSUBSCRIBE по разнице на момент отправки", () => {
   it("символы терминала и ячеек — одно соединение с потоками в адресе, без управляющих сообщений", async () => {
     const f = feed();
     f.subscribe("BTCUSDT", listener());
@@ -143,17 +209,19 @@ describe("подписка: одно соединение, SUBSCRIBE/UNSUBSCRIBE
     expect(FakeWS.all).toHaveLength(1);
     expect(last().url).toBe("wss://x/stream?streams=btcusdt@kline_1m/btcusdt@aggTrade/ethusdt@kline_1m/ethusdt@aggTrade");
     last().open();
+    last().kline("BTCUSDT");
     await vi.advanceTimersByTimeAsync(1000);
     expect(last().sent).toEqual([]);
     f.dispose();
   });
 
-  it("смена символа: одно UNSUBSCRIBE и одно SUBSCRIBE в том же соединении; смена таймфрейма (тот же символ) — ничего", async () => {
+  it("смена символа: SUBSCRIBE нового (сразу), затем UNSUBSCRIBE прежнего в том же соединении; смена таймфрейма — ничего", async () => {
     const f = feed();
     let off = f.subscribe("BTCUSDT", listener());
     await vi.advanceTimersByTimeAsync(BATCH_MS);
     const ws = last();
     ws.open();
+    ws.kline("BTCUSDT");
     // таймфрейм: отписка и подписка того же символа в одном такте
     off();
     off = f.subscribe("BTCUSDT", listener());
@@ -162,10 +230,12 @@ describe("подписка: одно соединение, SUBSCRIBE/UNSUBSCRIBE
     // символ
     off();
     f.subscribe("SOLUSDT", listener());
-    await vi.advanceTimersByTimeAsync(500);
+    await vi.advanceTimersByTimeAsync(BATCH_MS);
+    expect(ws.control.map(({ method, params }) => ({ method, params }))).toEqual([{ method: "SUBSCRIBE", params: ["solusdt@kline_1m", "solusdt@aggTrade"] }]);
+    await vi.advanceTimersByTimeAsync(CONTROL_GAP_MS);
     expect(ws.control.map(({ method, params }) => ({ method, params }))).toEqual([
-      { method: "UNSUBSCRIBE", params: ["btcusdt@kline_1m", "btcusdt@aggTrade"] },
       { method: "SUBSCRIBE", params: ["solusdt@kline_1m", "solusdt@aggTrade"] },
+      { method: "UNSUBSCRIBE", params: ["btcusdt@kline_1m", "btcusdt@aggTrade"] },
     ]);
     expect(new Set(ws.control.map((c) => c.id)).size).toBe(2);
     expect(f.streams.sort()).toEqual(["solusdt@aggTrade", "solusdt@kline_1m"]);
@@ -186,6 +256,63 @@ describe("подписка: одно соединение, SUBSCRIBE/UNSUBSCRIBE
     f.dispose();
   });
 
+  it("быстрый перебор символов (каждые 170 мс): каждое сообщение — по текущему символу, ни одного SUBSCRIBE ушедшего; последний — за BATCH_MS + CONTROL_GAP_MS", async () => {
+    FakeWS.answer = true;
+    const f = feed();
+    let off = f.subscribe("BTCUSDT", listener());
+    await vi.advanceTimersByTimeAsync(BATCH_MS);
+    const ws = last();
+    ws.open();
+    ws.kline("BTCUSDT");
+    const syms = ["ETH", "SOL", "ADA", "XRP", "DOGE", "LINK", "AVAX", "DOT", "LTC", "BNB"].map((s) => `${s}USDT`);
+    const current: { at: number; sym: string }[] = [];
+    for (const sym of syms) {
+      off();
+      off = f.subscribe(sym, listener());
+      current.push({ at: Date.now(), sym });
+      await vi.advanceTimersByTimeAsync(170);
+    }
+    const lastSwitch = current.at(-1)!.at;
+    await vi.advanceTimersByTimeAsync(2000);
+    const at = (t: number) => current.filter((c) => c.at <= t).at(-1)!.sym.toLowerCase();
+    const subs = ws.control.map((c, i) => ({ ...c, t: ws.sentAt[i]! })).filter((c) => c.method === "SUBSCRIBE");
+    expect(subs.length).toBeGreaterThan(0);
+    for (const s of subs) expect(s.params).toEqual(streamsOf(at(s.t)));
+    const final = subs.at(-1)!;
+    expect(final.params).toEqual(streamsOf("BNBUSDT"));
+    expect(final.t - lastSwitch).toBeLessThanOrEqual(BATCH_MS + CONTROL_GAP_MS);
+    expect(f.streams.sort()).toEqual(["bnbusdt@aggTrade", "bnbusdt@kline_1m"]);
+    f.dispose();
+  });
+
+  it("клавиша зажата в ячейке мультичарта (30 смен в секунду): очередь не растёт — сообщений не больше одного на CONTROL_GAP_MS, итог — последний символ сразу", async () => {
+    FakeWS.answer = true;
+    const f = feed();
+    f.subscribe("BTCUSDT", listener()); // терминал
+    let off = f.subscribe("ETHUSDT", listener()); // ячейка
+    await vi.advanceTimersByTimeAsync(BATCH_MS);
+    const ws = last();
+    ws.open();
+    ws.kline("BTCUSDT");
+    const from = Date.now();
+    for (let i = 0; i < 33; i++) {
+      off();
+      off = f.subscribe(`C${i}USDT`, listener());
+      await vi.advanceTimersByTimeAsync(33);
+    }
+    const released = Date.now();
+    await vi.advanceTimersByTimeAsync(BATCH_MS + CONTROL_GAP_MS);
+    // последний символ подписан не позже BATCH_MS + CONTROL_GAP_MS после отпускания
+    const subC32 = ws.control.findIndex((c) => c.method === "SUBSCRIBE" && c.params?.includes("c32usdt@kline_1m"));
+    expect(subC32).toBeGreaterThanOrEqual(0);
+    expect(ws.sentAt[subC32]! - released).toBeLessThanOrEqual(BATCH_MS + CONTROL_GAP_MS);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(ws.sent.length).toBeLessThanOrEqual(Math.ceil((released - from) / CONTROL_GAP_MS) + 3);
+    for (let i = 1; i < ws.sentAt.length; i++) expect(ws.sentAt[i]! - ws.sentAt[i - 1]!).toBeGreaterThanOrEqual(CONTROL_GAP_MS);
+    expect(f.streams.sort()).toEqual(["btcusdt@aggTrade", "btcusdt@kline_1m", "c32usdt@aggTrade", "c32usdt@kline_1m"]);
+    f.dispose();
+  });
+
   it("управляющие сообщения — не чаще CONTROL_GAP_MS (лимит Binance — 10 в секунду)", async () => {
     const f = feed();
     const first = f.subscribe("BTCUSDT", listener());
@@ -193,12 +320,6 @@ describe("подписка: одно соединение, SUBSCRIBE/UNSUBSCRIBE
     const ws = last();
     ws.open();
     ws.kline("BTCUSDT");
-    const at: number[] = [];
-    const send = ws.send.bind(ws);
-    ws.send = (m: string) => {
-      at.push(Date.now());
-      send(m);
-    };
     // пользователь быстро перебирает символы: 20 смен за секунду
     let off = first;
     for (let i = 0; i < 20; i++) {
@@ -210,6 +331,7 @@ describe("подписка: одно соединение, SUBSCRIBE/UNSUBSCRIBE
       ws.kline("C19USDT");
       await vi.advanceTimersByTimeAsync(1000);
     }
+    const at = ws.sentAt;
     expect(at.length).toBeGreaterThan(4);
     for (let i = 1; i < at.length; i++) expect(at[i]! - at[i - 1]!).toBeGreaterThanOrEqual(CONTROL_GAP_MS);
     for (const t of at) expect(at.filter((x) => x >= t && x < t + 1000).length).toBeLessThanOrEqual(10);
@@ -239,6 +361,28 @@ describe("подписка: одно соединение, SUBSCRIBE/UNSUBSCRIBE
     off();
     await vi.advanceTimersByTimeAsync(LINGER_MS + 100);
     expect(ws.closed).toBe(true);
+    expect(FakeWS.all).toHaveLength(1);
+    expect(vi.getTimerCount()).toBe(0);
+    f.dispose();
+  });
+
+  it("ушли со страницы графика, пока соединения нет (пауза после отказа), — таймеров не остаётся; подписка и отписка за BATCH_MS — тоже", async () => {
+    const f = feed();
+    const off = f.subscribe("BTCUSDT", listener());
+    await vi.advanceTimersByTimeAsync(BATCH_MS);
+    last().error();
+    expect(f.connected).toBe(false);
+    expect(vi.getTimerCount()).toBeGreaterThan(0); // проверка раз в секунду и пауза
+    off();
+    await vi.advanceTimersByTimeAsync(BATCH_MS);
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(RETRY_MAX_MS);
+    expect(FakeWS.all).toHaveLength(1);
+    // до первого соединения: пришли и ушли в одном такте
+    const off2 = f.subscribe("ETHUSDT", listener());
+    off2();
+    await vi.advanceTimersByTimeAsync(BATCH_MS);
+    expect(vi.getTimerCount()).toBe(0);
     expect(FakeWS.all).toHaveLength(1);
     f.dispose();
   });
@@ -290,13 +434,14 @@ describe("события: kline и сделки", () => {
   });
 });
 
-describe("свежесть, отказ, тишина, паузы", () => {
-  it("свежесть по символу: при подписке — как есть, первые данные — сразу, тишина символа FRESH_MS — с сервера, данные снова — с биржи", async () => {
+describe("свежесть: соединение живо и данные символа были", () => {
+  it("до первых данных символа — сервер (снимка при подписке нет); первые данные — биржа; тихий символ остаётся на бирже, пока соединение отвечает", async () => {
+    FakeWS.answer = true;
     const f = feed();
     const btc = listener();
-    const eth = listener();
+    const dydx = listener();
     f.subscribe("BTCUSDT", btc);
-    f.subscribe("ETHUSDT", eth);
+    f.subscribe("DYDXUSDT", dydx);
     expect(btc.log.fresh).toEqual([false]);
     await vi.advanceTimersByTimeAsync(BATCH_MS);
     const ws = last();
@@ -304,48 +449,125 @@ describe("свежесть, отказ, тишина, паузы", () => {
     ws.kline("BTCUSDT");
     expect(btc.log.fresh).toEqual([false, true]);
     expect(f.isFresh("BTCUSDT")).toBe(true);
-    expect(f.isFresh("ETHUSDT")).toBe(false);
-    // ETH идёт, BTC молчит: соединение живо, BTC — с сервера через FRESH_MS
-    for (let i = 0; i < 6; i++) {
-      await vi.advanceTimersByTimeAsync(1000);
-      ws.trade("ETHUSDT", "2500");
-    }
-    expect(btc.log.fresh).toEqual([false, true, false]);
-    expect(eth.log.fresh).toEqual([false, true]);
-    expect(f.isFresh("BTCUSDT")).toBe(false);
-    ws.kline("BTCUSDT");
-    expect(btc.log.fresh.at(-1)).toBe(true);
+    expect(f.isFresh("DYDXUSDT")).toBe(false);
+    // ни у кого нет сделок минуту: соединение отвечает на проверки — ни отказа, ни переподключения, ни смены источника
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(ws.control.filter((c) => c.method === "LIST_SUBSCRIPTIONS").length).toBeGreaterThanOrEqual(10);
+    expect(ws.closed).toBe(false);
+    expect(FakeWS.all).toHaveLength(1);
+    expect(btc.log.fresh).toEqual([false, true]);
+    expect(f.isFresh("BTCUSDT")).toBe(true);
+    // первая сделка тихого символа через 60 с после подключения — биржа и для него
+    ws.trade("DYDXUSDT", "0.61");
+    expect(dydx.log.fresh).toEqual([false, true]);
     // подписчик, пришедший к свежему символу, узнаёт сразу
     const late = listener();
     f.subscribe("BTCUSDT", late);
     expect(late.log.fresh).toEqual([true]);
+    f.dispose();
+  });
+
+  it("новое соединение без данных (тихий рынок при подключении) не рвётся: первая сделка через 40 с — биржа", async () => {
+    FakeWS.answer = true;
+    const f = feed();
+    const l = listener();
+    f.subscribe("GRTUSDT", l);
+    await vi.advanceTimersByTimeAsync(BATCH_MS);
+    const ws = last();
+    ws.open();
+    await vi.advanceTimersByTimeAsync(40_000);
+    expect(FakeWS.all).toHaveLength(1);
+    expect(ws.closed).toBe(false);
+    expect(l.log.fresh).toEqual([false]);
+    ws.kline("GRTUSDT", { c: "0.08" });
+    expect(l.log.fresh).toEqual([false, true]);
+    expect(l.log.forming).toHaveLength(1);
+    f.dispose();
+  });
+
+  it("соединение молчит SILENCE_MS — проверка LIST_SUBSCRIPTIONS; ответ — живо; без ответа PROBE_TIMEOUT_MS — мёртво: сразу с сервера, новое после паузы", async () => {
+    const f = feed();
+    const l = listener();
+    f.subscribe("BTCUSDT", l);
+    await vi.advanceTimersByTimeAsync(BATCH_MS);
+    const ws = last();
+    ws.open();
+    ws.kline("BTCUSDT");
+    await vi.advanceTimersByTimeAsync(SILENCE_MS + 1000);
+    expect(ws.control.map((c) => c.method)).toEqual(["LIST_SUBSCRIPTIONS"]);
+    expect(l.log.fresh).toEqual([false, true]); // тишина символа — не отказ
+    // ответ — соединение живо (символ просто молчит)
+    ws.reply();
+    await vi.advanceTimersByTimeAsync(PROBE_TIMEOUT_MS + 1000);
+    expect(FakeWS.all).toHaveLength(1);
+    expect(l.log.fresh).toEqual([false, true]);
+    // снова тишина, проверка без ответа (полуоткрытый сокет) — закрыт, символ с сервера, новое — через паузу
+    await vi.advanceTimersByTimeAsync(SILENCE_MS);
+    expect(ws.control.map((c) => c.method)).toEqual(["LIST_SUBSCRIPTIONS", "LIST_SUBSCRIPTIONS"]);
+    await vi.advanceTimersByTimeAsync(PROBE_TIMEOUT_MS + 1000);
+    expect(ws.closed).toBe(true);
+    expect(l.log.fresh).toEqual([false, true, false]);
+    await vi.advanceTimersByTimeAsync(RETRY_MIN_MS);
+    expect(FakeWS.all).toHaveLength(2);
+    // поздние сообщения старого сокета ничего не трогают
+    ws.kline("BTCUSDT");
+    expect(l.log.forming).toHaveLength(1);
+    f.dispose();
+  });
+
+  it("улика сервера: его тик с новой ценой новее данных биржи больше BEHIND_MS — сразу сервер; та же цена или тик старше — ничего; биржа догнала — снова биржа", async () => {
+    FakeWS.answer = true;
+    const f = feed();
+    const l = listener();
+    f.subscribe("BTCUSDT", l);
+    await vi.advanceTimersByTimeAsync(BATCH_MS);
+    const ws = last();
+    ws.open();
+    const t0 = Date.now();
+    ws.trade("BTCUSDT", "100.5", t0);
+    const tick = (p: string, dt: number) => f.server({ s: "BTCUSDT", p, at: new Date(t0 + dt).toISOString() });
+    // сервер отстаёт: тик старше или ровесник данных биржи с другой ценой — обычное дело
+    tick("100.4", -1500);
+    tick("100.2", BEHIND_MS);
+    // тихий рынок: та же цена через 30 с — биржа права
+    await vi.advanceTimersByTimeAsync(30_000);
+    tick("100.50", 30_000);
+    expect(l.log.fresh).toEqual([false, true]);
+    // новая цена на сервере, а у биржи её нет — биржа отстала
+    tick("100.7", 30_000);
+    expect(l.log.fresh).toEqual([false, true, false]);
+    expect(f.isFresh("BTCUSDT")).toBe(false);
+    // запоздавшие данные биржи старше улики — ещё не догнала
+    ws.trade("BTCUSDT", "100.6", t0 + 20_000);
+    expect(f.isFresh("BTCUSDT")).toBe(false);
+    // догнала: событие биржи на уровне улики сервера
+    ws.trade("BTCUSDT", "100.7", t0 + 29_500);
+    expect(l.log.fresh).toEqual([false, true, false, true]);
     expect(FakeWS.all).toHaveLength(1);
     f.dispose();
   });
 
-  it("биржа недоступна (геоблок 451 — ошибка рукопожатия): с сервера, новые попытки через 5, 10, 20, 40, 60, 60 с; данные сбрасывают паузу", async () => {
+  it("биржа недоступна (геоблок 451 — ошибка рукопожатия): с сервера, попытки через 5, 10, 20, 40, 60 с, затем раз в COOL_MS; ответ биржи сбрасывает паузу", async () => {
     const f = feed();
     const l = listener();
     f.subscribe("BTCUSDT", l);
     await vi.advanceTimersByTimeAsync(BATCH_MS);
     const waits: number[] = [];
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < BLOCKED_AFTER + 1; i++) {
       const ws = last();
       ws.error();
       ws.finishClose();
-      const n = FakeWS.all.length;
-      const from = Date.now();
-      while (FakeWS.all.length === n) await vi.advanceTimersByTimeAsync(500);
-      waits.push(Math.round((Date.now() - from) / 1000) * 1000);
+      waits.push(Math.round((await waitDial(COOL_MS + 5000)) / 1000) * 1000);
     }
-    expect(waits).toEqual([RETRY_MIN_MS, 10_000, 20_000, 40_000, RETRY_MAX_MS, RETRY_MAX_MS]);
+    expect(waits).toEqual([RETRY_MIN_MS, 10_000, 20_000, 40_000, RETRY_MAX_MS, COOL_MS, COOL_MS]);
+    expect([1, 2, 3, 4, 5, 6, 7].map(retryWait)).toEqual(waits);
     expect(l.log.fresh).toEqual([false]); // ни разу не была основной
-    // заработала: данные — пауза снова минимальная
+    // заработала: ответ — пауза снова минимальная
     last().open();
     last().kline("BTCUSDT");
     expect(l.log.fresh).toEqual([false, true]);
     last().finishClose();
-    expect(l.log.fresh).toEqual([false, true, false]); // сразу с сервера, не через FRESH_MS
+    expect(l.log.fresh).toEqual([false, true, false]); // сразу с сервера
     expect(f.isFresh("BTCUSDT")).toBe(false);
     const n = FakeWS.all.length;
     await vi.advanceTimersByTimeAsync(RETRY_MIN_MS - 100);
@@ -356,108 +578,18 @@ describe("свежесть, отказ, тишина, паузы", () => {
     f.dispose();
   });
 
-  it("соединение замолчало: проверка LIST_SUBSCRIPTIONS; ответ — соединение живо, символ с сервера; без ответа — новое после паузы", async () => {
+  it("рукопожатие дольше CONNECT_TIMEOUT_MS — отказ и новая попытка после паузы", async () => {
     const f = feed();
-    const l = listener();
-    f.subscribe("BTCUSDT", l);
+    f.subscribe("BTCUSDT", listener());
     await vi.advanceTimersByTimeAsync(BATCH_MS);
-    const ws = last();
-    ws.open();
-    ws.kline("BTCUSDT");
-    await vi.advanceTimersByTimeAsync(SILENCE_MS + 1000);
-    expect(ws.control.map((c) => c.method)).toEqual(["LIST_SUBSCRIPTIONS"]);
-    expect(l.log.fresh).toEqual([false, true, false]);
-    // ответ — соединение живо (символ просто молчит)
-    ws.raw({ result: streamsOf("BTCUSDT"), id: ws.control[0]!.id });
-    await vi.advanceTimersByTimeAsync(PROBE_TIMEOUT_MS + 1000);
-    expect(FakeWS.all).toHaveLength(1);
-    // снова тишина, проверка без ответа (полуоткрытый сокет) — закрыт, новое — через паузу
-    await vi.advanceTimersByTimeAsync(SILENCE_MS);
-    expect(ws.control.map((c) => c.method)).toEqual(["LIST_SUBSCRIPTIONS", "LIST_SUBSCRIPTIONS"]);
-    await vi.advanceTimersByTimeAsync(PROBE_TIMEOUT_MS + 1000);
-    expect(ws.closed).toBe(true);
-    await vi.advanceTimersByTimeAsync(RETRY_MIN_MS);
-    expect(FakeWS.all).toHaveLength(2);
-    // поздние сообщения старого сокета ничего не трогают
-    ws.kline("BTCUSDT");
-    expect(l.log.forming).toHaveLength(1);
-    f.dispose();
-  });
-
-  it("рукопожатие дольше CONNECT_TIMEOUT_MS — новая попытка; открылось, но данных нет FIRST_DATA_MS (биржа отвечает, а рынка не шлёт) — отказ и пауза", async () => {
-    const f = feed();
-    const l = listener();
-    f.subscribe("BTCUSDT", l);
-    await vi.advanceTimersByTimeAsync(BATCH_MS);
-    // рукопожатие висит
     await vi.advanceTimersByTimeAsync(CONNECT_TIMEOUT_MS + 1000);
     expect(FakeWS.all[0]!.closed).toBe(true);
     await vi.advanceTimersByTimeAsync(RETRY_MIN_MS);
     expect(FakeWS.all).toHaveLength(2);
-    // открылось, на управляющие отвечает, данных нет — так ведёт себя Binance из контейнера
-    const ws = last();
-    ws.open();
-    ws.raw({ result: [], id: 1 });
-    await vi.advanceTimersByTimeAsync(FIRST_DATA_MS + 1000);
-    expect(ws.closed).toBe(true);
-    expect(l.log.fresh).toEqual([false]);
-    // пауза удвоилась: 10 с
-    await vi.advanceTimersByTimeAsync(9000);
-    expect(FakeWS.all).toHaveLength(2);
-    await vi.advanceTimersByTimeAsync(1500);
-    expect(FakeWS.all).toHaveLength(3);
     f.dispose();
   });
 
-  it("данные были, потом только ответы на проверки дольше NO_DATA_MS — отказ и новое соединение после паузы", async () => {
-    const f = feed();
-    const l = listener();
-    f.subscribe("BTCUSDT", l);
-    await vi.advanceTimersByTimeAsync(BATCH_MS);
-    const ws = last();
-    ws.open();
-    ws.kline("BTCUSDT");
-    // соединение отвечает на каждую проверку, но рыночных данных больше нет
-    const answered = new Set<number>();
-    for (let t = 0; t < NO_DATA_MS && !ws.closed; t += 1000) {
-      await vi.advanceTimersByTimeAsync(1000);
-      const probe = ws.control.at(-1);
-      if (probe && !answered.has(probe.id)) {
-        answered.add(probe.id);
-        ws.raw({ result: streamsOf("BTCUSDT"), id: probe.id });
-      }
-    }
-    expect(answered.size).toBeGreaterThanOrEqual(2);
-    await vi.advanceTimersByTimeAsync(2000);
-    expect(ws.closed).toBe(true);
-    expect(l.log.fresh).toEqual([false, true, false]);
-    await vi.advanceTimersByTimeAsync(RETRY_MIN_MS);
-    expect(FakeWS.all).toHaveLength(2);
-    f.dispose();
-  });
-
-  it("вкладка снова видна после сна: открытый, но молчащий сокет — новый сразу (без паузы)", async () => {
-    const fns = new Set<() => void>();
-    const doc = { visibilityState: "visible", addEventListener: (_: string, fn: () => void) => fns.add(fn), removeEventListener: (_: string, fn: () => void) => fns.delete(fn) };
-    const f = feed({ doc: doc as unknown as Document });
-    const l = listener();
-    f.subscribe("BTCUSDT", l);
-    await vi.advanceTimersByTimeAsync(BATCH_MS);
-    const ws = last();
-    ws.open();
-    ws.kline("BTCUSDT");
-    fns.forEach((fn) => fn()); // свеж — ничего
-    expect(FakeWS.all).toHaveLength(1);
-    // таймеры телефона спали: часы ушли вперёд без проверок
-    vi.setSystemTime(Date.now() + 60_000);
-    fns.forEach((fn) => fn());
-    expect(ws.closed).toBe(true);
-    expect(FakeWS.all).toHaveLength(2);
-    expect(l.log.fresh.at(-1)).toBe(false);
-    f.dispose();
-  });
-
-  it("24 ч: за час до закрытия биржей — новое соединение с теми же потоками, старое закрыто, когда новое принесло данные; без паузы в свежести", async () => {
+  it("24 ч: за час до закрытия биржей — новое соединение с теми же потоками; основным становится, когда ответило; без паузы в свежести", async () => {
     const f = feed();
     const l = listener();
     f.subscribe("BTCUSDT", l);
@@ -470,18 +602,21 @@ describe("свежесть, отказ, тишина, паузы", () => {
     await vi.advanceTimersByTimeAsync(1000);
     old.kline("BTCUSDT");
     expect(FakeWS.all).toHaveLength(1);
-    await vi.advanceTimersByTimeAsync(2000);
+    await vi.advanceTimersByTimeAsync(1000);
+    old.kline("BTCUSDT");
+    await vi.advanceTimersByTimeAsync(1000);
     expect(FakeWS.all).toHaveLength(2);
     const next = last();
     expect(next.url).toBe(old.url);
-    // пока новое без данных — данные старого идут
+    // открылось — проверка; пока не ответило, данные старого идут
     next.open();
-    next.raw({ result: null, id: 1 });
+    expect(next.control.map((c) => c.method)).toEqual(["LIST_SUBSCRIPTIONS"]);
     old.kline("BTCUSDT", { c: "101" });
     expect(old.closed).toBe(false);
     expect(l.log.forming.at(-1)!.c.c).toBe("101");
-    next.kline("BTCUSDT", { c: "102" });
+    next.reply();
     expect(old.closed).toBe(true);
+    next.kline("BTCUSDT", { c: "102" });
     expect(l.log.forming.at(-1)!.c.c).toBe("102");
     old.kline("BTCUSDT", { c: "1" }); // старое уже отцеплено
     expect(l.log.forming.at(-1)!.c.c).toBe("102");
@@ -489,7 +624,7 @@ describe("свежесть, отказ, тишина, паузы", () => {
     // подписка дальше идёт через новое соединение
     f.subscribe("ETHUSDT", listener());
     await vi.advanceTimersByTimeAsync(500);
-    expect(next.control.map((c) => c.method)).toEqual(["SUBSCRIBE"]);
+    expect(next.control.map((c) => c.method)).toEqual(["LIST_SUBSCRIPTIONS", "SUBSCRIBE"]);
     // новое закрылось — обычная пауза и попытка
     next.finishClose();
     expect(l.log.fresh.at(-1)).toBe(false);
@@ -522,15 +657,190 @@ describe("свежесть, отказ, тишина, паузы", () => {
     expect(old.closed).toBe(false);
     f.dispose();
   });
+});
 
-  it("свежесть гаснет без данных символа, даже если проверка таймером ещё не прошла (isFresh — по часам)", async () => {
-    const f = feed();
+describe("пауза: возврат вкладки, сеть, уход со страницы, перезагрузка", () => {
+  it("вкладка снова видна после сна: открытый, но молчащий дольше живого сокет — новый сразу; молчит недолго — проверка", async () => {
+    const ev = targets();
+    const f = feed({ doc: ev.doc, win: ev.win });
+    const l = listener();
+    f.subscribe("BTCUSDT", l);
+    await vi.advanceTimersByTimeAsync(BATCH_MS);
+    const ws = last();
+    ws.open();
+    ws.kline("BTCUSDT");
+    ev.show(); // свеж — ничего
+    expect(FakeWS.all).toHaveLength(1);
+    expect(ws.sent).toEqual([]);
+    // таймеры телефона спали: часы ушли вперёд без проверок
+    vi.setSystemTime(Date.now() + 60_000);
+    ev.show();
+    expect(ws.closed).toBe(true);
+    expect(FakeWS.all).toHaveLength(2);
+    expect(l.log.fresh.at(-1)).toBe(false);
+    // новое ответило; тишина SILENCE_MS (без проверки таймером) — вкладка видна: проверка, а не новое соединение
+    const ws2 = last();
+    ws2.open();
+    ws2.kline("BTCUSDT");
+    vi.setSystemTime(Date.now() + SILENCE_MS + 500);
+    ev.pageshow();
+    expect(FakeWS.all).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(ws2.control.map((c) => c.method)).toEqual(["LIST_SUBSCRIPTIONS"]);
+    f.dispose();
+    expect(ev.count()).toBe(0);
+  });
+
+  it("сокет закрылся во сне (iOS доставляет close до visibilitychange) — при возврате новое сразу, пауза не растёт", async () => {
+    const ev = targets();
+    const f = feed({ doc: ev.doc, win: ev.win });
+    const l = listener();
+    f.subscribe("BTCUSDT", l);
+    await vi.advanceTimersByTimeAsync(BATCH_MS);
+    for (let i = 0; i < 3; i++) {
+      const ws = last();
+      ws.open();
+      ws.kline("BTCUSDT");
+      await vi.advanceTimersByTimeAsync(120_000 / 60); // поток шёл
+      const n = FakeWS.all.length;
+      ws.finishClose(); // разблокировка: сначала close…
+      expect(l.log.fresh.at(-1)).toBe(false);
+      ev.show(); // …потом visibilitychange
+      expect(FakeWS.all).toHaveLength(n + 1);
+    }
+    // тот же порядок, но новое не открылось: пауза — первая (5 с), а не удвоенная
+    last().error();
+    const n = FakeWS.all.length;
+    await vi.advanceTimersByTimeAsync(RETRY_MIN_MS - 200);
+    expect(FakeWS.all).toHaveLength(n);
+    await vi.advanceTimersByTimeAsync(400);
+    expect(FakeWS.all).toHaveLength(n + 1);
+    f.dispose();
+  });
+
+  it("закрытие в скрытой вкладке — не отказ: попыток нет, пока вкладка скрыта; при возврате — сразу", async () => {
+    const ev = targets();
+    const f = feed({ doc: ev.doc, win: ev.win });
     f.subscribe("BTCUSDT", listener());
     await vi.advanceTimersByTimeAsync(BATCH_MS);
+    const ws = last();
+    ws.open();
+    ws.kline("BTCUSDT");
+    ev.hide();
+    ws.finishClose();
+    await vi.advanceTimersByTimeAsync(RETRY_MAX_MS * 3);
+    expect(FakeWS.all).toHaveLength(1);
+    ev.show();
+    expect(FakeWS.all).toHaveLength(2);
+    // закрытие в скрытой вкладке паузу не нарастило: отказ после возврата — первый (5 с)
+    last().error();
+    expect(Math.round((await waitDial(RETRY_MAX_MS)) / 1000) * 1000).toBe(RETRY_MIN_MS);
+    f.dispose();
+  });
+
+  it("сеть вернулась (online) во время паузы — попытка сразу, не дожидаясь 20 с", async () => {
+    const ev = targets();
+    const f = feed({ doc: ev.doc, win: ev.win });
+    const l = listener();
+    f.subscribe("BTCUSDT", l);
+    await vi.advanceTimersByTimeAsync(BATCH_MS);
+    // туннель: три попытки подряд не удались — следующая через 20 с
+    for (let i = 0; i < 3; i++) {
+      last().error();
+      if (i < 2) await waitDial(RETRY_MAX_MS);
+    }
+    const n = FakeWS.all.length;
+    await vi.advanceTimersByTimeAsync(1000);
+    ev.online();
+    expect(FakeWS.all).toHaveLength(n + 1);
     last().open();
     last().kline("BTCUSDT");
-    vi.setSystemTime(Date.now() + FRESH_MS);
-    expect(f.isFresh("BTCUSDT")).toBe(false);
+    expect(l.log.fresh.at(-1)).toBe(true);
     f.dispose();
+  });
+
+  it("долгая пауза (геоблок): возврат вкладки её не прерывает, сеть вернулась (online) — одна попытка", async () => {
+    const ev = targets();
+    const f = feed({ doc: ev.doc, win: ev.win });
+    f.subscribe("BTCUSDT", listener());
+    await vi.advanceTimersByTimeAsync(BATCH_MS);
+    for (let i = 0; i < BLOCKED_AFTER; i++) {
+      last().error();
+      if (i < BLOCKED_AFTER - 1) await waitDial(RETRY_MAX_MS + 2000);
+    }
+    const n = FakeWS.all.length;
+    ev.hide();
+    ev.show();
+    ev.pageshow();
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(FakeWS.all).toHaveLength(n);
+    ev.online();
+    expect(FakeWS.all).toHaveLength(n + 1);
+    // и она не удалась — снова долгая пауза
+    last().error();
+    expect(await waitDial(COOL_MS + 2000)).toBeGreaterThanOrEqual(COOL_MS);
+    f.dispose();
+  });
+
+  it("ушли со страницы графика и вернулись во время паузы — попытка не раньше конца паузы (ошибка в консоли не чаще)", async () => {
+    const f = feed();
+    let off = f.subscribe("BTCUSDT", listener());
+    await vi.advanceTimersByTimeAsync(BATCH_MS);
+    last().error(); // 1-я: следующая через 5 с
+    await waitDial(RETRY_MAX_MS);
+    last().error(); // 2-я: следующая через 10 с
+    await waitDial(RETRY_MAX_MS);
+    last().error(); // 3-я: следующая через 20 с
+    const failedAt = Date.now();
+    const n = FakeWS.all.length;
+    // три раза «Скринер → назад к графику» за 6 с
+    for (let i = 0; i < 3; i++) {
+      off();
+      await vi.advanceTimersByTimeAsync(1000);
+      off = f.subscribe("BTCUSDT", listener());
+      await vi.advanceTimersByTimeAsync(1000);
+    }
+    expect(FakeWS.all).toHaveLength(n);
+    const waited = await waitDial(RETRY_MAX_MS);
+    expect(Date.now() - failedAt).toBeGreaterThanOrEqual(20_000);
+    expect(Date.now() - failedAt).toBeLessThan(20_000 + 200);
+    expect(waited).toBeGreaterThan(0);
+    f.dispose();
+  });
+
+  it("пауза переживает перезагрузку вкладки (sessionStorage): новая страница не стучится сразу; ответ биржи паузу стирает", async () => {
+    const store = memoryStore();
+    const a = feed({ store });
+    a.subscribe("BTCUSDT", listener());
+    await vi.advanceTimersByTimeAsync(BATCH_MS);
+    for (let i = 0; i < 3; i++) {
+      last().error();
+      if (i < 2) await waitDial(RETRY_MAX_MS);
+    }
+    a.dispose();
+    expect(JSON.parse(store.map.get(RETRY_KEY)!)).toMatchObject({ fails: 3 });
+    await vi.advanceTimersByTimeAsync(3000);
+    const n = FakeWS.all.length;
+    // перезагрузка: новая страница, та же вкладка
+    const b = feed({ store });
+    b.subscribe("BTCUSDT", listener());
+    await vi.advanceTimersByTimeAsync(BATCH_MS);
+    expect(FakeWS.all).toHaveLength(n);
+    await vi.advanceTimersByTimeAsync(20_000 - 3000);
+    expect(FakeWS.all).toHaveLength(n + 1);
+    last().open();
+    last().reply();
+    last().raw({ result: [], id: 1 });
+    expect(JSON.parse(store.map.get(RETRY_KEY)!)).toEqual({ fails: 0, retryAt: 0 });
+    b.dispose();
+    // хранилище запрещено — работает без него
+    const broken = { getItem: () => { throw new Error("denied"); }, setItem: () => { throw new Error("denied"); } };
+    const c = feed({ store: broken });
+    c.subscribe("BTCUSDT", listener());
+    await vi.advanceTimersByTimeAsync(BATCH_MS);
+    expect(FakeWS.all).toHaveLength(n + 2);
+    last().error();
+    expect(await waitDial(RETRY_MAX_MS)).toBeGreaterThanOrEqual(RETRY_MIN_MS);
+    c.dispose();
   });
 });

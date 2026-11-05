@@ -6,9 +6,10 @@ import { liveSocket } from "./helpers/live";
 /**
  * Цена с биржи напрямую (ADR-0010, дополнение): браузер держит одно соединение с Binance USDⓈ-M Futures на все
  * показанные символы; пока биржа свежа, её сделки и минуты — основной источник цены и свечи, тики сервера по символу
- * пропускаются; биржа недоступна (геоблок) или молчит — цена с сервера, попытки биржи — с паузой 5 → 60 с.
- * Биржа здесь — заглушка page.routeWebSocket (helpers/binance): настоящие цены не должны смешиваться с фикстурами; как и
- * настоящая Binance, заглушка шлёт kline и сделки только на рыночный адрес /market/.
+ * пропускаются; тихий рынок (сделок нет, соединение отвечает) — по-прежнему биржа; биржа недоступна (геоблок), соединение
+ * мертво или сервер видит цену, которой у биржи нет, — цена с сервера, попытки биржи — с паузой 5 → 60 с, а возврат сети —
+ * попытка сразу. Биржа здесь — заглушка page.routeWebSocket (helpers/binance): настоящие цены не должны смешиваться с
+ * фикстурами; как и настоящая Binance, заглушка шлёт kline и сделки только на рыночный адрес /market/.
  */
 
 type Bar = { time: number; open: number; high: number; low: number; close: number; value?: number };
@@ -133,7 +134,7 @@ test("1m: закрытая минута с биржи (x = true) — закры�
   }
 });
 
-test("смена символа — UNSUBSCRIBE/SUBSCRIBE в том же соединении; мультичарт — одно соединение на все ячейки", async ({ page }) => {
+test("смена символа — SUBSCRIBE/UNSUBSCRIBE в том же соединении; мультичарт — одно соединение на все ячейки", async ({ page }) => {
   const calls: string[] = [];
   await mock(page, calls);
   const now = fixtureClock();
@@ -146,7 +147,8 @@ test("смена символа — UNSUBSCRIBE/SUBSCRIBE в том же сое�
     expect(bn.control).toEqual([]);
     await page.getByLabel("инструмент", { exact: true }).selectOption("ETHUSDT");
     await expect(page).toHaveURL(/\/chart\/ETHUSDT\/4h/);
-    await expect.poll(() => bn.control.map((c) => `${c.method} ${(c.params ?? []).join(",")}`)).toEqual(["UNSUBSCRIBE btcusdt@kline_1m,btcusdt@aggTrade", "SUBSCRIBE ethusdt@kline_1m,ethusdt@aggTrade"]);
+    // новый символ — первым (его цена раньше), прежний — следом
+    await expect.poll(() => bn.control.map((c) => `${c.method} ${(c.params ?? []).join(",")}`)).toEqual(["SUBSCRIBE ethusdt@kline_1m,ethusdt@aggTrade", "UNSUBSCRIBE btcusdt@kline_1m,btcusdt@aggTrade"]);
     expect(bn.sockets).toHaveLength(1);
     expect(bn.openCount()).toBe(1);
     expect(bn.streams()).toEqual(["ethusdt@aggTrade", "ethusdt@kline_1m"]);
@@ -199,7 +201,7 @@ test("биржа недоступна (геоблок): цена с сервер
   }
 });
 
-test("биржа замолчала (полуоткрытый сокет): через 5 с цена с сервера, соединение заменяется после паузы — снова с биржи", async ({ page }) => {
+test("биржа замолчала (полуоткрытый сокет): цена с сервера (улика сервера или проверка без ответа), соединение заменяется после паузы — снова с биржи", async ({ page }) => {
   test.setTimeout(60_000);
   const calls: string[] = [];
   await mock(page, calls);
@@ -212,11 +214,12 @@ test("биржа замолчала (полуоткрытый сокет): че�
     await expect(strip.locator(BINANCE_TITLE)).toHaveCount(1);
     server.state.ticks = true;
     await expect.poll(() => headerPrice(page)).toBeGreaterThan(RICH_C0 + 10);
-    // ни данных, ни ответов на проверку
+    // ни данных, ни ответов на проверку: сервер видит новые цены, которых у биржи нет дольше 3 с, а проверка
+    // LIST_SUBSCRIPTIONS (тишина 2 с) остаётся без ответа 3 с — что раньше, то и переключает на сервер
     const silentAt = Date.now();
     bn.state.silent = true;
     await expect(strip.locator(SERVER_TITLE)).toHaveCount(1, { timeout: 8000 });
-    expect(Date.now() - silentAt).toBeGreaterThanOrEqual(4500);
+    expect(Date.now() - silentAt).toBeGreaterThanOrEqual(3000);
     await expect(strip).toContainText("онлайн");
     // тики сервера двигают цену: сервер отстаёт на секунду — close тика старше сделки биржи не откатывает, следующие — идут
     await expect.poll(() => headerPrice(page), { timeout: 4000 }).toBeLessThan(RICH_C0);
