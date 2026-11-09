@@ -4,8 +4,9 @@
   python scripts/admin_2fa_reset.py owner@example.com
 
 Что делает: отключает двухфакторную защиту аккаунта (удаляет секрет и резервные коды), закрывает
-все сеансы админки и пишет строку в аудит. При следующем входе на /admin/login после пароля
-(или ссылки из письма) откроется первая настройка: новый QR-код и новые резервные коды.
+все сеансы админки и пишет строку в аудит. Первая настройка нового кода открывается только по
+ссылке из письма: после пароля на /admin/login письмо придёт само, а если почта на сервере не
+настроена — ссылку выдаёт ``python scripts/admin_link.py owner@example.com``.
 Пароль и сессии сайта не меняет. Только для аккаунтов с ролью admin/owner или из OWNER_EMAILS.
 Скрипт ничего не печатает о секрете — печатать нечего: секрет удаляется.
 """
@@ -42,7 +43,7 @@ def main() -> int:
         row = db.get(TwoFactor, user.id)
         if row is not None:
             db.delete(row)
-        closed = admin_auth.revoke_user_sessions(db, user.id)
+        closed = admin_auth.revoke_user_sessions(db, user.id, "2fa")
         db.add(
             AdminAudit(
                 actor_id=user.id,
@@ -53,8 +54,8 @@ def main() -> int:
         )
         db.commit()
     print(
-        f"2FA сброшена, закрыто сеансов админки: {closed}. "
-        "Следующий вход на /admin/login начнётся с настройки нового кода."
+        f"2FA сброшена, закрыто сеансов админки: {closed}. Настройка нового кода — по ссылке "
+        "из письма после пароля на /admin/login или по ссылке из scripts/admin_link.py."
     )
     return 0
 
