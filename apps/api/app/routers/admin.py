@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
-from app import admin_auth, auth, billing, twofactor
+from app import admin_auth, auth, billing, ratelimit, twofactor
 from app.admin_rules import can_decide, transition_allowed
 from app.config import settings
 from app.models import (
@@ -428,13 +428,17 @@ def update_user(
         if step_up:
             # выдача прав админки — только с кодом из телефона: скрипт на странице сайта
             # (XSS) при открытом сеансе админки не сделает своего админа
+            if not body.code:
+                raise HTTPException(403, STEP_UP_FAILED)
+            attempt = admin_auth.take_code_attempt(user.id)  # перебор кода скриптом — 429
             tf = twofactor.locked(db, user.id)
-            if tf is None or not twofactor.is_enabled(tf) or not body.code:
+            if tf is None or not twofactor.is_enabled(tf):
                 raise HTTPException(403, STEP_UP_FAILED)
             if admin_auth.check_second_factor(tf, body.code) is None:
                 _audit(db, user, "user.role_code_failed", f"user:{u.id}", {"to": body.role})
                 db.commit()
                 raise HTTPException(403, STEP_UP_FAILED)
+            ratelimit.give_back(attempt)
         _audit(
             db,
             user,

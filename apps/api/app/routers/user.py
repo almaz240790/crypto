@@ -167,6 +167,12 @@ def delete_account(
     user: User = Depends(auth.current_user), db: Session = Depends(auth.get_db)
 ) -> Response:
     """Мягкое удаление (GDPR): помечаем, анонимизируем email, сессии отзываются."""
+    if user.role in admin_auth.ADMIN_ROLES:
+        # ADR-0011: украденная сессия сайта не должна удалять аккаунт владельца или админа
+        # (и освобождать его адрес для новой регистрации)
+        raise HTTPException(
+            403, "Аккаунт администратора удаляется после снятия прав админки — напишите владельцу."
+        )
     user.deleted_at = datetime.now(tz=UTC)
     user.email = f"deleted-{user.id}@users.platform.local"
     user.name = None
@@ -504,7 +510,21 @@ def two_factor_status(
     return {
         "enabled": twofactor.is_enabled(row),
         "backup_codes_left": len(row.backup_codes) if row is not None and row.enabled_at else 0,
+        # админу код настраивается при входе в админку (по ссылке из письма), не из сеанса сайта
+        "admin": admin_auth.is_admin_account(user),
     }
+
+
+ADMIN_2FA_ELSEWHERE = (
+    "Администратору защита кодом настраивается при входе в админку — по ссылке из письма."
+)
+
+
+def _not_for_admin(user: User) -> None:
+    """ADR-0011: включить 2FA из сеанса сайта админ не может — иначе украденный пароль (вход на
+    сайт без кода) или украденная сессия сайта привязали бы к админке чужое приложение."""
+    if admin_auth.is_admin_account(user):
+        raise HTTPException(403, ADMIN_2FA_ELSEWHERE)
 
 
 @router.post("/me/2fa/setup")
@@ -512,6 +532,7 @@ def two_factor_setup(
     user: User = Depends(auth.current_user), db: Session = Depends(auth.get_db)
 ) -> dict[str, Any]:
     """Новый секрет (пока не включён); повторный вызов заменяет невключённый секрет."""
+    _not_for_admin(user)
     row = twofactor.locked(db, user.id)
     if twofactor.is_enabled(row):
         raise HTTPException(409, "2FA уже включена — сначала отключите")
@@ -531,6 +552,7 @@ def two_factor_enable(
     db: Session = Depends(auth.get_db),
 ) -> dict[str, Any]:
     """Первый верный код включает 2FA и выдаёт резервные коды (показываются один раз)."""
+    _not_for_admin(user)
     row = twofactor.locked(db, user.id)
     if row is None:
         raise HTTPException(400, "сначала вызовите настройку")

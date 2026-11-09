@@ -555,7 +555,15 @@ def test_reregistered_owner_address_gets_no_admin(
     c = world.client()
     stolen = {"authorization": f"Bearer {auth.make_access_token(owner)}"}
     assert c.get("/v1/admin/users", headers=stolen).status_code == 401
-    assert c.delete("/v1/me", headers=stolen).status_code == 204
+    # удалить аккаунт владельца из сеанса сайта нельзя (адрес не освобождается)
+    assert c.delete("/v1/me", headers=stolen).status_code == 403
+    world.db.expire_all()
+    assert world.db.get(User, owner_id).deleted_at is None  # type: ignore[union-attr]
+    # адрес всё же свободен (так было до этой правки; или адрес из OWNER_EMAILS ещё без аккаунта)
+    gone = world.db.get(User, owner_id)
+    assert gone is not None
+    gone.deleted_at, gone.email = datetime.now(tz=UTC), f"deleted-{owner_id}@users.platform.local"
+    world.db.commit()
     attacker = world.client()
     reg = attacker.post(
         "/v1/auth/register", json={"email": owner_email, "password": "attacker password 77"}
@@ -574,6 +582,61 @@ def test_reregistered_owner_address_gets_no_admin(
     world.db.expire_all()
     assert world.db.get(TwoFactor, new.id) is None
     assert attacker.get("/v1/admin/users").status_code == 401
+    # и из сеанса сайта своё приложение к адресу владельца не привязать
+    r = attacker.post("/v1/me/2fa/setup", headers=token)
+    assert r.status_code == 403 and "админку" in r.json()["detail"]
+
+
+@db_only
+def test_site_session_cannot_enable_2fa_for_admin_account(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Окно SEC-1 через сайт: украденный пароль (вход на сайт без кода) или сессия сайта не
+    включают 2FA админу — иначе чужое приложение стало бы вторым фактором админки."""
+    c = world.client()
+    owner, _, _ = world.user(role="owner")
+    bearer = {"authorization": f"Bearer {auth.make_access_token(owner)}"}
+    st = c.get("/v1/me/2fa", headers=bearer).json()
+    assert st == {"enabled": False, "backup_codes_left": 0, "admin": True}
+    assert c.post("/v1/me/2fa/setup", headers=bearer).status_code == 403
+    world.db.add(TwoFactor(user_id=owner.id, secret=twofactor.new_secret(), backup_codes=[]))
+    world.db.commit()
+    r = c.post("/v1/me/2fa/enable", json={"code": "123456"}, headers=bearer)
+    assert r.status_code == 403
+    world.db.expire_all()
+    tf = world.db.get(TwoFactor, owner.id)
+    assert tf is not None and tf.enabled_at is None
+    assert _login(world.client(), owner.email).json()["step"] == "mail"  # пароль → только письмо
+    # обычный пользователь настраивает 2FA на сайте как раньше
+    plain, _, _ = world.user(role="user")
+    b2 = {"authorization": f"Bearer {auth.make_access_token(plain)}"}
+    assert c.get("/v1/me/2fa", headers=b2).json()["admin"] is False
+    s = c.post("/v1/me/2fa/setup", headers=b2)
+    assert s.status_code == 200
+    ok = c.post("/v1/me/2fa/enable", json={"code": _code(s.json()["secret"])}, headers=b2)
+    assert ok.status_code == 200 and len(ok.json()["backup_codes"]) == 10
+    # адрес из OWNER_EMAILS без роли (почта не подтверждена) — тоже нельзя
+    listed, _, _ = world.user(role="user")
+    monkeypatch.setattr(settings, "owner_emails", listed.email)
+    b3 = {"authorization": f"Bearer {auth.make_access_token(listed)}"}
+    assert c.post("/v1/me/2fa/setup", headers=b3).status_code == 403
+
+
+@db_only
+def test_provider_verified_email_promotes_existing_owner_account(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Вход через Google с подтверждённым адресом подтверждает почту и у аккаунта, который уже
+    был заведён на этот адрес, — после этого адрес из OWNER_EMAILS получает роль владельца."""
+    u, _, _ = world.user(role="user")
+    monkeypatch.setattr(settings, "owner_emails", u.email)
+    assert not auth.promote_owner(u, settings.owner_email_set)
+    same = auth.find_or_link_identity(world.db, "google", f"g-{u.id}", u.email, None, {})
+    assert same.id == u.id and same.email_verified_at is not None
+    assert auth.promote_owner(same, settings.owner_email_set) and same.role == "owner"
+    world.db.commit()
+    world.db.execute(text("delete from auth_identities where user_id = :u"), {"u": u.id})
+    world.db.commit()
 
 
 @db_only
@@ -824,6 +887,14 @@ def test_rate_limits_per_email_ip_and_code(world: World) -> None:
         for i in range(ratelimit.ADMIN_CODE_PER_USER[0] + 1)
     ]
     assert statuses[-1] == 429 and set(statuses[:-1]) == {401}
+    # верные коды попыток не тратят: владелец не запирает себя обычными входами
+    ratelimit._memory.values.clear()
+    u_ok, backup_ok, _ = world.user(two_factor=True)
+    for i in range(ratelimit.ADMIN_CODE_PER_USER[0] + 2):
+        t_ok = _login(c, u_ok.email).json()["ticket"]
+        r_ok = c.post("/v1/admin/auth/verify", json={"ticket": t_ok, "code": backup_ok[i % 10]})
+        if i < 10:
+            assert r_ok.status_code == 200, (i, r_ok.text)
     # мусорные билеты с одного IP: лимит до поиска билета, в аудит они не пишутся вовсе
     ratelimit._memory.values.clear()
     junk = [
@@ -1086,6 +1157,15 @@ def test_granting_admin_role_needs_fresh_code(world: World) -> None:
     # понижение и роль support — без кода
     assert c.patch(url, json={"role": "support"}, headers=CSRF).status_code == 200
     assert "user.role_code_failed" in [a for a, _ in world.audit(owner.id)]
+    # перебор кода скриптом упирается в лимит кодов аккаунта (10 неверных за 15 минут)
+    ratelimit._memory.values.clear()
+    tries = [
+        c.patch(url, json={"role": "admin", "code": f"{i:06d}"}, headers=CSRF).status_code
+        for i in range(ratelimit.ADMIN_CODE_PER_USER[0] + 1)
+    ]
+    assert tries[:-1] == [403] * ratelimit.ADMIN_CODE_PER_USER[0] and tries[-1] == 429
+    r = c.patch(url, json={"role": "admin", "code": _code(secret, 2)}, headers=CSRF)
+    assert r.status_code == 429  # и верный код — после паузы
 
 
 @db_only

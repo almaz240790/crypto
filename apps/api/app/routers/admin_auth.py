@@ -102,10 +102,10 @@ def _guard_ip(request: Request, scope: str = "admin-code") -> None:
     ratelimit.guard(request, scope, None, per_ip, per_ip, strict=True)
 
 
-def _guard_user(request: Request, user: User) -> None:
-    ratelimit.guard(
-        request, "admin-code", str(user.id), ratelimit.ADMIN_CODE_PER_USER, None, strict=True
-    )
+def _guard_user(user: User) -> str:
+    """Лимит кодов на аккаунт (10 за 15 минут). Возвращает ключ попытки: верный код её
+    возвращает (:func:`ratelimit.give_back`), так что считаются только неверные коды."""
+    return aa.take_code_attempt(user.id)
 
 
 def _ticket_user(db: Session, raw: str, request: Request) -> tuple[EmailToken, User]:
@@ -346,12 +346,13 @@ def setup_confirm(
     """Первый верный код включает 2FA, выдаёт резервные коды (один раз) и открывает сеанс."""
     _guard_ip(request)
     ticket_row, user = _setup_ticket(db, body.ticket, request)
-    _guard_user(request, user)
+    attempt = _guard_user(user)
     row = twofactor.locked(db, user.id)
     if row is None or twofactor.is_enabled(row):
         raise HTTPException(409, "Начните настройку заново.")
     if not twofactor.use_totp(row, body.code):
         _wrong_code(db, request, ticket_row, user, "admin_login.setup_code_failed")
+    ratelimit.give_back(attempt)
     plain, hashes = twofactor.make_backup_codes()
     row.enabled_at = datetime.now(tz=UTC)
     row.backup_codes = hashes
@@ -380,13 +381,14 @@ def verify(
     """Второй шаг обычного входа: код из приложения или резервный код."""
     _guard_ip(request)
     ticket_row, user = _ticket_user(db, body.ticket, request)
-    _guard_user(request, user)
+    attempt = _guard_user(user)
     row = twofactor.locked(db, user.id)
     if row is None or not twofactor.is_enabled(row):
         raise HTTPException(409, "Защита кодом ещё не настроена — начните вход заново.")
     kind = aa.check_second_factor(row, body.code)
     if kind is None:
         _wrong_code(db, request, ticket_row, user, "admin_login.code_failed")
+    ratelimit.give_back(attempt)
     extra: dict[str, Any] = {"backup_left": len(row.backup_codes)} if kind == "backup" else {}
     return _finish(
         db,
@@ -468,12 +470,13 @@ def backup_codes(
 ) -> dict[str, Any]:
     """Новые 10 резервных кодов (старые перестают работать) — по коду из приложения."""
     user, _ = aa.admin_session(request, db)
-    _guard_user(request, user)
+    attempt = _guard_user(user)
     row = twofactor.locked(db, user.id)
     if row is None or not twofactor.is_enabled(row):
         raise HTTPException(409, "Защита кодом не включена.")
     if not twofactor.use_totp(row, body.code):
         _session_code_failed(db, request, user, "admin_2fa.code_failed")
+    ratelimit.give_back(attempt)
     plain, hashes = twofactor.make_backup_codes()
     row.backup_codes = hashes
     aa.audit(db, request, "admin_2fa.backup_codes_reissued", user)
@@ -492,13 +495,14 @@ def rotate_start(
 
     Защита при этом не выключается: старый код работает, пока новый не подтверждён."""
     user, session = aa.admin_session(request, db)
-    _guard_user(request, user)
+    attempt = _guard_user(user)
     row = twofactor.locked(db, user.id)
     if row is None or not twofactor.is_enabled(row):
         raise HTTPException(409, "Защита кодом не включена.")
     kind = aa.check_second_factor(row, body.code)
     if kind is None:
         _session_code_failed(db, request, user, "admin_2fa.code_failed")
+    ratelimit.give_back(attempt)
     secret = twofactor.new_secret()
     aa.audit(db, request, "admin_2fa.rotate_started", user, factor=kind)
     db.commit()
@@ -518,7 +522,7 @@ def rotate_confirm(
     """Шаг 2: код из нового приложения — секрет заменяется, выдаются новые резервные коды,
     остальные сеансы админки закрываются (этот остаётся)."""
     user, session = aa.admin_session(request, db)
-    _guard_user(request, user)
+    attempt = _guard_user(user)
     secret = aa.read_rotation(body.pending, user.id, session.id)
     row = twofactor.locked(db, user.id)
     if secret is None or row is None or not twofactor.is_enabled(row) or row.secret == secret:
@@ -526,6 +530,7 @@ def rotate_confirm(
     step = twofactor.matched_step(secret, body.code)
     if step is None:
         _session_code_failed(db, request, user, "admin_2fa.rotate_code_failed")
+    ratelimit.give_back(attempt)
     plain, hashes = twofactor.make_backup_codes()
     row.secret, row.last_step, row.backup_codes = secret, step, hashes
     closed = aa.revoke_user_sessions(db, user.id, "2fa", keep=session.id)

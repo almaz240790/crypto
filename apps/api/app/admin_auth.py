@@ -423,6 +423,18 @@ def mail_ready() -> bool:
 # --- второй фактор --------------------------------------------------------------------------------
 
 
+def take_code_attempt(user_id: int) -> str:
+    """Занять попытку ввода кода для аккаунта (10 за 15 минут) или 429. Возвращает ключ попытки:
+    верный код возвращает её через ``ratelimit.give_back`` — считаются только неверные коды, и
+    владелец не запирает себя обычными входами. Общий счётчик для входа, действий с кодом
+    внутри админки и выдачи роли."""
+    limit, window = ratelimit.ADMIN_CODE_PER_USER
+    ok, bucket = ratelimit.take(f"admin-code:s:{user_id}", limit, window)
+    if not ok:
+        raise HTTPException(429, f"слишком много попыток, подождите {max(1, window // 60)} мин")
+    return bucket
+
+
 def check_second_factor(row: TwoFactor, code: str, now: datetime | None = None) -> str | None:
     """«totp», «backup» (резервный код сгорает) или None; код TOTP — один раз (общая отметка
     шага с сайтом). Строку брать через ``twofactor.locked``; commit — снаружи."""

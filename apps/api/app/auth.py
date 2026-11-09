@@ -149,8 +149,9 @@ def find_or_link_identity(
     if user is None:
         pseudo_email = email or f"{provider}-{provider_user_id}@users.platform.local"
         user = create_user(db, pseudo_email, None, name)
-        if email:
-            user.email_verified_at = datetime.now(tz=UTC)  # email подтверждён провайдером
+    if email and user.email_verified_at is None:
+        # email подтверждён провайдером — и для аккаунта, который уже был заведён на этот адрес
+        user.email_verified_at = datetime.now(tz=UTC)
     db.add(
         AuthIdentity(
             user_id=user.id, provider=provider, provider_user_id=provider_user_id, data=data
