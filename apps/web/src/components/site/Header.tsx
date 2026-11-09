@@ -7,8 +7,12 @@ import { Logo } from "./Logo";
 import s from "./Header.module.css";
 import { LanguageSwitch, useT } from "@/i18n/client";
 
-/** Шапка маркетинговых страниц: всегда чёрная (сетка по образцу robinhood.com, ADR-0006); на телефоне — меню-«гамбургер». */
-export function Header() {
+/**
+ * Шапка маркетинговых страниц: всегда чёрная (сетка по образцу robinhood.com, ADR-0006); на телефоне — меню-«гамбургер».
+ * chartCta={false} — без кнопки «Открыть график» у вошедшего: на главной она уже есть на первом экране, и две
+ * одинаковые кнопки рядом сбивают с толку; к графику ведёт пункт «График» в разделах.
+ */
+export function Header({ chartCta = true }: { chartCta?: boolean } = {}) {
   const t = useT();
   const { user } = useAuth();
   const [open, setOpen] = useState(false);
@@ -50,10 +54,12 @@ export function Header() {
             <LanguageSwitch />
           </span>
           {user ? (
-            <Link href="/chart" className={`${s.pill} ${s.acc}`}>
-              <span className={s.labelLong}>{t("Открыть график")}</span>
-              <span className={s.labelShort}>{t("График")}</span>
-            </Link>
+            chartCta && (
+              <Link href="/chart" className={`${s.pill} ${s.acc}`}>
+                <span className={s.labelLong}>{t("Открыть график")}</span>
+                <span className={s.labelShort}>{t("График")}</span>
+              </Link>
+            )
           ) : (
             <>
               <Link href="/login" className={`${s.pill} ${s.line} ${s.desktopOnly}`}>

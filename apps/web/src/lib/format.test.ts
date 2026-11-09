@@ -120,4 +120,10 @@ describe("nb", () => {
     expect(nb("мультичарт на 4 графика")).toBe(`мультичарт на${NB}4${NB}графика`);
     expect(nb("Read charts — right on the chart")).toBe(`Read charts${NB}— right on the chart`);
   });
+
+  it("стрелка не переносится одна на новую строку: «Смена ↓», “Shift ↑”", () => {
+    expect(nb("метка «Смена ↑» или «Смена ↓»")).toBe(`метка «Смена${NB}↑» или «Смена${NB}↓»`);
+    expect(nb("a “Shift ↑” or “Shift ↓” mark")).toBe(`a “Shift${NB}↑” or “Shift${NB}↓” mark`);
+    expect(nb("вверх → вниз ←")).toBe(`вверх${NB}→ вниз${NB}←`);
+  });
 });
