@@ -5,6 +5,7 @@ from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     DateTime,
     ForeignKey,
@@ -78,6 +79,8 @@ class TwoFactor(Base):
     secret: Mapped[str] = mapped_column(String(64))
     enabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     backup_codes: Mapped[list[Any]] = mapped_column(JSONB, default=list)
+    # последний принятый 30-секундный шаг TOTP: тот же код второй раз не проходит (ADR-0011)
+    last_step: Mapped[int | None] = mapped_column(BigInteger)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -256,6 +259,8 @@ class AdminSession(Base):
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # почему закрыт: logout / password / 2fa / role / blocked — страница входа объясняет владельцу
+    revoked_reason: Mapped[str | None] = mapped_column(String(16))
     ip: Mapped[str | None] = mapped_column(String(64))
     user_agent: Mapped[str | None] = mapped_column(String(255))
 

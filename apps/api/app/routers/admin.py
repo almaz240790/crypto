@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
-from app import admin_auth, auth, billing
+from app import admin_auth, auth, billing, twofactor
 from app.admin_rules import can_decide, transition_allowed
 from app.config import settings
 from app.models import (
@@ -39,7 +39,9 @@ from app.models import (
 )
 from app.support import reply_ticket, ticket_dict
 
-router = APIRouter(prefix="/v1/admin", tags=["admin"])
+router = APIRouter(
+    prefix="/v1/admin", tags=["admin"], dependencies=[Depends(admin_auth.site_proxy_only)]
+)
 ADMIN = admin_auth.require_admin
 OPEN = ("pending", "active", "tp1_hit", "tp2_hit")
 
@@ -400,6 +402,11 @@ class UserUpdateIn(BaseModel):
     role: str | None = Field(default=None, pattern="^(user|support|admin|owner)$")
     block: bool | None = None
     reason: str | None = Field(default=None, max_length=255)
+    code: str | None = Field(default=None, max_length=16)
+    """Код из приложения (или резервный): нужен, чтобы выдать роль admin/owner (ADR-0011)."""
+
+
+STEP_UP_FAILED = "Чтобы выдать права админки, введите свежий код из приложения."
 
 
 @router.patch("/users/{user_id}")
@@ -417,9 +424,26 @@ def update_user(
             raise HTTPException(403, "роли меняет только владелец")
         if u.id == user.id:
             raise HTTPException(400, "свою роль менять нельзя")
-        _audit(db, user, "user.role", f"user:{u.id}", {"from": u.role, "to": body.role})
+        step_up = body.role in admin_auth.ADMIN_ROLES and u.role not in admin_auth.ADMIN_ROLES
+        if step_up:
+            # выдача прав админки — только с кодом из телефона: скрипт на странице сайта
+            # (XSS) при открытом сеансе админки не сделает своего админа
+            tf = twofactor.locked(db, user.id)
+            if tf is None or not twofactor.is_enabled(tf) or not body.code:
+                raise HTTPException(403, STEP_UP_FAILED)
+            if admin_auth.check_second_factor(tf, body.code) is None:
+                _audit(db, user, "user.role_code_failed", f"user:{u.id}", {"to": body.role})
+                db.commit()
+                raise HTTPException(403, STEP_UP_FAILED)
+        _audit(
+            db,
+            user,
+            "user.role",
+            f"user:{u.id}",
+            {"from": u.role, "to": body.role, **({"confirmed": "code"} if step_up else {})},
+        )
         u.role = body.role
-        admin_auth.revoke_user_sessions(db, u.id)  # новая роль — новый вход в админку
+        admin_auth.revoke_user_sessions(db, u.id, "role")  # новая роль — новый вход в админку
     if body.block is not None:
         if u.id == user.id:
             raise HTTPException(400, "себя заблокировать нельзя")
@@ -428,7 +452,7 @@ def update_user(
         u.blocked_at = datetime.now(tz=UTC) if body.block else None
         u.blocked_reason = body.reason if body.block else None
         if body.block:
-            admin_auth.revoke_user_sessions(db, u.id)
+            admin_auth.revoke_user_sessions(db, u.id, "blocked")
         _audit(
             db,
             user,

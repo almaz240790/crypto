@@ -250,14 +250,14 @@ def current_user(request: Request, db: Session = Depends(get_db)) -> User:
 def promote_owner(user: User, owner_emails: set[str]) -> bool:
     """Роль owner для адресов из OWNER_EMAILS. Вызывается при входе, обновлении токена и /auth/me,
     чтобы владелец получил права, даже если адрес добавили в настройки уже после его входа.
-    Адрес владельца считается подтверждённым: его вписал в настройки сервера сам владелец."""
-    if user.email.strip().lower() not in owner_emails:
+
+    Только для подтверждённой почты (ADR-0011): иначе любой, кто первым зарегистрирует адрес
+    владельца (или заново — после удаления аккаунта), получил бы роль owner без доступа к ящику.
+    Подтверждают почту ссылка из письма (подтверждение, вход по ссылке, сброс пароля), вход через
+    Google с подтверждённым адресом и одноразовая ссылка с сервера (``scripts/admin_link.py``)."""
+    if user.email.strip().lower() not in owner_emails or user.email_verified_at is None:
         return False
-    changed = False
     if user.role == "user":
         user.role = "owner"
-        changed = True
-    if user.email_verified_at is None:
-        user.email_verified_at = datetime.now(tz=UTC)
-        changed = True
-    return changed
+        return True
+    return False

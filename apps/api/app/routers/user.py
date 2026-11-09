@@ -112,7 +112,7 @@ def change_password(
             403, "Администратору пароль задаётся через «Забыли пароль?» на странице входа (письмом)"
         )
     user.password_hash = auth.hash_password(body.new_password)
-    admin_auth.revoke_user_sessions(db, user.id)  # новый пароль закрывает сеансы админки
+    admin_auth.revoke_user_sessions(db, user.id, "password")  # новый пароль закрывает админку
     db.commit()
     return Response(status_code=204)
 
@@ -512,14 +512,14 @@ def two_factor_setup(
     user: User = Depends(auth.current_user), db: Session = Depends(auth.get_db)
 ) -> dict[str, Any]:
     """Новый секрет (пока не включён); повторный вызов заменяет невключённый секрет."""
-    row = db.get(TwoFactor, user.id)
+    row = twofactor.locked(db, user.id)
     if twofactor.is_enabled(row):
         raise HTTPException(409, "2FA уже включена — сначала отключите")
     secret = twofactor.new_secret()
     if row is None:
         db.add(TwoFactor(user_id=user.id, secret=secret, backup_codes=[]))
     else:
-        row.secret = secret
+        twofactor.reset_secret(row, secret)
     db.commit()
     return {"secret": secret, "otpauth_url": twofactor.otpauth_url(secret, user.email)}
 
@@ -531,12 +531,12 @@ def two_factor_enable(
     db: Session = Depends(auth.get_db),
 ) -> dict[str, Any]:
     """Первый верный код включает 2FA и выдаёт резервные коды (показываются один раз)."""
-    row = db.get(TwoFactor, user.id)
+    row = twofactor.locked(db, user.id)
     if row is None:
         raise HTTPException(400, "сначала вызовите настройку")
     if row.enabled_at is not None:
         raise HTTPException(409, "2FA уже включена")
-    if not twofactor.verify_totp(row.secret, body.code):
+    if not twofactor.use_totp(row, body.code):
         raise HTTPException(400, "неверный код")
     plain, hashes = twofactor.make_backup_codes()
     row.enabled_at = datetime.now(tz=UTC)
@@ -551,14 +551,15 @@ def two_factor_disable(
     user: User = Depends(auth.current_user),
     db: Session = Depends(auth.get_db),
 ) -> Response:
-    row = db.get(TwoFactor, user.id)
+    row = twofactor.locked(db, user.id)
     if not twofactor.is_enabled(row) or row is None:
         raise HTTPException(400, "2FA не включена")
-    if not twofactor.verify_code(row, body.code):
+    if not twofactor.verify_code(row, body.code):  # код TOTP — один раз (и после админки)
         db.commit()
         raise HTTPException(400, "неверный код")
     db.delete(row)
-    admin_auth.revoke_user_sessions(db, user.id)  # без 2FA сеанс админки не держится
+    # без 2FA сеанс админки не держится; новая настройка для админки — только по ссылке из письма
+    admin_auth.revoke_user_sessions(db, user.id, "2fa")
     db.commit()
     return Response(status_code=204)
 

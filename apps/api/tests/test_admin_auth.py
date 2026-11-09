@@ -10,13 +10,14 @@ import re
 import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 
 import pyotp
 import pytest
 import segno
 from fastapi import HTTPException
-from sqlalchemy import text
+from sqlalchemy import select, text
 
 from app import admin_auth as aa
 from app import auth, ratelimit, twofactor
@@ -129,18 +130,120 @@ def test_totp_code_is_single_use_and_backup_codes_burn() -> None:
     now = datetime.now(tz=UTC)
     code = pyotp.TOTP(secret).at(now)
     prev = pyotp.TOTP(secret).at(now - timedelta(seconds=30))
-    assert aa.check_totp(secret, code, 1, now)
-    assert not aa.check_totp(secret, code, 1, now)  # тот же код второй раз — нет
-    assert aa.check_totp(secret, code, 2, now)  # у другого пользователя свой счёт
-    assert prev == code or aa.check_totp(secret, prev, 1, now)  # окно ±30 с
-    assert not aa.check_totp(secret, "12345", 1, now)
+    row = TwoFactor(user_id=1, secret=secret, backup_codes=[], enabled_at=now)
+    assert aa.check_second_factor(row, code, now) == "totp"
+    assert aa.check_second_factor(row, code, now) is None  # тот же код второй раз — нет
+    assert prev == code or aa.check_second_factor(row, prev, now) is None  # старый шаг — тоже
+    other = TwoFactor(user_id=2, secret=secret, backup_codes=[], enabled_at=now)
+    assert aa.check_second_factor(other, code, now) == "totp"  # у другого аккаунта своя отметка
+    assert aa.check_second_factor(other, "12345", now) is None
     plain, hashes = twofactor.make_backup_codes()
-    row = TwoFactor(user_id=1, secret=secret, backup_codes=list(hashes), enabled_at=now)
-    assert aa.check_second_factor(row, plain[3].lower(), 1, now) == "backup"
+    row.backup_codes = list(hashes)
+    assert aa.check_second_factor(row, plain[3].lower(), now) == "backup"
     assert len(row.backup_codes) == 9
-    assert aa.check_second_factor(row, plain[3], 1, now) is None  # резервный код сгорел
+    assert aa.check_second_factor(row, plain[3], now) is None  # резервный код сгорел
     fresh = pyotp.TOTP(secret).at(now + timedelta(seconds=30))
-    assert aa.check_second_factor(row, fresh, 1, now) == "totp"
+    assert aa.check_second_factor(row, fresh, now) == "totp"
+    # новый секрет (настройка заново) — отметка шага сбрасывается
+    twofactor.reset_secret(row, twofactor.new_secret())
+    assert row.last_step is None and row.backup_codes == []
+
+
+def test_totp_single_use_survives_utc_midnight() -> None:
+    """SEC-4: код, принятый в 23:59:45, не принимается в 00:00:15 (раньше — новый день счётчика)."""
+    secret = twofactor.new_secret()
+    before = datetime(2026, 11, 5, 23, 59, 45, tzinfo=UTC)
+    after = datetime(2026, 11, 6, 0, 0, 15, tzinfo=UTC)
+    code = pyotp.TOTP(secret).at(before)
+    assert twofactor.matched_step(secret, code, after) is not None  # ещё в окне ±30 с
+    row = TwoFactor(user_id=1, secret=secret, backup_codes=[], enabled_at=before)
+    assert twofactor.use_totp(row, code, before)
+    assert not twofactor.use_totp(row, code, after)
+    # сайт и админка делят отметку: verify_code (сайт) тот же код тоже не примет
+    assert not twofactor.verify_code(row, code)
+
+
+def _fake_clock(monkeypatch: pytest.MonkeyPatch, t: float) -> dict[str, float]:
+    box = {"t": t}
+    monkeypatch.setattr(ratelimit, "time", SimpleNamespace(time=lambda: box["t"]))
+    return box
+
+
+def test_strict_window_slides_over_clock_boundary(monkeypatch: pytest.MonkeyPatch) -> None:
+    """SEC-5: у лимитов админки нет двойного запаса на стыке окон."""
+    boundary = 900 * 2_000_000.0
+    clock = _fake_clock(monkeypatch, boundary - 20)
+    assert all(ratelimit.hit("adm-slide", 10, 900, strict=True) for _ in range(10))
+    clock["t"] = boundary + 20
+    assert not ratelimit.hit("adm-slide", 10, 900, strict=True)
+    # обычный (сайт) — по-прежнему фиксированные окна
+    clock["t"] = boundary - 20
+    assert all(ratelimit.hit("site-fixed", 2, 900) for _ in range(2))
+    clock["t"] = boundary + 20
+    assert ratelimit.hit("site-fixed", 2, 900)
+    # счётчик на срок жизни (билет): граница часов его не обнуляет
+    clock["t"] = boundary - 20
+    assert all(ratelimit.hit_total("ticket-x", 4, 900) for _ in range(4))
+    clock["t"] = boundary + 20
+    assert not ratelimit.hit_total("ticket-x", 4, 900)
+    # только неудачи: take занимает попытку, give_back возвращает (удачный вход)
+    for _ in range(5):
+        ok, bucket = ratelimit.take("only-fail", 2, 900)
+        assert ok
+        ratelimit.give_back(bucket)
+    assert ratelimit.take("only-fail", 2, 900)[0] and ratelimit.take("only-fail", 2, 900)[0]
+    assert not ratelimit.take("only-fail", 2, 900)[0]
+
+
+def test_client_ip_is_validated_and_proxy_ip_trusted_only_with_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SEC-2: в аудит, сеансы и письма идёт только IP-адрес; IP от прокси — только с секретом."""
+    from fastapi import Request
+
+    def req(headers: dict[str, str], host: str = "10.0.0.9") -> Request:
+        raw = [(k.encode(), v.encode()) for k, v in headers.items()]
+        return Request({"type": "http", "headers": raw, "client": (host, 1), "method": "GET"})
+
+    forged = "192.0.2.1 (home Wi-Fi - this was you - no action needed), 198.51.100.99"
+    assert ratelimit.client_ip(req({"x-forwarded-for": forged})) == "10.0.0.9"
+    assert ratelimit.client_ip(req({"x-forwarded-for": "203.0.113.5, 10.0.0.2"})) == "203.0.113.5"
+    assert ratelimit.client_ip(req({}, host="testclient")) == "?"
+    proxied = {
+        "x-forwarded-for": "6.6.6.6",
+        ratelimit.PROXY_HEADER: "proxy-secret-xyz",
+        ratelimit.PROXY_IP_HEADER: "198.51.100.7",
+    }
+    monkeypatch.setattr(settings, "proxy_secret", None)
+    assert ratelimit.client_ip(req(proxied)) == "6.6.6.6"  # без секрета заголовок прокси не верим
+    monkeypatch.setattr(settings, "proxy_secret", "proxy-secret-xyz")
+    assert ratelimit.client_ip(req(proxied)) == "198.51.100.7"
+    assert ratelimit.client_ip(req({**proxied, ratelimit.PROXY_HEADER: "guess"})) == "6.6.6.6"
+    with pytest.raises(HTTPException) as e:
+        aa.site_proxy_only(req({"x-forwarded-for": "6.6.6.6"}))
+    assert e.value.status_code == 403
+    aa.site_proxy_only(req(proxied))
+
+
+def test_device_cookie_and_rotation_tokens_are_bound() -> None:
+    from fastapi import Request
+
+    token = aa.make_device(7)
+    r = Request({"type": "http", "headers": [(b"cookie", f"{aa.DEVICE_COOKIE}={token}".encode())]})
+    dev = aa.read_device(r)
+    assert dev is not None and dev[0] == 7
+    owner = User(id=7, email="o@x.io", role="owner")
+    stranger = User(id=8, email="s@x.io", role="owner")
+    assert aa.limit_key("admin-login", "o@x.io", owner, dev).startswith("admin-login:dev:")
+    assert aa.limit_key("admin-login", "s@x.io", stranger, dev) == "admin-login:s:s@x.io"
+    # cookie устройства — не сеанс: подписана своим ключом, токеном админки не служит
+    with pytest.raises(HTTPException):
+        aa.decode_token(token)
+    pending = aa.make_rotation(7, "sid-1", "SECRET")
+    assert aa.read_rotation(pending, 7, "sid-1") == "SECRET"
+    assert aa.read_rotation(pending, 7, "sid-2") is None  # только в том же сеансе
+    assert aa.read_rotation(pending, 8, "sid-1") is None
+    assert aa.read_rotation(token, 7, "sid-1") is None
 
 
 def test_strict_limit_counts_in_memory_when_redis_fails() -> None:
@@ -281,6 +384,7 @@ def world(monkeypatch: pytest.MonkeyPatch) -> Iterator[World]:
 
     monkeypatch.setattr(router_mod, "send_mail", lambda *a: w.mails.append(a))
     monkeypatch.setattr(settings, "owner_emails", "")
+    monkeypatch.setattr(settings, "proxy_secret", None)
     # local: cookie без Secure (тестовый клиент ходит по http), письма — в лог
     monkeypatch.setattr(settings, "app_env", "local")
     monkeypatch.setattr(settings, "resend_api_key", None)
@@ -296,6 +400,23 @@ def _code(secret: str, shift: int = 0) -> str:
 
 def _login(c: Any, email: str, password: str = PASSWORD) -> Any:
     return c.post("/v1/admin/auth/login", json={"email": email, "password": password})
+
+
+def _last_link(w: World) -> str:
+    """Ссылка входа в админку из последнего письма."""
+    m = re.search(r"/admin/login\?link=([\w-]+)", w.mails[-1][2])
+    assert m, w.mails[-1]
+    return m.group(1)
+
+
+def _setup_by_link(w: World, c: Any, email: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Пароль → письмо со ссылкой → ссылка → первая настройка кода. (шаг ссылки, ответ setup)."""
+    first = _login(c, email).json()
+    assert first["step"] == "mail" and first["sent"] is True, first
+    step = c.post("/v1/admin/auth/magic/consume", json={"link": _last_link(w)}).json()
+    assert step["step"] == "setup", step
+    s = c.post("/v1/admin/auth/setup", json={"ticket": step["ticket"]}).json()
+    return step, s
 
 
 def _admin_in(w: World, c: Any) -> tuple[User, str, list[str]]:
@@ -339,8 +460,17 @@ def test_first_time_setup_then_admin_access(world: World, monkeypatch: pytest.Mo
     c = world.client()
     u, _, _ = world.user(role="user")
     monkeypatch.setattr(settings, "owner_emails", u.email.upper())  # владелец из OWNER_EMAILS
-    step = _login(c, u.email).json()
+    # пароль без 2FA (и почта ещё не подтверждена) — только письмо со ссылкой, не настройка
+    first = _login(c, u.email).json()
+    assert first == {"step": "mail", "email": u.email, "mail": True, "sent": True}
+    world.db.expire_all()
+    assert world.db.get(User, u.id).role == "user"  # type: ignore[union-attr]
+    assert world.mails[-1][0] == u.email
+    step = c.post("/v1/admin/auth/magic/consume", json={"link": _last_link(world)}).json()
     assert step["step"] == "setup" and step["email"] == u.email
+    world.db.expire_all()
+    promoted = world.db.get(User, u.id)
+    assert promoted is not None and promoted.role == "owner" and promoted.email_verified_at
     s = c.post("/v1/admin/auth/setup", json={"ticket": step["ticket"]}).json()
     assert s["otpauth_url"].startswith("otpauth://totp/PlatformSol:") and len(s["secret"]) >= 16
     assert s["qr"]["size"] >= 21 and s["qr"]["path"].startswith("M")
@@ -352,9 +482,12 @@ def test_first_time_setup_then_admin_access(world: World, monkeypatch: pytest.Mo
     assert ok.status_code == 200, ok.text
     body = ok.json()
     assert len(body["backup_codes"]) == 10 and body["role"] == "owner"
-    cookie = ok.headers["set-cookie"]
-    assert "pl_admin=" in cookie and "Path=/v1/admin" in cookie and "HttpOnly" in cookie
+    cookies = ok.headers.get_list("set-cookie")
+    cookie = next(x for x in cookies if x.startswith("pl_admin="))
+    assert "Path=/v1/admin" in cookie and "HttpOnly" in cookie
     assert "SameSite=strict" in cookie or "samesite=strict" in cookie.lower()
+    device = next(x for x in cookies if x.startswith(f"{aa.DEVICE_COOKIE}="))
+    assert "Path=/v1/admin/auth" in device and "HttpOnly" in device
     # билет одноразовый
     again = c.post(
         "/v1/admin/auth/setup/confirm",
@@ -366,10 +499,11 @@ def test_first_time_setup_then_admin_access(world: World, monkeypatch: pytest.Mo
     assert c.get("/v1/admin/audit").status_code == 200
     world.db.expire_all()
     tf = world.db.get(TwoFactor, u.id)
-    assert tf is not None and tf.enabled_at is not None
+    assert tf is not None and tf.enabled_at is not None and tf.last_step is not None
     actions = [a for a, _ in world.audit(u.id)]
     for a in (
         "admin_login.password_ok",
+        "admin_login.link_used",
         "admin_login.setup_started",
         "admin_login.setup_code_failed",
         "admin_login.setup_done",
@@ -378,6 +512,95 @@ def test_first_time_setup_then_admin_access(world: World, monkeypatch: pytest.Mo
         assert a in actions
     assert world.mails and world.mails[-1][0] == u.email  # письмо о входе
     assert s["secret"] not in str(world.audit(u.id)) and s["secret"] not in str(world.mails)
+
+
+@db_only
+def test_password_alone_never_opens_first_setup(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SEC-1/SEC-7: без подтверждения почты в этом входе привязать своё приложение нельзя."""
+    c = world.client()
+    u, _, _ = world.user(role="owner")
+    # билет после пароля (как будто его выдали) настройку не открывает
+    pw_ticket = aa.issue_ticket(world.db, u, "password")
+    world.db.commit()
+    r = c.post("/v1/admin/auth/setup", json={"ticket": pw_ticket})
+    assert r.status_code == 409 and r.json()["detail"] == aa.SETUP_NEEDS_LINK
+    r = c.post("/v1/admin/auth/setup/confirm", json={"ticket": pw_ticket, "code": "123456"})
+    assert r.status_code == 409
+    # почта на сервере не настроена: шаг mail без письма, подсказка про ссылку с сервера
+    monkeypatch.setattr(settings, "app_env", "production")
+    sent_before = len(world.mails)
+    off = _login(c, u.email).json()
+    assert off == {"step": "mail", "email": u.email, "mail": False, "sent": False}
+    assert len(world.mails) == sent_before
+    assert world.db.get(TwoFactor, u.id) is None
+    # ссылка с сервера (scripts/admin_link.py делает то же) открывает настройку
+    raw = aa.issue_email_token(world.db, u, aa.MAGIC_PURPOSE, timedelta(minutes=30))
+    world.db.commit()
+    step = c.post("/v1/admin/auth/magic/consume", json={"link": raw}).json()
+    assert step["step"] == "setup"
+
+
+@db_only
+def test_reregistered_owner_address_gets_no_admin(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SEC-7: украденная сессия сайта → удалить аккаунт → зарегистрировать адрес владельца заново
+    со своим паролем. Новый аккаунт не владелец (почта не подтверждена), настройка кода — только
+    по ссылке, которая уходит в ящик настоящего владельца."""
+    owner, _, _ = world.user(role="owner", two_factor=True)
+    owner_id, owner_email = owner.id, owner.email
+    monkeypatch.setattr(settings, "owner_emails", owner_email)
+    c = world.client()
+    stolen = {"authorization": f"Bearer {auth.make_access_token(owner)}"}
+    assert c.get("/v1/admin/users", headers=stolen).status_code == 401
+    assert c.delete("/v1/me", headers=stolen).status_code == 204
+    attacker = world.client()
+    reg = attacker.post(
+        "/v1/auth/register", json={"email": owner_email, "password": "attacker password 77"}
+    )
+    assert reg.status_code == 201, reg.text
+    world.db.expire_all()
+    new = world.db.scalar(select(User).where(User.email == owner_email))
+    assert new is not None and new.id != owner_id
+    world.ids.append(new.id)
+    assert new.role == "user" and new.email_verified_at is None
+    token = {"authorization": f"Bearer {reg.json()['access_token']}"}
+    assert attacker.get("/v1/auth/me", headers=token).json()["role"] == "user"
+    step = _login(attacker, owner_email, "attacker password 77").json()
+    assert step["step"] == "mail" and "ticket" not in step  # ссылка — в ящик владельца
+    assert world.mails[-1][0] == owner_email
+    world.db.expire_all()
+    assert world.db.get(TwoFactor, new.id) is None
+    assert attacker.get("/v1/admin/users").status_code == 401
+
+
+@db_only
+def test_code_used_in_admin_is_not_accepted_on_site(world: World) -> None:
+    """SEC-1: код, которым владелец вошёл в админку, нельзя повторить на сайте (вход и отключение
+    2FA); после отключения 2FA следующий вход в админку ведёт к письму, а не к настройке."""
+    c = world.client()
+    u, _, secret = world.user(two_factor=True)
+    assert secret is not None
+    used = _code(secret)
+    step = _login(c, u.email).json()
+    ok = c.post("/v1/admin/auth/verify", json={"ticket": step["ticket"], "code": used})
+    assert ok.status_code == 200  # этим кодом владелец вошёл в админку
+    site = world.client()
+    first = site.post("/v1/auth/login", json={"email": u.email, "password": PASSWORD}).json()
+    assert first["two_factor"] is True
+    r = site.post("/v1/auth/login/2fa", json={"ticket": first["ticket"], "code": used})
+    assert r.status_code == 401
+    bearer = {"authorization": f"Bearer {auth.make_access_token(u)}"}
+    assert site.post("/v1/me/2fa/disable", json={"code": used}, headers=bearer).status_code == 400
+    assert c.get("/v1/admin/auth/me").status_code == 200  # сеанс владельца цел
+    # владелец сам отключил 2FA свежим кодом — админка закрылась, настройка только по ссылке
+    fresh = _code(secret, 1)
+    assert site.post("/v1/me/2fa/disable", json={"code": fresh}, headers=bearer).status_code == 204
+    r = c.get("/v1/admin/auth/me")
+    assert r.status_code == 401 and r.headers[aa.ENDED_HEADER] == "2fa"
+    assert _login(world.client(), u.email).json()["step"] == "mail"
 
 
 @db_only
@@ -457,14 +680,16 @@ def test_idle_and_absolute_expiry(world: World) -> None:
     row.last_seen_at = datetime.now(tz=UTC) - timedelta(minutes=61)
     world.db.commit()
     r = c.get("/v1/admin/auth/me")
-    assert r.status_code == 401 and r.json()["detail"] == aa.SESSION_ENDED
+    assert r.status_code == 401 and r.headers[aa.ENDED_HEADER] == "idle"
+    assert r.json()["detail"] == aa.ENDED_TEXT["idle"]
     c2 = world.client()
     u2, _, _ = _admin_in(world, c2)
     world.db.expire_all()
     row2 = world.db.query(AdminSession).filter_by(user_id=u2.id).one()
     row2.expires_at = datetime.now(tz=UTC) - timedelta(seconds=1)
     world.db.commit()
-    assert c2.get("/v1/admin/users").status_code == 401
+    r2 = c2.get("/v1/admin/users")
+    assert r2.status_code == 401 and r2.headers[aa.ENDED_HEADER] == "expired"
     # действие в админке продлевает простой (отметка не чаще раза в минуту)
     c3 = world.client()
     u3, _, _ = _admin_in(world, c3)
@@ -570,9 +795,13 @@ def test_demoted_or_blocked_admin_loses_session(world: World) -> None:
 def test_rate_limits_per_email_ip_and_code(world: World) -> None:
     c = world.client()
     u, _, secret = world.user(two_factor=True)
+    # верные входы попыток не тратят (раньше 5 входов за 15 минут запирали самого владельца)
+    for _ in range(ratelimit.ADMIN_LOGIN_PER_EMAIL[0] + 1):
+        assert _login(c, u.email).json()["step"] == "code"
     for _ in range(ratelimit.ADMIN_LOGIN_PER_EMAIL[0]):
         assert _login(c, u.email, "wrong password x").status_code == 401
-    assert _login(c, u.email).status_code == 429  # даже с верным паролем
+    # с нового браузера (без cookie устройства) — 429 даже с верным паролем: перебор по адресу
+    assert _login(c, u.email).status_code == 429
     ratelimit._memory.values.clear()
     ip = {"x-forwarded-for": "198.51.100.7"}
     codes = [
@@ -595,7 +824,7 @@ def test_rate_limits_per_email_ip_and_code(world: World) -> None:
         for i in range(ratelimit.ADMIN_CODE_PER_USER[0] + 1)
     ]
     assert statuses[-1] == 429 and set(statuses[:-1]) == {401}
-    # мусорные билеты с одного IP: лимит срабатывает до поиска билета, аудит не раздувается
+    # мусорные билеты с одного IP: лимит до поиска билета, в аудит они не пишутся вовсе
     ratelimit._memory.values.clear()
     junk = [
         c.post(
@@ -604,8 +833,259 @@ def test_rate_limits_per_email_ip_and_code(world: World) -> None:
         for i in range(ratelimit.ADMIN_CODE_PER_IP[0] + 1)
     ]
     assert set(junk[:-1]) == {410} and junk[-1] == 429
-    invalid = [a for a, _ in world.audit(None) if a == "admin_login.ticket_invalid"]
-    assert len(invalid) == ratelimit.ADMIN_CODE_PER_IP[0]
+    assert not [a for a, _ in world.audit(None) if a == "admin_login.ticket_invalid"]
+
+
+@db_only
+def test_strangers_cannot_lock_the_owner_out(world: World) -> None:
+    """SEC-3 / OWNER-EMAIL-LOCKOUT: перебор по известному адресу (с любых IP) не запирает
+    браузер, где владелец уже входил; ссылку на почту — тоже."""
+    owner_browser = world.client()
+    u, _, _ = _admin_in(world, owner_browser)
+    assert owner_browser.cookies.get(aa.DEVICE_COOKIE)
+    attacker = world.client()
+
+    def guess(i: int, password: str) -> int:
+        r = attacker.post(
+            "/v1/admin/auth/login",
+            json={"email": u.email, "password": password},
+            headers={"x-forwarded-for": f"203.0.113.{i + 1}"},  # каждый раз новый IP
+        )
+        return int(r.status_code)
+
+    assert [guess(i, f"guess {i}") for i in range(ratelimit.ADMIN_LOGIN_PER_EMAIL[0])] == [401] * 5
+    assert guess(9, "guess again") == 429
+    assert guess(10, PASSWORD) == 429  # с чужого браузера — даже верный пароль (перебор по адресу)
+    for _ in range(ratelimit.ADMIN_MAIL_PER_EMAIL[0]):
+        assert attacker.post("/v1/admin/auth/magic", json={"email": u.email}).status_code == 202
+    assert attacker.post("/v1/admin/auth/magic", json={"email": u.email}).status_code == 429
+    # владелец со своего браузера: и пароль, и ссылка работают
+    assert _login(owner_browser, u.email).json()["step"] == "code"
+    assert owner_browser.post("/v1/admin/auth/magic", json={"email": u.email}).status_code == 202
+    # но cookie устройства — не пропуск: неверный пароль с неё тоже считается (5 за 15 минут)
+    for i in range(ratelimit.ADMIN_LOGIN_PER_EMAIL[0]):
+        assert _login(owner_browser, u.email, f"typo {i}").status_code == 401
+    assert _login(owner_browser, u.email).status_code == 429
+
+
+@db_only
+def test_wrong_codes_burn_ticket_across_clock_boundary(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SEC-5: 5-й неверный код сжигает билет, даже если попытки пришлись на стык окон."""
+    c = world.client()
+    u, _, secret = world.user(two_factor=True)
+    assert secret is not None
+    ticket = _login(c, u.email).json()["ticket"]
+    boundary = (int(datetime.now(tz=UTC).timestamp()) // 900 + 1) * 900
+    clock = _fake_clock(monkeypatch, boundary - 20)
+    wrong = [
+        c.post("/v1/admin/auth/verify", json={"ticket": ticket, "code": "000001"}).status_code
+        for _ in range(4)
+    ]
+    clock["t"] = boundary + 20
+    fifth = c.post("/v1/admin/auth/verify", json={"ticket": ticket, "code": "000001"})
+    assert wrong == [401] * 4 and fifth.status_code == 410
+    late = c.post("/v1/admin/auth/verify", json={"ticket": ticket, "code": _code(secret)})
+    assert late.status_code == 410
+
+
+@db_only
+def test_single_use_secrets_hold_under_concurrency(world: World) -> None:
+    """SEC-6: один резервный код и одна ссылка из письма — один вход, даже одновременно."""
+    import threading
+
+    u, backup, _ = world.user(two_factor=True)
+    tickets = [_login(world.client(), u.email).json()["ticket"] for _ in range(6)]
+    barrier = threading.Barrier(len(tickets))
+    results: list[int] = []
+
+    def go(ticket: str) -> None:
+        client = world.client()
+        barrier.wait()
+        r = client.post("/v1/admin/auth/verify", json={"ticket": ticket, "code": backup[0]})
+        results.append(r.status_code)
+
+    threads = [threading.Thread(target=go, args=(t,)) for t in tickets]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert sorted(results).count(200) == 1, results
+    world.db.expire_all()
+    assert world.db.query(AdminSession).filter_by(user_id=u.id).count() == 1
+    tf = world.db.get(TwoFactor, u.id)
+    assert tf is not None and len(tf.backup_codes) == 9
+    # ссылка из письма: 4 одновременных перехода — один билет
+    raw = aa.issue_email_token(world.db, u, aa.MAGIC_PURPOSE, aa.MAGIC_TTL)
+    world.db.commit()
+    barrier2 = threading.Barrier(4)
+    used: list[int] = []
+
+    def consume() -> None:
+        client = world.client()
+        barrier2.wait()
+        used.append(client.post("/v1/admin/auth/magic/consume", json={"link": raw}).status_code)
+
+    threads = [threading.Thread(target=consume) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert sorted(used) == [200, 400, 400, 400], used
+
+
+@db_only
+def test_proxy_secret_gates_admin_and_supplies_client_ip(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SEC-2: с PROXY_SECRET админка — только через прокси сайта, IP — от прокси; в аудит и
+    письмо подставленный текст не попадает."""
+    monkeypatch.setattr(settings, "proxy_secret", "proxy-secret-test")
+    c = world.client()
+    assert c.get("/v1/admin/auth/config").status_code == 403
+    assert c.get("/v1/admin/users").status_code == 403
+    proxy = {ratelimit.PROXY_HEADER: "proxy-secret-test", ratelimit.PROXY_IP_HEADER: "203.0.113.9"}
+    forged = "1.2.3.4 (this was you - all good), 5.6.7.8"
+    hdrs = {**proxy, "x-forwarded-for": forged}
+    assert c.get("/v1/admin/auth/config", headers=hdrs).status_code == 200
+    u, _, secret = world.user(two_factor=True)
+    assert secret is not None
+    step = c.post(
+        "/v1/admin/auth/login", json={"email": u.email, "password": PASSWORD}, headers=hdrs
+    ).json()
+    ok = c.post(
+        "/v1/admin/auth/verify",
+        json={"ticket": step["ticket"], "code": _code(secret)},
+        headers=hdrs,
+    )
+    assert ok.status_code == 200
+    ips = {p["ip"] for _, p in world.audit(u.id)}
+    assert ips == {"203.0.113.9"}
+    world.db.expire_all()
+    row = world.db.query(AdminSession).filter_by(user_id=u.id).one()
+    assert row.ip == "203.0.113.9"
+    assert "this was you" not in world.mails[-1][2] and "203.0.113.9" in world.mails[-1][2]
+    # без секрета прокси — подставленный X-Forwarded-For с текстом не проходит проверку
+    monkeypatch.setattr(settings, "proxy_secret", None)
+    c.post(
+        "/v1/admin/auth/login",
+        json={"email": u.email, "password": "wrong password"},
+        headers={"x-forwarded-for": forged},
+    )
+    assert "this was you" not in str(world.audit(u.id))
+
+
+@db_only
+def test_session_end_reasons_reach_login_page(world: World) -> None:
+    """ENDED-MESSAGE-WRONG-REASON: причина закрытия сеанса — в заголовке X-Admin-Ended."""
+    c = world.client()
+    u, _, _ = _admin_in(world, c)
+    bearer = {"authorization": f"Bearer {auth.make_access_token(u)}"}
+    c.post(
+        "/v1/me/password",
+        json={"current_password": PASSWORD, "new_password": "another long password 8"},
+        headers=bearer,
+    )
+    r = c.get("/v1/admin/audit")
+    assert r.status_code == 401 and r.headers[aa.ENDED_HEADER] == "password"
+    assert r.json()["detail"] == aa.ENDED_TEXT["password"]
+    c2 = world.client()
+    _admin_in(world, c2)
+    c2_cookie = c2.cookies.get(aa.COOKIE)
+    other_tab = world.client()
+    other_tab.cookies.set(aa.COOKIE, c2_cookie, domain="testserver.local", path="/v1/admin")
+    assert c2.post("/v1/admin/auth/logout").status_code == 204
+    assert other_tab.get("/v1/admin/auth/me").headers[aa.ENDED_HEADER] == "logout"
+    c3 = world.client()
+    u3, _, _ = _admin_in(world, c3)
+    world.db.expire_all()
+    world.db.get(User, u3.id).role = "user"  # type: ignore[union-attr]
+    world.db.commit()
+    r3 = c3.get("/v1/admin/users")
+    assert r3.status_code == 403 and r3.headers[aa.ENDED_HEADER] == "role"
+    assert world.client().get("/v1/admin/auth/me").status_code == 401  # без cookie — без причины
+
+
+@db_only
+def test_backup_codes_reissue_and_moving_code_to_new_phone(world: World) -> None:
+    """OWNER-BACKUP-CODES-LOST-ON-RELOAD: новые резервные коды внутри админки по коду из
+    приложения; перенос кода на другой телефон — без выключения 2FA."""
+    c = world.client()
+    u, secret, old_backup = _admin_in(world, c)
+    r = c.post("/v1/admin/auth/2fa/backup-codes", json={"code": _code(secret, 1)})
+    assert r.status_code == 403  # без заголовка админки (CSRF)
+    r = c.post("/v1/admin/auth/2fa/backup-codes", json={"code": old_backup[0]}, headers=CSRF)
+    assert r.status_code == 401  # резервным кодом новые коды не выпускаются — нужен телефон
+    r = c.post("/v1/admin/auth/2fa/backup-codes", json={"code": _code(secret, 1)}, headers=CSRF)
+    assert r.status_code == 200 and len(r.json()["backup_codes"]) == 10
+    new_backup = r.json()["backup_codes"]
+    world.db.expire_all()
+    tf = world.db.get(TwoFactor, u.id)
+    assert tf is not None and auth.sha256(old_backup[1]) not in tf.backup_codes
+    # второй браузер с сеансом админки — его закроет перенос кода
+    other = world.client()
+    step = _login(other, u.email).json()
+    assert (
+        other.post(
+            "/v1/admin/auth/verify", json={"ticket": step["ticket"], "code": new_backup[0]}
+        ).status_code
+        == 200
+    )
+    # перенос: телефон потерян — начать можно резервным кодом
+    start = c.post("/v1/admin/auth/2fa/rotate", json={"code": new_backup[1]}, headers=CSRF)
+    assert start.status_code == 200, start.text
+    data = start.json()
+    assert data["qr"]["path"].startswith("M") and data["secret"] != secret
+    bad = c.post(
+        "/v1/admin/auth/2fa/rotate/confirm",
+        json={"pending": data["pending"], "code": _code(secret, 1)},
+        headers=CSRF,
+    )
+    assert bad.status_code == 401  # код старого телефона новый секрет не подтверждает
+    done = c.post(
+        "/v1/admin/auth/2fa/rotate/confirm",
+        json={"pending": data["pending"], "code": _code(data["secret"])},
+        headers=CSRF,
+    )
+    assert done.status_code == 200 and len(done.json()["backup_codes"]) == 10
+    again = c.post(
+        "/v1/admin/auth/2fa/rotate/confirm",
+        json={"pending": data["pending"], "code": _code(data["secret"], 1)},
+        headers=CSRF,
+    )
+    assert again.status_code == 410  # ожидающий секрет одноразовый
+    assert c.get("/v1/admin/auth/me").status_code == 200  # этот сеанс остаётся
+    gone = other.get("/v1/admin/auth/me")
+    assert gone.status_code == 401 and gone.headers[aa.ENDED_HEADER] == "2fa"
+    world.db.expire_all()
+    tf = world.db.get(TwoFactor, u.id)
+    assert tf is not None and tf.secret == data["secret"]
+    actions = [a for a, _ in world.audit(u.id)]
+    for a in ("admin_2fa.backup_codes_reissued", "admin_2fa.rotate_started", "admin_2fa.rotated"):
+        assert a in actions
+    assert data["secret"] not in str(world.audit(u.id))
+
+
+@db_only
+def test_granting_admin_role_needs_fresh_code(world: World) -> None:
+    """SEC-8 (смягчение): выдать права админки можно только с кодом из телефона — скрипт на
+    странице сайта при открытом сеансе админки не сделает своего админа."""
+    c = world.client()
+    owner, secret, _ = _admin_in(world, c)
+    target, _, _ = world.user(role="user")
+    url = f"/v1/admin/users/{target.id}"
+    r = c.patch(url, json={"role": "admin"}, headers=CSRF)
+    assert r.status_code == 403
+    r = c.patch(url, json={"role": "admin", "code": "000000"}, headers=CSRF)
+    assert r.status_code == 403
+    r = c.patch(url, json={"role": "admin", "code": _code(secret, 1)}, headers=CSRF)
+    assert r.status_code == 200, r.text
+    world.db.expire_all()
+    assert world.db.get(User, target.id).role == "admin"  # type: ignore[union-attr]
+    # понижение и роль support — без кода
+    assert c.patch(url, json={"role": "support"}, headers=CSRF).status_code == 200
+    assert "user.role_code_failed" in [a for a, _ in world.audit(owner.id)]
 
 
 @db_only
