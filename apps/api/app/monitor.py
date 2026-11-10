@@ -31,6 +31,7 @@ log = logging.getLogger("monitor")
 
 OK, DEGRADED, DOWN = "ok", "degraded", "down"
 REALERT_AFTER = timedelta(hours=6)
+INCIDENTS_LOCK = 0x706C_6D6E  # ключ advisory-блокировки инцидентов («plmn»), см. incidents_lock
 _no_owners_warned = False
 
 
@@ -294,11 +295,25 @@ def send_alerts(db: Session, components: list[Component], now: datetime) -> int:
     return sent
 
 
+def incidents_lock(db: Session) -> bool:
+    """Взять блокировку инцидентов на эту транзакцию (``pg_try_advisory_xact_lock``).
+
+    Два уведомителя бок о бок (выкладка без простоя) иначе оба открыли бы инцидент по одному
+    компоненту и оба отправили бы письмо. Не взяли — этот прогон инциденты не трогает: их ведёт
+    другой экземпляр, следующий прогон через минуту. Снимается при commit/rollback.
+    """
+    return bool(db.scalar(select(func.pg_try_advisory_xact_lock(INCIDENTS_LOCK))))
+
+
 def run_monitor(db: Session, r: Any | None) -> dict[str, Any]:
     snap = collect(db, r)
     comps = evaluate(snap)
-    opened = sync_incidents(db, comps, snap.now)
-    send_alerts(db, comps, snap.now)
+    opened: list[Incident] = []
+    if incidents_lock(db):
+        opened = sync_incidents(db, comps, snap.now)
+        send_alerts(db, comps, snap.now)
+    else:
+        log.info("инциденты ведёт другой экземпляр монитора — пропуск")
     db.commit()
     if opened:
         log.warning("инциденты: %s", ", ".join(f"{i.component}={i.severity}" for i in opened))
