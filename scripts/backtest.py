@@ -148,6 +148,34 @@ def load_derivatives(
     )
 
 
+def market_inputs(
+    symbol: str,
+    start: datetime,
+    end: datetime,
+    params: StrategyParams,
+    derivatives: bool = True,
+) -> MarketInputs | None:
+    """Входы прогона по инструменту за [start; end] с разогревом (история для структуры, EMA50 D1
+    и ATR-перцентилей) и 30 днями после ``end`` для исполнения последних сделок. None — мало H4.
+    Общий для этого скрипта и ``scripts/occupancy_report.py``."""
+    warmup = start - timedelta(days=200)
+    h4 = load_candles(symbol, Timeframe.H4, warmup, end + timedelta(days=30))
+    if len(h4) < params.min_h4_history:
+        print(f"{symbol}: мало свечей H4 ({len(h4)}), пропуск", file=sys.stderr, flush=True)
+        return None
+    d1 = load_candles(symbol, Timeframe.D1, warmup - timedelta(days=120), end + timedelta(days=30))
+    w1 = load_candles(symbol, Timeframe.W1, warmup - timedelta(days=400), end + timedelta(days=30))
+    funding, oi, ls = load_derivatives(symbol, warmup, end) if derivatives else ([], [], [])
+    print(
+        f"{symbol}: H4={len(h4)} D1={len(d1)} W1={len(w1)} funding={len(funding)} oi={len(oi)}",
+        file=sys.stderr,
+        flush=True,
+    )
+    return MarketInputs(
+        symbol=symbol, h4=h4, d1=d1, w1=w1, funding=funding, open_interest=oi, long_short=ls
+    )
+
+
 def override_params(
     base: StrategyParams, overrides: dict[str, dict[str, object]]
 ) -> StrategyParams:
@@ -280,33 +308,13 @@ def main() -> int:
         params = override_params(params, json.loads(text_json))
     start = datetime(args.start.year, args.start.month, args.start.day, tzinfo=UTC)
     end = datetime(args.end.year, args.end.month, args.end.day, tzinfo=UTC)
-    warmup = start - timedelta(days=200)  # история для структуры, EMA50 D1 и ATR-перцентилей
     exec_params = ExecutionParams(entry_type=args.entry)
 
     def inputs_iter():  # type: ignore[no-untyped-def]
         for symbol in symbols:
-            h4 = load_candles(symbol, Timeframe.H4, warmup, end + timedelta(days=30))
-            if len(h4) < params.min_h4_history:
-                print(f"{symbol}: мало свечей H4 ({len(h4)}), пропуск", file=sys.stderr, flush=True)
-                continue
-            d1 = load_candles(
-                symbol, Timeframe.D1, warmup - timedelta(days=120), end + timedelta(days=30)
-            )
-            w1 = load_candles(
-                symbol, Timeframe.W1, warmup - timedelta(days=400), end + timedelta(days=30)
-            )
-            funding, oi, ls = (
-                ([], [], []) if args.no_derivatives else load_derivatives(symbol, warmup, end)
-            )
-            print(
-                f"{symbol}: H4={len(h4)} D1={len(d1)} W1={len(w1)} "
-                f"funding={len(funding)} oi={len(oi)}",
-                file=sys.stderr,
-                flush=True,
-            )
-            yield MarketInputs(
-                symbol=symbol, h4=h4, d1=d1, w1=w1, funding=funding, open_interest=oi, long_short=ls
-            )
+            inp = market_inputs(symbol, start, end, params, derivatives=not args.no_derivatives)
+            if inp is not None:
+                yield inp
 
     t0 = time.time()
     run = run_backtest(inputs_iter(), params, start, end, exec_params, window=args.window)
