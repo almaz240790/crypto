@@ -3,6 +3,7 @@
 import { useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useState, type FormEvent } from "react";
 import { AppShell } from "@/components/app/AppShell";
+import { useSignalsAccess } from "@/components/auth/signalsAccess";
 import s from "@/components/tools/tools.module.css";
 import { Button, EmptyState, Input, Panel, Select, Table, Td, Th } from "@/components/ui";
 import { getAccessToken } from "@/lib/auth-client";
@@ -60,24 +61,25 @@ function BucketTable({ title, rows, label }: { title: string; rows: AnalyticsBuc
   );
 }
 
-function Analytics({ a }: { a: JournalAnalytics }) {
+/** Аналитика журнала. signals=false — сигналы закрыты (ADR-0013): без градаций и ошибок «по сигналу». */
+function Analytics({ a, signals }: { a: JournalAnalytics; signals: boolean }) {
   const t = useT();
   const e = a.errors;
   return (
-    <Panel title={t("Аналитика")} footer={t("Ранний выход — сделка по сигналу закрыта хуже результата сигнала более чем на 0.5 R. Превышение риска — риск сделки больше бюджета из риск-профиля на 10 % и более.")}>
+    <Panel title={t("Аналитика")} footer={signals ? t("Ранний выход — сделка по сигналу закрыта хуже результата сигнала более чем на 0.5 R. Превышение риска — риск сделки больше бюджета из риск-профиля на 10 % и более.") : t("Превышение риска — риск сделки больше бюджета из риск-профиля на 10 % и более.")}>
       <div className={s.analytics} data-testid="journal-analytics">
         <div>
           <p className="caption" style={{ margin: "0 0 4px" }}>
             Кривая капитала, R{a.equity.max_drawdown_r != null && <> · макс. просадка {formatR(a.equity.max_drawdown_r)}</>}
           </p>
           <EquityCurve points={a.equity.points} />
-          <p className="caption" style={{ margin: "8px 0 0" }} aria-label={t("типовые ошибки")}>{t("Типовые ошибки: ранний выход")}{" "}<strong>{e.early_exit.count}</strong> из {e.early_exit.of} по сигналу · вход без сигнала <strong>{e.no_signal.count}</strong> из {e.no_signal.of} ·
-            превышение риска {e.risk_exceeded.budget_usd == null ? <span>{t("— задайте депозит в настройках")}</span> : <><strong>{e.risk_exceeded.count}</strong> из {e.risk_exceeded.of} (бюджет {e.risk_exceeded.budget_usd} USDT)</>}
+          <p className="caption" style={{ margin: "8px 0 0" }} aria-label={t("типовые ошибки")}>{signals ? <>{t("Типовые ошибки: ранний выход")}{" "}<strong>{e.early_exit.count}</strong> из {e.early_exit.of} по сигналу · вход без сигнала <strong>{e.no_signal.count}</strong> из {e.no_signal.of} ·
+            превышение риска</> : t("Типовые ошибки: превышение риска")} {e.risk_exceeded.budget_usd == null ? <span>{t("— задайте депозит в настройках")}</span> : <><strong>{e.risk_exceeded.count}</strong> из {e.risk_exceeded.of} (бюджет {e.risk_exceeded.budget_usd} USDT)</>}
           </p>
         </div>
         <BucketTable title={t("День недели")} rows={a.by_weekday} label={(k) => t(WEEKDAYS[Number(k)] ?? String(k))} />
         <BucketTable title={t("Инструмент")} rows={a.by_symbol.slice(0, 12)} label={(k) => String(k)} />
-        <BucketTable title={t("Градация")} rows={a.by_grade} label={(k) => t(GRADES[String(k)] ?? String(k))} />
+        {signals && <BucketTable title={t("Градация")} rows={a.by_grade} label={(k) => t(GRADES[String(k)] ?? String(k))} />}
       </div>
     </Panel>
   );
@@ -94,6 +96,7 @@ function toLocalInput(iso: string | null): string {
 
 function JournalInner() {
   const t = useT();
+  const { open: signals } = useSignalsAccess();
   const sp = useSearchParams();
   const [items, setItems] = useState<JournalEntry[] | null>(null);
   const [summary, setSummary] = useState<JournalSummary | null>(null);
@@ -115,7 +118,11 @@ function JournalInner() {
       const r = await importTrades({ exchange: "binance", api_key: imp.api_key.trim(), api_secret: imp.api_secret.trim(), days: Number(imp.days) });
       setImp(null);
       await load();
-      setToast(t("Импортировано {n} сделок (по сигналам: {m}, открытых: {o}), пропущено уже известных: {s}", { n: r.imported, m: r.matched, o: r.open, s: r.skipped }));
+      setToast(
+        signals
+          ? t("Импортировано {n} сделок (по сигналам: {m}, открытых: {o}), пропущено уже известных: {s}", { n: r.imported, m: r.matched, o: r.open, s: r.skipped })
+          : t("Импортировано {n} сделок (открытых: {o}), пропущено уже известных: {s}", { n: r.imported, o: r.open, s: r.skipped }),
+      );
       setTimeout(() => setToast(null), 6000);
     } catch (e) {
       setError(e instanceof Error ? e.message : t("ошибка импорта"));
@@ -246,7 +253,7 @@ function JournalInner() {
           </p>
         )}
         {imp && (
-          <Panel title={t("Импорт сделок с Binance (USDT-M фьючерсы)")} footer={t("Нужен API-ключ только на чтение (без прав на торговлю и вывод). Ключ и секрет используются один раз для запроса и не сохраняются. Сделки сопоставляются с сигналами по инструменту, направлению и времени входа; повторный импорт не создаёт дублей.")}>
+          <Panel title={t("Импорт сделок с Binance (USDT-M фьючерсы)")} footer={signals ? t("Нужен API-ключ только на чтение (без прав на торговлю и вывод). Ключ и секрет используются один раз для запроса и не сохраняются. Сделки сопоставляются с сигналами по инструменту, направлению и времени входа; повторный импорт не создаёт дублей.") : t("Нужен API-ключ только на чтение (без прав на торговлю и вывод). Ключ и секрет используются один раз для запроса и не сохраняются. Повторный импорт не создаёт дублей.")}>
             <form className={s.form} onSubmit={runImport} aria-label={t("импорт с биржи")}>
               {error && (
                 <p className={s.toast} data-kind="error" role="alert">
@@ -271,7 +278,7 @@ function JournalInner() {
             </form>
           </Panel>
         )}
-        {analytics && analytics.total.trades > 0 && <Analytics a={analytics} />}
+        {analytics && analytics.total.trades > 0 && <Analytics a={analytics} signals={signals} />}
         {form && (
           <Panel title={editId ? t("Правка записи") : t("Новая запись")} actions={<button type="button" className={s.small} onClick={() => { setForm(null); setEditId(null); }}>{t("закрыть")}</button>}>
             <form className={s.form} onSubmit={submit}>
@@ -314,7 +321,7 @@ function JournalInner() {
             </form>
           </Panel>
         )}
-        <Panel flush title={t("Записи")} footer={t("Записи создаются из сигнала кнопкой «Я вошёл» или вручную. Результат в R — по вашим ценам входа, стопа и выхода.")}>
+        <Panel flush title={t("Записи")} footer={signals ? t("Записи создаются из сигнала кнопкой «Я вошёл» или вручную. Результат в R — по вашим ценам входа, стопа и выхода.") : t("Записи создаются вручную или импортом с биржи. Результат в R — по вашим ценам входа, стопа и выхода.")}>
           {error && !form && <EmptyState text={error} />}
           {items === null ? (
             <EmptyState text={t("Загрузка…")} />
@@ -346,7 +353,7 @@ function JournalInner() {
                       </Td>
                       <Td>
                         <strong>{e.symbol}</strong> <span className={e.direction === "long" ? "up" : "down"}>{e.direction}</span>
-                        {e.source === "signal" && <span className="caption">{" "}{t("· по сигналу")}</span>}
+                        {signals && e.source === "signal" && <span className="caption">{" "}{t("· по сигналу")}</span>}
                       </Td>
                       <Td num mobile="right">{e.entry_price}</Td>
                       <Td num mobile="hidden">{e.stop_loss ?? "—"}</Td>

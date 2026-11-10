@@ -228,6 +228,15 @@ export async function getDailyCloses(symbol = "BTCUSDT", count = 240): Promise<n
   return closes.length > 10 ? closes.slice(-count) : null;
 }
 
+/**
+ * Открыты ли сигналы всем (ADR-0013): ответ API без входа, /v1/features. Нет ответа — считаем закрытыми
+ * (безопасная сторона: лишний раз спрятать ссылку лучше, чем показать раздел, который ответит 404).
+ */
+export async function getSignalsPublic(): Promise<boolean> {
+  const r = await get<{ signals?: boolean }>("/v1/features", 60);
+  return r?.signals === true;
+}
+
 export function getHealth(): Promise<Health | null> {
   return get<Health>("/health", 30);
 }

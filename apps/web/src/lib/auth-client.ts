@@ -15,6 +15,8 @@ export type Me = {
   locale: string;
   timezone: string;
   theme: string;
+  /** Видны ли сигналы этому пользователю (ADR-0013): решает API по выключателю SIGNALS_PUBLIC и роли. */
+  signals?: boolean;
   risk: {
     deposit: string | null;
     risk_pct: string;

@@ -4,6 +4,7 @@ import { CHART_TYPES, type ChartType, type ScaleMode } from "@platform/charts";
 import { Button, Popover, Select, usePopover } from "@/components/ui";
 import { IconChevronDown, IconView } from "@/components/ui/icons";
 import { useT } from "@/i18n/client";
+import { useSignalsAccess } from "@/components/auth/signalsAccess";
 import type { Instrument } from "@/lib/user";
 import { SCALE_LABEL, TYPE_LABEL } from "./labels";
 import c from "./chrome.module.css";
@@ -26,6 +27,7 @@ type Props = {
  */
 export function ViewMenu({ symbol, type, scale, overlay, instruments, onType, onScale, onOverlay }: Props) {
   const t = useT();
+  const { open: signals } = useSignalsAccess();
   const view = usePopover();
   return (
     <>
@@ -46,7 +48,7 @@ export function ViewMenu({ symbol, type, scale, overlay, instruments, onType, on
                 </option>
               ))}
             </Select>
-            {type === "heikin" && <p className={c.hint}>{t("Паттерны и сигналы считаются по обычным свечам")}</p>}
+            {type === "heikin" && <p className={c.hint}>{signals ? t("Паттерны и сигналы считаются по обычным свечам") : t("Паттерны считаются по обычным свечам")}</p>}
           </div>
           <Select label={t("Шкала")} aria-label={t("шкала")} value={scale} onChange={(e) => onScale(e.target.value as ScaleMode)}>
             {(Object.keys(SCALE_LABEL) as ScaleMode[]).map((m) => (

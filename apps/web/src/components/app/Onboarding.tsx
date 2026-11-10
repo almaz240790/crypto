@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { useAuth } from "@/components/auth/AuthProvider";
+import { useSignalsAccess } from "@/components/auth/signalsAccess";
 import { Button, Input, Panel, Select } from "@/components/ui";
 import { patchRisk, type Me } from "@/lib/auth-client";
 import s from "./Onboarding.module.css";
@@ -12,14 +13,16 @@ const TG_BOT = process.env.NEXT_PUBLIC_TELEGRAM_BOT;
 const STEPS = ["Опыт", "Риск", "Уведомления"];
 
 type Exp = "novice" | "experienced" | "systematic";
-const EXP: { v: Exp; t: string; d: string }[] = [
-  { v: "novice", t: "Начинаю", d: "Подсказки в карточке сигнала, пояснение каждого термина, уведомления только по сигналам градации A." },
-  { v: "experienced", t: "Торгую давно", d: "Краткие подсказки, все градации, уведомления по сигналам и срабатыванию стопа/целей." },
-  { v: "systematic", t: "Торгую системно", d: "Без подсказок, полный доступ к статистике и выгрузке, уведомления по всем событиям." },
+const EXP: { v: Exp; t: string; d: string; plain: string }[] = [
+  { v: "novice", t: "Начинаю", d: "Подсказки в карточке сигнала, пояснение каждого термина, уведомления только по сигналам градации A.", plain: "Пояснение каждого термина и подсказки к инструментам графика." },
+  { v: "experienced", t: "Торгую давно", d: "Краткие подсказки, все градации, уведомления по сигналам и срабатыванию стопа/целей.", plain: "Краткие подсказки, все инструменты анализа под рукой." },
+  { v: "systematic", t: "Торгую системно", d: "Без подсказок, полный доступ к статистике и выгрузке, уведомления по всем событиям.", plain: "Без подсказок, выгрузки в CSV и журнал сделок." },
 ];
 
+/** Первый вход: опыт, риск, уведомления. Пока сигналы закрыты (ADR-0013), тексты о них видит только admin и owner. */
 export function Onboarding({ user }: { user: Me }) {
   const t = useT();
+  const { open: signals } = useSignalsAccess();
   const router = useRouter();
   const { reload } = useAuth();
   const [step, setStep] = useState(0);
@@ -66,7 +69,7 @@ export function Onboarding({ user }: { user: Me }) {
                   <input type="radio" name="experience" value={o.v} checked={exp === o.v} onChange={() => setExp(o.v)} />
                   <div>
                     <strong>{o.t}</strong>
-                    <span>{o.d}</span>
+                    <span>{signals ? o.d : t(o.plain)}</span>
                   </div>
                 </label>
               ))}
@@ -130,7 +133,7 @@ export function Onboarding({ user }: { user: Me }) {
       )}
 
       {step === 2 && (
-        <Panel title={t("Уведомления")} footer={t("Логика сигналов не зависит от канала: все каналы получают одно и то же в одно время.")}>
+        <Panel title={t("Уведомления")} footer={signals ? t("Логика сигналов не зависит от канала: все каналы получают одно и то же в одно время.") : t("Алерты приходят во все подключённые каналы одновременно.")}>
           <div className={s.form}>
             <div className={s.options}>
               <div className={s.opt} style={{ cursor: "default" }}>
@@ -154,8 +157,12 @@ export function Onboarding({ user }: { user: Me }) {
               <div className={s.opt} style={{ cursor: "default" }}>
                 <span aria-hidden="true" />
                 <div>
-                  <strong>{t("Email-дайджест")}</strong>
-                  <span>Раз в день, по закрытым сигналам. Включён для подтверждённого адреса{` ${user.email}`}.</span>
+                  <strong>{signals ? t("Email-дайджест") : t("Отчёт по журналу на почту")}</strong>
+                  {signals ? (
+                    <span>Раз в день, по закрытым сигналам. Включён для подтверждённого адреса{` ${user.email}`}.</span>
+                  ) : (
+                    <span>{t("Раз в неделю, если в журнале есть закрытые сделки. Включён для подтверждённого адреса {email}.", { email: user.email })}</span>
+                  )}
                 </div>
               </div>
               <div className={s.opt} style={{ cursor: "default" }}>

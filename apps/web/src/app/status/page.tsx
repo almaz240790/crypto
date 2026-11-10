@@ -12,7 +12,7 @@ export async function generateMetadata(): Promise<Metadata> {
   const t = await getT();
   return {
     title: t("Статус системы"),
-    description: t("Состояние данных с биржи, движка сигналов, трекера и уведомлений PlatformSol. Инциденты за 7 дней."),
+    description: t("Состояние данных с биржи, свечей, уведомлений, алертов и API PlatformSol. Инциденты за 7 дней."),
   };
 }
 
@@ -35,10 +35,14 @@ async function load(): Promise<Status | null> {
   }
 }
 
+/** Компоненты сигналов: пока сигналы закрыты (ADR-0013), API их сюда не отдаёт — они во вкладке «Система» админки. */
+const SIGNAL_KEYS = new Set(["engine", "tracker"]);
+
 export default async function StatusPage() {
   const t = await getT();
   const st = await load();
   const titles = new Map((st?.components ?? []).map((c) => [c.key, componentTitle(t, c.key, c.title)]));
+  const signals = (st?.components ?? []).some((c) => SIGNAL_KEYS.has(c.key));
   return (
     <>
       <Header />
@@ -119,7 +123,11 @@ export default async function StatusPage() {
             </Panel>
           </>
         )}
-        <p className="caption">{t("Правила: сигнал публикуется в течение 60 секунд после закрытия свечи H4; отсутствие закрытия свечи дольше 2 минут или прогона движка по более чем 5 % инструментов считается инцидентом.")}</p>
+        <p className="caption">
+          {signals
+            ? t("Правила: сигнал публикуется в течение 60 секунд после закрытия свечи H4; отсутствие закрытия свечи дольше 2 минут или прогона движка по более чем 5 % инструментов считается инцидентом.")
+            : t("Правила: если свеча H4 не закрылась в течение 2 минут после срока или минутные свечи не приходят дольше 2 минут, открывается инцидент.")}
+        </p>
       </main>
       <Footer />
     </>

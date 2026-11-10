@@ -3,19 +3,21 @@
 import Link from "next/link";
 import { useState } from "react";
 import s from "@/components/auth/AuthCard.module.css";
+import { useSignalsAccess } from "@/components/auth/signalsAccess";
 import { Button } from "@/components/ui";
 import { api } from "@/lib/auth-client";
 import { useT } from "@/i18n/client";
 
-/** Отписка по ссылке из письма: без входа, одним нажатием (приёмка 2.13). */
-export function Unsubscribe({ token }: { token: string | null }) {
+/** Отписка по ссылке из письма: без входа, одним нажатием (приёмка 2.13). pub — открыты ли сигналы всем (ADR-0013). */
+export function Unsubscribe({ token, pub = false }: { token: string | null; pub?: boolean }) {
   const t = useT();
+  const { open: signals } = useSignalsAccess(pub);
   const [state, setState] = useState<"idle" | "busy" | "ok" | "error">(token ? "idle" : "error");
   const [msg, setMsg] = useState(token ? "" : t("в ссылке нет токена"));
   if (state === "ok") {
     return (
       <div className={s.form}>
-        <div className={s.ok} role="status">{t("Вы отписаны от писем: дайджест и уведомления о сигналах выключены. Включить обратно можно в настройках.")}</div>
+        <div className={s.ok} role="status">{signals ? t("Вы отписаны от писем: дайджест и уведомления о сигналах выключены. Включить обратно можно в настройках.") : t("Вы отписаны от писем: отчёты и уведомления выключены. Включить обратно можно в настройках.")}</div>
         <Link href="/settings">{t("Настройки уведомлений")}</Link>
       </div>
     );

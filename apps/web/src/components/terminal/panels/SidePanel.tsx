@@ -46,7 +46,7 @@ type Props = {
     onMarkup: (id: PresetId) => void;
     layers: Readonly<Record<LayerKey, boolean>>;
     onLayer: (k: LayerKey) => void;
-    authed: boolean;
+    signals: boolean;
     liqUnavailable: boolean;
   };
   layouts: {

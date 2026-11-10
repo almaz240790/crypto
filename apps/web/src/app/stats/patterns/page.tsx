@@ -1,8 +1,9 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { SignalsOnly } from "@/components/auth/signalsAccess";
 import { DISCLAIMER, Footer, Header } from "@/components/site";
 import { EmptyState, Panel, Table, Td, Th } from "@/components/ui";
-import { getFigureStats, getPatternStats, type PatternStatItem } from "@/lib/api";
+import { getFigureStats, getPatternStats, getSignalsPublic, type PatternStatItem } from "@/lib/api";
 import { formatTimeUTC } from "@/lib/format";
 import { TF_LABEL, type Timeframe } from "@/lib/timeframes";
 import s from "../page.module.css";
@@ -50,7 +51,7 @@ export default async function PatternStatsPage({ searchParams }: { searchParams:
   const scope = one(sp.scope) === "live" ? "live" : "backfill";
   const horizon = HORIZONS.includes(Number(one(sp.horizon))) ? Number(one(sp.horizon)) : 5;
   const type = one(sp.type) || undefined;
-  const data = await getPatternStats({ tf, scope, horizon, type });
+  const [data, pub] = await Promise.all([getPatternStats({ tf, scope, horizon, type }), getSignalsPublic()]);
   const figures = ["4h", "1d", "1w"].includes(tf) ? await getFigureStats({ tf, scope }) : null;
   const figItems = figures?.items ?? [];
   const link = (patch: Partial<{ tf: string; scope: string; horizon: number; type: string | undefined }>) => {
@@ -70,7 +71,10 @@ export default async function PatternStatsPage({ searchParams }: { searchParams:
             <h1>{t("Отработка свечных паттернов")}</h1>
             <p className="text-2">
               {t("Доля случаев, когда после подтверждения паттерна на закрытии свечи цена прошла ≥ 1 ATR в его сторону за {h} {candles}. Считается автоматически из отметок детектора, без ручного ввода. При n < 30 процент не показывается. Паттерны не являются сигналами.", { h: horizon, candles: horizon === 3 ? t("свечи") : t("свечей") })}{" "}
-              <Link href="/stats">{t("Статистика сигналов")}</Link>.
+              {/* статистика сигналов — пока они закрыты (ADR-0013), ссылку видят только admin и owner */}
+              <SignalsOnly pub={pub}>
+                <Link href="/stats">{t("Статистика сигналов")}</Link>.
+              </SignalsOnly>
             </p>
           </div>
           <nav className={s.scopes} aria-label={t("область статистики")}>
