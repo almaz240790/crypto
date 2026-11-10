@@ -164,7 +164,7 @@ def _db_available() -> bool:
 
 
 db_only = pytest.mark.skipif(
-    not _db_available(), reason="БД с применёнными миграциями (до 0025) недоступна"
+    not _db_available(), reason="БД с применёнными миграциями (до 0026) недоступна"
 )
 
 
