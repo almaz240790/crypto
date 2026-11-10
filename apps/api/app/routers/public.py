@@ -339,6 +339,16 @@ def prices(
     return {by_id[i]: {"p": p, "at": at.isoformat()} for i, (p, at) in last.items()}
 
 
+def _forward_hidden(db: Session, user: User | None) -> bool:
+    """Скрыт ли форвард-сигнал от пользователя. Форвард видят админы и тариф с форвардом
+    (план 2.11, раздел 4); остальным карточка, анализ и свечи такого сигнала отвечают 404."""
+    if user is None:
+        return True
+    if user.role in ("admin", "owner"):
+        return False
+    return not entitlements_for(db, user, datetime.now(tz=UTC)).forward_scope
+
+
 @router.get("/signals/{public_id}")
 def signal_detail(
     public_id: str,
@@ -407,7 +417,7 @@ def signal_analysis(
     if row is None:
         raise HTTPException(404)
     s, inst = row
-    if s.scope == "forward" and (user is None or user.role not in ("admin", "owner")):
+    if s.scope == "forward" and _forward_hidden(db, user):
         raise HTTPException(404)
     if user is None and s.status in OPEN_STATUSES:
         raise HTTPException(403)
@@ -425,7 +435,7 @@ def signal_candles(
 ) -> dict[str, Any]:
     """Свечи вокруг сигнальной — для графика в карточке."""
     s = db.scalar(select(Signal).where(Signal.public_id == public_id))
-    if s is None:
+    if s is None or (s.scope == "forward" and _forward_hidden(db, user)):
         raise HTTPException(404)
     if user is None and s.status in OPEN_STATUSES:
         raise HTTPException(403)

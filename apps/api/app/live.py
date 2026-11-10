@@ -412,7 +412,10 @@ class Hub:
 
     async def handle_event(self, channel: str, data: dict[str, Any]) -> None:
         if channel == CHANNEL_STATUS:
-            self.broadcast({"t": "signal", **data}, authed_only=True)
+            # форвард построчно не публикуется (план 2.11): клиентам — только события live.
+            # Событие без области (трекер до миграции 0022) — не live: live-сигналов тогда не было.
+            if data.get("scope") == "live":
+                self.broadcast({"t": "signal", **data}, authed_only=True)
             return
         symbol = str(data["symbol"])
         candle = data.get("candle") if isinstance(data.get("candle"), dict) else None

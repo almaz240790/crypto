@@ -290,6 +290,10 @@ def test_forward_history_stays_forward_after_version_goes_live(db: Session) -> N
     assert new_live.public_id in {i["id"] for i in feed["items"]}
     assert closed_fwd.public_id not in {i["id"] for i in feed["items"]}
     assert client.get(f"/v1/signals/{closed_fwd.public_id}").status_code == 404
+    # анализ и свечи карточки — по тому же правилу, что сама карточка (ревью T5-R4)
+    assert client.get(f"/v1/signals/{closed_fwd.public_id}/analysis").status_code == 404
+    assert client.get(f"/v1/signals/{closed_fwd.public_id}/candles").status_code == 404
+    assert client.get(f"/v1/signals/{new_live.public_id}/candles").status_code == 200
     card = client.get(f"/v1/signals/{new_live.public_id}").json()
     assert card["scope"] == "live"
 
@@ -302,6 +306,7 @@ def test_forward_history_stays_forward_after_version_goes_live(db: Session) -> N
     summary = client.get("/v1/signals/summary?scope=live").json()
     assert summary["active"] == 0  # открытый форвард-сигнал в live не считается
     assert client.get(f"/v1/signals/{closed_fwd.public_id}").json()["scope"] == "forward"
+    assert client.get(f"/v1/signals/{closed_fwd.public_id}/candles").status_code == 200
 
 
 @db_only
