@@ -588,11 +588,11 @@ def test_forward_archived_version_keeps_recorded_history(fx: Fixture) -> None:
         assert _get(f"/v1/stats/trades?scope=forward&version={fx.v_old.version}")["total"] == 4
     finally:
         app.dependency_overrides.pop(optional_user, None)
-    # пересчёт снимков пишет форвард только по версиям в статусе forward: у архивной снимка нет,
-    # её история считается на лету и даёт те же числа
+    # пересчёт снимков пишет форвард по каждой версии с форвард-историей (signals.scope), в том
+    # числе по архивной: числа те же, что на лету
     recompute(fx.db)
     again = _get(url)
-    assert again["source"] == "live" and again["metrics"] == before["metrics"]
+    assert again["source"] == "snapshot" and again["metrics"] == before["metrics"]
     assert _get("/v1/stats?scope=forward")["source"] == "snapshot"
 
     # версия вернулась из форварда в backtest — её записанная история тоже форвардная
