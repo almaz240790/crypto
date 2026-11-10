@@ -32,7 +32,6 @@ from app.models import (
     Signal,
     SignalEvent,
     SignalResult,
-    StrategyVersion,
     User,
     Watchlist,
     WatchlistItem,
@@ -170,13 +169,10 @@ def _record_push(db: Session, user_id: int, kind: str, ref: str) -> bool:
         return False
 
 
-def _live_signal(db: Session, sig: Signal) -> bool:
-    return (
-        db.scalar(
-            select(StrategyVersion.status).where(StrategyVersion.id == sig.strategy_version_id)
-        )
-        == "live"
-    )
+def _live_signal(sig: Signal) -> bool:
+    """Уведомления — только по live-сигналам. Область зафиксирована при публикации
+    (``signals.scope``): по форвард-сигналу версии, ставшей потом live, писем и push нет."""
+    return sig.scope == "live"
 
 
 def _recipients(db: Session, flag: str) -> list[tuple[User, NotificationSettings]]:
@@ -195,7 +191,7 @@ def _recipients(db: Session, flag: str) -> list[tuple[User, NotificationSettings
 def notify_new_signal(db: Session, sig: Signal, now: datetime | None = None) -> int:
     """Письма всем, у кого включены письма о сигналах. Возвращает число отправок."""
     now = now or datetime.now(tz=UTC)
-    if not _live_signal(db, sig):
+    if not _live_signal(sig):
         return 0
     symbol = db.scalar(select(Instrument.symbol).where(Instrument.id == sig.instrument_id)) or "?"
     sent = 0
@@ -234,7 +230,7 @@ def notify_new_signal(db: Session, sig: Signal, now: datetime | None = None) -> 
 def notify_event(db: Session, ev: SignalEvent, now: datetime | None = None) -> int:
     now = now or datetime.now(tz=UTC)
     sig = db.get(Signal, ev.signal_id)
-    if sig is None or ev.type not in EVENT_TEXT or not _live_signal(db, sig):
+    if sig is None or ev.type not in EVENT_TEXT or not _live_signal(sig):
         return 0
     symbol = db.scalar(select(Instrument.symbol).where(Instrument.id == sig.instrument_id)) or "?"
     sent = 0
@@ -289,17 +285,15 @@ def digest_text(db: Session, user: User, period: str, now: datetime) -> str | No
     closed = db.execute(
         select(Signal, Instrument.symbol, SignalResult)
         .join(Instrument, Instrument.id == Signal.instrument_id)
-        .join(StrategyVersion, StrategyVersion.id == Signal.strategy_version_id)
         .join(SignalResult, SignalResult.signal_id == Signal.id)
-        .where(StrategyVersion.status == "live", SignalResult.closed_at >= since)
+        .where(Signal.scope == "live", SignalResult.closed_at >= since)
         .order_by(SignalResult.closed_at)
     ).all()
     active = db.execute(
         select(Signal, Instrument.symbol)
         .join(Instrument, Instrument.id == Signal.instrument_id)
-        .join(StrategyVersion, StrategyVersion.id == Signal.strategy_version_id)
         .where(
-            StrategyVersion.status == "live",
+            Signal.scope == "live",
             Signal.status.in_(("pending", "active", "tp1_hit", "tp2_hit")),
         )
         .order_by(Signal.candle_close_time.desc())

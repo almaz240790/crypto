@@ -110,6 +110,7 @@ def _signal(status: str = "pending", sid: int = 1, close: datetime = SIGNAL_CLOS
         grade="B",
         input_hash="x" * 64,
         status=status,
+        scope="forward",
     )
 
 
@@ -457,6 +458,7 @@ def test_catch_up_isolates_failed_signals_with_real_savepoints(
                         rr_tp2=D("2.333"),
                         score=70,
                         grade="B",
+                        scope="forward",
                         input_hash="x" * 64,
                     )
                 )

@@ -73,6 +73,7 @@ def _fixture_signal(s: Session) -> Signal:
         rr_tp2=Decimal(2),
         score=80,
         grade="A",
+        scope="forward",
         input_hash="x" * 64,
     )
     s.add(sig)
@@ -85,6 +86,29 @@ def test_signal_trade_fields_are_immutable(session: Session) -> None:
     sig.stop_loss = Decimal(90)
     with pytest.raises(DBAPIError, match="неизменяемы"):
         session.flush()
+
+
+def test_signal_scope_is_immutable(session: Session) -> None:
+    """Область сигнала фиксируется при публикации (план 2.11, правило 5; миграция 0022)."""
+    sig = _fixture_signal(session)
+    sig.scope = "live"
+    with pytest.raises(DBAPIError, match="неизменяемы"):
+        session.flush()
+
+
+def test_signal_scope_must_be_known(session: Session) -> None:
+    sig = _fixture_signal(session)
+    with pytest.raises(DBAPIError, match="ck_signals_scope"):
+        session.execute(
+            text(
+                "insert into signals (public_id, strategy_version_id, instrument_id, direction, "
+                "candle_close_time, entry_market, stop_loss, tp1, tp2, tp3, rr_tp2, score, grade, "
+                "input_hash, scope) select 'scopebad', strategy_version_id, instrument_id, "
+                "direction, candle_close_time + interval '4 hours', entry_market, stop_loss, tp1, "
+                "tp2, tp3, rr_tp2, score, grade, input_hash, 'demo' from signals where id = :id"
+            ),
+            {"id": sig.id},
+        )
 
 
 def test_signal_status_can_change(session: Session) -> None:

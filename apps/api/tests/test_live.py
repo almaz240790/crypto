@@ -56,6 +56,29 @@ def test_broadcast_filters_by_symbol_and_auth_without_waiting_for_sockets() -> N
     assert _outbox(pro) == [{"t": "signal", "id": "x"}]
 
 
+def test_signal_status_event_reaches_clients_only_for_live_scope() -> None:
+    """Форвард построчно не публикуется (план 2.11): смена статуса форвард-сигнала и событие
+    без области (трекер до миграции 0022) клиентам не рассылаются, live — только вошедшим."""
+    h = Hub()
+    guest, user = _client("BTCUSDT"), _client("BTCUSDT", user_id=7)
+    h.clients.update({guest, user})
+    base = {
+        "id": "s1",
+        "instrument_id": 1,
+        "status": "closed_sl",
+        "at": "2026-11-10T00:00:00+00:00",
+    }
+
+    async def run() -> None:
+        await h.handle_event(live.CHANNEL_STATUS, {**base, "scope": "forward"})
+        await h.handle_event(live.CHANNEL_STATUS, dict(base))
+        await h.handle_event(live.CHANNEL_STATUS, {**base, "id": "s2", "scope": "live"})
+
+    asyncio.run(run())
+    assert _outbox(guest) == []
+    assert _outbox(user) == [{"t": "signal", **base, "id": "s2", "scope": "live"}]
+
+
 def test_ws_subscribe_and_pong(monkeypatch: Any) -> None:
     async def no_start(self: Hub) -> None:  # не трогаем Redis
         return None

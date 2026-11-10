@@ -11,6 +11,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.signal_scope import FORWARD_DEFAULT_VERSION_STATUSES
 from engine.backtest import (
     BacktestTrade,
     Metrics,
@@ -46,12 +47,20 @@ def load_trades(
     grade: str | None = None,
     entry_type: str | None = None,
 ) -> list[BacktestTrade]:
-    """Сигналы версий стратегии в статусе ``scope`` (live/forward) как сделки бэктеста.
+    """Сигналы области ``scope`` (live/forward) как сделки бэктеста.
+
+    Область — ``signals.scope``, зафиксированная при публикации (``app.signal_scope``), а не
+    текущий статус версии. live — все live-сигналы, в том числе версий, ушедших потом в forward
+    или archived. forward по явной версии — вся её форвард-история; без версии — форвард-сигналы
+    версий, которые сейчас в forward или live (``FORWARD_DEFAULT_VERSION_STATUSES``).
 
     ``facts`` каждой сделки = (public_id, тип входа) — для ссылок и разбивки по типу входа.
     """
-    where = ["sv.status = :scope"]
+    where = ["s.scope = :scope"]
     params: dict[str, Any] = {"scope": scope}
+    if strategy_version_id is None and scope == "forward":
+        where.append("sv.status = any(:default_statuses)")
+        params["default_statuses"] = list(FORWARD_DEFAULT_VERSION_STATUSES)
     if grade:
         where.append("s.grade = :grade")
         params["grade"] = grade.upper()

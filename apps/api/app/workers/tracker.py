@@ -239,7 +239,10 @@ CHANNEL_STATUS = "signals.status"
 
 
 def _publish_status(changes: list[dict[str, Any]]) -> None:
-    """Смена статуса → Redis ``signals.status`` (для WebSocket API). Ошибка Redis не критична."""
+    """Смена статуса → Redis ``signals.status`` (для WebSocket API). Ошибка Redis не критична.
+
+    В событии есть ``scope``: WebSocket API рассылает клиентам только live-события
+    (``live.Hub.handle_event``), форвард построчно не публикуется (план 2.11)."""
     if not changes:
         return
     try:
@@ -303,6 +306,7 @@ def catch_up(tf: Timeframe = Timeframe.M1, instrument_id: int | None = None) -> 
                         "id": sig.public_id,
                         "instrument_id": sig.instrument_id,
                         "status": sig.status,
+                        "scope": sig.scope,
                         "at": datetime.now(tz=UTC).isoformat(),
                     }
                 )
