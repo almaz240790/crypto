@@ -149,6 +149,24 @@ def _setup(db: Session, status: str = "forward") -> tuple[Strategy, StrategyVers
     return strat, ver, inst
 
 
+def _instrument(db: Session) -> Instrument:
+    """Ещё один инструмент. Одна открытая сделка на инструмент и версию (задача 6): второй
+    сигнал версии по той же монете не пишется, пока первый открыт."""
+    tag = _tag().upper()
+    inst = Instrument(
+        exchange="binance",
+        symbol=f"SC{tag}USDT",
+        base=f"SC{tag}",
+        quote="USDT",
+        market_type="futures",
+        tick_size=Decimal("0.01"),
+        lot_size=Decimal("0.001"),
+    )
+    db.add(inst)
+    db.flush()
+    return inst
+
+
 def _version(db: Session, strat: Strategy, status: str) -> StrategyVersion:
     ver = StrategyVersion(
         strategy_id=strat.id, version=f"0.{_tag()}.1", params={"t": _tag()}, status=status
@@ -254,7 +272,7 @@ def test_forward_history_stays_forward_after_version_goes_live(db: Session) -> N
     """Критерий 1: у версии есть форвард-сигналы → заявка переводит её в live → старые сигналы
     остаются в форвард-статистике и не видны в live-ленте; новые сигналы пишутся как live."""
     _, ver, inst = _setup(db, "forward")
-    open_fwd = _publish(db, ver, inst, T0)
+    open_fwd = _publish(db, ver, _instrument(db), T0)  # открыт до конца теста — своя монета
     closed_fwd = _publish(db, ver, inst, T0 + H4)
     _close(db, closed_fwd, "-1")
     assert open_fwd.scope == closed_fwd.scope == "forward"
@@ -369,7 +387,7 @@ def test_no_notification_for_forward_signal_of_version_now_live(db: Session) -> 
     assert notify_event(db, ev, now=T0 + timedelta(minutes=2)) == 0
     assert notify_new_signal(db, fwd, now=T0 + timedelta(minutes=2)) == 0
 
-    live = _publish(db, ver, inst, T0 + 2 * H4)
+    live = _publish(db, ver, _instrument(db), T0 + 2 * H4)  # монета fwd занята, он открыт
     ev2 = SignalEvent(signal_id=live.id, type="activated", occurred_at=T0 + 2 * H4)
     db.add(ev2)
     db.flush()
