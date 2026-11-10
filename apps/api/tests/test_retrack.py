@@ -735,3 +735,38 @@ def test_fees_without_state_uses_recorded_result() -> None:
     out = retrack._fees(NoState(), sig, P, res)  # type: ignore[arg-type]
     assert out.cost_r == execution_cost_r(D(100), _setup_from_row(sig).risk, DEFAULT_EXECUTION)
     assert out.realized_r == D(-1) - COST and out.r_if_full_tp2 is None
+
+
+def test_overlaps_flag_signals_opened_while_previous_trade_runs() -> None:
+    """Справочная пометка правила одной сделки (задача 6): сигнал, открытый до закрытия
+    предыдущей сделки той же версии по инструменту или на свече H4 её выхода."""
+
+    def plan(pid: str, opened: datetime, closed: datetime | None, kind: str = "retrack") -> Any:
+        return retrack.Plan(
+            signal_id=int(opened.timestamp()),
+            public_id=pid,
+            symbol="XLMUSDT",
+            version="1.0.0",
+            opened=opened,
+            kind=kind,
+            reason="",
+            before=retrack.Outcome("closed_time"),
+            after=retrack.Outcome("closed_sl", closed_at=closed),
+        )
+
+    plans = [
+        plan("a", T, T + 7 * H4 + 10 * M1),  # закрыта внутри свечи H4, что кончается в T + 8 H4
+        plan("b", T + 2 * H4, T + 3 * H4),  # открыт при сделке a
+        plan("x", T + 8 * H4, T + 8 * H4 + M1),  # на свече выхода a — в бэктесте тоже занято
+        plan("c", T + 9 * H4, None),  # свободно; сделка c ещё открыта
+        plan("d", T + 30 * H4, T + 31 * H4),  # c открыта — занято
+        plan("e", T + 40 * H4, None, kind="void"),  # недействительные не учитываются
+    ]
+    assert retrack.overlaps(plans) == {"b": "a", "x": "a", "d": "c"}
+    other = [plan("x", T + H4, None)]
+    other[0] = retrack.Plan(**{**vars_plan(other[0]), "symbol": "FILUSDT"})
+    assert retrack.overlaps([plans[0], *other]) == {}
+
+
+def vars_plan(p: retrack.Plan) -> dict[str, Any]:
+    return {f: getattr(p, f) for f in p.__dataclass_fields__}

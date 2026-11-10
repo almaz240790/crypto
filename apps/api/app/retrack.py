@@ -303,6 +303,8 @@ class Plan:
     public_id: str
     symbol: str
     version: str
+    opened: datetime
+    """Закрытие сигнальной свечи — момент входа по рынку."""
     kind: str
     reason: str
     before: Outcome
@@ -396,6 +398,7 @@ def plan_signal(db: Session, sig: Signal) -> Plan:
         "public_id": sig.public_id,
         "symbol": symbol or "?",
         "version": version or "?",
+        "opened": sig.candle_close_time.astimezone(UTC),
         "before": before,
     }
     done = db.scalar(
@@ -582,6 +585,26 @@ def _candidate_ids(db: Session, since: datetime) -> list[int]:
     )
 
 
+def overlaps(plans: Sequence[Plan]) -> dict[str, str]:
+    """Справочно, для отчёта: сигналы, открытые, пока по тому же инструменту и версии шла
+    предыдущая сделка (с учётом пересчёта). В бэктесте их не было бы — инструмент занят до
+    закрытия сделки и ещё на свечу H4 выхода (правило одной сделки, задача 6); такой сигнал и
+    сам инструмент не занимает. Данные это не меняет. ``public_id`` → ``public_id`` сделки,
+    при которой сигнал открыт."""
+    out: dict[str, str] = {}
+    last: dict[tuple[str, str], tuple[str, datetime | None]] = {}
+    for p in sorted(plans, key=lambda x: (x.opened, x.signal_id)):
+        if p.kind == VOID:
+            continue
+        key = (p.version, p.symbol)
+        prev = last.get(key)
+        if prev is not None and (prev[1] is None or p.opened < prev[1] + SIGNAL_TIMEFRAME.delta):
+            out[p.public_id] = prev[0]
+            continue
+        last[key] = (p.public_id, (p.after or p.before).closed_at)
+    return out
+
+
 def _totals(plans: Sequence[Plan]) -> list[str]:
     """Итоги по версиям: закрытые сделки и сумма R до и после (недействительные не входят)."""
     out = []
@@ -628,10 +651,18 @@ def run(
             since.date().isoformat(),
             len(plans),
         )
+        busy = overlaps(plans)
         for p in plans:
-            log.info("  %s", p.line())
+            extra = f" | открыт при сделке {busy[p.public_id]}" if p.public_id in busy else ""
+            log.info("  %s%s", p.line(), extra)
         for line in _totals(plans):
             log.info("  итог %s", line)
+        if busy:
+            log.info(
+                "  справочно: %d сигналов открыты при незакрытой сделке той же версии по "
+                "инструменту (в бэктесте их не было бы, задача 6); данные не меняются",
+                len(busy),
+            )
 
         applied: Counter[str] = Counter()
         failed: list[str] = []
@@ -657,7 +688,7 @@ def run(
             "applied": dict(sorted(applied.items())),
             "failed": failed,
             "totals": _totals(after),
-            "report": [p.as_json() for p in plans],
+            "report": [p.as_json() | {"overlaps": busy.get(p.public_id)} for p in plans],
         }
         if failed:
             log.error(
