@@ -36,6 +36,10 @@ export type Stats = {
   equity: { t: string; r: number }[];
   worst_drawdowns: { start: string; trough: string; depth_r: number }[];
   run?: BacktestRunMeta | null;
+  /** Live и forward: комиссия и проскальзывание (доли, строками), вычтенные из результатов. */
+  execution?: { fee_rate: string; slippage: string } | null;
+  /** Закрытые сделки, записанные до вычета комиссий (cost_r пуст); у бэктеста 0. */
+  without_costs?: number;
   scope: "live" | "forward" | "backtest";
   generated_at: string;
   /** Только у форварда: версия, по которой посчитана сводка (агрегата «все версии» нет). */

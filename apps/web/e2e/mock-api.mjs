@@ -18,6 +18,9 @@ const stats = (scope) => ({
   equity: eq,
   worst_drawdowns: [{ start: "2026-08-02T00:00:00Z", trough: "2026-08-14T00:00:00Z", depth_r: 4.2 }],
   run: scope === "backtest" ? { id: 3, strategy_version: "1.1.0", period: ["2022-01-01", "2026-10-01"], instruments: 20, entry_type: "market", note: "walk-forward", created_at: null } : null,
+  // как API: у live и форварда — комиссия и проскальзывание из ExecutionParams (задача 3); у бэктеста — свои в run
+  ...(scope === "backtest" ? {} : { execution: { fee_rate: "0.0005", slippage: "0.0003" } }),
+  without_costs: 0,
   scope,
   generated_at: new Date().toISOString(),
 });
@@ -28,6 +31,8 @@ const EMPTY = { by_grade: {}, by_symbol: {}, by_month: {}, by_direction: {}, by_
 const sv = (id, version, status) => ({ id, strategy: "trend-ob-retest", name: "Trend OB retest", version, status, activated_at: null });
 const VERSIONS = [sv(1, "0.9.0", "archived"), sv(2, "1.0.0", "archived"), sv(3, "1.1.0", "forward"), sv(4, "1.2.0", "forward")];
 const FORWARD_METRICS = { "1.0.0": m(40, 0.47, 14.2), "1.1.0": m(12, 0.5, 2.4) };
+// сделки, записанные до вычета комиссий (задача 3): у 1.0.0 — все, у 1.1.0 — 5 из 12
+const FORWARD_WITHOUT_COSTS = { "1.0.0": 40, "1.1.0": 5 };
 // Другие состояния API форварда выбираются параметром run_id. Настоящий API у форварда run_id не читает,
 // а страница /stats передаёт его в запрос как есть, поэтому у каждого состояния свой адрес запроса и
 // кэш fetch в Next (60 с, ключ — адрес) их не смешивает. Без run_id — состояние дня выкладки:
@@ -55,6 +60,7 @@ function forwardStats(u) {
     notice: state.notice === false ? null : { invalid_until: state.until ?? null },
     low_n_threshold: 30,
     low_data: metrics.closed < 30,
+    without_costs: (cur && FORWARD_WITHOUT_COSTS[cur.version]) ?? 0,
   }];
 }
 const trade = (i) => ({ id: `s${i}`, symbol: i % 2 ? "BTCUSDT" : "ETHUSDT", direction: i % 3 ? "long" : "short", signal_time: new Date(Date.UTC(2026, 8, 1 + (i % 28), 8)).toISOString(), grade: "AB"[i % 2], score: 60 + i, entry: "100", stop: "98", rr_tp2: "2.5", entry_type: "market", status: i % 4 ? "closed_tp3" : "closed_sl", tp_hits: i % 4 ? 3 : 0, realized_r: i % 4 ? 2.9 : -1, mfe_r: 3, mae_r: 0.2, exit_time: null });

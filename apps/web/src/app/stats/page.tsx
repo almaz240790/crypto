@@ -12,7 +12,7 @@ import {
   type Metrics,
   type StatsQuery,
 } from "@/lib/api";
-import { formatDayUTC, formatDuration, formatPct, formatR, formatTimeUTC, plural } from "@/lib/format";
+import { formatDayUTC, formatDuration, formatPct, formatR, formatRatePct, formatTimeUTC, plural } from "@/lib/format";
 import { forwardEmptyKind, forwardVersionOptions } from "@/lib/forwardStats";
 import s from "./page.module.css";
 import { getT } from "@/i18n/server";
@@ -233,6 +233,14 @@ export default async function StatsPage({ searchParams }: { searchParams: Promis
           <strong>{scopeInfo.label}.</strong> {scopeInfo.note}
           {fwd && <> {tr("Показана версия {name} {version}: форвард считается по каждой версии отдельно.", { name: fwd.name, version: fwd.version })}</>}
           {fwd && fwd.status !== "forward" && has && <> {tr("Эта версия больше не проходит форвард-тест: показана её записанная история.")}</>}
+          {scope !== "backtest" && stats?.execution && (
+            <>
+              {" "}
+              {tr("Результат — с учётом комиссии {fee} % за сторону и проскальзывания {slippage} %.", { fee: formatRatePct(stats.execution.fee_rate), slippage: formatRatePct(stats.execution.slippage) })}
+              {/* результаты, закрытые до вычета комиссий, не пересчитываются (задачи 7 и 10): подпись их оговаривает */}
+              {stats.without_costs ? <> {tr("Сделки, закрытые до учёта комиссий, пока записаны без них: {n}.", { n: stats.without_costs })}</> : null}
+            </>
+          )}
           {scope === "backtest" && stats?.run && (
             <>
               {" "}
