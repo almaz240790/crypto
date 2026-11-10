@@ -66,6 +66,9 @@ from engine.patterns import PatternType
 from engine.strategies import STRATEGIES
 
 router = APIRouter(prefix="/v1", tags=["public"])
+SIGNALS_IN_SCHEMA = settings.signals_public
+"""Эндпоинты сигналов в схеме OpenAPI (/docs) — только когда сигналы открыты (ADR-0013): пока
+закрыты, адреса выглядят отсутствующими и там. Читается при запуске сервиса."""
 OPEN_STATUSES = ("pending", "active", "tp1_hit", "tp2_hit")
 SPARK_LEN = 24
 
@@ -251,7 +254,7 @@ SORT_COLUMNS = {
 }
 
 
-@router.get("/signals")
+@router.get("/signals", include_in_schema=SIGNALS_IN_SCHEMA)
 def signals(
     status: str | None = Query(None, description="open | closed | all"),
     symbol: str | None = None,
@@ -341,7 +344,7 @@ def signals(
     }
 
 
-@router.get("/signals/summary")
+@router.get("/signals/summary", include_in_schema=SIGNALS_IN_SCHEMA)
 def signals_summary(
     scope: str = Query("live", pattern="^(live|forward)$"),
     user: User | None = Depends(signals_viewer),
@@ -396,7 +399,7 @@ def _forward_hidden(db: Session, user: User | None) -> bool:
     return not entitlements_for(db, user, datetime.now(tz=UTC)).forward_scope
 
 
-@router.get("/signals/{public_id}")
+@router.get("/signals/{public_id}", include_in_schema=SIGNALS_IN_SCHEMA)
 def signal_detail(
     public_id: str,
     user: User | None = Depends(signals_viewer),
@@ -449,7 +452,7 @@ def signal_detail(
     return out
 
 
-@router.get("/signals/{public_id}/analysis")
+@router.get("/signals/{public_id}/analysis", include_in_schema=SIGNALS_IN_SCHEMA)
 def signal_analysis(
     public_id: str,
     user: User | None = Depends(signals_viewer),
@@ -471,7 +474,7 @@ def signal_analysis(
     return analyze_signal(db, s, inst)
 
 
-@router.get("/signals/{public_id}/candles")
+@router.get("/signals/{public_id}/candles", include_in_schema=SIGNALS_IN_SCHEMA)
 def signal_candles(
     public_id: str,
     tf: str = "4h",
@@ -657,7 +660,7 @@ def _forward_meta(db: Session, sv: StrategyVersion | None, closed: int) -> dict[
     }
 
 
-@router.get("/stats")
+@router.get("/stats", include_in_schema=SIGNALS_IN_SCHEMA)
 def stats(
     scope: str = Query("live", pattern="^(live|forward|backtest)$"),
     strategy_version_id: int | None = None,
@@ -774,7 +777,7 @@ def stats_figures(
     return figure_stats(db, tf, scope, type)
 
 
-@router.get("/stats/trades")
+@router.get("/stats/trades", include_in_schema=SIGNALS_IN_SCHEMA)
 def stats_trades(
     scope: str = Query("live", pattern="^(live|forward|backtest)$"),
     strategy_version_id: int | None = None,
@@ -815,7 +818,7 @@ def stats_trades(
     }
 
 
-@router.get("/stats/export.csv")
+@router.get("/stats/export.csv", include_in_schema=SIGNALS_IN_SCHEMA)
 def stats_export(
     scope: str = Query("live", pattern="^(live|forward|backtest)$"),
     version: str | None = Query(None, max_length=32),
@@ -870,7 +873,7 @@ def stats_export(
     )
 
 
-@router.get("/stats/runs")
+@router.get("/stats/runs", include_in_schema=SIGNALS_IN_SCHEMA)
 def stats_runs(
     limit: int = Query(20, ge=1, le=100),
     _viewer: User | None = Depends(signals_viewer),
@@ -940,7 +943,7 @@ def screener_export(
     )
 
 
-@router.get("/strategies")
+@router.get("/strategies", include_in_schema=SIGNALS_IN_SCHEMA)
 def strategies(
     _viewer: User | None = Depends(signals_viewer), db: Session = Depends(auth.get_db)
 ) -> list[dict[str, Any]]:

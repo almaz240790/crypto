@@ -160,6 +160,18 @@ def test_ws_connect_takes_role_from_token(
         assert mine and mine[0].staff is staff
 
 
+def test_openapi_hides_signal_routes_while_closed() -> None:
+    """Пока сигналы закрыты, их адресов нет и в схеме /docs (флаг читается при запуске)."""
+    if public.SIGNALS_IN_SCHEMA:
+        pytest.skip("SIGNALS_PUBLIC включён в окружении тестов")
+    from app.main import app
+
+    paths = set(app.openapi()["paths"])
+    assert not {p for p in paths if p.startswith(("/v1/signals", "/v1/strategies"))}
+    assert not {"/v1/stats", "/v1/stats/trades", "/v1/stats/export.csv", "/v1/stats/runs"} & paths
+    assert {"/v1/stats/patterns", "/v1/stats/figures", "/v1/features"} <= paths
+
+
 # --- статус-страница ------------------------------------------------------------------------
 
 FULL_STATUS: dict[str, Any] = {
