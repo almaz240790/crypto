@@ -28,7 +28,6 @@ from app.models import (
     SavedScreen,
     Signal,
     SignalResult,
-    StrategyVersion,
     TwoFactor,
     User,
     Watchlist,
@@ -633,9 +632,9 @@ def journal_import(
         or 0
     )
     live_signals = db.execute(
-        select(Signal.id, Signal.instrument_id, Signal.direction, Signal.candle_close_time)
-        .join(StrategyVersion, StrategyVersion.id == Signal.strategy_version_id)
-        .where(StrategyVersion.status == "live", Signal.candle_close_time >= since - MATCH_WINDOW)
+        select(Signal.id, Signal.instrument_id, Signal.direction, Signal.candle_close_time).where(
+            Signal.scope == "live", Signal.candle_close_time >= since - MATCH_WINDOW
+        )
     ).all()
     imported = skipped = matched = open_count = 0
     for t in trades:
@@ -738,8 +737,7 @@ def _vs_system(db: Session, user: User, entries: list[JournalEntry]) -> dict[str
         db.scalar(
             select(func.count())
             .select_from(Signal)
-            .join(StrategyVersion, StrategyVersion.id == Signal.strategy_version_id)
-            .where(StrategyVersion.status == "live", Signal.candle_close_time >= since)
+            .where(Signal.scope == "live", Signal.candle_close_time >= since)
         )
         or 0
     )

@@ -173,7 +173,11 @@ def decide_status_request(
     req_id: int, body: DecisionIn, user: User = Depends(ADMIN), db: Session = Depends(auth.get_db)
 ) -> dict[str, Any]:
     """Второй админ подтверждает или отклоняет. При подтверждении статус применяется;
-    при переводе в live — у других версий live снимается (одна live-версия стратегии)."""
+    при переводе в live — у других версий live снимается (одна live-версия стратегии).
+
+    Уже опубликованные сигналы не меняют область (``signals.scope``, план 2.11, правило 5):
+    форвард-история версии, ставшей live, остаётся форвардом, а live-история заменённой версии
+    остаётся в live. Новые сигналы получают область по статусу версии в момент записи."""
     r = db.get(StatusChangeRequest, req_id)
     if r is None or r.decision != "pending":
         raise HTTPException(404, "заявка не найдена или уже решена")
@@ -299,7 +303,7 @@ def admin_signals(
     db: Session = Depends(auth.get_db),
 ) -> list[dict[str, Any]]:
     q = (
-        select(Signal, Instrument.symbol, StrategyVersion.version, StrategyVersion.status)
+        select(Signal, Instrument.symbol, StrategyVersion.version)
         .join(Instrument, Instrument.id == Signal.instrument_id)
         .join(StrategyVersion, StrategyVersion.id == Signal.strategy_version_id)
         .order_by(Signal.id.desc())
@@ -314,7 +318,7 @@ def admin_signals(
             "id": s.public_id,
             "symbol": sym,
             "version": ver,
-            "scope": vstatus,
+            "scope": s.scope,  # область на момент публикации, не текущий статус версии
             "direction": s.direction,
             "grade": s.grade,
             "score": s.score,
@@ -326,7 +330,7 @@ def admin_signals(
             "facts": (s.rationale_facts or {}).get("facts", []),
             "input_hash": s.input_hash,
         }
-        for s, sym, ver, vstatus in db.execute(q).all()
+        for s, sym, ver in db.execute(q).all()
     ]
 
 

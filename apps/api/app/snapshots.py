@@ -2,7 +2,8 @@
 
 ``build`` — чистая функция: по списку сделок отдаёт агрегаты по ключам (все / по градации /
 по инструменту) тем же кодом, что бэктест (``stats_payload`` → ``engine.backtest.summarize``).
-``recompute`` пишет снимки в БД по каждой версии стратегии в live/forward и по области целиком;
+``recompute`` пишет снимки в БД по области целиком, по каждой версии в статусе области и по каждой
+версии, у которой есть сигналы этой области (``signals.scope`` — область на момент публикации);
 ``find`` достаёт снимок для ``GET /v1/stats``, если запрос ложится на ключ.
 """
 
@@ -16,7 +17,7 @@ from typing import Any
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from app.models import Instrument, StatsSnapshot, StrategyVersion
+from app.models import Instrument, Signal, StatsSnapshot, StrategyVersion
 from app.stats import load_trades, stats_payload
 from engine.backtest import BacktestTrade
 
@@ -52,10 +53,18 @@ def recompute(db: Session, now: datetime | None = None) -> int:
     ids = {s: i for s, i in db.execute(select(Instrument.symbol, Instrument.id)).all()}
     written = 0
     for scope in SCOPES:
-        versions = db.scalars(
-            select(StrategyVersion.id).where(StrategyVersion.status == scope)
-        ).all()
-        targets: list[int | None] = [None, *versions]
+        # версии в статусе области (как раньше, в том числе без сигналов) и версии с сигналами
+        # этой области в любом статусе: live-история версии, ушедшей в forward или archived,
+        # и форвард-история версии, ставшей live, остаются доступны по явной версии
+        versions = set(
+            db.scalars(select(StrategyVersion.id).where(StrategyVersion.status == scope)).all()
+        )
+        versions.update(
+            db.scalars(
+                select(Signal.strategy_version_id).where(Signal.scope == scope).distinct()
+            ).all()
+        )
+        targets: list[int | None] = [None, *sorted(versions)]
         db.execute(delete(StatsSnapshot).where(StatsSnapshot.scope == scope))
         for vid in targets:
             trades = load_trades(db, scope, vid)

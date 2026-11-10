@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import logging
 import secrets
 import sys
 from dataclasses import asdict
@@ -41,6 +42,7 @@ from app.models import (
     Strategy,
     StrategyVersion,
 )
+from app.signal_scope import scope_at_publication
 from engine.backtest import DEFAULT_EXECUTION, TradeResult, TradeStatus, simulate_trade
 from engine.candles import Candle, Timeframe
 from engine.data.binance import BinanceHistory
@@ -53,6 +55,7 @@ from engine.trade import TradeSetup
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts"))
 
+log = logging.getLogger("forward")
 STRATEGY_SLUG = "trend-ob-retest"
 # Новая версия из кода не оценивается сама: в forward её переводят заявкой в админке (план 2.9).
 NEW_VERSION_STATUS = "backtest"
@@ -353,6 +356,9 @@ def ensure_strategy_versions(session: Session) -> dict[str, StrategyVersion]:
 def write_candidate(
     session: Session, version: StrategyVersion, inst: Instrument, cand: SignalCandidate
 ) -> bool:
+    """Пишет кандидата в ``signals`` (pending + событие created). Область сигнала (``scope``)
+    берётся из статуса версии, прочитанного из БД в момент записи, и дальше не меняется
+    (план 2.11, правило 5). Если версия к этому моменту ушла из forward/live, сигнал не пишется."""
     exists = session.scalar(
         select(Signal.id).where(
             Signal.strategy_version_id == version.id,
@@ -361,6 +367,13 @@ def write_candidate(
         )
     )
     if exists:
+        return False
+    status = session.scalar(select(StrategyVersion.status).where(StrategyVersion.id == version.id))
+    scope = scope_at_publication(status or "")
+    if scope is None:
+        log.warning(
+            "%s %s: версия в статусе %s — сигнал не записан", inst.symbol, version.version, status
+        )
         return False
     t = cand.trade
     sig = Signal(
@@ -391,6 +404,7 @@ def write_candidate(
             "flags": cand.filters.flags,
         },
         status="pending",
+        scope=scope,
         input_hash=cand.input_hash,
     )
     session.add(sig)
