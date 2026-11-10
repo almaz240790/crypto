@@ -15,6 +15,11 @@
 Первая настройка кода — только после ссылки из письма (или одноразовой ссылки с сервера):
 одного пароля для неё мало. Браузер, где админ уже входил, получает cookie устройства
 ``pl_admin_device``: лимит попыток по адресу его не блокирует (чужой перебор не запирает владельца).
+
+Переходный режим: строгий вход обязателен только для аккаунта с включённой 2FA. Пока админ или
+владелец код не настроил, ``/v1/admin/*`` открывает и обычный токен сайта (как до ADR-0011) —
+иначе владелец, до которого не дошло письмо со ссылкой, остался бы без админки. Первый верный код
+режим закрывает: дальше для этого аккаунта — только сеанс админки (:func:`admin_access`).
 """
 
 from __future__ import annotations
@@ -71,6 +76,11 @@ CSRF_HEADER = "x-requested-with"
 CSRF_VALUE = "platformsol-admin"
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 AUDIT_TARGET = "admin_login"
+GRACE = "grace"
+"""Способ доступа «переходный режим»: обычный токен сайта, 2FA у аккаунта ещё не включена."""
+GRACE_METHOD = "site"
+ACCESS_KEY = "admin_access"
+"""Ключ в ``Session.info`` запроса: как открыт доступ к админке (для отметки в аудите)."""
 
 LOGIN_FAILED = "Не получилось войти. Проверьте email и пароль."
 LINK_FAILED = "Ссылка недействительна или устарела. Запросите новую."
@@ -78,6 +88,7 @@ TICKET_FAILED = "Вход устарел. Начните заново: email и 
 CODE_FAILED = "Код не подошёл. Введите свежий код из приложения — он меняется каждые 30 секунд."
 CODE_LOCKED = "Слишком много неверных кодов. Начните вход заново."
 NEED_LOGIN = "Нужен вход в админку."
+BLOCKED = "Аккаунт заблокирован."
 SESSION_ENDED = "Сеанс админки закончился. Войдите снова."
 NO_RIGHTS = "Недостаточно прав для админки."
 CSRF_FAILED = "Запрос отклонён: нет заголовка админки."
@@ -291,9 +302,69 @@ def admin_session(request: Request, db: Session) -> tuple[User, AdminSession]:
     return user, row
 
 
+def grace_user(request: Request, db: Session) -> User | None:
+    """Переходный режим: админ или владелец по обычному токену сайта, пока 2FA не включена.
+
+    None — токена сайта в запросе нет. Токен есть, но не подходит — отказ: 2FA уже включена
+    (нужен вход в админку), роль не admin/owner, аккаунт заблокирован или удалён. API-ключ
+    (``X-API-Key``) сюда не годится — только ``Authorization: Bearer``."""
+    header = request.headers.get("authorization", "")
+    if not header.lower().startswith("bearer "):
+        return None
+    try:
+        user = db.get(User, int(auth.decode_access_token(header[7:])["sub"]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(401, NEED_LOGIN) from exc
+    problem = account_problem(user)
+    if problem == "not_admin":
+        raise HTTPException(403, NO_RIGHTS)
+    if problem == "blocked":
+        raise HTTPException(403, BLOCKED)
+    if problem is not None or user is None:
+        raise HTTPException(401, NEED_LOGIN)
+    if twofactor.is_enabled(db.get(TwoFactor, user.id)):
+        raise HTTPException(401, NEED_LOGIN)  # код настроен — дальше только сеанс админки
+    return user
+
+
+def admin_access(request: Request, db: Session) -> tuple[User, AdminSession | None]:
+    """Кто обращается к админке: (пользователь, сеанс) или (пользователь, None) в переходном
+    режиме.
+
+    Сначала — сеанс админки (cookie), как всегда. Если его нет или он закрыт — обычный токен
+    сайта, но только пока у аккаунта не включена 2FA (:func:`grace_user`). Заголовок против CSRF
+    для такого запроса не нужен: токен не cookie, чужой сайт его не подставит. Способ доступа
+    запоминается в ``db.info`` — действия попадают в аудит с ``access: "grace"``."""
+    try:
+        return admin_session(request, db)
+    except HTTPException as session_error:
+        try:
+            user = grace_user(request, db)
+        except HTTPException as grace_error:
+            # была cookie сеанса — странице входа нужна причина его закрытия, а не отказ по токену
+            if request.cookies.get(COOKIE):
+                raise session_error from None
+            raise grace_error from None
+        if user is None:
+            raise
+        db.info[ACCESS_KEY] = GRACE
+        return user, None
+
+
+def is_grace(db: Session) -> bool:
+    """Запрос идёт в переходном режиме (по токену сайта, без кода из телефона)."""
+    return db.info.get(ACCESS_KEY) == GRACE
+
+
+def access_mark(db: Session) -> dict[str, str]:
+    """Отметка для аудита: действие сделано в переходном режиме, без 2FA."""
+    return {"access": GRACE} if is_grace(db) else {}
+
+
 def require_admin(request: Request, db: Session = Depends(auth.get_db)) -> User:
-    """Зависимость всех /v1/admin/*: только сеанс админки (обычный токен сайта не подходит)."""
-    user, _ = admin_session(request, db)
+    """Зависимость всех /v1/admin/*: сеанс админки; обычный токен сайта — только в переходном
+    режиме, пока у аккаунта не включена 2FA (:func:`admin_access`)."""
+    user, _ = admin_access(request, db)
     return user
 
 

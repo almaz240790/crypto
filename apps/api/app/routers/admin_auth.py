@@ -14,6 +14,10 @@
 Внутри админки: ``/2fa/backup-codes`` (новые резервные коды по коду из приложения) и
 ``/2fa/rotate`` → ``/2fa/rotate/confirm`` (перенос кода на другой телефон без выключения 2FA).
 
+Переходный режим: пока 2FA у админа не включена, ``/me`` и остальные ``/v1/admin/*`` отвечают и
+по обычному токену сайта (``grace: true``); шаги входа и настройки от этого не меняются — первая
+настройка кода по-прежнему только по ссылке из письма.
+
 Коды ответов для страницы входа: 401 — неверные данные (можно повторить), 409 — шаг не тот
 (2FA уже включена или ещё нет), 410 — билет недействителен или сгорел (начать вход заново).
 """
@@ -84,14 +88,23 @@ def _step_out(db: Session, user: User, method: str) -> dict[str, Any]:
     return {"step": "code" if enabled else "setup", "ticket": ticket, "email": user.email}
 
 
-def _me_out(user: User, row: AdminSession, db: Session) -> dict[str, Any]:
+def _me_out(user: User, row: AdminSession | None, db: Session) -> dict[str, Any]:
+    """Кто в админке. Без сеанса (``row`` нет) — переходный режим: вход по токену сайта, код ещё
+    не настроен; сроков сеанса у такого доступа нет."""
+    who = {"id": user.id, "email": user.email, "name": user.name, "role": user.role}
+    if row is None:
+        return {
+            **who,
+            "method": aa.GRACE_METHOD,
+            "grace": True,
+            "setup_required": True,
+            "backup_codes_left": 0,
+        }
     tf = db.get(TwoFactor, user.id)
     return {
-        "id": user.id,
-        "email": user.email,
-        "name": user.name,
-        "role": user.role,
+        **who,
         "method": row.method,
+        "grace": False,
         "started_at": row.created_at.isoformat(),
         "expires_at": row.expires_at.isoformat(),
         "idle_minutes": int(aa.IDLE.total_seconds() // 60),
@@ -431,7 +444,9 @@ def _wrong_code(
 
 @router.get("/me")
 def me(request: Request, db: Session = Depends(auth.get_db)) -> dict[str, Any]:
-    user, row = aa.admin_session(request, db)
+    """Кто вошёл: по cookie — сеанс админки; по обычному токену сайта, пока 2FA не включена, —
+    переходный режим (``grace: true``, ``setup_required: true``)."""
+    user, row = aa.admin_access(request, db)
     return _me_out(user, row, db)
 
 

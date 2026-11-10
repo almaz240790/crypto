@@ -567,12 +567,22 @@ def two_factor_enable(
     return {"enabled": True, "backup_codes": plain}
 
 
+ADMIN_2FA_STAYS = (
+    "Администратору защита кодом на сайте не отключается. "
+    "Новый телефон и резервные коды — в админке, раздел «Защита входа»."
+)
+
+
 @router.post("/me/2fa/disable", status_code=204)
 def two_factor_disable(
     body: TwoFactorCodeIn,
     user: User = Depends(auth.current_user),
     db: Session = Depends(auth.get_db),
 ) -> Response:
+    if admin_auth.is_admin_account(user):
+        # ADR-0011: без 2FA админку снова открывал бы обычный токен сайта (переходный режим) —
+        # украденная сессия сайта и один резервный код не должны возвращать аккаунт в этот режим
+        raise HTTPException(403, ADMIN_2FA_STAYS)
     row = twofactor.locked(db, user.id)
     if not twofactor.is_enabled(row) or row is None:
         raise HTTPException(400, "2FA не включена")
@@ -580,7 +590,7 @@ def two_factor_disable(
         db.commit()
         raise HTTPException(400, "неверный код")
     db.delete(row)
-    # без 2FA сеанс админки не держится; новая настройка для админки — только по ссылке из письма
+    # сеансов админки у обычного пользователя нет; на случай оставшихся (роль сняли) — закрыть
     admin_auth.revoke_user_sessions(db, user.id, "2fa")
     db.commit()
     return Response(status_code=204)

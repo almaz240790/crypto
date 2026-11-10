@@ -645,10 +645,11 @@ def test_provider_verified_email_promotes_existing_owner_account(
 
 @db_only
 def test_code_used_in_admin_is_not_accepted_on_site(world: World) -> None:
-    """SEC-1: код, которым владелец вошёл в админку, нельзя повторить на сайте (вход и отключение
-    2FA); после отключения 2FA следующий вход в админку ведёт к письму, а не к настройке."""
+    """SEC-1: код, которым владелец вошёл в админку, нельзя повторить на сайте. Отключить 2FA на
+    сайте админ не может вовсе — иначе аккаунт вернулся бы в переходный режим (админка по токену
+    сайта); после сброса на сервере следующий вход ведёт к письму, а не к настройке."""
     c = world.client()
-    u, _, secret = world.user(two_factor=True)
+    u, backup, secret = world.user(two_factor=True)
     assert secret is not None
     used = _code(secret)
     step = _login(c, u.email).json()
@@ -660,14 +661,33 @@ def test_code_used_in_admin_is_not_accepted_on_site(world: World) -> None:
     r = site.post("/v1/auth/login/2fa", json={"ticket": first["ticket"], "code": used})
     assert r.status_code == 401
     bearer = {"authorization": f"Bearer {auth.make_access_token(u)}"}
-    assert site.post("/v1/me/2fa/disable", json={"code": used}, headers=bearer).status_code == 400
+    # ни использованным, ни свежим, ни резервным кодом
+    for code in (used, _code(secret, 1), backup[0]):
+        r = site.post("/v1/me/2fa/disable", json={"code": code}, headers=bearer)
+        assert r.status_code == 403 and "Защита входа" in r.json()["detail"]
     assert c.get("/v1/admin/auth/me").status_code == 200  # сеанс владельца цел
-    # владелец сам отключил 2FA свежим кодом — админка закрылась, настройка только по ссылке
-    fresh = _code(secret, 1)
-    assert site.post("/v1/me/2fa/disable", json={"code": fresh}, headers=bearer).status_code == 204
+    world.db.expire_all()
+    tf = world.db.get(TwoFactor, u.id)
+    assert twofactor.is_enabled(tf) and tf is not None and len(tf.backup_codes) == 10
+    assert site.get("/v1/admin/users", headers=bearer).status_code == 401  # и токен сайта — нет
+    # сброс на сервере (scripts/admin_2fa_reset.py): сеанс закрыт, новая настройка — по ссылке
+    world.db.delete(tf)
+    aa.revoke_user_sessions(world.db, u.id, "2fa")
+    world.db.commit()
     r = c.get("/v1/admin/auth/me")
     assert r.status_code == 401 and r.headers[aa.ENDED_HEADER] == "2fa"
     assert _login(world.client(), u.email).json()["step"] == "mail"
+    # обычный пользователь отключает 2FA на сайте как раньше; использованный код не повторить
+    plain, _, s2 = world.user(role="user", two_factor=True)
+    assert s2 is not None
+    b2 = {"authorization": f"Bearer {auth.make_access_token(plain)}"}
+    t2 = site.post("/v1/auth/login", json={"email": plain.email, "password": PASSWORD}).json()
+    spent = _code(s2)
+    r = site.post("/v1/auth/login/2fa", json={"ticket": t2["ticket"], "code": spent})
+    assert r.status_code == 200
+    assert site.post("/v1/me/2fa/disable", json={"code": spent}, headers=b2).status_code == 400
+    r = site.post("/v1/me/2fa/disable", json={"code": _code(s2, 1)}, headers=b2)
+    assert r.status_code == 204
 
 
 @db_only
@@ -702,30 +722,162 @@ def test_code_step_wrong_code_backup_code_and_burned_ticket(world: World) -> Non
     assert late.status_code == 410 and late.json()["detail"] == aa.TICKET_FAILED
 
 
+GRACE_PATHS = (
+    "/v1/admin/strategies",
+    "/v1/admin/users",
+    "/v1/admin/audit",
+    "/v1/admin/labels/stats",
+)
+
+
+def _bearer(user: User) -> dict[str, str]:
+    """Обычный токен сайта этого пользователя (как у вошедшего на сайт)."""
+    return {"authorization": f"Bearer {auth.make_access_token(user)}"}
+
+
+def _promo() -> dict[str, Any]:
+    return {"code": f"ADMT{uuid.uuid4().hex[:6]}", "percent": 5}
+
+
 @db_only
-def test_user_token_never_opens_admin_and_admin_token_not_site(world: World) -> None:
+def test_site_token_opens_admin_only_until_2fa_is_enabled(world: World) -> None:
+    """Переходный режим: владельца без 2FA в админку пускает обычный токен сайта (как до
+    ADR-0011), действия помечены в аудите; первый верный код закрывает этот путь навсегда."""
     c = world.client()
     owner, _, _ = world.user(role="owner")
-    bearer = {"authorization": f"Bearer {auth.make_access_token(owner)}"}
-    for path in (
-        "/v1/admin/strategies",
-        "/v1/admin/users",
-        "/v1/admin/audit",
-        "/v1/admin/labels/stats",
-    ):
-        r = c.get(path, headers=bearer)
-        assert r.status_code == 401, path
-    assert (
-        c.post("/v1/admin/promo", json={"code": "ADMTX", "percent": 5}, headers=bearer).status_code
-        == 401
+    bearer = _bearer(owner)
+    assert c.get("/v1/admin/users").status_code == 401  # без токена и без cookie — нет
+    me = c.get("/v1/admin/auth/me", headers=bearer)
+    assert me.status_code == 200, me.text
+    assert me.json() == {
+        "id": owner.id,
+        "email": owner.email,
+        "name": None,
+        "role": "owner",
+        "method": "site",
+        "grace": True,
+        "setup_required": True,
+        "backup_codes_left": 0,
+    }  # сроков сеанса нет: это не сеанс админки
+    assert aa.COOKIE not in c.cookies
+    for path in GRACE_PATHS:
+        assert c.get(path, headers=bearer).status_code == 200, path
+    # изменяющий запрос: заголовок против CSRF не нужен (токен не cookie), в аудите — access=grace
+    made = c.post("/v1/admin/promo", json=_promo(), headers=bearer)
+    assert made.status_code == 201, made.text
+    assert [p for a, p in world.audit(owner.id) if a == "promo.create"][-1]["access"] == "grace"
+    # настроить код без письма нельзя: пароль → письмо; начатая настройка режим не закрывает
+    c2 = world.client()
+    step, s = _setup_by_link(world, c2, owner.email)
+    assert c.get("/v1/admin/users", headers=bearer).status_code == 200
+    for path in ("/v1/admin/auth/2fa/backup-codes", "/v1/admin/auth/2fa/rotate"):
+        r = c.post(path, json={"code": "123456"}, headers=bearer)
+        assert r.status_code == 401, path  # действия с кодом — только в сеансе админки
+    done = c2.post(
+        "/v1/admin/auth/setup/confirm", json={"ticket": step["ticket"], "code": _code(s["secret"])}
     )
-    _admin_in(world, c)
-    assert c.get("/v1/admin/users").status_code == 200
-    raw = c.cookies.get("pl_admin")
-    assert raw
+    assert done.status_code == 200, done.text
+    # 2FA включена — тот же токен сайта больше не подходит нигде
+    for path in ("/v1/admin/auth/me", *GRACE_PATHS):
+        r = c.get(path, headers=bearer)
+        assert r.status_code == 401 and r.json()["detail"] == aa.NEED_LOGIN, path
+    assert c.post("/v1/admin/promo", json=_promo(), headers=bearer).status_code == 401
+    # сеанс админки работает как раньше: сроки, заголовок против CSRF, в аудите отметки нет
+    me2 = c2.get("/v1/admin/auth/me").json()
+    assert me2["grace"] is False and me2["method"] == "magic" and "setup_required" not in me2
+    assert me2["expires_at"] and me2["idle_minutes"] == 60 and me2["backup_codes_left"] == 10
+    r = c2.post("/v1/admin/promo", json=_promo(), headers=bearer)  # cookie есть — решает сеанс
+    assert r.status_code == 403 and r.json()["detail"] == aa.CSRF_FAILED
+    assert c2.post("/v1/admin/promo", json=_promo(), headers=CSRF).status_code == 201
+    assert "access" not in [p for a, p in world.audit(owner.id) if a == "promo.create"][-1]
     # cookie админки не годится как токен сайта
+    raw = c2.cookies.get("pl_admin")
+    assert raw
     site = world.client().get("/v1/auth/me", headers={"authorization": f"Bearer {raw}"})
     assert site.status_code == 401
+
+
+@db_only
+def test_grace_is_for_admins_without_2fa_only(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Переходный режим не шире, чем доступ до ADR-0011: не админ — 403, заблокированный и
+    удалённый — отказ, чужие токены — 401, права админки без кода не выдаются."""
+    c = world.client()
+    for role in ("user", "support"):
+        plain, _, _ = world.user(role=role)
+        for path in ("/v1/admin/auth/me", *GRACE_PATHS):
+            r = c.get(path, headers=_bearer(plain))
+            assert r.status_code == 403 and r.json()["detail"] == aa.NO_RIGHTS, (role, path)
+    owner, _, _ = world.user(role="owner")
+    bearer = _bearer(owner)
+    assert c.get("/v1/admin/users", headers=bearer).status_code == 200
+    # подделка, токен без подписи сайта, токен админки и API-ключ — не подходят
+    now = datetime.now(tz=UTC)
+    admin_token = aa.make_token(owner.id, "a" * 32, now, now + aa.TTL)
+    for bad in ("garbage", admin_token, aa.make_device(owner.id)):
+        r = c.get("/v1/admin/users", headers={"authorization": f"Bearer {bad}"})
+        assert r.status_code == 401, bad[:12]
+    assert c.get("/v1/admin/users", headers={"x-api-key": "pk_whatever"}).status_code == 401
+    # выдать права админки в переходном режиме нельзя (кода ещё нет) — даже с «кодом»
+    target, _, _ = world.user(role="user")
+    url = f"/v1/admin/users/{target.id}"
+    for body in ({"role": "admin"}, {"role": "owner", "code": "123456"}):
+        r = c.patch(url, json=body, headers=bearer)
+        assert r.status_code == 403 and "сначала настройте защиту" in r.json()["detail"]
+    world.db.expire_all()
+    assert world.db.get(User, target.id).role == "user"  # type: ignore[union-attr]
+    # остальное — как до ADR-0011: роль support и блокировка работают и видны в аудите
+    assert c.patch(url, json={"role": "support"}, headers=bearer).status_code == 200
+    r = c.patch(url, json={"block": True, "reason": "проверка"}, headers=bearer)
+    assert r.status_code == 200
+    marks = {a: p.get("access") for a, p in world.audit(owner.id)}
+    assert marks == {"user.role": "grace", "user.block": "grace"}
+    # только через прокси сайта, если задан PROXY_SECRET
+    monkeypatch.setattr(settings, "proxy_secret", "proxy-secret-for-grace")
+    r = c.get("/v1/admin/users", headers=bearer)
+    assert r.status_code == 403 and r.json()["detail"] == aa.PROXY_ONLY
+    signed = {**bearer, ratelimit.PROXY_HEADER: "proxy-secret-for-grace"}
+    assert c.get("/v1/admin/users", headers=signed).status_code == 200
+    monkeypatch.setattr(settings, "proxy_secret", None)
+    # заблокированный и удалённый владелец
+    world.db.expire_all()
+    row = world.db.get(User, owner.id)
+    assert row is not None
+    row.blocked_at = now
+    world.db.commit()
+    r = c.get("/v1/admin/users", headers=bearer)
+    assert r.status_code == 403 and r.json()["detail"] == aa.BLOCKED
+    assert c.get("/v1/admin/auth/me", headers=bearer).status_code == 403
+    row.blocked_at, row.deleted_at = None, now
+    world.db.commit()
+    assert c.get("/v1/admin/users", headers=bearer).status_code == 401
+
+
+@db_only
+def test_closed_session_keeps_its_reason_and_server_reset_returns_grace(world: World) -> None:
+    """Закрытый сеанс админа с 2FA: токен сайта не помогает, причина закрытия доходит до страницы
+    входа. После сброса 2FA на сервере аккаунт снова в переходном режиме — до новой настройки."""
+    c = world.client()
+    u, _, _ = _admin_in(world, c)
+    bearer = _bearer(u)
+    assert c.get("/v1/admin/auth/me", headers=bearer).json()["grace"] is False  # решает сеанс
+    aa.revoke_user_sessions(world.db, u.id, "password")
+    world.db.commit()
+    r = c.get("/v1/admin/users", headers=bearer)
+    assert r.status_code == 401 and r.headers[aa.ENDED_HEADER] == "password"
+    # scripts/admin_2fa_reset.py: секрет удалён, сеансы закрыты
+    c2 = world.client()
+    u2, _, _ = _admin_in(world, c2)
+    tf = world.db.get(TwoFactor, u2.id)
+    assert tf is not None
+    world.db.delete(tf)
+    aa.revoke_user_sessions(world.db, u2.id, "2fa")
+    world.db.commit()
+    r = c2.get("/v1/admin/auth/me")
+    assert r.status_code == 401 and r.headers[aa.ENDED_HEADER] == "2fa"
+    me = c2.get("/v1/admin/auth/me", headers=_bearer(u2))  # старая cookie ещё в браузере
+    assert me.status_code == 200 and me.json()["grace"] is True
 
 
 @db_only
@@ -772,7 +924,7 @@ def test_idle_and_absolute_expiry(world: World) -> None:
 
 
 @db_only
-def test_password_change_and_2fa_disable_revoke_admin_sessions(world: World) -> None:
+def test_password_change_revokes_admin_sessions_and_2fa_stays(world: World) -> None:
     c = world.client()
     u, secret, backup = _admin_in(world, c)
     bearer = {"authorization": f"Bearer {auth.make_access_token(u)}"}
@@ -783,14 +935,14 @@ def test_password_change_and_2fa_disable_revoke_admin_sessions(world: World) -> 
     )
     assert r.status_code == 204
     assert c.get("/v1/admin/auth/me").status_code == 401
-    # снова вошёл; отключение 2FA на сайте закрывает и этот сеанс
+    # снова вошёл; отключить 2FA на сайте админу нельзя — сеанс остаётся
     step = _login(c, u.email, "another long password 7").json()
     again = c.post("/v1/admin/auth/verify", json={"ticket": step["ticket"], "code": backup[0]})
     assert again.status_code == 200
     assert c.get("/v1/admin/auth/me").status_code == 200
     r = c.post("/v1/me/2fa/disable", json={"code": _code(secret, 1)}, headers=bearer)
-    assert r.status_code == 204
-    assert c.get("/v1/admin/auth/me").status_code == 401
+    assert r.status_code == 403
+    assert c.get("/v1/admin/auth/me").status_code == 200
     # пароль по ссылке сброса — тоже
     c2 = world.client()
     u2, _, _ = _admin_in(world, c2)

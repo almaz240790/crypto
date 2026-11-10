@@ -2,8 +2,9 @@
 подтверждением статусов, инструменты, сигналы (отмена с публичной причиной), пользователи,
 системный статус. Каждое действие — строка в admin_audit.
 
-Доступ — только по сеансу админки (ADR-0011, ``admin_auth.require_admin``): отдельный вход
-/admin/login с обязательным кодом 2FA; обычный токен сайта сюда не пускает даже владельца."""
+Доступ — по сеансу админки (ADR-0011, ``admin_auth.require_admin``): отдельный вход /admin/login
+с кодом 2FA. Обычный токен сайта пускает сюда админа или владельца, только пока у него 2FA не
+включена (переходный режим); такие действия помечены в аудите ``access: "grace"``."""
 
 from __future__ import annotations
 
@@ -49,7 +50,9 @@ OPEN = ("pending", "active", "tp1_hit", "tp2_hit")
 def _audit(
     db: Session, actor: User, action: str, target: str, payload: dict[str, Any] | None = None
 ) -> None:
-    db.add(AdminAudit(actor_id=actor.id, action=action, target=target, payload=payload or {}))
+    # переходный режим (вход по токену сайта, без кода) виден в каждой строке: access=grace
+    data = {**(payload or {}), **admin_auth.access_mark(db)}
+    db.add(AdminAudit(actor_id=actor.id, action=action, target=target, payload=data))
 
 
 def _dec(x: Decimal | None) -> str | None:
@@ -407,6 +410,7 @@ class UserUpdateIn(BaseModel):
 
 
 STEP_UP_FAILED = "Чтобы выдать права админки, введите свежий код из приложения."
+STEP_UP_NEEDS_SETUP = "Чтобы выдать права админки, сначала настройте защиту входа кодом."
 ROLE_RANK = {"user": 0, "support": 1, "admin": 2, "owner": 3}
 
 
@@ -429,6 +433,9 @@ def update_user(
         if step_up:
             # повышение до admin или owner — только с кодом из телефона: скрипт на странице сайта
             # (XSS) при открытом сеансе админки не сделает своего админа и не поднимет чужого
+            if admin_auth.is_grace(db):
+                # переходный режим: кода у владельца ещё нет — сначала настройка, потом права
+                raise HTTPException(403, STEP_UP_NEEDS_SETUP)
             if not body.code:
                 raise HTTPException(403, STEP_UP_FAILED)
             attempt = admin_auth.take_code_attempt(user.id)  # перебор кода скриптом — 429
