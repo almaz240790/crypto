@@ -1,7 +1,7 @@
 .main {
   display: grid;
   gap: var(--gap-4);
-  padding: var(--gap-5) 0 0;
+  padding-top: var(--gap-5);
 }
 
 .top {
