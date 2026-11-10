@@ -56,6 +56,8 @@
 }
 
 .email {
+  flex: 0 1 auto;
+  min-width: 0;
   max-width: 260px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -64,11 +66,23 @@
 }
 
 .role {
+  flex: none;
   padding: 1px var(--gap-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-pill);
   color: var(--text-2);
   font-size: var(--fs-caption);
+}
+
+/* «Защита входа» — резервные коды и перенос кода: видна всегда, не только в ленте вкладок */
+.sec {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--touch-min);
+  color: var(--accent);
+  font-size: var(--fs-table);
+  white-space: nowrap;
 }
 
 .warn {
@@ -106,7 +120,7 @@
   }
 
   .email {
-    max-width: calc(100% - 120px);
+    max-width: none;
   }
 
   .main {

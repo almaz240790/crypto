@@ -99,6 +99,9 @@ export function AdminShell({ children }: { children: ReactNode }) {
               {me.email}
             </span>
             <span className={s.role}>{t(ROLE[me.role] ?? me.role)}</span>
+            <Link href="/admin?tab=security" className={s.sec}>
+              {t("Защита входа")}
+            </Link>
           </div>
           <div className={s.actions}>
             <ThemeToggle />

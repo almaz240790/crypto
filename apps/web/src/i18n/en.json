@@ -58,6 +58,7 @@
   "Проверяем вход в админку…": "Checking your admin sign-in…",
   "На сайт": "To the site",
   "Выйти из админки": "Sign out of admin",
+  "Защита входа": "Sign-in protection",
   "Осталось резервных кодов: {n}. Запасной способ входа почти закончился.": "Backup codes left: {n}. Your fallback sign-in method is almost used up.",
   "Проверяем, открыт ли сеанс админки…": "Checking whether your admin session is open…",
   "Шаг 1 из 2 · подтверждение почты": "Step 1 of 2 · email confirmation",
