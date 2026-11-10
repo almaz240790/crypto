@@ -241,8 +241,8 @@ CHANNEL_STATUS = "signals.status"
 def _publish_status(changes: list[dict[str, Any]]) -> None:
     """Смена статуса → Redis ``signals.status`` (для WebSocket API). Ошибка Redis не критична.
 
-    В событии есть ``scope``: WebSocket API рассылает клиентам только live-события
-    (``live.Hub.handle_event``), форвард построчно не публикуется (план 2.11)."""
+    В событии есть ``scope``: WebSocket API рассылает события только вошедшим и передаёт область
+    клиенту — форвард показывается как тестовый сигнал (``live.Hub.handle_event``, ADR-0013)."""
     if not changes:
         return
     try:

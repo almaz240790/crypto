@@ -5,9 +5,10 @@ ADR-0010) обрабатывается сразу, в самом слушате�
 ``{"t":"ticks","at","p":{…}}`` для клиента, попросившего ``batch``) и формирующаяся минута
 ``{"t":"forming","s","tf":"1m","c"}`` подписчикам символа — не чаще раза в секунду на символ и
 клиента. ``candles.closed`` (только 1m) → ``price`` и ``candle``; ``signals.status`` → ``signal``
-залогиненным — через ограниченную очередь отдельной задачей: чтение БД и ошибки там не задерживают
-и не обрывают тики. Каждому клиенту пишет только его задача отправки, с таймаутом: медленный клиент
-не держит остальных и отключается. При (пере)подписке слушатель читает последние цены из ключа
+залогиненным (в сообщении есть ``scope``; форвард — тестовые сигналы, ADR-0013) — через
+ограниченную очередь отдельной задачей: чтение БД и ошибки там не задерживают и не обрывают тики.
+Каждому клиенту пишет только его задача отправки, с таймаутом: медленный клиент не держит остальных
+и отключается. При (пере)подписке слушатель читает последние цены из ключа
 ``prices:last`` — после перезапуска API и обрыва Redis цены сразу верные. Клиент не ходит на биржу
 напрямую. Без Redis (тесты, локально) слушатель спит и повторяет попытку.
 """
@@ -19,6 +20,7 @@ import json
 import logging
 import time
 from collections import deque
+from collections.abc import Callable
 from contextlib import suppress
 from datetime import UTC, datetime
 from typing import Any
@@ -30,6 +32,7 @@ from sqlalchemy import text
 from app import auth
 from app.config import settings
 from app.db import SessionLocal
+from app.entitlements import all_plans_have_test_signals
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -74,9 +77,10 @@ def _age(at: object) -> float | None:
 
 
 class Client:
-    def __init__(self, ws: WebSocket, user_id: int | None) -> None:
+    def __init__(self, ws: WebSocket, user_id: int | None, role: str | None = None) -> None:
         self.ws = ws
         self.user_id = user_id
+        self.role = role if user_id is not None else None  # роль из токена; у гостя её нет
         self.symbols: set[str] = set()
         self.batch = False  # тики одной пачкой раз в секунду ({"t":"ticks"}), не по символу
         self.forming = True  # формирующиеся минуты нужны (графику; ленте — нет)
@@ -412,10 +416,20 @@ class Hub:
 
     async def handle_event(self, channel: str, data: dict[str, Any]) -> None:
         if channel == CHANNEL_STATUS:
-            # форвард построчно не публикуется (план 2.11): клиентам — только события live.
-            # Событие без области (трекер до миграции 0022) — не live: live-сигналов тогда не было.
-            if data.get("scope") == "live":
+            # Гостю — ничего. Вошедшим: live — всем; форвард — как тестовые сигналы (ADR-0013):
+            # admin/owner всегда, остальным — пока флаг ``test_signals`` включён на всех тарифах
+            # (тариф клиента сокет не знает). Область — в сообщении, клиент ставит пометку.
+            # Событие без области (трекер до миграции 0022) не рассылается.
+            scope = data.get("scope")
+            if scope == "live":
                 self.broadcast({"t": "signal", **data}, authed_only=True)
+            elif scope == "forward":
+                everyone = all_plans_have_test_signals()
+                self.broadcast(
+                    {"t": "signal", **data},
+                    authed_only=True,
+                    only=None if everyone else (lambda c: c.role in ("admin", "owner")),
+                )
             return
         symbol = str(data["symbol"])
         candle = data.get("candle") if isinstance(data.get("candle"), dict) else None
@@ -439,7 +453,11 @@ class Hub:
         return any(symbol in c.symbols for c in self.clients)
 
     def broadcast(
-        self, payload: dict[str, Any], symbol: str | None = None, authed_only: bool = False
+        self,
+        payload: dict[str, Any],
+        symbol: str | None = None,
+        authed_only: bool = False,
+        only: Callable[[Client], bool] | None = None,
     ) -> None:
         """В очередь отправки подходящих клиентов — без ожидания сокетов."""
         text_ = json.dumps(payload)
@@ -447,6 +465,8 @@ class Hub:
             if symbol is not None and symbol not in c.symbols:
                 continue
             if authed_only and c.user_id is None:
+                continue
+            if only is not None and not only(c):
                 continue
             c.push(text_)
 
@@ -498,17 +518,21 @@ async def ws_endpoint(ws: WebSocket) -> None:
     """Протокол: клиент → {"sub": ["BTCUSDT", ...], "batch"?: true, "forming"?: false} (замена
     набора; batch — тики пачкой {"t":"ticks"}, forming: false — без формирующихся минут) и
     {"ping": 1}; сервер → subscribed, pong, price и candle (закрытая минута), tick или ticks (живая
-    цена раз в секунду), forming (формирующаяся минута), signal. Незнакомые типы старые клиенты
+    цена раз в секунду), forming (формирующаяся минута), signal (со ``scope``: live или forward —
+    тестовый сигнал; только вошедшим). Незнакомые типы старые клиенты
     пропускают."""
     user_id: int | None = None
+    role: str | None = None
     token = ws.query_params.get("token")
     if token:
         try:
-            user_id = int(auth.decode_access_token(token)["sub"])
+            claims = auth.decode_access_token(token)
+            user_id = int(claims["sub"])
+            role = str(claims.get("role") or "user")
         except Exception:
             user_id = None
     await ws.accept()
-    client = Client(ws, user_id)
+    client = Client(ws, user_id, role)
     hub.clients.add(client)
     await hub.start()
     sender = asyncio.create_task(client.pump(hub))

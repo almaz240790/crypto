@@ -45,6 +45,11 @@ class Entitlements:
     alerts_limit: int | None = None
     api_access: bool = False
     """API-ключи для чтения (план 3.10) — Premium."""
+    test_signals: bool = True
+    """Тестовые сигналы (ADR-0013): форвард-сигналы видны вошедшему пользователю с пометкой
+    «Тестовый режим» — лента, карточка, слой графика, WebSocket, уведомления по подписке.
+    Сейчас включено на всех тарифах; гостю форвард не виден никогда. Чтобы закрыть доступ
+    (например, при выпуске версии в live), достаточно выставить ``False`` нужным тарифам."""
     """Активных алертов (план 2A.6, лимит по тарифу: 3 / 50 / без лимита — на утверждение)."""
 
 
@@ -70,6 +75,21 @@ def entitlements_for(db: Session, user: User | None, now: datetime | None = None
     if user.role in ("admin", "owner"):
         return ENTITLEMENTS[PREMIUM]
     return entitlements(plan_for(db, user, now))
+
+
+def forward_visible(user: User | None, ent: Entitlements) -> bool:
+    """Видит ли пользователь форвард-сигналы: гость — никогда; admin/owner — всегда; остальные —
+    по тарифу (``forward_scope`` — раздел 4, ``test_signals`` — ADR-0013). Единственное место,
+    где решается доступ к форварду в ленте, карточке, анализе, свечах, сводке и слое графика."""
+    if user is None:
+        return False
+    return user.role in ("admin", "owner") or ent.forward_scope or ent.test_signals
+
+
+def all_plans_have_test_signals() -> bool:
+    """Тестовые сигналы включены на каждом тарифе. WebSocket знает о клиенте только id и роль
+    (не тариф), поэтому события форвард-сигналов рассылает всем вошедшим, только пока это так."""
+    return all(e.test_signals for e in ENTITLEMENTS.values())
 
 
 def visible_since(ent: Entitlements, now: datetime) -> datetime | None:
@@ -121,4 +141,5 @@ def restrictions_dict(ent: Entitlements) -> dict[str, object]:
         "layouts_limit": ent.layouts_limit,
         "alerts_limit": ent.alerts_limit,
         "api_access": ent.api_access,
+        "test_signals": ent.test_signals,
     }

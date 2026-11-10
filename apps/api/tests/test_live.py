@@ -7,6 +7,7 @@ import json
 import queue
 import time
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -14,6 +15,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import auth, live
+from app.entitlements import ENTITLEMENTS
 from app.live import Client, Hub, hub
 from app.main import app
 from app.models import User
@@ -56,9 +58,10 @@ def test_broadcast_filters_by_symbol_and_auth_without_waiting_for_sockets() -> N
     assert _outbox(pro) == [{"t": "signal", "id": "x"}]
 
 
-def test_signal_status_event_reaches_clients_only_for_live_scope() -> None:
-    """Форвард построчно не публикуется (план 2.11): смена статуса форвард-сигнала и событие
-    без области (трекер до миграции 0022) клиентам не рассылаются, live — только вошедшим."""
+def test_signal_status_events_go_to_logged_in_clients_with_scope() -> None:
+    """ADR-0013: смена статуса и live-, и форвард-сигнала («тестового») рассылается вошедшим,
+    область — в сообщении (по ней клиент ставит пометку «Тестовый режим»). Гостю — ничего.
+    Событие без области (трекер до миграции 0022) не рассылается никому."""
     h = Hub()
     guest, user = _client("BTCUSDT"), _client("BTCUSDT", user_id=7)
     h.clients.update({guest, user})
@@ -76,7 +79,37 @@ def test_signal_status_event_reaches_clients_only_for_live_scope() -> None:
 
     asyncio.run(run())
     assert _outbox(guest) == []
-    assert _outbox(user) == [{"t": "signal", **base, "id": "s2", "scope": "live"}]
+    assert _outbox(user) == [
+        {"t": "signal", **base, "scope": "forward"},
+        {"t": "signal", **base, "id": "s2", "scope": "live"},
+    ]
+
+
+def test_forward_status_events_only_to_admins_when_flag_is_off(monkeypatch: Any) -> None:
+    """Флаг ``test_signals`` выключен хотя бы на одном тарифе (доступ ужесточён): сокет не знает
+    тариф клиента, поэтому события форварда получают только admin/owner; live — как раньше."""
+    monkeypatch.setitem(ENTITLEMENTS, "free", replace(ENTITLEMENTS["free"], test_signals=False))
+    h = Hub()
+    guest = _client("BTCUSDT")
+    user = Client(FakeWs(), 7, "user")  # type: ignore[arg-type]
+    admin = Client(FakeWs(), 8, "admin")  # type: ignore[arg-type]
+    owner = Client(FakeWs(), 9, "owner")  # type: ignore[arg-type]
+    h.clients.update({guest, user, admin, owner})
+    fwd = {"id": "s1", "instrument_id": 1, "status": "active", "at": "x", "scope": "forward"}
+    lv = {**fwd, "id": "s2", "scope": "live"}
+
+    async def run() -> None:
+        await h.handle_event(live.CHANNEL_STATUS, fwd)
+        await h.handle_event(live.CHANNEL_STATUS, lv)
+
+    asyncio.run(run())
+    assert _outbox(guest) == []
+    assert _outbox(user) == [{"t": "signal", **lv}]
+    assert _outbox(admin) == _outbox(owner) == [{"t": "signal", **fwd}, {"t": "signal", **lv}]
+
+
+def test_guest_client_never_gets_a_role() -> None:
+    assert Client(FakeWs(), None, "admin").role is None  # type: ignore[arg-type]
 
 
 def test_ws_subscribe_and_pong(monkeypatch: Any) -> None:
@@ -91,6 +124,7 @@ def test_ws_subscribe_and_pong(monkeypatch: Any) -> None:
         ws.send_text('{"ping": 1}')
         assert ws.receive_json() == {"t": "pong"}
         assert any(c.user_id == 5 and "BTCUSDT" in c.symbols for c in hub.clients)
+        assert {c.role for c in hub.clients if c.user_id == 5} == {"user"}  # роль — из токена
     assert not any(c.user_id == 5 for c in hub.clients)
 
 

@@ -1,7 +1,8 @@
 """/v1/instruments, /v1/signals, /v1/stats — публичные данные (план 3.4, 3.5, 3.10).
 
-Видны только live-сигналы: ``signals.scope = 'live'``, область зафиксирована при публикации
-(``app.signal_scope``, план 2.11, правило 5); форвард — по правам (Premium, admin/owner).
+Гостю видны только live-сигналы: ``signals.scope = 'live'``, область зафиксирована при публикации
+(``app.signal_scope``, план 2.11, правило 5). Форвард — вошедшим как «тестовые сигналы»
+(``entitlements.forward_visible``, ADR-0013); построчная история форварда в статистике — admin.
 Задержка для Free и доступ к активным сигналам — этап 3 (тарифы); сейчас все эндпоинты без
 ограничений для залогиненных, а без логина — только закрытые сигналы и агрегированная статистика.
 """
@@ -15,7 +16,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
-from sqlalchemy import func, select, text
+from sqlalchemy import exists, func, select, text
 from sqlalchemy.orm import Session
 
 from app import auth
@@ -26,6 +27,7 @@ from app.entitlements import (
     Entitlements,
     allowed_instrument_ids,
     entitlements_for,
+    forward_visible,
     restrictions_dict,
     signal_visible,
     visible_since,
@@ -65,13 +67,9 @@ SPARK_LEN = 24
 
 
 def _scope(scope: str, user: User | None, ent: Entitlements | None = None) -> str:
-    """``live`` — всем; ``forward`` — Premium и admin/owner (план 4)."""
-    if scope == "forward":
-        allowed = user is not None and (
-            user.role in ("admin", "owner") or (ent is not None and ent.forward_scope)
-        )
-        if not allowed:
-            raise HTTPException(403, "форвард-сигналы доступны на тарифе Premium")
+    """``live`` — всем; ``forward`` (тестовые сигналы) — вошедшим по ``forward_visible``."""
+    if scope == "forward" and (ent is None or not forward_visible(user, ent)):
+        raise HTTPException(403, "тестовые сигналы доступны после входа")
     return scope
 
 
@@ -311,9 +309,22 @@ def signals_summary(
     user: User | None = Depends(optional_user),
     db: Session = Depends(auth.get_db),
 ) -> dict[str, Any]:
-    """Счётчики для шапки ленты: активных, новых сегодня, следующее закрытие H4 (план 3.4)."""
+    """Счётчики для шапки ленты: активных, новых сегодня, следующее закрытие H4 (план 3.4).
+
+    ``live_available`` — есть live-версия или live-сигналы; ``test_available`` — пользователю
+    видны тестовые (форвард) сигналы и есть версия в форварде или её сигналы; ``default_scope`` —
+    что лента открывает без явного выбора: тестовые, пока live нет (ADR-0013)."""
     now = datetime.now(tz=UTC)
-    scope = _scope(scope, user, entitlements_for(db, user, now))
+    ent = entitlements_for(db, user, now)
+    scope = _scope(scope, user, ent)
+    live_available = bool(
+        db.scalar(select(exists().where(StrategyVersion.status == "live")))
+        or db.scalar(select(exists().where(Signal.scope == "live")))
+    )
+    test_available = forward_visible(user, ent) and bool(
+        db.scalar(select(exists().where(StrategyVersion.status == "forward")))
+        or db.scalar(select(exists().where(scope_filter("forward"))))
+    )
     base = select(func.count()).select_from(Signal).where(scope_filter(scope))
     active = db.scalar(base.where(Signal.status.in_(OPEN_STATUSES))) or 0
     today = (
@@ -332,6 +343,9 @@ def signals_summary(
         "next_h4_close": next_close.isoformat(),
         "now": now.isoformat(),
         "scope": scope,
+        "live_available": live_available,
+        "test_available": test_available,
+        "default_scope": "forward" if test_available and not live_available else "live",
     }
 
 
@@ -351,13 +365,11 @@ def prices(
 
 
 def _forward_hidden(db: Session, user: User | None) -> bool:
-    """Скрыт ли форвард-сигнал от пользователя. Форвард видят админы и тариф с форвардом
-    (план 2.11, раздел 4); остальным карточка, анализ и свечи такого сигнала отвечают 404."""
+    """Скрыт ли форвард-сигнал от пользователя (``forward_visible``, ADR-0013): гостю карточка,
+    анализ и свечи такого сигнала отвечают 404."""
     if user is None:
         return True
-    if user.role in ("admin", "owner"):
-        return False
-    return not entitlements_for(db, user, datetime.now(tz=UTC)).forward_scope
+    return not forward_visible(user, entitlements_for(db, user, datetime.now(tz=UTC)))
 
 
 @router.get("/signals/{public_id}")
@@ -378,9 +390,7 @@ def signal_detail(
     now = datetime.now(tz=UTC)
     ent = entitlements_for(db, user, now)
     # область — на момент публикации: форвард-сигнал версии, ставшей live, остаётся форвардом
-    if s.scope == "forward" and (
-        user is None or (user.role not in ("admin", "owner") and not ent.forward_scope)
-    ):
+    if s.scope == "forward" and not forward_visible(user, ent):
         raise HTTPException(404)
     if user is None and s.status in OPEN_STATUSES:
         raise HTTPException(403, "активные сигналы доступны после входа")

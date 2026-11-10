@@ -385,6 +385,7 @@ def signal_layer(
         {
             "id": s.public_id,
             "version": ver,
+            "scope": s.scope,
             "dir": s.direction,
             "t": int(s.candle_close_time.timestamp()),
             "status": s.status,

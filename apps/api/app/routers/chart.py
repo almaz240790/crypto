@@ -28,7 +28,7 @@ from app.chart_data import (
     without_open_minutes,
 )
 from app.config import settings
-from app.entitlements import entitlements_for
+from app.entitlements import entitlements_for, forward_visible
 from app.models import Instrument, User
 from app.routers.public import optional_user
 from engine.candles import Timeframe
@@ -117,7 +117,8 @@ def layers(
     db: Session = Depends(auth.get_db),
 ) -> dict[str, Any]:
     """Слои: структура (swing, BOS/CHoCH), зоны, уровни, равные уровни, снятия, bias — по tf ≥ 1h;
-    сигналы инструмента (live; forward — по правам). Кэш 60 с."""
+    сигналы инструмента (live; forward — вошедшим как тестовые, ADR-0013; у каждого ``scope``).
+    Кэш 60 с."""
     timeframe = _tf(tf)
     inst = _instrument(db, symbol)
     now = datetime.now(tz=UTC)
@@ -129,7 +130,7 @@ def layers(
         r = None
     structure = layers_cached(db, r, inst, timeframe, now) if timeframe in LAYER_TFS else None
     scopes = ["live"]
-    if user is not None and (user.role in ("admin", "owner") or ent.forward_scope):
+    if forward_visible(user, ent):
         scopes.append("forward")
     signals = signal_layer(db, inst, scopes) if user is not None else []
     return {
