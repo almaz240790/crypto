@@ -8,10 +8,10 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
-from app.signal_scope import FORWARD_DEFAULT_VERSION_STATUSES
+from app.models import StrategyVersion
 from engine.backtest import (
     BacktestTrade,
     Metrics,
@@ -33,10 +33,9 @@ STATUS_TO_RESULT = {
     "cancelled": TradeStatus.CLOSED_TIME,  # 0 R, учитывается как закрытая (план 2.10)
 }
 HITS = {"closed_tp3": 3, "tp2_hit": 2, "tp1_hit": 1}
+FORWARD = "forward"
 HIST_EDGES = [Decimal(x) for x in ("-1.5", "-1", "-0.5", "0", "0.5", "1", "1.5", "2", "3", "4")]
 """Границы корзин гистограммы R; крайние корзины открытые."""
-
-
 def load_trades(
     session: Session,
     scope: str = "live",
@@ -49,18 +48,17 @@ def load_trades(
 ) -> list[BacktestTrade]:
     """Сигналы области ``scope`` (live/forward) как сделки бэктеста.
 
+    ``facts`` каждой сделки = (public_id, тип входа) — для ссылок и разбивки по типу входа.
     Область — ``signals.scope``, зафиксированная при публикации (``app.signal_scope``), а не
     текущий статус версии. live — все live-сигналы, в том числе версий, ушедших потом в forward
-    или archived. forward по явной версии — вся её форвард-история; без версии — форвард-сигналы
-    версий, которые сейчас в forward или live (``FORWARD_DEFAULT_VERSION_STATUSES``).
-
-    ``facts`` каждой сделки = (public_id, тип входа) — для ссылок и разбивки по типу входа.
+    или archived. Форвард считается только по одной версии (план 2.11: версии не смешиваются),
+    поэтому для ``forward`` версия обязательна — см. ``default_forward_version``; это вся её
+    форвард-история, в каком бы статусе версия ни была сейчас.
     """
+    if scope == FORWARD and strategy_version_id is None:
+        raise ValueError("форвард считается по одной версии стратегии: укажите версию")
     where = ["s.scope = :scope"]
     params: dict[str, Any] = {"scope": scope}
-    if strategy_version_id is None and scope == "forward":
-        where.append("sv.status = any(:default_statuses)")
-        params["default_statuses"] = list(FORWARD_DEFAULT_VERSION_STATUSES)
     if grade:
         where.append("s.grade = :grade")
         params["grade"] = grade.upper()
@@ -127,6 +125,38 @@ def load_trades(
             )
         )
     return out
+
+
+def default_forward_version(session: Session) -> StrategyVersion | None:
+    """Форвард-версия по умолчанию: наибольший id среди версий в статусе forward.
+
+    Агрегата «все версии» у форварда нет: сумма по версиям смешивала бы разные правила и
+    считала одни и те же сделки дважды (план 2.11). ``None`` — форвард-версий нет.
+    """
+    return session.scalars(
+        select(StrategyVersion)
+        .where(StrategyVersion.status == FORWARD)
+        .order_by(StrategyVersion.id.desc())
+        .limit(1)
+    ).first()
+
+
+def forward_versions(session: Session) -> list[dict[str, Any]]:
+    """Версии, у которых есть что показать на вкладке форварда, по возрастанию id — для
+    селектора: версии в статусе forward (в том числе ещё без сделок) и версии, которые ушли из
+    форварда, но оставили форвард-историю (сигналы с ``scope = 'forward'``). Вид — как в
+    ``/v1/strategies``."""
+    rows = session.execute(
+        text(
+            "select sv.id, st.slug, st.name, sv.version, sv.status from strategy_versions sv "
+            "join strategies st on st.id = sv.strategy_id "
+            "where sv.status = 'forward' or exists (select 1 from signals s "
+            "where s.strategy_version_id = sv.id and s.scope = 'forward') order by sv.id"
+        )
+    ).all()
+    return [
+        {"id": r[0], "strategy": r[1], "name": r[2], "version": r[3], "status": r[4]} for r in rows
+    ]
 
 
 STATUS_FROM_VALUE = {s.value: s for s in TradeStatus}
@@ -265,8 +295,22 @@ def stats_payload(trades: list[BacktestTrade]) -> dict[str, Any]:
 
 
 def worst_drawdowns(trades: list[BacktestTrade], n: int = 3) -> list[dict[str, Any]]:
-    """Три самые глубокие просадки с датами (план 3.10 «Худшие периоды»)."""
-    closed = sorted((t for t in trades if t.result.closed), key=lambda t: t.signal_time)
+    """Три самые глубокие просадки с датами (план 3.10 «Худшие периоды»).
+
+    Накопленный результат строится в порядке **закрытия** сделок: пик и дно подписаны временем
+    закрытия, поэтому и считать нужно по нему, иначе дно оказывается раньше пика
+    («30.10 17:28 → 30.10 16:15»). От прежнего расчёта отличается только ключ сортировки:
+    остальное не тронуто, чтобы блок на вкладке бэктеста менялся только из-за порядка. Сделки с
+    одинаковым временем закрытия остаются в порядке входного списка (сортировка устойчивая), а
+    ``load_trades`` и ``trades_from_run`` отдают сделки в порядке сигналов.
+
+    Метрики движка (``summarize``, ``max_drawdown_r``) считаются в порядке сигналов, как в
+    отчётах бэктеста, и здесь не меняются; поэтому глубина худшего периода может немного
+    отличаться от карточки «макс. просадка».
+    """
+    closed = sorted(
+        (t for t in trades if t.result.closed), key=lambda t: t.exit_time or t.signal_time
+    )
     eq = peak = Decimal(0)
     peak_t: datetime | None = None
     cur: dict[str, Any] | None = None
