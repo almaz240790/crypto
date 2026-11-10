@@ -54,7 +54,7 @@ from app.stats import (
     trade_rows,
     trades_from_run,
 )
-from engine.backtest import BacktestTrade
+from engine.backtest import DEFAULT_EXECUTION, BacktestTrade
 from engine.candles import Timeframe
 from engine.patterns import PatternType
 from engine.strategies import STRATEGIES
@@ -672,7 +672,18 @@ def stats(
         payload["generated_at"] = datetime.now(tz=UTC).isoformat()
     if scope == FORWARD:
         payload.update(_forward_meta(db, fwd, int(payload["metrics"]["closed"])))
+    if scope != "backtest":
+        payload["execution"] = _execution_meta()
     return payload
+
+
+def _execution_meta() -> dict[str, str]:
+    """Комиссия и проскальзывание, вычтенные из результатов live и forward, — те же
+    ``ExecutionParams``, что в бэктесте (план 2.11). Подпись на /stats берёт числа отсюда."""
+    return {
+        "fee_rate": str(DEFAULT_EXECUTION.fee_rate),
+        "slippage": str(DEFAULT_EXECUTION.slippage),
+    }
 
 
 @router.get("/stats/patterns")
