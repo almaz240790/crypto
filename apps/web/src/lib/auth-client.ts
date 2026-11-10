@@ -53,7 +53,8 @@ export function hasHint(): boolean {
   return typeof document !== "undefined" && document.cookie.includes(`${HINT_COOKIE}=1`);
 }
 
-async function readError(res: Response): Promise<string> {
+/** Текст ошибки API для человека: detail строкой, первая ошибка проверки или «ошибка N». */
+export async function readError(res: Response): Promise<string> {
   try {
     const j = (await res.json()) as { detail?: unknown };
     if (typeof j.detail === "string") return j.detail;

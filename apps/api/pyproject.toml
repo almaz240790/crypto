@@ -22,6 +22,7 @@ dependencies = [
     "sentry-sdk[fastapi]>=2.0",
     "anthropic>=1.0",
     "pyotp>=2.10.0",
+    "segno>=1.6",
 ]
 
 [tool.uv.sources]

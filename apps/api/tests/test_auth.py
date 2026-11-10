@@ -37,9 +37,13 @@ def test_access_token_roundtrip_and_rejection() -> None:
 
 def test_promote_owner_by_email_case_and_spaces() -> None:
     owners = {"boss@example.com"}
-    u = User(id=1, email=" Boss@Example.com", role="user")
+    # почта не подтверждена — не владелец (ADR-0011: кто первым зарегистрировал адрес владельца,
+    # не получает роль без доступа к ящику) и подтверждённой она от этого не становится
+    fresh = User(id=4, email="boss@example.com", role="user")
+    assert not auth.promote_owner(fresh, owners)
+    assert fresh.role == "user" and fresh.email_verified_at is None
+    u = User(id=1, email=" Boss@Example.com", role="user", email_verified_at=datetime.now(tz=UTC))
     assert auth.promote_owner(u, owners) and u.role == "owner"
-    assert u.email_verified_at is not None  # адрес владельца подтверждён настройками сервера
     assert not auth.promote_owner(u, owners)  # уже владелец
     admin = User(
         id=2, email="boss@example.com", role="admin", email_verified_at=datetime.now(tz=UTC)

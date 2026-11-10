@@ -127,7 +127,8 @@ export const getApiKeys = () => api<{ items: ApiKeyRow[]; limit: number }>("/v1/
 export const createApiKey = (name: string) => api<ApiKeyRow & { key: string }>("/v1/me/api-keys", { method: "POST", json: { name } });
 export const revokeApiKey = (id: number) => api<void>(`/v1/me/api-keys/${id}`, { method: "DELETE" });
 
-export type TwoFactorStatus = { enabled: boolean; backup_codes_left: number };
+/** admin — аккаунт администратора: защита кодом настраивается при входе в админку, не здесь (ADR-0011). */
+export type TwoFactorStatus = { enabled: boolean; backup_codes_left: number; admin?: boolean };
 export const getTwoFactor = () => api<TwoFactorStatus>("/v1/me/2fa");
 export const setupTwoFactor = () => api<{ secret: string; otpauth_url: string }>("/v1/me/2fa/setup", { method: "POST" });
 export const enableTwoFactor = (code: string) => api<{ enabled: boolean; backup_codes: string[] }>("/v1/me/2fa/enable", { method: "POST", json: { code } });

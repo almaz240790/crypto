@@ -196,6 +196,11 @@ function TwoFactorPanel({ note }: { note: (text: string, kind?: "ok" | "error") 
       <div className={s.form} data-testid="two-factor">
         {st === null ? (
           <span className="caption">{t("Загрузка…")}</span>
+        ) : st.enabled && st.admin ? (
+          // ADR-0011: администратору защиту на сайте не выключить — новый телефон и коды в админке
+          <p style={{ margin: 0 }} data-testid="two-factor-admin">
+            {t("Включена · резервных кодов осталось")} <strong>{st.backup_codes_left}</strong>. {t("Администратору защита кодом не отключается: новый телефон и новые резервные коды — в админке, раздел «Защита входа».")}
+          </p>
         ) : st.enabled ? (
           <form className={s.form} onSubmit={disable}>
             <p style={{ margin: 0 }}>{t("Включена · резервных кодов осталось")}{" "}<strong>{st.backup_codes_left}</strong>
@@ -219,6 +224,8 @@ function TwoFactorPanel({ note }: { note: (text: string, kind?: "ok" | "error") 
               <Button type="button" size="sm" variant="ghost" onClick={() => setSetup(null)}>{t("Отмена")}</Button>
             </div>
           </form>
+        ) : st.admin ? (
+          <p className="text-2" style={{ margin: 0 }} data-testid="two-factor-admin">{t("Выключена. Для администратора защита кодом настраивается при входе в админку — по ссылке из письма.")}</p>
         ) : (
           <div className={s.actions}>
             <span className="text-2">{t("Выключена.")}</span>

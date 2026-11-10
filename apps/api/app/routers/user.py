@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app import apikeys, auth, sessions, twofactor
+from app import admin_auth, apikeys, auth, sessions, twofactor
 from app.config import settings
 from app.entitlements import entitlements_for
 from app.journal_analytics import TradeRow, analytics
@@ -105,7 +105,13 @@ def change_password(
         body.current_password or "", user.password_hash
     ):
         raise HTTPException(400, "текущий пароль неверен")
+    if not user.password_hash and admin_auth.is_admin_account(user):
+        # ADR-0011: иначе чужой сеанс сайта задал бы пароль — первый фактор входа в админку
+        raise HTTPException(
+            403, "Администратору пароль задаётся через «Забыли пароль?» на странице входа (письмом)"
+        )
     user.password_hash = auth.hash_password(body.new_password)
+    admin_auth.revoke_user_sessions(db, user.id, "password")  # новый пароль закрывает админку
     db.commit()
     return Response(status_code=204)
 
@@ -160,6 +166,12 @@ def delete_account(
     user: User = Depends(auth.current_user), db: Session = Depends(auth.get_db)
 ) -> Response:
     """Мягкое удаление (GDPR): помечаем, анонимизируем email, сессии отзываются."""
+    if user.role in admin_auth.ADMIN_ROLES:
+        # ADR-0011: украденная сессия сайта не должна удалять аккаунт владельца или админа
+        # (и освобождать его адрес для новой регистрации)
+        raise HTTPException(
+            403, "Аккаунт администратора удаляется после снятия прав админки — напишите владельцу."
+        )
     user.deleted_at = datetime.now(tz=UTC)
     user.email = f"deleted-{user.id}@users.platform.local"
     user.name = None
@@ -497,7 +509,21 @@ def two_factor_status(
     return {
         "enabled": twofactor.is_enabled(row),
         "backup_codes_left": len(row.backup_codes) if row is not None and row.enabled_at else 0,
+        # админу код настраивается при входе в админку (по ссылке из письма), не из сеанса сайта
+        "admin": admin_auth.is_admin_account(user),
     }
+
+
+ADMIN_2FA_ELSEWHERE = (
+    "Администратору защита кодом настраивается при входе в админку — по ссылке из письма."
+)
+
+
+def _not_for_admin(user: User) -> None:
+    """ADR-0011: включить 2FA из сеанса сайта админ не может — иначе украденный пароль (вход на
+    сайт без кода) или украденная сессия сайта привязали бы к админке чужое приложение."""
+    if admin_auth.is_admin_account(user):
+        raise HTTPException(403, ADMIN_2FA_ELSEWHERE)
 
 
 @router.post("/me/2fa/setup")
@@ -505,14 +531,15 @@ def two_factor_setup(
     user: User = Depends(auth.current_user), db: Session = Depends(auth.get_db)
 ) -> dict[str, Any]:
     """Новый секрет (пока не включён); повторный вызов заменяет невключённый секрет."""
-    row = db.get(TwoFactor, user.id)
+    _not_for_admin(user)
+    row = twofactor.locked(db, user.id)
     if twofactor.is_enabled(row):
         raise HTTPException(409, "2FA уже включена — сначала отключите")
     secret = twofactor.new_secret()
     if row is None:
         db.add(TwoFactor(user_id=user.id, secret=secret, backup_codes=[]))
     else:
-        row.secret = secret
+        twofactor.reset_secret(row, secret)
     db.commit()
     return {"secret": secret, "otpauth_url": twofactor.otpauth_url(secret, user.email)}
 
@@ -524,12 +551,13 @@ def two_factor_enable(
     db: Session = Depends(auth.get_db),
 ) -> dict[str, Any]:
     """Первый верный код включает 2FA и выдаёт резервные коды (показываются один раз)."""
-    row = db.get(TwoFactor, user.id)
+    _not_for_admin(user)
+    row = twofactor.locked(db, user.id)
     if row is None:
         raise HTTPException(400, "сначала вызовите настройку")
     if row.enabled_at is not None:
         raise HTTPException(409, "2FA уже включена")
-    if not twofactor.verify_totp(row.secret, body.code):
+    if not twofactor.use_totp(row, body.code):
         raise HTTPException(400, "неверный код")
     plain, hashes = twofactor.make_backup_codes()
     row.enabled_at = datetime.now(tz=UTC)
@@ -538,19 +566,31 @@ def two_factor_enable(
     return {"enabled": True, "backup_codes": plain}
 
 
+ADMIN_2FA_STAYS = (
+    "Администратору защита кодом на сайте не отключается. "
+    "Новый телефон и резервные коды — в админке, раздел «Защита входа»."
+)
+
+
 @router.post("/me/2fa/disable", status_code=204)
 def two_factor_disable(
     body: TwoFactorCodeIn,
     user: User = Depends(auth.current_user),
     db: Session = Depends(auth.get_db),
 ) -> Response:
-    row = db.get(TwoFactor, user.id)
+    if admin_auth.is_admin_account(user):
+        # ADR-0011: без 2FA админку снова открывал бы обычный токен сайта (переходный режим) —
+        # украденная сессия сайта и один резервный код не должны возвращать аккаунт в этот режим
+        raise HTTPException(403, ADMIN_2FA_STAYS)
+    row = twofactor.locked(db, user.id)
     if not twofactor.is_enabled(row) or row is None:
         raise HTTPException(400, "2FA не включена")
-    if not twofactor.verify_code(row, body.code):
+    if not twofactor.verify_code(row, body.code):  # код TOTP — один раз (и после админки)
         db.commit()
         raise HTTPException(400, "неверный код")
     db.delete(row)
+    # сеансов админки у обычного пользователя нет; на случай оставшихся (роль сняли) — закрыть
+    admin_auth.revoke_user_sessions(db, user.id, "2fa")
     db.commit()
     return Response(status_code=204)
 

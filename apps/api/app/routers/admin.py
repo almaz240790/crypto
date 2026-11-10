@@ -1,6 +1,10 @@
 """/v1/admin/* — базовая админка (план 3.15, задача 2.14): стратегии и версии с четырёхглазым
 подтверждением статусов, инструменты, сигналы (отмена с публичной причиной), пользователи,
-системный статус. Каждое действие — строка в admin_audit."""
+системный статус. Каждое действие — строка в admin_audit.
+
+Доступ — по сеансу админки (ADR-0011, ``admin_auth.require_admin``): отдельный вход /admin/login
+с кодом 2FA. Обычный токен сайта пускает сюда админа или владельца, только пока у него 2FA не
+включена (переходный режим); такие действия помечены в аудите ``access: "grace"``."""
 
 from __future__ import annotations
 
@@ -16,7 +20,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
-from app import auth, billing
+from app import admin_auth, auth, billing, ratelimit, twofactor
 from app.admin_rules import can_decide, transition_allowed
 from app.config import settings
 from app.models import (
@@ -36,15 +40,19 @@ from app.models import (
 )
 from app.support import reply_ticket, ticket_dict
 
-router = APIRouter(prefix="/v1/admin", tags=["admin"])
-ADMIN = auth.require_role("admin", "owner")
+router = APIRouter(
+    prefix="/v1/admin", tags=["admin"], dependencies=[Depends(admin_auth.site_proxy_only)]
+)
+ADMIN = admin_auth.require_admin
 OPEN = ("pending", "active", "tp1_hit", "tp2_hit")
 
 
 def _audit(
     db: Session, actor: User, action: str, target: str, payload: dict[str, Any] | None = None
 ) -> None:
-    db.add(AdminAudit(actor_id=actor.id, action=action, target=target, payload=payload or {}))
+    # переходный режим (вход по токену сайта, без кода) виден в каждой строке: access=grace
+    data = {**(payload or {}), **admin_auth.access_mark(db)}
+    db.add(AdminAudit(actor_id=actor.id, action=action, target=target, payload=data))
 
 
 def _dec(x: Decimal | None) -> str | None:
@@ -401,6 +409,13 @@ class UserUpdateIn(BaseModel):
     role: str | None = Field(default=None, pattern="^(user|support|admin|owner)$")
     block: bool | None = None
     reason: str | None = Field(default=None, max_length=255)
+    code: str | None = Field(default=None, max_length=16)
+    """Код из приложения (или резервный): нужен, чтобы выдать роль admin/owner (ADR-0011)."""
+
+
+STEP_UP_FAILED = "Чтобы выдать права админки, введите свежий код из приложения."
+STEP_UP_NEEDS_SETUP = "Чтобы выдать права админки, сначала настройте защиту входа кодом."
+ROLE_RANK = {"user": 0, "support": 1, "admin": 2, "owner": 3}
 
 
 @router.patch("/users/{user_id}")
@@ -418,8 +433,33 @@ def update_user(
             raise HTTPException(403, "роли меняет только владелец")
         if u.id == user.id:
             raise HTTPException(400, "свою роль менять нельзя")
-        _audit(db, user, "user.role", f"user:{u.id}", {"from": u.role, "to": body.role})
+        step_up = body.role in admin_auth.ADMIN_ROLES and ROLE_RANK[body.role] > ROLE_RANK[u.role]
+        if step_up:
+            # повышение до admin или owner — только с кодом из телефона: скрипт на странице сайта
+            # (XSS) при открытом сеансе админки не сделает своего админа и не поднимет чужого
+            if admin_auth.is_grace(db):
+                # переходный режим: кода у владельца ещё нет — сначала настройка, потом права
+                raise HTTPException(403, STEP_UP_NEEDS_SETUP)
+            if not body.code:
+                raise HTTPException(403, STEP_UP_FAILED)
+            attempt = admin_auth.take_code_attempt(user.id)  # перебор кода скриптом — 429
+            tf = twofactor.locked(db, user.id)
+            if tf is None or not twofactor.is_enabled(tf):
+                raise HTTPException(403, STEP_UP_FAILED)
+            if admin_auth.check_second_factor(tf, body.code) is None:
+                _audit(db, user, "user.role_code_failed", f"user:{u.id}", {"to": body.role})
+                db.commit()
+                raise HTTPException(403, STEP_UP_FAILED)
+            ratelimit.give_back(attempt)
+        _audit(
+            db,
+            user,
+            "user.role",
+            f"user:{u.id}",
+            {"from": u.role, "to": body.role, **({"confirmed": "code"} if step_up else {})},
+        )
         u.role = body.role
+        admin_auth.revoke_user_sessions(db, u.id, "role")  # новая роль — новый вход в админку
     if body.block is not None:
         if u.id == user.id:
             raise HTTPException(400, "себя заблокировать нельзя")
@@ -427,6 +467,8 @@ def update_user(
             raise HTTPException(403, "владельца заблокировать нельзя")
         u.blocked_at = datetime.now(tz=UTC) if body.block else None
         u.blocked_reason = body.reason if body.block else None
+        if body.block:
+            admin_auth.revoke_user_sessions(db, u.id, "blocked")
         _audit(
             db,
             user,
@@ -501,14 +543,15 @@ def audit(
 ) -> list[dict[str, Any]]:
     rows = db.execute(
         select(AdminAudit, User.email)
-        .join(User, User.id == AdminAudit.actor_id)
+        .outerjoin(User, User.id == AdminAudit.actor_id)
         .order_by(AdminAudit.id.desc())
         .limit(limit)
     ).all()
     return [
         {
             "id": a.id,
-            "actor": email,
+            # попытка входа с неизвестным адресом: пользователя нет, в деталях — адрес под маской
+            "actor": email or str((a.payload or {}).get("email") or "—"),
             "action": a.action,
             "target": a.target,
             "payload": a.payload,
