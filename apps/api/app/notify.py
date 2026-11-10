@@ -23,8 +23,8 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.journal_analytics import TradeRow, analytics
+from app.mail import MailError, send_mail
 from app.mail import configured as mail_configured
-from app.mail import send_mail
 from app.models import (
     Instrument,
     JournalEntry,
@@ -76,6 +76,29 @@ def mail_key(kind: str, user_id: int, ref: str) -> str:
     """Ключ идемпотентности письма рассылки (Resend помнит его сутки): если процесс упал между
     отправкой и фиксацией отметки, повтор того же письма провайдер не отправит второй раз."""
     return f"{kind}-{user_id}-{ref}".replace(":", "-")
+
+
+def _send_recorded(db: Session, to: str, subject: str, text: str, key: str) -> bool:
+    """Письмо рассылки после отметки в ``notification_log`` (``_record``, ещё не зафиксирована).
+
+    Отправлено — отметка фиксируется, True. Отказ провайдера — отметка откатывается, письмо не
+    числится отправленным: постоянный (неверный адрес) — False, адрес пропускается до следующего
+    прохода; временный (лимит, сбой провайдера, ключ или домен) и сетевая ошибка — исключение,
+    проход прерывается, его повторит уведомитель (уже отправленным дубля не будет).
+    """
+    try:
+        send_mail(to, subject, text, idempotency_key=key, strict=True)
+    except MailError as exc:
+        db.rollback()
+        if not exc.permanent:
+            raise
+        log.error("письмо %s отклонено провайдером (%s), не отмечаем", key, exc)
+        return False
+    except Exception:
+        db.rollback()
+        raise
+    db.commit()
+    return True
 
 
 def settings_for(db: Session, user: User) -> NotificationSettings:
@@ -359,7 +382,9 @@ def run_digest(db: Session, period: str = "daily", now: datetime | None = None) 
     (уведомитель и cron-скрипт, два экземпляра при выкладке) ждёт её на вставке, а после фиксации
     получает конфликт и пропускает адрес; повтор не шлёт дубль тем, кому уже отправлено, а сбой на
     одном адресе не откатывает отметки остальных. Упал между письмом и фиксацией — повтор с тем
-    же ключом идемпотентности (``mail_key``) провайдер не отправит второй раз."""
+    же ключом идемпотентности (``mail_key``) провайдер не отправит второй раз. Письмо, которое
+    провайдер не принял, не отмечается (``_send_recorded``); временный отказ прерывает проход
+    исключением — повторит уведомитель."""
     if not mail_ready():
         log.warning("дайджест %s: нет ключа почты — пропуск, отправит процесс с ключом", period)
         return 0
@@ -370,20 +395,20 @@ def run_digest(db: Session, period: str = "daily", now: datetime | None = None) 
         .join(NotificationSettings, NotificationSettings.user_id == User.id)
         .where(User.deleted_at.is_(None), User.email_verified_at.is_not(None))
         .where(NotificationSettings.email_digest == period)
+        .order_by(User.id)
     ).all()
     sent = 0
     for user, ns in rows:
         text = digest_text(db, user, period, now)
         if text is None or not _record(db, user.id, "digest", ref):
             continue
-        send_mail(
+        sent += _send_recorded(
+            db,
             user.email,
             f"Platform: дайджест {now.strftime('%d.%m')}",
             text + unsubscribe_footer(ns),
-            idempotency_key=mail_key("digest", user.id, ref),
+            mail_key("digest", user.id, ref),
         )
-        db.commit()
-        sent += 1
     db.commit()
     log.info("дайджест %s: отправлено %d из %d", period, sent, len(rows))
     return sent
@@ -479,7 +504,8 @@ def journal_report_text(db: Session, user: User, now: datetime) -> str | None:
 
 def run_journal_reports(db: Session, now: datetime | None = None) -> int:
     """Еженедельно (по понедельникам, вместе с дайджестом): всем, у кого письма не выключены
-    и за неделю есть закрытые сделки. Одна отправка на дату; отметка — после каждого письма."""
+    и за неделю есть закрытые сделки. Одна отправка на дату; отметка — как у дайджеста
+    (``run_digest``, ``_send_recorded``)."""
     if not mail_ready():
         log.warning("отчёт по журналу: нет ключа почты — пропуск, отправит процесс с ключом")
         return 0
@@ -490,20 +516,20 @@ def run_journal_reports(db: Session, now: datetime | None = None) -> int:
         .join(NotificationSettings, NotificationSettings.user_id == User.id)
         .where(User.deleted_at.is_(None), User.email_verified_at.is_not(None))
         .where(NotificationSettings.email_digest != "off")
+        .order_by(User.id)
     ).all()
     sent = 0
     for user, ns in rows:
         text = journal_report_text(db, user, now)
         if text is None or not _record(db, user.id, "journal", ref):
             continue
-        send_mail(
+        sent += _send_recorded(
+            db,
             user.email,
             f"Platform: отчёт по журналу {now.strftime('%d.%m')}",
             text + unsubscribe_footer(ns),
-            idempotency_key=mail_key("journal", user.id, ref),
+            mail_key("journal", user.id, ref),
         )
-        db.commit()
-        sent += 1
     db.commit()
     log.info("отчёт по журналу: отправлено %d из %d", sent, len(rows))
     return sent

@@ -25,6 +25,7 @@ import contextlib
 import logging
 import signal as os_signal
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -33,6 +34,7 @@ import redis
 import redis.asyncio as aioredis
 import sentry_sdk
 from sqlalchemy import func, select
+from sqlalchemy.orm import Session
 
 from app.alerts import CHANNEL_TRIGGERED, DELIVERY_BATCH, deliver_pending
 from app.coin_rank import refresh_if_due
@@ -117,13 +119,30 @@ def digest_due(now: datetime, done_date: str | None) -> bool:
 
 
 def digests_once(now: datetime) -> dict[str, int]:
-    """Синхронно: ежедневный дайджест; по понедельникам — недельный и отчёт по журналу."""
+    """Синхронно: ежедневный дайджест; по понедельникам — недельный и отчёт по журналу.
+
+    Ошибка одной рассылки не отменяет остальные; если хоть одна не завершилась —
+    ``RuntimeError`` в конце, и уведомитель повторит проход (отправленным дубля не будет)."""
+    jobs: list[tuple[str, Callable[[Session], int]]] = [
+        ("daily", lambda db: run_digest(db, "daily", now))
+    ]
+    if now.weekday() == 0:
+        jobs += [
+            ("weekly", lambda db: run_digest(db, "weekly", now)),
+            ("journal", lambda db: run_journal_reports(db, now)),
+        ]
     out: dict[str, int] = {}
+    failed: list[str] = []
     with SessionLocal() as db:
-        out["daily"] = run_digest(db, "daily", now)
-        if now.weekday() == 0:
-            out["weekly"] = run_digest(db, "weekly", now)
-            out["journal"] = run_journal_reports(db, now)
+        for name, job in jobs:
+            try:
+                out[name] = job(db)
+            except Exception:
+                log.exception("дайджесты: рассылка %s не завершена", name)
+                db.rollback()
+                failed.append(name)
+    if failed:
+        raise RuntimeError(f"рассылки не завершены: {', '.join(failed)}; отправлено {out}")
     return out
 
 
@@ -213,6 +232,24 @@ class Notifier:
             for w in waits:
                 w.cancel()
 
+    async def digests(self, now: datetime) -> None:
+        """Проход дайджестов за дату ``now``.
+
+        Отметка «за эту дату отправлено» ставится в Redis на ``DIGEST_RETRY_AFTER`` секунд до
+        прохода (аренда) и на трое суток — только после успешного. Ошибка или процесс убит
+        посреди прохода (выкладка, перезапуск) — аренда истекает, и проход повторяет этот или
+        новый экземпляр; уже отправленным дубля не будет (``notification_log``). Cron-сервис
+        digest без ключа почты больше не подстраховывает — повторяем сами."""
+        today = now.strftime("%Y-%m-%d")
+        await self.redis.set(KEY_DIGEST + "date", today, ex=DIGEST_RETRY_AFTER)
+        try:
+            result = await asyncio.to_thread(digests_once, now)
+        except Exception:
+            log.exception("дайджесты: ошибка, повтор через %d с", DIGEST_RETRY_AFTER)
+            return
+        await self.redis.set(KEY_DIGEST + "date", today, ex=3 * 86400)
+        log.info("дайджесты: %s", result)
+
     async def main_loop(self) -> None:
         last_signal = int(await self.redis.get(KEY_SIGNAL) or -1)
         last_event = int(await self.redis.get(KEY_EVENT) or -1)
@@ -242,16 +279,7 @@ class Notifier:
                 log.info("дайджесты: отметка в Redis за %s, час UTC %d", done_date, now.hour)
                 digest_logged = True
             if digest_due(now, done_date):
-                await self.redis.set(KEY_DIGEST + "date", now.strftime("%Y-%m-%d"), ex=3 * 86400)
-                try:
-                    log.info("дайджесты: %s", await asyncio.to_thread(digests_once, now))
-                except Exception:
-                    # cron-сервис digest без ключа почты больше не подстраховывает: повторяем сами,
-                    # не чаще раза в DIGEST_RETRY_AFTER; уже отправленным дубля не будет
-                    log.exception("дайджесты: ошибка, повтор через %d с", DIGEST_RETRY_AFTER)
-                    await self.redis.set(
-                        KEY_DIGEST + "date", now.strftime("%Y-%m-%d"), ex=DIGEST_RETRY_AFTER
-                    )
+                await self.digests(now)
             if time.monotonic() >= next_monitor:
                 next_monitor = time.monotonic() + MONITOR_EVERY
                 try:
