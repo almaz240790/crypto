@@ -24,6 +24,7 @@ from decimal import Decimal
 from enum import StrEnum
 
 from engine.candles import Candle, Timeframe
+from engine.occupancy import TradeSpan, occupying
 from engine.params import StrategyParams, TradeParams
 from engine.scoring import Grade
 from engine.signal import MarketInputs, SignalCandidate, evaluate
@@ -247,13 +248,31 @@ class BacktestTrade:
 class BacktestRun:
     trades: list[BacktestTrade] = field(default_factory=list)
     skipped: dict[str, int] = field(default_factory=lambda: defaultdict(int))
-    """Причины отсутствия сигнала по этапам (data/bias/trigger/filters/trade) — для анализа."""
+    """Причины отсутствия сигнала по этапам (data/bias/trigger/filters/trade) — для анализа;
+    ``busy`` — закрытия H4, пропущенные из-за открытой сделки по инструменту
+    (``engine.occupancy``)."""
     skipped_by_symbol: dict[str, dict[str, int]] = field(
         default_factory=lambda: defaultdict(lambda: defaultdict(int))
     )
     block_reasons: dict[str, int] = field(default_factory=lambda: defaultdict(int))
     """Какие фильтры блокировали (по имени из причины), чтобы видеть, что режет сигналы."""
     evaluated: int = 0
+
+
+def backtest_span(trade: BacktestTrade) -> TradeSpan | None:
+    """Сделка бэктеста для правила одной сделки на инструмент (``engine.occupancy``).
+
+    Бэктест знает исход заранее: истёкший лимит сделкой не был и инструмент не занимал — None.
+    Сделка, открытая до конца данных, не закончилась (``active``); у закрытой конец —
+    ``exit_time``, закрытие свечи выхода.
+    """
+    r = trade.result
+    ref = trade.signal_time.isoformat()
+    if r.status is TradeStatus.EXPIRED:
+        return None
+    if r.status is TradeStatus.OPEN:
+        return TradeSpan(ref, trade.signal_time, "active")
+    return TradeSpan(ref, trade.signal_time, r.status.value, trade.exit_time)
 
 
 def run_backtest(
@@ -267,20 +286,24 @@ def run_backtest(
 ) -> BacktestRun:
     """Проходит все закрытия H4 в [start; end] по каждому инструменту.
 
-    Одновременно по инструменту — не больше одной открытой сделки. Отложенные (новости)
-    сигналы в бэктесте пропускаются и считаются в ``skipped['deferred']``.
+    Одновременно по инструменту — не больше одной открытой сделки: правило ``engine.occupancy``,
+    то же, что в scheduler и forward. Закрытия H4, пропущенные из-за занятого инструмента (и
+    свеча, на которой закрылась прежняя сделка), считаются в ``skipped['busy']``. Отложенные
+    (новости) сигналы в бэктесте пропускаются и считаются в ``skipped['deferred']``.
     ``window`` — сколько последних свечей H4 передаётся в ``evaluate`` (экономия времени;
     должно быть ≥ ``params.min_h4_history`` и ``params.hash_candles``).
     """
     run = BacktestRun()
     for inp in inputs:
         h4 = list(inp.h4)
-        busy_until = -1
+        last: tuple[TradeSpan, ...] = ()  # прежняя сделка: сделки по инструменту не пересекаются
         for i, c in enumerate(h4):
             at = c.close_time(Timeframe.H4)
             if at < start or at > end:
                 continue
-            if i <= busy_until:
+            if occupying(last, at) is not None:
+                run.skipped["busy"] += 1
+                run.skipped_by_symbol[inp.symbol]["busy"] += 1
                 continue
             run.evaluated += 1
             sliced = MarketInputs(
@@ -320,28 +343,26 @@ def run_backtest(
             exit_time = (
                 h4[i + 1 + exit_idx].close_time(Timeframe.H4) if exit_idx is not None else None
             )
-            run.trades.append(
-                BacktestTrade(
-                    symbol=inp.symbol,
-                    direction=res.direction,
-                    signal_time=at,
-                    grade=res.score.grade,
-                    score=res.score.total,
-                    rr_tp2=res.trade.rr_tp2,
-                    entry=res.trade.entry_market,
-                    stop=res.trade.stop_loss,
-                    tp1=res.trade.tp1,
-                    tp2=res.trade.tp2,
-                    tp3=res.trade.tp3,
-                    result=result,
-                    exit_time=exit_time,
-                    facts=res.facts,
-                )
+            trade = BacktestTrade(
+                symbol=inp.symbol,
+                direction=res.direction,
+                signal_time=at,
+                grade=res.score.grade,
+                score=res.score.total,
+                rr_tp2=res.trade.rr_tp2,
+                entry=res.trade.entry_market,
+                stop=res.trade.stop_loss,
+                tp1=res.trade.tp1,
+                tp2=res.trade.tp2,
+                tp3=res.trade.tp3,
+                result=result,
+                exit_time=exit_time,
+                facts=res.facts,
             )
-            if exit_idx is not None:
-                busy_until = i + 1 + exit_idx
-            elif result.status is TradeStatus.OPEN:
-                busy_until = len(h4)
+            run.trades.append(trade)
+            span = backtest_span(trade)
+            if span is not None:
+                last = (span,)
     return run
 
 
