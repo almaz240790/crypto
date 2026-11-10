@@ -485,6 +485,7 @@ def test_first_time_setup_then_admin_access(world: World, monkeypatch: pytest.Mo
     cookies = ok.headers.get_list("set-cookie")
     cookie = next(x for x in cookies if x.startswith("pl_admin="))
     assert "Path=/v1/admin" in cookie and "HttpOnly" in cookie
+    assert f"Max-Age={int((aa.TTL + aa.COOKIE_GRACE).total_seconds())}" in cookie
     assert "SameSite=strict" in cookie or "samesite=strict" in cookie.lower()
     device = next(x for x in cookies if x.startswith(f"{aa.DEVICE_COOKIE}="))
     assert "Path=/v1/admin/auth" in device and "HttpOnly" in device
@@ -1075,7 +1076,18 @@ def test_session_end_reasons_reach_login_page(world: World) -> None:
     world.db.commit()
     r3 = c3.get("/v1/admin/users")
     assert r3.status_code == 403 and r3.headers[aa.ENDED_HEADER] == "role"
-    assert world.client().get("/v1/admin/auth/me").status_code == 401  # без cookie — без причины
+    nobody = world.client().get("/v1/admin/auth/me")
+    assert nobody.status_code == 401 and aa.ENDED_HEADER not in nobody.headers  # без cookie
+    # cookie живёт дольше сеанса: через 8 часов API называет причину, а не «нет входа»
+    c4 = world.client()
+    u4, _, _ = world.user(two_factor=True)
+    past = datetime.now(tz=UTC) - aa.TTL - timedelta(minutes=5)
+    old_token = aa.make_token(u4.id, "f" * 32, past, past + aa.TTL)
+    c4.cookies.set(aa.COOKIE, old_token, domain="testserver.local", path="/v1/admin")
+    r4 = c4.get("/v1/admin/users")
+    assert r4.status_code == 401 and r4.headers[aa.ENDED_HEADER] == "expired"
+    c4.cookies.set(aa.COOKIE, old_token[:-4] + "AAAA", domain="testserver.local", path="/v1/admin")
+    assert c4.get("/v1/admin/users").headers[aa.ENDED_HEADER] == "gone"  # подделка — без подсказок
 
 
 @db_only

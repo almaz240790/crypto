@@ -50,6 +50,8 @@ TTL = timedelta(hours=8)
 """Абсолютный срок сеанса админки с момента входа."""
 IDLE = timedelta(hours=1)
 """Сеанс обрывается, если в админке не было запросов дольше этого."""
+COOKIE_GRACE = timedelta(days=1)
+"""Сколько cookie живёт после конца сеанса: чтобы API ответил «прошло 8 часов», а не «нет входа»."""
 TOUCH_EVERY = timedelta(minutes=1)
 """Как часто обновлять отметку последнего действия (чтобы не писать в БД на каждый запрос)."""
 TICKET_TTL = timedelta(minutes=15)
@@ -139,6 +141,21 @@ def decode_token(token: str) -> dict[str, Any]:
     return payload
 
 
+def token_expired(token: str) -> bool:
+    """Токен настоящий (подпись, аудитория, scope), но срок вышел: сеанс прожил свои 8 часов."""
+    try:
+        payload = jwt.decode(
+            token,
+            _signing_key(),
+            algorithms=["HS256"],
+            audience=AUDIENCE,
+            options={"require": ["exp", "sub", "sid", "aud"], "verify_exp": False},
+        )
+    except jwt.PyJWTError:
+        return False
+    return payload.get("scope") == SCOPE and int(payload["exp"]) <= datetime.now(tz=UTC).timestamp()
+
+
 def session_problem(row: AdminSession | None, user_id: int, now: datetime) -> str | None:
     """Почему сеанс не годится: unknown / revoked / expired / idle; None — годится."""
     if row is None or row.user_id != user_id:
@@ -215,7 +232,7 @@ def set_cookie(response: Response, token: str) -> None:
     response.set_cookie(
         COOKIE,
         token,
-        max_age=int(TTL.total_seconds()),
+        max_age=int((TTL + COOKIE_GRACE).total_seconds()),
         httponly=True,
         secure=settings.app_env != "local",
         samesite="strict",
@@ -251,7 +268,7 @@ def admin_session(request: Request, db: Session) -> tuple[User, AdminSession]:
         payload = decode_token(raw)
         user_id = int(payload["sub"])
     except (HTTPException, TypeError, ValueError) as exc:
-        raise ended("gone") from exc
+        raise ended("expired" if token_expired(raw) else "gone") from exc
     now = datetime.now(tz=UTC)
     row = db.get(AdminSession, str(payload["sid"]))
     problem = session_problem(row, user_id, now)
