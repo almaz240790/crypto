@@ -186,6 +186,28 @@ test("форвард: плашка с датой, выключенная пла�
   await expect(page.getByText("мало данных")).toHaveCount(0);
 });
 
+test("live и форвард: результат с учётом комиссии и проскальзывания, числа из API; у бэктеста подписи нет", async ({ page }) => {
+  await mockClient(page, false);
+  const COSTS = "Результат — с учётом комиссии 0.05 % за сторону и проскальзывания 0.03 %.";
+  const costNote = page.locator("p", { hasText: "с учётом комиссии" });
+  await page.goto("/stats");
+  await expect(costNote).toContainText(COSTS);
+  await expect(page.getByText(/закрытые до учёта комиссий/)).toHaveCount(0);
+  // форвард: сделки, закрытые до вычета комиссий, названы числом (их не пересчитываем — задачи 7 и 10)
+  await page.goto("/stats?scope=forward&version=1.1.0");
+  await expect(costNote).toContainText(COSTS);
+  await expect(costNote).toContainText("Сделки, закрытые до учёта комиссий, пока записаны без них: 5.");
+  await page.goto("/stats?scope=forward");
+  await expect(costNote).toContainText(COSTS);
+  await expect(page.getByText(/закрытые до учёта комиссий/)).toHaveCount(0);
+  await page.goto("/stats?scope=backtest");
+  await expect(page.getByText("Прогон #3")).toBeVisible();
+  await expect(page.getByText(/с учётом комиссии/)).toHaveCount(0);
+  await page.context().addCookies([{ name: "pl_locale", value: "en", url: "http://localhost:3101" }]);
+  await page.goto("/stats?scope=forward&version=1.0.0");
+  await expect(page.getByText(/Results are net of a 0\.05 % fee per side and 0\.03 % slippage\. Trades closed before costs were applied are still recorded without them: 40\./)).toBeVisible();
+});
+
 test("форвард: ни одной версии в форварде", async ({ page }) => {
   await mockClient(page, false);
   await page.goto(`/stats?scope=forward&${NO_FORWARD}`);

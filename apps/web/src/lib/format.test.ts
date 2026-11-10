@@ -7,6 +7,7 @@ import {
   formatListPrice,
   formatPrice,
   formatR,
+  formatRatePct,
   formatTimeUTC,
   nb,
   plural,
@@ -134,5 +135,20 @@ describe("nb", () => {
     expect(nb("метка «Смена ↑» или «Смена ↓»")).toBe(`метка «Смена${NB}↑» или «Смена${NB}↓»`);
     expect(nb("a “Shift ↑” or “Shift ↓” mark")).toBe(`a “Shift${NB}↑” or “Shift${NB}↓” mark`);
     expect(nb("вверх → вниз ←")).toBe(`вверх${NB}→ вниз${NB}←`);
+  });
+});
+
+describe("formatRatePct", () => {
+  it("доля из ExecutionParams → проценты без лишних нулей и без ошибок float", () => {
+    expect(formatRatePct("0.0005")).toBe("0.05");
+    expect(formatRatePct("0.0003")).toBe("0.03");
+    expect(formatRatePct("0.00075")).toBe("0.075");
+    expect(formatRatePct("0.001")).toBe("0.1");
+    expect(formatRatePct("0")).toBe("0");
+  });
+
+  it("мусор из API — прочерк, а не NaN", () => {
+    expect(formatRatePct("")).toBe("—");
+    expect(formatRatePct("abc")).toBe("—");
   });
 });

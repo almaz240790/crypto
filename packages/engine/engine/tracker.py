@@ -30,6 +30,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
 
+from engine.backtest import DEFAULT_EXECUTION, ExecutionParams, execution_cost_r
 from engine.candles import SIGNAL_TIMEFRAME, Candle, Timeframe
 from engine.params import TradeParams
 from engine.structure import Direction
@@ -119,6 +120,19 @@ class TrackerState:
     """``open_time`` последней обработанной свечи: по нему проверяются порядок и шаг потока."""
 
 
+@dataclass(frozen=True, slots=True)
+class TrackerResult:
+    """Результат сделки за вычетом комиссии и проскальзывания — то, что пишется в
+    ``signal_results`` (план 2.11). Считается из состояния в момент записи: в самом состоянии
+    результат хранится до вычета, поэтому сохранённые состояния от формулы не зависят."""
+
+    realized_r: Decimal
+    r_if_tp1_only: Decimal | None
+    r_if_full_tp2: Decimal | None
+    cost_r: Decimal
+    """Вычтенные комиссия и проскальзывание в R (``execution_cost_r``); 0 — входа не было."""
+
+
 class SignalTracker:
     """Ведёт один сигнал. Неизменяемое состояние — удобно хранить/восстанавливать из БД.
 
@@ -172,6 +186,27 @@ class SignalTracker:
         if entry is None:
             raise ValueError("сигнал ещё не активирован")
         return (price - entry) * self._sign / self._risk(entry)
+
+    def cost_r(self, exec_params: ExecutionParams = DEFAULT_EXECUTION) -> Decimal:
+        """Комиссия и проскальзывание сделки в R по той же формуле, что в ``simulate_trade``:
+        от фактического входа и риска до стопа. До входа (pending, expired) — 0."""
+        entry = self.state.entry_price
+        if entry is None:
+            return Decimal(0)
+        return execution_cost_r(entry, self._risk(entry), exec_params)
+
+    def result(self, exec_params: ExecutionParams = DEFAULT_EXECUTION) -> TrackerResult:
+        """Результат за вычетом ``cost_r`` — как ``simulate_trade`` для закрытой сделки:
+        ``realized_r``, ``r_if_tp1_only`` и ``r_if_full_tp2`` уменьшены на одну и ту же величину.
+        Состояние не меняется."""
+        s = self.state
+        cost = self.cost_r(exec_params)
+        return TrackerResult(
+            realized_r=s.realized_r - cost,
+            r_if_tp1_only=None if s.r_if_tp1_only is None else s.r_if_tp1_only - cost,
+            r_if_full_tp2=None if s.r_if_full_tp2 is None else s.r_if_full_tp2 - cost,
+            cost_r=cost,
+        )
 
     # --- сроки -----------------------------------------------------------------------------------
     @staticmethod

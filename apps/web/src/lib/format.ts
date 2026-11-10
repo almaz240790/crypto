@@ -105,6 +105,16 @@ export function formatDayUTC(iso: string): string {
   return `${pad(d.getUTCDate())}.${pad(d.getUTCMonth() + 1)}.${d.getUTCFullYear()}`;
 }
 
+/**
+ * Доля строкой из API ("0.0005", как ExecutionParams) → проценты без лишних нулей ("0.05").
+ * Для подписи о комиссии и проскальзывании: числа приходят из API, в тексте их не пишем.
+ */
+export function formatRatePct(rate: string): string {
+  const n = Number(rate);
+  if (rate.trim() === "" || !Number.isFinite(n)) return "—";
+  return String(+(n * 100).toFixed(6));
+}
+
 /** Длительность в часах → "2 ч 14 мин", "3 д 5 ч", "40 мин". */
 export function formatDuration(hours: number | string | null | undefined): string {
   if (hours === null || hours === undefined || hours === "") return "—";

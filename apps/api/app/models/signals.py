@@ -137,3 +137,6 @@ class SignalResult(Base):
     max_adverse_r: Mapped[Decimal | None] = mapped_column(Numeric(8, 3))
     closed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     entry_type_used: Mapped[str] = mapped_column(String(8), default="market")  # market / limit
+    cost_r: Mapped[Decimal | None] = mapped_column(Numeric(8, 3))
+    """Комиссия и проскальзывание в R, уже вычтенные из ``realized_r*`` (``ExecutionParams``,
+    план 2.11). NULL — строка записана до вычета комиссий (до миграции 0025)."""

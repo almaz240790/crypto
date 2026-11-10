@@ -1577,5 +1577,7 @@
   "Настройка защиты входа": "Set up sign-in protection",
   "Защитите админку кодом из телефона — это одна минута. Введите email и пароль от сайта: мы пришлём письмо со ссылкой, по ней откроется QR-код для приложения «Пароли» или Google Authenticator.": "Protect the admin panel with a code from your phone — it takes one minute. Enter your site email and password: we'll email you a link that opens a QR code for the Passwords app or Google Authenticator.",
   "Вернуться в админку": "Back to the admin panel",
-  "Администратору защита кодом не отключается: новый телефон и новые резервные коды — в админке, раздел «Защита входа».": "Code protection can't be turned off for an administrator: a new phone and new backup codes are in the admin panel, under “Sign-in protection”."
+  "Администратору защита кодом не отключается: новый телефон и новые резервные коды — в админке, раздел «Защита входа».": "Code protection can't be turned off for an administrator: a new phone and new backup codes are in the admin panel, under “Sign-in protection”.",
+  "Результат — с учётом комиссии {fee} % за сторону и проскальзывания {slippage} %.": "Results are net of a {fee} % fee per side and {slippage} % slippage.",
+  "Сделки, закрытые до учёта комиссий, пока записаны без них: {n}.": "Trades closed before costs were applied are still recorded without them: {n}."
 }

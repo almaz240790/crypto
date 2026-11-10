@@ -174,3 +174,49 @@ def test_summarize_metrics_by_hand() -> None:
     assert m.avg_duration_hours == D(7)
     assert m.expectancy == D("0.5") * D("1.2") - D("0.5") * D(1)
     assert summarize([]).winrate is None and summarize([]).max_drawdown_r == 0
+
+
+# --- эталон: список сделок бэктеста не меняется (задача 3: комиссии в трекере) -----------------
+
+
+def trade_list_digest() -> str:
+    """sha256 списка сделок на фикстуре: синтетический сетап ``run_backtest`` и 200 случайных
+    путей H4 через ``simulate_trade`` (лонг/шорт, рыночный/лимитный вход) — всё с комиссиями
+    ``DEFAULT_EXECUTION``. Любая правка исполнения или формулы ``cost_r`` меняет хэш."""
+    import hashlib
+    import random
+
+    from engine.backtest import DEFAULT_EXECUTION
+    from tests.test_tracker import SHORT, random_path
+
+    lines: list[str] = []
+    params = StrategyParams(filters=FilterParams(atr_min_history=10**6))
+    after = [
+        (99.5, 104, 99, 103),
+        (103, 106, 102, 105.5),
+        (105.5, 111, 105, 110),
+        (110, 112, 109, 111),
+    ]
+    start = T0 + H4 * (len(FLAT) + len(SETUP) - 3)
+    end = T0 + H4 * (len(FLAT) + len(SETUP) + len(after))
+    run = run_backtest([inputs(after)], params, start, end, DEFAULT_EXECUTION)
+    results = [(t.symbol, t.signal_time.isoformat(), t.result) for t in run.trades]
+    rng = random.Random(2026)
+    for trial in range(200):
+        setup = LONG if trial % 2 == 0 else SHORT
+        entry_type = "limit" if trial % 5 == 0 else "market"
+        path = random_path(rng, rng.randint(1, 30))
+        r = simulate_trade(setup, path, TP, ExecutionParams(entry_type=entry_type))
+        results.append((entry_type, str(trial), r))
+    for a, b, r in results:
+        lines.append(
+            f"{a}|{b}|{r.status}|{r.realized_r}|{r.r_if_tp1_only}|{r.r_if_full_tp2}|{r.tp_hits}|"
+            f"{r.entry_index}|{r.exit_index}|{r.max_favorable_r}|{r.max_adverse_r}|{r.cost_r}"
+        )
+    return hashlib.sha256("\n".join(lines).encode()).hexdigest()
+
+
+def test_trade_list_digest_is_unchanged() -> None:
+    """Эталон посчитан до выноса формулы cost_r в ``execution_cost_r``: на 55402f6 и на
+    origin/main a91eab4 (после задач 1, 2, 4, 5) — хэш совпал."""
+    assert trade_list_digest() == "7704a4aba7394b7cd1e40e78fce4ccc3f51ec39a79755fec20ffee1c20b076cc"

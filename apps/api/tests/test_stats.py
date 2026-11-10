@@ -167,6 +167,28 @@ def test_worst_drawdowns_open_and_expired_ignored() -> None:
     assert worst_drawdowns([still_open, t]) == [{"start": at_4h, "trough": at_4h, "depth_r": 1.0}]
 
 
+def test_without_costs_counts_closed_results_recorded_before_fees() -> None:
+    """Задача 3: закрытые сделки, записанные до вычета комиссий (``cost_r`` NULL), считаются
+    отдельно — подпись «с учётом комиссии» на /stats их оговаривает. Открытые и истёкшие не в
+    счёт; у сделок прогона бэктеста пометки нет."""
+    from dataclasses import replace
+
+    from app.stats import WITHOUT_COSTS, without_costs
+
+    net = replace(_trade("-1", 0, 4), facts=("a", "market", ""))
+    gross = replace(_trade("2", 4, 8), facts=("b", "market", WITHOUT_COSTS))
+    open_res = TradeResult(
+        TradeStatus.OPEN, Decimal(0), None, None, 0, 0, None, Decimal(0), Decimal(0), Decimal(0)
+    )
+    still_open = replace(gross, result=open_res, exit_time=None)
+    expired = replace(gross, result=replace(open_res, status=TradeStatus.EXPIRED))
+    assert without_costs([net, gross, still_open, expired]) == 1
+    assert stats_payload([net, gross, gross])["without_costs"] == 2
+    # сделки прогона бэктеста (facts без пометки) и пустой список
+    assert stats_payload([_trade("-1", 0, 4)])["without_costs"] == 0
+    assert stats_payload([])["without_costs"] == 0
+
+
 def test_forward_notice_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     """По умолчанию плашка включена и без даты; пустая дата в окружении — тоже «без даты»."""
     from datetime import date
@@ -650,3 +672,55 @@ def test_forward_notice_with_mistyped_settings(
     monkeypatch.setattr(settings, "forward_notice", bad.forward_notice)
     monkeypatch.setattr(settings, "forward_notice_until", bad.forward_notice_until)
     assert _get("/v1/stats?scope=forward")["notice"] == {"invalid_until": None}
+
+
+@db_only
+def test_stats_execution_and_results_recorded_without_costs(fx: Fixture) -> None:
+    """Задача 3: live и forward называют комиссию и проскальзывание из ``ExecutionParams`` (подпись
+    на /stats берёт числа отсюда) и число закрытых сделок, записанных до вычета комиссий
+    (``signal_results.cost_r`` NULL). У бэктеста поля ``execution`` нет: комиссии прогона — в
+    ``run``."""
+    from sqlalchemy import select
+
+    from app.models import Signal, SignalResult
+    from app.snapshots import recompute
+    from app.stats import WITHOUT_COSTS, load_trades
+    from engine.backtest import DEFAULT_EXECUTION
+
+    execution = {"fee_rate": "0.0005", "slippage": "0.0003"}
+    assert execution == {
+        "fee_rate": str(DEFAULT_EXECUTION.fee_rate),
+        "slippage": str(DEFAULT_EXECUTION.slippage),
+    }
+    fwd = _get("/v1/stats?scope=forward")
+    assert fwd["execution"] == execution and fwd["without_costs"] == 2
+    live = _get("/v1/stats?scope=live")
+    assert live["execution"] == execution and live["without_costs"] >= 1
+    assert "execution" not in _get("/v1/stats?scope=backtest")
+
+    # одна из двух сделок новой версии закрыта уже с вычетом комиссий: −1 R − 0.043 R
+    first = fx.db.scalars(
+        select(SignalResult)
+        .join(Signal, Signal.id == SignalResult.signal_id)
+        .where(Signal.strategy_version_id == fx.v_new.id)
+        .order_by(Signal.candle_close_time)
+    ).first()
+    assert first is not None
+    first.realized_r, first.cost_r = Decimal("-1.043"), Decimal("0.043")
+    fx.db.flush()
+    trades = load_trades(fx.db, "forward", fx.v_new.id)
+    assert [(t.result.cost_r, t.facts[2]) for t in trades] == [
+        (Decimal("0.043"), ""),
+        (Decimal(0), WITHOUT_COSTS),
+    ]
+    fwd = _get("/v1/stats?scope=forward")
+    assert fwd["without_costs"] == 1 and fwd["metrics"]["sum_r"] == 0.957
+    assert _get(f"/v1/stats?scope=forward&version={fx.v_old.version}")["without_costs"] == 4
+    # фильтр считает только свои сделки; из снимка — те же поля
+    by_symbol = {t.symbol: t for t in trades}
+    net_symbol = next(sym for sym, t in by_symbol.items() if t.facts[2] == "")
+    assert _get(f"/v1/stats?scope=forward&symbol={net_symbol}")["without_costs"] == 0
+    recompute(fx.db)
+    snap = _get("/v1/stats?scope=forward")
+    assert snap["source"] == "snapshot"
+    assert snap["execution"] == execution and snap["without_costs"] == 1

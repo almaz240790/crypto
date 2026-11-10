@@ -34,6 +34,8 @@ STATUS_TO_RESULT = {
 }
 HITS = {"closed_tp3": 3, "tp2_hit": 2, "tp1_hit": 1}
 FORWARD = "forward"
+WITHOUT_COSTS = "without_costs"
+"""Пометка в ``facts`` сделки, чей результат записан до вычета комиссий (``cost_r`` NULL)."""
 HIST_EDGES = [Decimal(x) for x in ("-1.5", "-1", "-0.5", "0", "0.5", "1", "1.5", "2", "3", "4")]
 """Границы корзин гистограммы R; крайние корзины открытые."""
 
@@ -50,7 +52,11 @@ def load_trades(
 ) -> list[BacktestTrade]:
     """Сигналы области ``scope`` (live/forward) как сделки бэктеста.
 
-    ``facts`` каждой сделки = (public_id, тип входа) — для ссылок и разбивки по типу входа.
+    ``facts`` каждой сделки = (public_id, тип входа, пометка ``WITHOUT_COSTS`` или "") — для
+    ссылок, разбивки по типу входа и счёта сделок без комиссий. ``cost_r`` результата — из
+    ``signal_results.cost_r`` (комиссия и проскальзывание, уже вычтенные из ``realized_r``). У
+    результатов, записанных до вычета комиссий (задача 3, ``cost_r`` NULL), ``cost_r`` = 0, а в
+    ``facts`` — пометка ``WITHOUT_COSTS``: их ``realized_r`` без комиссий, пересчёт — задачи 7 и 10.
     Область — ``signals.scope``, зафиксированная при публикации (``app.signal_scope``), а не
     текущий статус версии. live — все live-сигналы, в том числе версий, ушедших потом в forward
     или archived. Форвард считается только по одной версии (план 2.11: версии не смешиваются),
@@ -84,7 +90,8 @@ def load_trades(
             "select i.symbol, s.direction, s.candle_close_time, s.grade, s.score, s.rr_tp2, "
             "s.entry_market, s.stop_loss, s.tp1, s.tp2, s.tp3, s.status, "
             "r.realized_r, r.realized_r_tp1_only, r.realized_r_full_tp2, r.max_favorable_r, "
-            "r.max_adverse_r, r.closed_at, s.public_id, coalesce(r.entry_type_used, 'market') "
+            "r.max_adverse_r, r.closed_at, s.public_id, coalesce(r.entry_type_used, 'market'), "
+            "r.cost_r, (r.signal_id is not null and r.cost_r is null) "
             "from signals s join instruments i on i.id = s.instrument_id "
             "join strategy_versions sv on sv.id = s.strategy_version_id "
             "left join signal_results r on r.signal_id = s.id "
@@ -106,7 +113,7 @@ def load_trades(
             exit_index=0 if tstatus not in (TradeStatus.OPEN, TradeStatus.EXPIRED) else None,
             max_favorable_r=r[15] or Decimal(0),
             max_adverse_r=r[16] or Decimal(0),
-            cost_r=Decimal(0),
+            cost_r=r[20] if r[20] is not None else Decimal(0),
         )
         out.append(
             BacktestTrade(
@@ -123,7 +130,7 @@ def load_trades(
                 tp3=r[10],
                 result=result,
                 exit_time=r[17],
-                facts=(r[18], r[19]),
+                facts=(r[18], r[19], WITHOUT_COSTS if r[21] else ""),
             )
         )
     return out
@@ -293,7 +300,15 @@ def stats_payload(trades: list[BacktestTrade]) -> dict[str, Any]:
         "r_histogram": r_histogram(trades),
         "equity": [{"t": t.isoformat(), "r": float(round(v, 3))} for t, v in equity_curve(trades)],
         "worst_drawdowns": worst_drawdowns(trades),
+        "without_costs": without_costs(trades),
     }
+
+
+def without_costs(trades: list[BacktestTrade]) -> int:
+    """Сколько закрытых сделок записано без вычета комиссий и проскальзывания: результат закрыт
+    до задачи 3 (``signal_results.cost_r`` NULL). Подпись «с учётом комиссии» на /stats честно
+    оговаривает их, пока они не пересчитаны (задачи 7 и 10). У бэктеста таких нет."""
+    return sum(1 for t in trades if t.result.closed and WITHOUT_COSTS in t.facts[2:])
 
 
 def worst_drawdowns(trades: list[BacktestTrade], n: int = 3) -> list[dict[str, Any]]:
