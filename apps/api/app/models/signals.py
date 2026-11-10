@@ -12,7 +12,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -32,7 +32,10 @@ SIGNAL_STATUSES = (
     "closed_time",
     "expired",
     "cancelled",
+    "voided",
 )
+"""``voided`` — результат недействителен: исход записан с ошибкой учёта и не пересчитан (нет
+1m-свечей), в статистику не входит (``app.retrack``, миграция 0026)."""
 SIGNAL_EVENT_TYPES = (
     "created",
     "activated",
@@ -44,7 +47,10 @@ SIGNAL_EVENT_TYPES = (
     "time_stop",
     "expired",
     "cancelled",
+    "corrected",
+    "voided",
 )
+"""``corrected`` и ``voided`` — пояснение исправления исхода (``signal_corrections``)."""
 
 
 class Strategy(Base):
@@ -140,3 +146,37 @@ class SignalResult(Base):
     cost_r: Mapped[Decimal | None] = mapped_column(Numeric(8, 3))
     """Комиссия и проскальзывание в R, уже вычтенные из ``realized_r*`` (``ExecutionParams``,
     план 2.11). NULL — строка записана до вычета комиссий (до миграции 0025)."""
+
+
+class SignalCorrection(Base):
+    """Исправление записанного исхода сигнала (задание «сигналы», задачи 7 и 10; миграция 0026).
+
+    Исходные строки ``signal_events`` не меняются и не удаляются: события, которые исправление
+    заменило, перечислены в ``superseded_event_ids`` (карточка и слой графика их не показывают,
+    ``app.corrections.current_event``), новые события пишутся с ``source = 'retrack'``, событие
+    ``note_event_id`` (``corrected`` / ``voided``) объясняет исправление. Прежние строки
+    ``signal_results`` и ``signal_tracking`` — в ``result_before`` и ``tracking_before`` (все
+    столбцы строки; ``None`` — строки не было). Одно исправление на сигнал и задание.
+
+    ``kind``: ``retrack`` — исход пересчитан по 1m-свечам; ``fees`` — исход верный, из результата
+    вычтены комиссия и проскальзывание; ``void`` — пересчитать нельзя, результат недействителен.
+    """
+
+    __tablename__ = "signal_corrections"
+    __table_args__ = (
+        UniqueConstraint("signal_id", "job", name="uq_signal_corrections_signal_job"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    signal_id: Mapped[int] = mapped_column(ForeignKey("signals.id"), index=True)
+    job: Mapped[str] = mapped_column(String(64))
+    kind: Mapped[str] = mapped_column(String(8))
+    status_before: Mapped[str] = mapped_column(String(16))
+    status_after: Mapped[str] = mapped_column(String(16))
+    result_before: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    result_after: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    tracking_before: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    superseded_event_ids: Mapped[list[int]] = mapped_column(ARRAY(Integer), default=list)
+    note_event_id: Mapped[int | None] = mapped_column(ForeignKey("signal_events.id"))
+    note: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

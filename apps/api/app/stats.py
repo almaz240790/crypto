@@ -11,6 +11,7 @@ from typing import Any
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
+from app.corrections import VOIDED
 from app.models import StrategyVersion
 from engine.backtest import (
     BacktestTrade,
@@ -61,12 +62,15 @@ def load_trades(
     текущий статус версии. live — все live-сигналы, в том числе версий, ушедших потом в forward
     или archived. Форвард считается только по одной версии (план 2.11: версии не смешиваются),
     поэтому для ``forward`` версия обязательна — см. ``default_forward_version``; это вся её
-    форвард-история, в каком бы статусе версия ни была сейчас.
+    форвард-история, в каком бы статусе версия ни была сейчас. Сигналы со статусом ``voided``
+    (результат недействителен, задачи 7 и 10) не входят.
     """
     if scope == FORWARD and strategy_version_id is None:
         raise ValueError("форвард считается по одной версии стратегии: укажите версию")
-    where = ["s.scope = :scope"]
-    params: dict[str, Any] = {"scope": scope}
+    # недействительные результаты (исход записан с ошибкой учёта, пересчитать нельзя —
+    # ``app.retrack``) в статистику не входят
+    where = ["s.scope = :scope", "s.status <> :voided"]
+    params: dict[str, Any] = {"scope": scope, "voided": VOIDED}
     if grade:
         where.append("s.grade = :grade")
         params["grade"] = grade.upper()
