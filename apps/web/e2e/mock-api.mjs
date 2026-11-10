@@ -21,10 +21,42 @@ const stats = (scope) => ({
   scope,
   generated_at: new Date().toISOString(),
 });
-const VERSIONS = [
-  { id: 1, strategy: "trend-ob-retest", name: "Trend OB retest", version: "1.0.0", status: "forward", activated_at: null },
-  { id: 2, strategy: "trend-ob-retest", name: "Trend OB retest", version: "1.1.0", status: "forward", activated_at: null },
-];
+const EMPTY = { by_grade: {}, by_symbol: {}, by_month: {}, by_direction: {}, by_entry_type: {}, r_histogram: [], equity: [], worst_drawdowns: [] };
+// Форвард — как на production в день выкладки: 1.0.0 переведена в архив, её форвард-сделки записаны;
+// 1.1.0 в форварде, сделок меньше порога «мало данных»; 1.2.0 в форварде без сделок, у неё наибольший id —
+// это версия по умолчанию. 0.9.0 — в архиве и без форвард-истории: в селектор не попадает.
+const sv = (id, version, status) => ({ id, strategy: "trend-ob-retest", name: "Trend OB retest", version, status, activated_at: null });
+const VERSIONS = [sv(1, "0.9.0", "archived"), sv(2, "1.0.0", "archived"), sv(3, "1.1.0", "forward"), sv(4, "1.2.0", "forward")];
+const FORWARD_METRICS = { "1.0.0": m(40, 0.47, 14.2), "1.1.0": m(12, 0.5, 2.4) };
+// Другие состояния API форварда выбираются параметром run_id. Настоящий API у форварда run_id не читает,
+// а страница /stats передаёт его в запрос как есть, поэтому у каждого состояния свой адрес запроса и
+// кэш fetch в Next (60 с, ключ — адрес) их не смешивает. Без run_id — состояние дня выкладки:
+// плашка включена и без даты (настройки API по умолчанию).
+const FORWARD_STATES = {
+  9001: { until: "2026-11-06" }, // FORWARD_NOTICE_UNTIL задан
+  9002: { notice: false }, // FORWARD_NOTICE=false
+  9003: { noForward: true }, // ни одной версии в статусе forward: 1.1.0 и 1.2.0 тоже в архиве
+};
+function forwardStats(u) {
+  const state = FORWARD_STATES[u.searchParams.get("run_id")] ?? {};
+  const all = VERSIONS.map((v) => (state.noForward ? { ...v, status: "archived" } : v));
+  const ref = ({ activated_at: _, ...v }) => v;
+  // как API: форвард только по одной версии; без версии — наибольший id в статусе forward
+  const want = u.searchParams.get("version");
+  const cur = want ? all.find((v) => v.version === want) : all.filter((v) => v.status === "forward").at(-1);
+  if (want && !cur) return [404, { detail: "версия стратегии не найдена" }];
+  const metrics = (cur && FORWARD_METRICS[cur.version]) ?? m(0, null, 0);
+  const body = metrics.closed ? { ...stats("forward"), metrics } : { ...stats("forward"), ...EMPTY, metrics };
+  return [200, {
+    ...body,
+    strategy_version: cur ? ref(cur) : null,
+    // селектор: версии в форварде и ушедшие из него с записанной форвард-историей
+    versions: all.filter((v) => v.status === "forward" || FORWARD_METRICS[v.version]).map(ref),
+    notice: state.notice === false ? null : { invalid_until: state.until ?? null },
+    low_n_threshold: 30,
+    low_data: metrics.closed < 30,
+  }];
+}
 const trade = (i) => ({ id: `s${i}`, symbol: i % 2 ? "BTCUSDT" : "ETHUSDT", direction: i % 3 ? "long" : "short", signal_time: new Date(Date.UTC(2026, 8, 1 + (i % 28), 8)).toISOString(), grade: "AB"[i % 2], score: 60 + i, entry: "100", stop: "98", rr_tp2: "2.5", entry_type: "market", status: i % 4 ? "closed_tp3" : "closed_sl", tp_hits: i % 4 ? 3 : 0, realized_r: i % 4 ? 2.9 : -1, mfe_r: 3, mae_r: 0.2, exit_time: null });
 
 http
@@ -38,16 +70,8 @@ http
     if (p === "/health") return J(200, { status: "ok", db: "ok", schema: "0005", candles: "123456", env: "test" });
     if (p === "/v1/stats") {
       const scope = u.searchParams.get("scope") ?? "live";
-      if (scope === "live") return J(200, { ...stats("live"), metrics: m(0, null, 0), by_grade: {}, by_symbol: {}, by_month: {}, by_direction: {}, by_entry_type: {}, r_histogram: [], equity: [], worst_drawdowns: [] });
-      if (scope === "forward") {
-        // как API: форвард только по одной версии; без версии — наибольший id в статусе forward
-        const want = u.searchParams.get("version");
-        const sv = want ? VERSIONS.find((v) => v.version === want) : VERSIONS.filter((v) => v.status === "forward").at(-1);
-        if (!sv) return J(404, { detail: "версия стратегии не найдена" });
-        const s = { ...stats("forward"), metrics: sv.version === "1.1.0" ? m(12, 0.5, 2.4) : m(40, 0.47, 14.2) };
-        const { activated_at: _, ...ref } = sv;
-        return J(200, { ...s, strategy_version: ref, notice: { invalid_until: "2026-11-06" }, low_n_threshold: 30, low_data: s.metrics.closed < 30 });
-      }
+      if (scope === "live") return J(200, { ...stats("live"), ...EMPTY, metrics: m(0, null, 0) });
+      if (scope === "forward") return J(...forwardStats(u));
       const s = stats(scope);
       if (u.searchParams.get("grade") === "A") s.metrics = m(15, 0.55, 9);
       return J(200, s);

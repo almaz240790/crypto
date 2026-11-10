@@ -13,7 +13,7 @@ import {
   type StatsQuery,
 } from "@/lib/api";
 import { formatDayUTC, formatDuration, formatPct, formatR, formatTimeUTC, plural } from "@/lib/format";
-import { forwardVersionOptions } from "@/lib/forwardStats";
+import { forwardEmptyKind, forwardVersionOptions } from "@/lib/forwardStats";
 import s from "./page.module.css";
 import { getT } from "@/i18n/server";
 
@@ -53,9 +53,14 @@ function pct(v: number | null | undefined): string {
   return num(v, (n) => formatPct(n * 100, { signed: false }));
 }
 
-/** lowN — порог «мало данных» из API (только форвард): числа не скрываем, только помечаем. */
+/**
+ * lowN — порог «мало данных» из API (только форвард): числа не скрываем, только помечаем.
+ * Пояснение к пометке — видимой строкой над карточками (на телефоне — прямо над карточкой с
+ * пометкой), а не подсказкой по наведению: на телефоне наведения нет, и порог иначе не прочитать.
+ */
 async function MetricCards({ m, lowN }: { m: Metrics; lowN?: number | null }) {
   const tr = await getT();
+  const low = lowN != null && m.closed < lowN;
   const cards: [string, string, string, string?][] = [
     ["closed", tr("закрытых сделок"), String(m.closed), `${m.open} ${plural(m.open, tr("активная"), tr("активные"), tr("активных"))}, ${m.expired} ${plural(m.expired, tr("истёк"), tr("истекли"), tr("истекли"))}`],
     ["winrate", tr("винрейт"), pct(m.winrate)],
@@ -69,6 +74,7 @@ async function MetricCards({ m, lowN }: { m: Metrics; lowN?: number | null }) {
   ];
   return (
     <div className={s.cards}>
+      {low && <p className={s.lowNote}>{tr("Меньше {n} закрытых сделок: выводы по этим числам делать рано.", { n: lowN })}</p>}
       {cards.map(([k, label, value, sub]) => (
         <dl key={k} className={s.card}>
           <dt>
@@ -77,11 +83,9 @@ async function MetricCards({ m, lowN }: { m: Metrics; lowN?: number | null }) {
           </dt>
           <dd>
             {value}
-            {k === "closed" && lowN != null && m.closed < lowN && (
+            {k === "closed" && low && (
               <span className={s.low}>
-                <Badge tone="warn" title={tr("Меньше {n} закрытых сделок: выводы по этим числам делать рано.", { n: lowN })}>
-                  {tr("мало данных")}
-                </Badge>
+                <Badge tone="warn">{tr("мало данных")}</Badge>
               </span>
             )}
             {sub && (
@@ -185,8 +189,14 @@ export default async function StatsPage({ searchParams }: { searchParams: Promis
   };
   const pages = trades ? Math.ceil(trades.total / PAGE) : 0;
   const versionOptions =
-    scope === "forward" ? forwardVersionOptions(strategies, fwd) : strategies.filter((v) => (scope === "backtest" ? true : v.status === scope));
+    scope === "forward" ? forwardVersionOptions(stats?.versions, strategies, fwd) : strategies.filter((v) => (scope === "backtest" ? true : v.status === scope));
   const filtered = !!(q.symbol || q.grade || q.entry_type || q.days);
+  // Поля фильтров неуправляемые (defaultValue): при переходе по ссылке (вкладка, «сбросить») React
+  // оставляет прежний узел и значение в нём не меняет, поэтому селектор показывал бы не ту версию,
+  // что посчитана и названа на странице, а «Применить» молча переключал бы на неё. Ключ пересоздаёт
+  // форму при каждой смене запроса или показанной версии.
+  const formKey = `${query}|${fwd?.version ?? ""}`;
+  const emptyKind = forwardEmptyKind(fwd, filtered);
 
   return (
     <>
@@ -222,6 +232,7 @@ export default async function StatsPage({ searchParams }: { searchParams: Promis
         <p className={s.note}>
           <strong>{scopeInfo.label}.</strong> {scopeInfo.note}
           {fwd && <> {tr("Показана версия {name} {version}: форвард считается по каждой версии отдельно.", { name: fwd.name, version: fwd.version })}</>}
+          {fwd && fwd.status !== "forward" && has && <> {tr("Эта версия больше не проходит форвард-тест: показана её записанная история.")}</>}
           {scope === "backtest" && stats?.run && (
             <>
               {" "}
@@ -231,7 +242,7 @@ export default async function StatsPage({ searchParams }: { searchParams: Promis
           )}
         </p>
 
-        <form className={s.filters} method="get" action="/stats">
+        <form key={formKey} className={s.filters} method="get" action="/stats">
           <input type="hidden" name="scope" value={scope} />
           {scope === "backtest" ? (
             <label>{tr("прогон")}<select name="run_id" defaultValue={q.run_id ?? ""}>
@@ -246,6 +257,8 @@ export default async function StatsPage({ searchParams }: { searchParams: Promis
           ) : (
             <label>{tr("версия стратегии")}<select name="version" defaultValue={scope === "forward" ? (fwd?.version ?? q.version ?? "") : (q.version ?? "")}>
                 {scope !== "forward" && <option value="">{tr("все")}</option>}
+                {/* форвард-версий нет: показана не версия, и селектор не должен выглядеть так, будто выбрана первая из списка */}
+                {scope === "forward" && !fwd && <option value="">—</option>}
                 {versionOptions.map((v) => (
                   <option key={v.id} value={v.version}>
                     {v.name} {v.version}
@@ -295,11 +308,13 @@ export default async function StatsPage({ searchParams }: { searchParams: Promis
                   ? tr("Live-сигналов пока нет: текущая версия стратегии проходит форвард-тест. Переключите область на «Форвард-тест» или «Бэктест».")
                   : scope === "backtest" && !stats.run
                     ? tr("Сохранённых прогонов бэктеста нет.")
-                    : scope === "forward" && !fwd
+                    : scope === "forward" && emptyKind === "none"
                       ? tr("Ни одна версия стратегии сейчас не проходит форвард-тест.")
-                      : scope === "forward" && !filtered
+                      : scope === "forward" && emptyKind === "no-trades"
                         ? tr("У версии {version} пока нет форвард-сделок.", { version: fwd!.version })
-                        : tr("По этим фильтрам сделок нет.")
+                        : scope === "forward" && emptyKind === "not-forward"
+                          ? tr("Версия {version} сейчас не проходит форвард-тест, форвард-статистики по ней нет.", { version: fwd!.version })
+                          : tr("По этим фильтрам сделок нет.")
               }
             />
           </Panel>

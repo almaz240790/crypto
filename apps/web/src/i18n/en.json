@@ -365,6 +365,8 @@
   "Меньше {n} закрытых сделок: выводы по этим числам делать рано.": "Fewer than {n} closed trades: it is too early to draw conclusions from these numbers.",
   "Ни одна версия стратегии сейчас не проходит форвард-тест.": "No strategy version is in forward testing right now.",
   "У версии {version} пока нет форвард-сделок.": "Version {version} has no forward-test trades yet.",
+  "Версия {version} сейчас не проходит форвард-тест, форвард-статистики по ней нет.": "Version {version} is not in forward testing now; there are no forward-test statistics for it.",
+  "Эта версия больше не проходит форвард-тест: показана её записанная история.": "This version is no longer in forward testing: its recorded history is shown.",
   "появится после подключения бота": "will appear once the bot is connected",
   "пробный период": "trial period",
   "проверить": "check",

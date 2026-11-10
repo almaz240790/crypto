@@ -71,6 +71,9 @@
 }
 
 .note {
+  /* плашка форварда — тоже <p> и стоит прямо перед пояснением: без этого глобальное p + p добавляло
+     отступ, и промежуток между ними был 28 px при 16 px между остальными блоками */
+  margin: 0;
   padding: var(--gap-2) var(--gap-3);
   border: 1px solid var(--border);
   border-left: 3px solid var(--warn);
@@ -106,6 +109,16 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--surface);
+}
+
+/* Пояснение к пометке «мало данных»: первая строка блока карточек во всю его ширину, видна без наведения. */
+.lowNote {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: var(--gap-2) var(--gap-3);
+  border-bottom: 1px solid var(--border);
+  font-size: var(--fs-caption);
+  color: var(--text-2);
 }
 
 .card {
