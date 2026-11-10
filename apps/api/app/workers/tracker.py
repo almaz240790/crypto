@@ -10,6 +10,8 @@
 - При старте и раз в минуту — догон: для открытых сигналов проигрываются все закрытые 1m-свечи
   после ``last_candle_time`` (или после сигнальной свечи), так что разрыв WebSocket не
   теряет касаний.
+- Ошибка в данных одного сигнала не останавливает проход: его шаг откатывается до точки
+  сохранения и пишется в лог, остальные сигналы ведутся (``catch_up``).
 """
 
 from __future__ import annotations
@@ -27,6 +29,7 @@ from typing import Any
 import redis as redis_sync
 import redis.asyncio as aioredis
 from sqlalchemy import select, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -250,8 +253,26 @@ def _publish_status(changes: list[dict[str, Any]]) -> None:
         log.warning("не удалось опубликовать смену статуса", exc_info=True)
 
 
+def _advance(session: Session, sig: Signal, tf: Timeframe) -> int:
+    """Догон одного сигнала: закрытые свечи после последней обработанной. Число событий."""
+    row = session.get(SignalTracking, sig.id)
+    since = (
+        (row.last_candle_time + tf.delta) if row and row.last_candle_time else sig.candle_close_time
+    )
+    candles = _candles_after(session, sig.instrument_id, since, tf)
+    return apply_candles(session, sig, candles, tf) if candles else 0
+
+
 def catch_up(tf: Timeframe = Timeframe.M1, instrument_id: int | None = None) -> int:
-    """Догон по всем открытым сигналам (или одного инструмента)."""
+    """Догон по всем открытым сигналам (или одного инструмента).
+
+    Каждый сигнал ведётся в своей точке сохранения. Ошибка одного сигнала (трекер отвергает
+    ``candle_close_time`` не на границе сигнального таймфрейма и свечу не на сетке потока,
+    повреждено сохранённое состояние) откатывает только его шаг и пишется в лог; остальные
+    сигналы прохода ведутся и фиксируются. Сам сигнал остаётся открытым и будет повторён на
+    следующем проходе. Потеря соединения с БД — не ошибка сигнала: проход прерывается целиком,
+    как и раньше.
+    """
     total = 0
     changes: list[dict[str, Any]] = []
     with SessionLocal() as session:
@@ -259,25 +280,32 @@ def catch_up(tf: Timeframe = Timeframe.M1, instrument_id: int | None = None) -> 
         if instrument_id is not None:
             q = q.where(Signal.instrument_id == instrument_id)
         for sig in session.scalars(q).all():
-            row = session.get(SignalTracking, sig.id)
-            since = (
-                (row.last_candle_time + tf.delta)
-                if row and row.last_candle_time
-                else sig.candle_close_time
-            )
-            candles = _candles_after(session, sig.instrument_id, since, tf)
-            if candles:
-                before = sig.status
-                total += apply_candles(session, sig, candles, tf)
-                if sig.status != before:
-                    changes.append(
-                        {
-                            "id": sig.public_id,
-                            "instrument_id": sig.instrument_id,
-                            "status": sig.status,
-                            "at": datetime.now(tz=UTC).isoformat(),
-                        }
-                    )
+            # до точки сохранения: после её отката изменённые поля объекта сбрасываются
+            ref = (sig.public_id, sig.id, sig.instrument_id)
+            before = sig.status
+            savepoint = session.begin_nested()
+            try:
+                n = _advance(session, sig, tf)
+                savepoint.commit()
+            except Exception as exc:
+                if isinstance(exc, DBAPIError) and exc.connection_invalidated:
+                    raise
+                savepoint.rollback()
+                log.exception(
+                    "сигнал %s (id %s, инструмент %s): ошибка трекера, в этом проходе пропущен",
+                    *ref,
+                )
+                continue
+            total += n
+            if sig.status != before:
+                changes.append(
+                    {
+                        "id": sig.public_id,
+                        "instrument_id": sig.instrument_id,
+                        "status": sig.status,
+                        "at": datetime.now(tz=UTC).isoformat(),
+                    }
+                )
         session.commit()
     _publish_status(changes)
     return total
