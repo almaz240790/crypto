@@ -3,6 +3,10 @@
 - ``notify_new_signal`` / ``notify_event`` — мгновенные письма по live-сигналам с учётом настроек:
   градации, инструменты (все / вотчлист), тихие часы (UTC), суточный лимит; каждая отправка
   записывается в ``notification_log`` (повтор невозможен).
+- ``notify_staff_signal`` / ``notify_staff_event`` — письма и push владельцам и администраторам о
+  новых сигналах форварда и смене их статуса (вход, TP1–TP3, стоп, выход по времени); форвард
+  видят только они, обычные пользователи этих уведомлений не получают; исправления исхода
+  (пересчёт форварда) не рассылаются.
 - ``run_digest`` — ежедневный/еженедельный дайджест: закрытые сигналы за период, активные,
   метрики за 30 дней, ссылка отписки.
 Тексты — простые, без обещаний (план 8). Без ключа Resend письма уходят в лог.
@@ -21,6 +25,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.corrections import CORRECTION_SOURCE
 from app.journal_analytics import TradeRow, analytics
 from app.mail import send_mail
 from app.models import (
@@ -32,6 +37,7 @@ from app.models import (
     Signal,
     SignalEvent,
     SignalResult,
+    StrategyVersion,
     User,
     Watchlist,
     WatchlistItem,
@@ -56,6 +62,8 @@ EVENT_TEXT = {
     "time_stop": "закрыт по времени",
     "expired": "вход не исполнен, сигнал истёк",
 }
+CLOSING_EVENTS = ("tp3", "be", "sl", "time_stop", "expired")
+"""События закрытия сделки: в уведомлении о них — итог в R."""
 
 
 def settings_for(db: Session, user: User) -> NotificationSettings:
@@ -267,6 +275,159 @@ def notify_event(db: Session, ev: SignalEvent, now: datetime | None = None) -> i
                 "tag": f"event-{ev.id}",
             },
         )
+    db.commit()
+    return sent
+
+
+# --- форвард: владельцу и администраторам ------------------------------------------------------
+
+STAFF_ROLES = ("owner", "admin")
+"""Кто получает письма и push о сигналах форварда: форвард видят только они (план 2.11)."""
+STAFF_SIGNAL, STAFF_EVENT = "fwd_signal", "fwd_event"
+"""``notification_log.kind`` уведомлений о форварде: повтор по тому же сигналу или событию
+невозможен (уникальность пользователь + канал + вид + ссылка)."""
+DIRECTION = {"long": "LONG", "short": "SHORT"}
+
+
+def _staff(db: Session) -> list[User]:
+    """Владельцы и администраторы: не удалены и не заблокированы."""
+    return list(
+        db.scalars(
+            select(User)
+            .where(
+                User.role.in_(STAFF_ROLES),
+                User.deleted_at.is_(None),
+                User.blocked_at.is_(None),
+            )
+            .order_by(User.id)
+        ).all()
+    )
+
+
+def _forward_signal(sig: Signal) -> bool:
+    """Уведомления владельцу и администраторам — по форвард-сигналам (``signals.scope``, область
+    на момент публикации). Live-сигналы идут обычным путём, по настройкам пользователей."""
+    return sig.scope == "forward"
+
+
+def _signal_head(db: Session, sig: Signal) -> tuple[str, str]:
+    symbol = db.scalar(select(Instrument.symbol).where(Instrument.id == sig.instrument_id)) or "?"
+    return symbol, f"{symbol} {DIRECTION.get(sig.direction, sig.direction.upper())}"
+
+
+def _levels_line(sig: Signal) -> str:
+    return (
+        f"вход {_dec(sig.entry_limit or sig.entry_market)}, стоп {_dec(sig.stop_loss)}, "
+        f"TP1 / TP2 / TP3 {_dec(sig.tp1)} / {_dec(sig.tp2)} / {_dec(sig.tp3)}"
+    )
+
+
+def staff_signal_text(sig: Signal, symbol: str, version: str) -> str:
+    """Письмо о новом сигнале форварда: инструмент, направление, уровни, градация, ссылка."""
+    rows = [
+        ("инструмент", symbol),
+        ("направление", DIRECTION.get(sig.direction, sig.direction.upper())),
+        ("градация", f"{sig.grade} ({sig.score})"),
+        ("вход", _dec(sig.entry_limit or sig.entry_market)),
+        ("стоп", _dec(sig.stop_loss)),
+        ("TP1 / TP2 / TP3", f"{_dec(sig.tp1)} / {_dec(sig.tp2)} / {_dec(sig.tp3)}"),
+        ("R:R до TP2", _dec(sig.rr_tp2)),
+        ("версия стратегии", version),
+        ("свеча", sig.candle_close_time.astimezone(UTC).strftime("%d.%m %H:%M UTC")),
+    ]
+    w = max(len(k) for k, _ in rows)
+    table = "\n".join(f"{k.ljust(w)}  {v}" for k, v in rows)
+    return (
+        f"Новый сигнал форварда: {symbol}\n\n{table}\n\n"
+        f"Карточка: {settings.frontend_url}/signals/{sig.public_id}\n\n"
+        "Сигналы форварда видят только владелец и администраторы."
+    )
+
+
+def staff_event_text(sig: Signal, ev: SignalEvent, head: str, result: SignalResult | None) -> str:
+    """Письмо о смене статуса сигнала форварда: что произошло, по какой цене, когда, результат."""
+    price = f" по {_dec(ev.price)}" if ev.price is not None else ""
+    lines = [
+        f"{head} · {sig.grade}: {EVENT_TEXT[ev.type]}{price}.",
+        f"Время: {ev.occurred_at.astimezone(UTC).strftime('%d.%m %H:%M UTC')}",
+    ]
+    if result is not None:
+        lines.append(f"Результат: {_fmt_r(result.realized_r)} с учётом комиссии и проскальзывания.")
+    lines += [
+        f"Уровни: {_levels_line(sig)}.",
+        f"Карточка: {settings.frontend_url}/signals/{sig.public_id}",
+    ]
+    return "\n".join(lines)
+
+
+def notify_staff_signal(db: Session, sig: Signal) -> int:
+    """Письмо и push о новом сигнале форварда — владельцам и администраторам (обычные
+    пользователи форвард не получают). Возвращает число отправок."""
+    if not _forward_signal(sig):
+        return 0
+    symbol, head = _signal_head(db, sig)
+    version = db.scalar(
+        select(StrategyVersion.version).where(StrategyVersion.id == sig.strategy_version_id)
+    )
+    sent = 0
+    for user in _staff(db):
+        if user.email_verified_at is not None and _record(db, user.id, STAFF_SIGNAL, sig.public_id):
+            send_mail(
+                user.email,
+                f"Новый сигнал: {head} · {sig.grade}",
+                staff_signal_text(sig, symbol, version or "?"),
+            )
+            sent += 1
+        if _record_push(db, user.id, STAFF_SIGNAL, sig.public_id):
+            sent += send_to_user(
+                db,
+                user.id,
+                {
+                    "title": f"Новый сигнал: {head} · {sig.grade}",
+                    "body": _levels_line(sig),
+                    "url": f"/signals/{sig.public_id}",
+                    "tag": f"signal-{sig.public_id}",
+                },
+            )
+    db.commit()
+    return sent
+
+
+def notify_staff_event(db: Session, ev: SignalEvent) -> int:
+    """Письмо и push о смене статуса сигнала форварда (вход, TP1–TP3, безубыток, стоп, выход по
+    времени, истечение) — владельцам и администраторам. Исправления исхода (``source =
+    'retrack'``) не рассылаются."""
+    if ev.type not in EVENT_TEXT or ev.source == CORRECTION_SOURCE:
+        return 0
+    sig = db.get(Signal, ev.signal_id)
+    if sig is None or not _forward_signal(sig):
+        return 0
+    _, head = _signal_head(db, sig)
+    what = EVENT_TEXT[ev.type].split(" — ")[0]
+    result = db.get(SignalResult, sig.id) if ev.type in CLOSING_EVENTS else None
+    sent = 0
+    for user in _staff(db):
+        if user.email_verified_at is not None and _record(db, user.id, STAFF_EVENT, str(ev.id)):
+            send_mail(
+                user.email,
+                f"{head}: {what}",
+                staff_event_text(sig, ev, head, result),
+            )
+            sent += 1
+        if _record_push(db, user.id, STAFF_EVENT, str(ev.id)):
+            body = f"по {_dec(ev.price)}" if ev.price is not None else ""
+            if result is not None:
+                body = f"{body}, итог {_fmt_r(result.realized_r)}".lstrip(", ")
+            sent += send_to_user(
+                db,
+                user.id,
+                {
+                    "title": f"{head}: {what}",
+                    "body": body,
+                    "url": f"/signals/{sig.public_id}",
+                    "tag": f"event-{ev.id}",
+                },
+            )
     db.commit()
     return sent
 

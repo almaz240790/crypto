@@ -1,5 +1,7 @@
 """Уведомитель (план 3.11): раз в ``POLL`` секунд читает новые live-сигналы и события трекера
-из БД и рассылает письма по настройкам пользователей. Последние обработанные id — в Redis,
+из БД и рассылает письма по настройкам пользователей; о сигналах форварда и смене их статуса —
+письма и push владельцам и администраторам (``notify_staff_*``). События исправления исхода
+(``source = 'retrack'``, пересчёт форварда) не рассылаются. Последние обработанные id — в Redis,
 при первом запуске начинает с текущего максимума (старое не рассылает). Heartbeat — в Redis.
 
 Здесь же пересчитываются снимки статистики (план 2.4): после закрытия сигнала и раз в
@@ -27,14 +29,24 @@ from sqlalchemy import func, select
 
 from app.coin_rank import refresh_if_due
 from app.config import settings
+from app.corrections import CORRECTION_SOURCE
 from app.db import SessionLocal
 from app.models import Signal, SignalEvent
 from app.monitor import run_monitor
-from app.notify import notify_event, notify_new_signal, run_digest, run_journal_reports
+from app.notify import (
+    notify_event,
+    notify_new_signal,
+    notify_staff_event,
+    notify_staff_signal,
+    run_digest,
+    run_journal_reports,
+)
 from app.snapshots import recompute
 from app.subscriptions import run_hourly
 
-CLOSING = {"closed_sl", "closed_be", "closed_tp3", "closed_time", "expired", "cancelled"}
+CLOSING = {"sl", "be", "tp3", "time_stop", "expired", "cancelled"}
+"""Типы событий, закрывающих сигнал: после них снимки статистики пересчитываются сразу (раньше
+здесь стояли статусы сигнала, и с типами событий совпадали только expired и cancelled)."""
 
 log = logging.getLogger("notifier")
 POLL = 30
@@ -66,11 +78,12 @@ def process(last_signal: int, last_event: int) -> tuple[int, int, int, bool]:
         for sig in db.scalars(
             select(Signal).where(Signal.id > last_signal).order_by(Signal.id)
         ).all():
-            try:
-                sent += notify_new_signal(db, sig)
-            except Exception:
-                log.exception("сигнал %s: ошибка рассылки", sig.public_id)
-                db.rollback()
+            for notify in (notify_new_signal, notify_staff_signal):
+                try:
+                    sent += notify(db, sig)
+                except Exception:
+                    log.exception("сигнал %s: ошибка рассылки", sig.public_id)
+                    db.rollback()
             last_signal = sig.id
         for ev in db.scalars(
             select(SignalEvent)
@@ -78,12 +91,15 @@ def process(last_signal: int, last_event: int) -> tuple[int, int, int, bool]:
             .order_by(SignalEvent.id)
         ).all():
             closed = closed or ev.type in CLOSING
-            try:
-                sent += notify_event(db, ev)
-            except Exception:
-                log.exception("событие %s: ошибка рассылки", ev.id)
-                db.rollback()
             last_event = ev.id
+            if ev.source == CORRECTION_SOURCE:
+                continue  # исправление исхода (пересчёт форварда) — без уведомлений
+            for notify_ev in (notify_event, notify_staff_event):
+                try:
+                    sent += notify_ev(db, ev)
+                except Exception:
+                    log.exception("событие %s: ошибка рассылки", ev.id)
+                    db.rollback()
     return last_signal, last_event, sent, closed
 
 
