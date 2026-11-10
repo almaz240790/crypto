@@ -25,12 +25,13 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.mail import send_mail
-from app.models import Incident, Instrument, Signal
+from app.models import Incident, Instrument, Signal, User
 
 log = logging.getLogger("monitor")
 
 OK, DEGRADED, DOWN = "ok", "degraded", "down"
 REALERT_AFTER = timedelta(hours=6)
+_no_owners_warned = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -235,16 +236,50 @@ def sync_incidents(db: Session, components: list[Component], now: datetime) -> l
     return opened
 
 
+def merge_owner_emails(configured: set[str], from_db: list[str]) -> list[str]:
+    """OWNER_EMAILS ∪ адреса владельцев из БД: без дублей, регистр и пробелы не различаются."""
+    out = {e.strip().lower() for e in configured if e and e.strip()}
+    out.update(e.strip().lower() for e in from_db if e and e.strip())
+    return sorted(out)
+
+
+def owner_recipients(db: Session) -> list[str]:
+    """Кому слать письма владельцам: OWNER_EMAILS этого процесса плюс активные (не удалённые,
+    не заблокированные) пользователи с ролью owner и подтверждённым адресом из БД.
+
+    У уведомителя на Railway переменной OWNER_EMAILS нет, а владелец в БД есть — без этого
+    письма об инцидентах не уходили никому.
+    """
+    rows = db.scalars(
+        select(User.email).where(
+            User.role == "owner",
+            User.deleted_at.is_(None),
+            User.blocked_at.is_(None),
+            User.email_verified_at.is_not(None),
+        )
+    ).all()
+    return merge_owner_emails(settings.owner_email_set, list(rows))
+
+
 def send_alerts(db: Session, components: list[Component], now: datetime) -> int:
     """Письмо владельцам по каждому открытому инциденту: при открытии и затем раз в 6 часов."""
-    owners = sorted(settings.owner_email_set)
+    global _no_owners_warned
+    due = [
+        inc
+        for inc in db.scalars(select(Incident).where(Incident.closed_at.is_(None))).all()
+        if inc.alerted_at is None or now - inc.alerted_at >= REALERT_AFTER
+    ]
+    if not due:
+        return 0
+    owners = owner_recipients(db)
     if not owners:
+        if not _no_owners_warned:
+            log.warning("инциденты открыты, а слать некому: нет OWNER_EMAILS и владельцев в БД")
+            _no_owners_warned = True
         return 0
     sent = 0
     titles = {c.key: c.title for c in components}
-    for inc in db.scalars(select(Incident).where(Incident.closed_at.is_(None))).all():
-        if inc.alerted_at is not None and now - inc.alerted_at < REALERT_AFTER:
-            continue
+    for inc in due:
         subject = f"[Platform] {inc.severity.upper()}: {titles.get(inc.component, inc.component)}"
         body = (
             f"{titles.get(inc.component, inc.component)}: {inc.message}\n"
