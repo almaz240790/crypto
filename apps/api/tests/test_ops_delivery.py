@@ -605,8 +605,9 @@ def test_retries_are_bounded_then_failed(db: Session, monkeypatch: pytest.Monkey
             assert delivery_state(trig)["attempts"] == attempt
             t = retry_at + timedelta(seconds=1)
     assert delivery_state(trig)["status"] == FAILED and not trig.notified
-    # push уходил при каждой попытке с тем же tag — на устройстве он заменяет прежний
-    assert {p[1]["tag"] for p in out.pushes} == {f"alert-{trig.id}"}
+    # push ушёл с первой попытки и больше не повторялся: каналы независимы
+    assert len(out.pushes) == 1 and out.pushes[0][1]["tag"] == f"alert-{trig.id}"
+    assert delivery_state(trig)["push_done"] is True and "mail_done" not in delivery_state(trig)
     assert deliver_pending(db, t + timedelta(hours=1), mail=out.mail, push=out.push) == 0
 
 
@@ -703,6 +704,40 @@ def test_provider_refusal_is_not_marked_delivered(
     db.refresh(trig)
     assert trig.notified and delivery_state(trig)["status"] == SENT
     assert len(calls) == 2 and calls[-1]["headers"]["Idempotency-Key"] == f"alert-trigger-{trig.id}"
+
+
+@db_only
+def test_push_failure_does_not_block_mail_and_retry_sends_only_push(
+    db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Push-сервис недоступен: письмо всё равно уходит; повтор шлёт только push, письмо — нет."""
+    _as_alerts_service(monkeypatch)
+    _, alert, _ = _alert_setup(db)
+    _only(monkeypatch, {alert.id})
+    now = datetime.now(tz=UTC)
+    trig = _fire_one(db, alert, now.replace(second=0, microsecond=0))
+    db.commit()
+    _as_notifier(monkeypatch)
+    out = Outbox()
+    push_down = True
+
+    def push(s: Session, user_id: int, payload: dict[str, Any]) -> int:
+        if push_down:
+            raise ConnectionError("push-сервис недоступен")
+        return out.push(s, user_id, payload)
+
+    assert deliver_pending(db, now, mail=out.mail, push=push) == 0
+    db.refresh(trig)
+    state = delivery_state(trig)
+    assert state["status"] == QUEUED and state["mail_done"] is True and "push_done" not in state
+    assert "push-сервис" in state["error"]
+    assert len(out.mails) == 1 and out.pushes == []
+    push_down = False
+    later = datetime.fromisoformat(state["retry_at"]) + timedelta(seconds=1)
+    assert deliver_pending(db, later, mail=out.mail, push=push) == 1
+    db.refresh(trig)
+    assert trig.notified and delivery_state(trig)["status"] == SENT
+    assert len(out.mails) == 1 and len(out.pushes) == 1
 
 
 @db_only

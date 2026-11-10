@@ -91,6 +91,16 @@ class PushSender(Protocol):
     def __call__(self, db: Session, user_id: int, payload: dict[str, Any]) -> int: ...
 
 
+class DeliveryIncompleteError(Exception):
+    """Канал доставки не сработал (``cause``); ``done`` — каналы, ушедшие в этой попытке
+    (``push_done`` / ``mail_done``): повтор их не повторяет."""
+
+    def __init__(self, cause: Exception, done: dict[str, bool]) -> None:
+        super().__init__(str(cause))
+        self.cause = cause
+        self.done = done
+
+
 # --- валидация условий ----------------------------------------------------------------------------
 
 
@@ -421,6 +431,8 @@ def notify_trigger(
     тихие часы, дневной лимит) — ``delivery.status = suppressed`` с причиной, ``notified`` остаётся
     False, как и раньше. Письмо идёт с ключом идемпотентности ``alert-trigger-{id}``, push — с
     ``tag`` ``alert-{id}``: повтор после сбоя не даёт второго письма, а push заменяет прежний.
+    Каналы независимы: сбой push не мешает письму и наоборот — ``DeliveryIncompleteError`` с тем,
+    что ушло (``push_done`` / ``mail_done``); повтор шлёт только недоставленное.
     ``mail`` / ``push`` — отправители (по умолчанию Resend и Web Push; в тестах — подмены).
     """
     mail = mail or _alert_mail
@@ -444,33 +456,47 @@ def notify_trigger(
     if limit_reached(ns, now):
         _set_delivery(trig, status=SUPPRESSED, reason="daily_limit")
         return 0
+    state = delivery_state(trig)
+    done: dict[str, bool] = {}
+    failure: Exception | None = None
     sent = 0
-    if ns.push_alerts:
+    if ns.push_alerts and not state.get("push_done"):
         late = ""
         if trig.created_at is not None and now - trig.created_at > DELIVERY_LATE:
             late = f" (сработал {trig.triggered_at:%d.%m %H:%M} UTC)"
-        sent += push(
-            db,
-            user.id,
-            {
-                "title": "Алерт",
-                "body": f"{text}{price}{late}",
-                "url": url,
-                "tag": f"alert-{trig.id}",
-            },
-        )
-    if ns.email_alerts and user.email_verified_at is not None:
-        mail(
-            user.email,
-            f"Алерт: {text}",
-            f"{text}{price}.\nВремя: {trig.triggered_at:%d.%m %H:%M UTC}\n"
-            f"{settings.frontend_url}{url}\n\n{DISCLAIMER}" + unsubscribe_footer(ns),
-            idempotency_key=f"alert-trigger-{trig.id}",
-        )
-        ns.sent_today += 1
-        sent += 1
+        try:
+            sent += push(
+                db,
+                user.id,
+                {
+                    "title": "Алерт",
+                    "body": f"{text}{price}{late}",
+                    "url": url,
+                    "tag": f"alert-{trig.id}",
+                },
+            )
+            done["push_done"] = True
+        except Exception as exc:
+            log.warning("срабатывание %s: push не отправлен (%s)", trig.id, exc)
+            failure = exc
+    if ns.email_alerts and user.email_verified_at is not None and not state.get("mail_done"):
+        try:
+            mail(
+                user.email,
+                f"Алерт: {text}",
+                f"{text}{price}.\nВремя: {trig.triggered_at:%d.%m %H:%M UTC}\n"
+                f"{settings.frontend_url}{url}\n\n{DISCLAIMER}" + unsubscribe_footer(ns),
+                idempotency_key=f"alert-trigger-{trig.id}",
+            )
+            done["mail_done"] = True
+            ns.sent_today += 1
+            sent += 1
+        except Exception as exc:
+            failure = exc  # ошибка письма важнее: по ней видно, постоянный ли отказ
+    if failure is not None:
+        raise DeliveryIncompleteError(failure, done)
     trig.notified = True
-    _set_delivery(trig, status=SENT)
+    _set_delivery(trig, status=SENT, **done)
     return sent
 
 
@@ -551,10 +577,13 @@ def _count_failure(db: Session, tid: int, exc: Exception, now: datetime) -> None
             db.rollback()
             return
         attempts = int(delivery_state(trig).get("attempts", 0)) + 1
-        fields: dict[str, Any] = {"attempts": attempts, "error": str(exc)[:200]}
-        if isinstance(exc, MailError) and exc.permanent:
+        cause = exc.cause if isinstance(exc, DeliveryIncompleteError) else exc
+        fields: dict[str, Any] = {"attempts": attempts, "error": str(cause)[:200]}
+        if isinstance(exc, DeliveryIncompleteError):
+            fields.update(exc.done)  # ушедшие каналы повтор не шлёт
+        if isinstance(cause, MailError) and cause.permanent:
             fields["status"] = FAILED
-            log.error("срабатывание %s: письмо отклонено (%s), не повторяем", tid, exc)
+            log.error("срабатывание %s: письмо отклонено (%s), не повторяем", tid, cause)
         elif attempts >= DELIVERY_MAX_ATTEMPTS:
             fields["status"] = FAILED
             log.error("срабатывание %s: %d ошибок доставки, больше не пытаемся", tid, attempts)
