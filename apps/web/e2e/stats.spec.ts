@@ -253,3 +253,13 @@ test.describe("форвард на телефоне", () => {
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
   });
 });
+
+test("статистика на телефоне: текст не прилегает к краю экрана", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await mockClient(page, false);
+  await page.goto("/stats?scope=forward");
+  const h = page.getByRole("heading", { name: "Статистика сигналов" });
+  await expect(h).toBeVisible();
+  const box = await h.boundingBox();
+  expect(box?.x ?? 0).toBeGreaterThanOrEqual(12);
+});
