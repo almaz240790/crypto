@@ -72,6 +72,12 @@ def mail_ready() -> bool:
     return mail_configured() or not settings.is_production
 
 
+def mail_key(kind: str, user_id: int, ref: str) -> str:
+    """Ключ идемпотентности письма рассылки (Resend помнит его сутки): если процесс упал между
+    отправкой и фиксацией отметки, повтор того же письма провайдер не отправит второй раз."""
+    return f"{kind}-{user_id}-{ref}".replace(":", "-")
+
+
 def settings_for(db: Session, user: User) -> NotificationSettings:
     ns = db.get(NotificationSettings, user.id)
     if ns is None:
@@ -348,9 +354,12 @@ def digest_text(db: Session, user: User, period: str, now: datetime) -> str | No
 def run_digest(db: Session, period: str = "daily", now: datetime | None = None) -> int:
     """Рассылает дайджест всем с подходящей настройкой; одна отправка на день/пользователя.
 
-    Отметка в ``notification_log`` фиксируется после каждого письма: повторный или параллельный
-    проход (уведомитель и cron-скрипт, два экземпляра при выкладке) не шлёт дубль тем, кому уже
-    отправлено, а сбой на одном адресе не откатывает отметки остальных."""
+    Отметка в ``notification_log`` пишется (flush) до письма и фиксируется после него: строка
+    с уникальным ключом (пользователь, канал, вид, дата) — блокировка. Параллельный проход
+    (уведомитель и cron-скрипт, два экземпляра при выкладке) ждёт её на вставке, а после фиксации
+    получает конфликт и пропускает адрес; повтор не шлёт дубль тем, кому уже отправлено, а сбой на
+    одном адресе не откатывает отметки остальных. Упал между письмом и фиксацией — повтор с тем
+    же ключом идемпотентности (``mail_key``) провайдер не отправит второй раз."""
     if not mail_ready():
         log.warning("дайджест %s: нет ключа почты — пропуск, отправит процесс с ключом", period)
         return 0
@@ -368,7 +377,10 @@ def run_digest(db: Session, period: str = "daily", now: datetime | None = None) 
         if text is None or not _record(db, user.id, "digest", ref):
             continue
         send_mail(
-            user.email, f"Platform: дайджест {now.strftime('%d.%m')}", text + unsubscribe_footer(ns)
+            user.email,
+            f"Platform: дайджест {now.strftime('%d.%m')}",
+            text + unsubscribe_footer(ns),
+            idempotency_key=mail_key("digest", user.id, ref),
         )
         db.commit()
         sent += 1
@@ -488,6 +500,7 @@ def run_journal_reports(db: Session, now: datetime | None = None) -> int:
             user.email,
             f"Platform: отчёт по журналу {now.strftime('%d.%m')}",
             text + unsubscribe_footer(ns),
+            idempotency_key=mail_key("journal", user.id, ref),
         )
         db.commit()
         sent += 1
