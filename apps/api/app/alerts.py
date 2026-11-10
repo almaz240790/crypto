@@ -3,6 +3,14 @@
 Типы: price (по 1m-свечам, ≤ 60 с), indicator (RSI/EMA/ATR по закрытию свечи TF),
 zone (цена вошла в активную зону), structure (BOS/CHoCH), pattern (подтверждён свечной паттерн).
 Срабатывание идемпотентно по (alert_id, triggered_at). Доставка — push/email по настройкам.
+
+Доставка (ADR-0004, раздел «Доставка через уведомитель»): исходящая очередь — сами строки
+``alert_triggers``. Срабатывание пишется с ``details.delivery.status = queued`` в той же транзакции,
+что и проверка (``_fire``). Если у процесса воркера есть и ключ почты, и ключи Web Push
+(``can_deliver_inline``, локальная разработка), он доставляет сразу; иначе (на Railway ключи есть
+только у уведомителя) строку забирает уведомитель (``deliver_pending``), воркер лишь будит его
+сообщением в Redis-канал ``CHANNEL_TRIGGERED``. Тексты, ссылки, настройки пользователя (тихие часы,
+лимит, каналы) и отписка в обоих путях одни и те же (``notify_trigger``).
 """
 
 from __future__ import annotations
@@ -10,14 +18,15 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
-from typing import Any
+from typing import Any, Protocol
 
-from sqlalchemy import select
+from sqlalchemy import DateTime, cast, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.chart_data import PAGE, bucket_start, load_candles
 from app.config import settings
+from app.mail import configured as mail_configured
 from app.mail import send_mail
 from app.models import (
     Alert,
@@ -31,6 +40,7 @@ from app.models import (
     WatchlistItem,
 )
 from app.notify import in_quiet_hours, limit_reached, settings_for, unsubscribe_footer
+from app.push import enabled as push_enabled
 from app.push import send_to_user
 from engine.candles import Candle, Timeframe, closed_only
 from engine.indicators import atr, ema, rsi
@@ -49,6 +59,31 @@ INDICATOR_PERIODS = {"rsi": 14, "ema": 50, "atr": 14}
 PRICE_OPS = ("cross_up", "cross_down", "enter_range")
 INDICATOR_OPS = ("above", "below", "cross_up", "cross_down", "price_cross_up", "price_cross_down")
 DISCLAIMER = "Алерт — уведомление по вашему условию, не рекомендация."
+CHANNEL_TRIGGERED = "alerts.triggered"
+"""Redis-канал: воркер алертов будит уведомитель — появились срабатывания для доставки."""
+QUEUED, SENT, SUPPRESSED, EXPIRED, FAILED = "queued", "sent", "suppressed", "expired", "failed"
+"""``details.delivery.status``: ждёт доставки / доставлено / подавлено настройками (тихие часы,
+лимит, нет пользователя) / устарело / не доставлено после всех попыток. Строки без отметки
+(записаны до этой схемы) уведомитель не трогает."""
+DELIVERY_MAX_ATTEMPTS = 6
+"""Попыток доставки; после последней ошибки — ``failed``, строка больше не берётся."""
+DELIVERY_RETRY_AFTER = timedelta(seconds=30)
+"""Пауза перед повтором; удваивается с каждой попыткой (30 с … 8 мин, всего ~15 мин)."""
+DELIVERY_MAX_AGE = timedelta(hours=6)
+"""Срабатывание старше (по ``created_at``) не доставляется — ``expired``: уведомление о цене
+многочасовой давности уже вводит в заблуждение. Простой уведомителя на минуты ничего не теряет."""
+DELIVERY_BATCH = 200
+"""Сколько срабатываний уведомитель берёт за один проход."""
+
+
+class MailSender(Protocol):
+    def __call__(
+        self, to: str, subject: str, text: str, idempotency_key: str | None = None
+    ) -> None: ...
+
+
+class PushSender(Protocol):
+    def __call__(self, db: Session, user_id: int, payload: dict[str, Any]) -> int: ...
 
 
 # --- валидация условий ----------------------------------------------------------------------------
@@ -333,13 +368,50 @@ def trigger(
     return row
 
 
+def can_deliver_inline() -> bool:
+    """Доставлять ли срабатывания прямо из воркера алертов: только когда у процесса есть и ключ
+    почты, и ключи Web Push (локальная разработка с полным ``.env``). Иначе срабатывание ждёт
+    уведомителя — на Railway ключи есть только у него."""
+    return mail_configured() and push_enabled()
+
+
+def delivery_state(trig: AlertTrigger) -> dict[str, Any]:
+    """Служебная отметка доставки ``details.delivery`` (в API не отдаётся, см. ``trigger_dict``)."""
+    return dict(trig.details.get("delivery") or {})
+
+
+def _set_delivery(trig: AlertTrigger, **fields: Any) -> None:
+    trig.details = {**trig.details, "delivery": {**delivery_state(trig), **fields}}
+
+
+def _alert_mail(to: str, subject: str, text: str, idempotency_key: str | None = None) -> None:
+    """Письмо алерта: временный отказ провайдера — исключение, срабатывание доставят повторно."""
+    send_mail(to, subject, text, idempotency_key=idempotency_key, strict=True)
+
+
 def notify_trigger(
-    db: Session, alert: Alert, trig: AlertTrigger, now: datetime | None = None
+    db: Session,
+    alert: Alert,
+    trig: AlertTrigger,
+    now: datetime | None = None,
+    *,
+    mail: MailSender | None = None,
+    push: PushSender | None = None,
 ) -> int:
-    """Push и письмо по настройкам пользователя; тихие часы и дневной лимит соблюдаются."""
+    """Push и письмо по настройкам пользователя; тихие часы и дневной лимит соблюдаются.
+
+    Доставлено — ``notified = True`` и ``delivery.status = sent``. Подавлено (нет пользователя,
+    тихие часы, дневной лимит) — ``delivery.status = suppressed`` с причиной, ``notified`` остаётся
+    False, как и раньше. Письмо идёт с ключом идемпотентности ``alert-trigger-{id}``, push — с
+    ``tag`` ``alert-{id}``: повтор после сбоя не даёт второго письма, а push заменяет прежний.
+    ``mail`` / ``push`` — отправители (по умолчанию Resend и Web Push; в тестах — подмены).
+    """
+    mail = mail or _alert_mail
+    push = push or send_to_user
     now = now or datetime.now(tz=UTC)
     user = db.get(User, alert.user_id)
     if user is None or user.deleted_at is not None:
+        _set_delivery(trig, status=SUPPRESSED, reason="no_user")
         return 0
     ns = settings_for(db, user)
     symbol = _symbol(db, alert.instrument_id) if alert.instrument_id else None
@@ -349,26 +421,111 @@ def notify_trigger(
     price = f" по {_fmt(trig.price)}" if trig.price is not None else ""
     tf = alert.timeframe or trig.details.get("tf") or "4h"
     url = f"/chart/{symbol}/{tf}" if symbol else "/alerts"
-    sent = 0
-    if in_quiet_hours(ns, now) or limit_reached(ns, now):
+    if in_quiet_hours(ns, now):
+        _set_delivery(trig, status=SUPPRESSED, reason="quiet_hours")
         return 0
+    if limit_reached(ns, now):
+        _set_delivery(trig, status=SUPPRESSED, reason="daily_limit")
+        return 0
+    sent = 0
     if ns.push_alerts:
-        sent += send_to_user(
+        sent += push(
             db,
             user.id,
             {"title": "Алерт", "body": f"{text}{price}", "url": url, "tag": f"alert-{trig.id}"},
         )
     if ns.email_alerts and user.email_verified_at is not None:
-        send_mail(
+        mail(
             user.email,
             f"Алерт: {text}",
             f"{text}{price}.\nВремя: {trig.triggered_at:%d.%m %H:%M UTC}\n"
             f"{settings.frontend_url}{url}\n\n{DISCLAIMER}" + unsubscribe_footer(ns),
+            idempotency_key=f"alert-trigger-{trig.id}",
         )
         ns.sent_today += 1
         sent += 1
     trig.notified = True
+    _set_delivery(trig, status=SENT)
     return sent
+
+
+def pending_ids(db: Session, now: datetime, limit: int = DELIVERY_BATCH) -> list[int]:
+    """Срабатывания в очереди: ``queued``, ещё не доставлены и пауза после ошибки истекла."""
+    status = func.jsonb_extract_path_text(AlertTrigger.details, "delivery", "status")
+    retry_at = func.jsonb_extract_path_text(AlertTrigger.details, "delivery", "retry_at")
+    return list(
+        db.scalars(
+            select(AlertTrigger.id)
+            .where(AlertTrigger.notified.is_(False), status == QUEUED)
+            .where(or_(retry_at.is_(None), cast(retry_at, DateTime(timezone=True)) <= now))
+            .order_by(AlertTrigger.id)
+            .limit(limit)
+        ).all()
+    )
+
+
+def deliver_pending(
+    db: Session,
+    now: datetime | None = None,
+    *,
+    mail: MailSender | None = None,
+    push: PushSender | None = None,
+    limit: int = DELIVERY_BATCH,
+) -> int:
+    """Уведомитель: доставить срабатывания из очереди (``alert_triggers`` со статусом ``queued``).
+
+    Пока уведомитель лежит, строки ждут в БД — ничего не теряется (до ``DELIVERY_MAX_AGE``).
+    Каждое срабатывание — в своей транзакции; строка берётся ``FOR UPDATE SKIP LOCKED`` и
+    перепроверяется под блокировкой: второй экземпляр уведомителя (выкладка без простоя) её
+    пропустит, а уже доставленную не тронет. Исключение при доставке (сеть, 429/5xx почты, БД) —
+    попытка засчитывается, повтор через ``DELIVERY_RETRY_AFTER`` × 2ⁿ; после
+    ``DELIVERY_MAX_ATTEMPTS`` — ``failed``, и «ядовитое» срабатывание не держит очередь. Сбой
+    между отправкой и фиксацией даёт повтор, но не второе письмо: ключ идемпотентности тот же.
+    Тихие часы и лимит проверяются на момент доставки. Возвращает число решённых срабатываний.
+    """
+    now = now or datetime.now(tz=UTC)
+    done = 0
+    for tid in pending_ids(db, now, limit):
+        try:
+            trig = db.get(AlertTrigger, tid, with_for_update={"skip_locked": True})
+            if trig is None or trig.notified or delivery_state(trig).get("status") != QUEUED:
+                db.rollback()  # занято другим экземпляром или уже решено
+                continue
+            alert = db.get(Alert, trig.alert_id)
+            if alert is None:
+                _set_delivery(trig, status=SUPPRESSED, reason="no_alert")
+            elif trig.created_at < now - DELIVERY_MAX_AGE:
+                _set_delivery(trig, status=EXPIRED)
+                log.warning("срабатывание %s: старше %s — не доставляем", tid, DELIVERY_MAX_AGE)
+            else:
+                notify_trigger(db, alert, trig, now, mail=mail, push=push)
+            db.commit()
+            done += 1
+        except Exception as exc:
+            log.exception("срабатывание %s: ошибка доставки", tid)
+            db.rollback()
+            _count_failure(db, tid, exc, now)
+    return done
+
+
+def _count_failure(db: Session, tid: int, exc: Exception, now: datetime) -> None:
+    try:
+        trig = db.get(AlertTrigger, tid, with_for_update=True)
+        if trig is None or trig.notified:
+            db.rollback()
+            return
+        attempts = int(delivery_state(trig).get("attempts", 0)) + 1
+        fields: dict[str, Any] = {"attempts": attempts, "error": str(exc)[:200]}
+        if attempts >= DELIVERY_MAX_ATTEMPTS:
+            fields["status"] = FAILED
+            log.error("срабатывание %s: %d ошибок доставки, больше не пытаемся", tid, attempts)
+        else:
+            fields["retry_at"] = (now + DELIVERY_RETRY_AFTER * 2 ** (attempts - 1)).isoformat()
+        _set_delivery(trig, **fields)
+        db.commit()
+    except Exception:
+        log.exception("срабатывание %s: учёт ошибки доставки", tid)
+        db.rollback()
 
 
 def _symbol(db: Session, instrument_id: int) -> str:
@@ -381,10 +538,15 @@ def _fire(
     row = trigger(db, alert, at, price, details)
     if row is None:
         return 0
-    try:
-        notify_trigger(db, alert, row, at)
-    except Exception:
-        log.exception("алерт %s: доставка", alert.id)
+    # в очередь — в той же транзакции, что и срабатывание: без ключей доставит уведомитель
+    _set_delivery(row, status=QUEUED)
+    if can_deliver_inline():
+        try:
+            with db.begin_nested():
+                notify_trigger(db, alert, row, at)
+        except Exception:
+            # точка сохранения откатилась, строка осталась queued — повторит уведомитель
+            log.exception("алерт %s: доставка (повторит уведомитель)", alert.id)
     return 1
 
 
@@ -610,7 +772,7 @@ def trigger_dict(t: AlertTrigger) -> dict[str, Any]:
         "alert_id": t.alert_id,
         "triggered_at": t.triggered_at.isoformat(),
         "price": _fmt(t.price) if t.price is not None else None,
-        "details": t.details,
+        "details": {k: v for k, v in t.details.items() if k != "delivery"},
         "notified": t.notified,
     }
 

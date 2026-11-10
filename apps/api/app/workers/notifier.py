@@ -7,6 +7,15 @@
 2.16): проверяет heartbeat воркеров и свежесть свечей, открывает инциденты и шлёт алерты
 владельцам. Раз в ``RANK_CHECK_EVERY`` секунд (и при старте) — порядок монет по капитализации
 (``app.coin_rank``): с CoinGecko, только если сохранённому в Redis больше суток.
+
+Отдельной задачей (ADR-0004) — доставка срабатываний алертов пользователям
+(``app.alerts.deliver_pending``): очередь — строки ``alert_triggers`` со статусом ``queued``,
+проход раз в ``ALERTS_POLL`` секунд и сразу по сообщению воркера алертов в ``alerts.triggered``.
+На Railway ключи почты и Web Push есть у этого процесса, а у воркера алертов — нет.
+
+Дайджесты (ADR-0002) шлёт этот процесс: у cron-сервиса ``digest`` на Railway нет ключа почты, и
+в production без ключа он ничего не отмечает (``app.notify.mail_ready``). Ошибка прохода —
+повтор через ``DIGEST_RETRY_AFTER`` секунд; дубли исключает ``notification_log``.
 """
 
 from __future__ import annotations
@@ -25,6 +34,7 @@ import redis.asyncio as aioredis
 import sentry_sdk
 from sqlalchemy import func, select
 
+from app.alerts import CHANNEL_TRIGGERED, deliver_pending
 from app.coin_rank import refresh_if_due
 from app.config import settings
 from app.db import SessionLocal
@@ -38,6 +48,8 @@ CLOSING = {"closed_sl", "closed_be", "closed_tp3", "closed_time", "expired", "ca
 
 log = logging.getLogger("notifier")
 POLL = 30
+ALERTS_POLL = 15
+"""Опрос очереди срабатываний алертов (страховка: обычно будит сообщение воркера алертов)."""
 MONITOR_EVERY = 60
 STATS_EVERY = 600
 BILLING_EVERY = 3600
@@ -46,6 +58,8 @@ RANK_CHECK_EVERY = 3600
 # дайджесты и отчёт по журналу — раз в сутки после этого часа UTC (понедельник: + недельные)
 DIGEST_HOUR_UTC = 6
 KEY_DIGEST = "notifier:digest:"
+DIGEST_RETRY_AFTER = 900
+"""После ошибки прохода дайджестов отметка за день живёт столько секунд, затем — повтор."""
 HEARTBEAT_KEY = "notifier:heartbeat"
 KEY_SIGNAL = "notifier:last_signal_id"
 KEY_EVENT = "notifier:last_event_id"
@@ -133,12 +147,71 @@ def monitor_once() -> str:
         r.close()
 
 
+def alerts_once() -> int:
+    """Синхронно: доставить срабатывания алертов из очереди (``app.alerts.deliver_pending``)."""
+    with SessionLocal() as db:
+        return deliver_pending(db)
+
+
 class Notifier:
     def __init__(self) -> None:
         self.redis = aioredis.from_url(settings.redis_url)
         self.stop = asyncio.Event()
+        self.alerts_wake = asyncio.Event()
 
     async def run(self) -> None:
+        tasks = [
+            asyncio.create_task(self.main_loop()),
+            asyncio.create_task(self.alerts_loop()),
+            asyncio.create_task(self.alerts_listener()),
+        ]
+        try:
+            await asyncio.gather(tasks[0], tasks[1])  # циклы выходят сами по ``stop``
+        finally:
+            self.stop.set()
+            for t in tasks:
+                t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            await self.redis.aclose()
+
+    async def alerts_listener(self) -> None:
+        """Сообщение воркера алертов в ``alerts.triggered`` — будит ``alerts_loop`` без ожидания.
+        Обрыв подписки — переподключение через 5 с; пока её нет, работает опрос."""
+        while not self.stop.is_set():
+            try:
+                async with self.redis.pubsub() as pubsub:  # выход закрывает соединение подписки
+                    await pubsub.subscribe(CHANNEL_TRIGGERED)
+                    async for msg in pubsub.listen():
+                        if msg.get("type") == "message":
+                            self.alerts_wake.set()
+            except Exception:
+                log.warning("подписка %s оборвалась, переподключение", CHANNEL_TRIGGERED)
+                await asyncio.sleep(5)
+
+    async def alerts_loop(self) -> None:
+        while not self.stop.is_set():
+            self.alerts_wake.clear()
+            try:
+                n = await asyncio.to_thread(alerts_once)
+                if n:
+                    log.info("алерты: доставлено срабатываний %d", n)
+            except Exception:
+                log.exception("доставка алертов")
+            await self._wait_alerts(ALERTS_POLL)
+
+    async def _wait_alerts(self, timeout: float) -> None:
+        """До сообщения воркера алертов, остановки или ``timeout`` секунд."""
+        waits = [
+            asyncio.create_task(self.alerts_wake.wait()),
+            asyncio.create_task(self.stop.wait()),
+        ]
+        try:
+            await asyncio.wait(waits, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for w in waits:
+                w.cancel()
+
+    async def main_loop(self) -> None:
         last_signal = int(await self.redis.get(KEY_SIGNAL) or -1)
         last_event = int(await self.redis.get(KEY_EVENT) or -1)
         next_monitor = 0.0
@@ -171,7 +244,12 @@ class Notifier:
                 try:
                     log.info("дайджесты: %s", await asyncio.to_thread(digests_once, now))
                 except Exception:
-                    log.exception("дайджесты: ошибка")
+                    # cron-сервис digest без ключа почты больше не подстраховывает: повторяем сами,
+                    # не чаще раза в DIGEST_RETRY_AFTER; уже отправленным дубля не будет
+                    log.exception("дайджесты: ошибка, повтор через %d с", DIGEST_RETRY_AFTER)
+                    await self.redis.set(
+                        KEY_DIGEST + "date", now.strftime("%Y-%m-%d"), ex=DIGEST_RETRY_AFTER
+                    )
             if time.monotonic() >= next_monitor:
                 next_monitor = time.monotonic() + MONITOR_EVERY
                 try:
@@ -201,7 +279,6 @@ class Notifier:
             await self.redis.set(HEARTBEAT_KEY, int(time.time()))
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self.stop.wait(), timeout=POLL)
-        await self.redis.aclose()
 
 
 def main() -> None:

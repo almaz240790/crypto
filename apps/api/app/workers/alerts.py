@@ -4,6 +4,9 @@
   по 4h/1d/1w и 1m на границах 15m/1h — индикаторы, зоны, структура.
 - Раз в 30 с: алерты по новым live-паттернам (курсор в Redis), истечение, heartbeat.
 - Идемпотентность: уникальность (alert_id, triggered_at) в БД плюс ключи ``alerts:done:*``.
+- Доставка (ADR-0004): срабатывание пишется в очередь (``alert_triggers``, ``queued``); без ключей
+  почты и Web Push у этого процесса его доставляет уведомитель, воркер будит его сообщением в
+  ``alerts.triggered`` (не дошло — уведомитель всё равно опрашивает очередь).
 """
 
 from __future__ import annotations
@@ -20,7 +23,14 @@ from datetime import UTC, datetime
 import redis.asyncio as aioredis
 from sqlalchemy import select
 
-from app.alerts import evaluate_bars, evaluate_figures, evaluate_patterns, evaluate_price, expire
+from app.alerts import (
+    CHANNEL_TRIGGERED,
+    evaluate_bars,
+    evaluate_figures,
+    evaluate_patterns,
+    evaluate_price,
+    expire,
+)
 from app.config import settings
 from app.db import SessionLocal
 from app.models import Instrument
@@ -94,6 +104,15 @@ class AlertsWorker:
         self.redis = aioredis.from_url(settings.redis_url)
         self.stop = asyncio.Event()
 
+    async def _nudge(self, n: int) -> None:
+        """Сработало ``n`` алертов (уже в БД) — разбудить уведомитель: ценовой алерт должен дойти
+        за 60 с от закрытия минуты (план 2A.6), а не ждать очередного опроса очереди. Будим и при
+        доставке здесь же: строки, которые не удалось доставить, остались в очереди. Сообщение
+        не дошло — не страшно: уведомитель опрашивает очередь сам."""
+        if n:
+            with contextlib.suppress(Exception):
+                await self.redis.publish(CHANNEL_TRIGGERED, json.dumps({"n": n}))
+
     async def _once(self, key: str, fn: Callable[..., int], *args: object) -> None:
         if not await self.redis.set(key, "1", nx=True, ex=DONE_TTL):
             return
@@ -101,6 +120,7 @@ class AlertsWorker:
             n = await asyncio.to_thread(fn, *args)
             if n:
                 log.info("%s: сработало %s", key, n)
+            await self._nudge(n)
         except Exception:
             log.exception("%s: ошибка проверки", key)
             await self.redis.delete(key)
@@ -146,6 +166,7 @@ class AlertsWorker:
                     await self.redis.set(FIGURE_CURSOR_KEY, new_f)
                 if ffired:
                     log.info("фигуры: сработало %d", ffired)
+                await self._nudge(fired + ffired)
                 expired = await asyncio.to_thread(expire_once)
                 if expired:
                     log.info("истекло алертов: %d", expired)
