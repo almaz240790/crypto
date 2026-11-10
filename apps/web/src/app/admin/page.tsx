@@ -2,6 +2,7 @@
 
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useState } from "react";
+import { AdminSecurity } from "@/components/admin/AdminSecurity";
 import { AdminShell, useAdminMe } from "@/components/admin/AdminShell";
 import t from "@/components/tools/tools.module.css";
 import { Badge, Button, EmptyState, Input, Panel, Select, StatusBadge, Table, Td, Th } from "@/components/ui";
@@ -20,6 +21,7 @@ const TABS = [
   ["labeling", "Разметка"],
   ["system", "Система"],
   ["audit", "Аудит"],
+  ["security", "Защита входа"],
 ] as const;
 type Tab = (typeof TABS)[number][0];
 type Run = (fn: () => Promise<unknown>, ok: string, after?: () => void) => Promise<void>;
@@ -389,7 +391,21 @@ function Users({ run, me }: { run: Run; me: { id: number; role: string } }) {
                   </Td>
                   <Td>
                     {me.role === "owner" && u.id !== me.id ? (
-                      <select aria-label={`роль ${u.email}`} value={u.role} onChange={(e) => void run(() => A.patchUser(u.id, { role: e.target.value }), "Роль изменена", () => void load())}>
+                      <select
+                        aria-label={`роль ${u.email}`}
+                        value={u.role}
+                        onChange={(e) => {
+                          const role = e.target.value;
+                          const body: Record<string, unknown> = { role };
+                          // выдача прав админки — только с кодом из приложения (ADR-0011)
+                          if (A.needsCode(u.role, role)) {
+                            const code = prompt(`Чтобы выдать роль ${role} для ${u.email}, введите 6 цифр из приложения на телефоне (или резервный код):`);
+                            if (!code) return;
+                            body.code = code;
+                          }
+                          void run(() => A.patchUser(u.id, body), "Роль изменена", () => void load());
+                        }}
+                      >
                         {["user", "support", "admin", "owner"].map((r) => (
                           <option key={r} value={r}>
                             {r}
@@ -844,6 +860,7 @@ function AdminInner() {
       {tab === "labeling" && <Labeling run={run} />}
       {tab === "system" && <System />}
       {tab === "audit" && <Audit />}
+      {tab === "security" && <AdminSecurity />}
     </>
   );
 }

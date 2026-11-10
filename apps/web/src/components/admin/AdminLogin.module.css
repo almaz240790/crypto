@@ -153,44 +153,6 @@
   font-size: var(--fs-caption);
 }
 
-.codes {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--gap-2);
-  margin: 0;
-  padding: var(--gap-3);
-  list-style: none;
-  border: 1px dashed var(--border);
-  border-radius: var(--radius);
-  background: var(--bg);
-  font-family: var(--font-mono), ui-monospace, monospace;
-  font-size: 15px;
-  letter-spacing: 0.06em;
-  user-select: all;
-}
-
-.row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--gap-2);
-}
-
-.check {
-  display: flex;
-  gap: var(--gap-2);
-  align-items: flex-start;
-  font-size: var(--fs-table);
-  line-height: 1.4;
-}
-
-.check input {
-  width: 20px;
-  height: 20px;
-  margin-top: 1px;
-  flex: none;
-  accent-color: var(--accent);
-}
-
 .link {
   justify-self: start;
   min-height: var(--touch-min);

@@ -15,17 +15,23 @@ import {
   adminSetupStart,
   adminVerify,
   getAdminConfig,
+  getAdminMe,
+  loadBackup,
   loadPending,
+  saveBackup,
   savePending,
+  setAdminHint,
   type AdminConfig,
+  type AdminMailStep,
   type AdminSetup,
   type PendingLogin,
 } from "@/lib/admin-auth";
-import { codeReady, groupSecret, normalizeCode } from "@/lib/adminGate";
-import { QrCode } from "./QrCode";
+import { codeReady, ENDED_TEXT, normalizeCode, type EndedReason } from "@/lib/adminGate";
+import { BackupCodes } from "./BackupCodes";
+import { SetupQr } from "./SetupQr";
 import s from "./AdminLogin.module.css";
 
-type View = "password" | "magic" | "magicSent" | "setup" | "code" | "backup";
+type View = "check" | "password" | "magic" | "magicSent" | "mail" | "setup" | "code" | "backup";
 
 const message = (e: unknown, fallback: string) => (e instanceof Error && e.message ? e.message : fallback);
 /** 410 — билет сгорел или устарел: только заново с первого шага. */
@@ -34,24 +40,24 @@ const isWrongStep = (e: unknown) => e instanceof ApiError && e.status === 409;
 
 /**
  * Вход в админку (ADR-0011): email и пароль (или ссылка на почту) → код из приложения на телефоне.
- * Первый вход: QR-код для «Пароли» на iPhone / Google Authenticator, первый код, резервные коды.
+ * Первый вход: подтверждение почты ссылкой из письма, QR-код для «Пароли» на iPhone / Google Authenticator,
+ * первый код, резервные коды. `live` — в браузере есть подсказка открытого сеанса: сначала проверяем его
+ * и ведём сразу в админку (закладка на /admin/login, ссылка из письма о тикете).
  */
-export function AdminLogin({ next, link, ended }: { next: string; link: string | null; ended: boolean }) {
+export function AdminLogin({ next, link, ended, live }: { next: string; link: string | null; ended: EndedReason | null; live: boolean }) {
   const t = useT();
   const router = useRouter();
-  const [view, setView] = useState<View>("password");
+  const [view, setView] = useState<View>(live ? "check" : "password");
   const [config, setConfig] = useState<AdminConfig | null>(null);
   const [pending, setPending] = useState<PendingLogin | null>(null);
+  const [mailStep, setMailStep] = useState<AdminMailStep | null>(null);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [info, setInfo] = useState<string | null>(ended ? t("Сеанс админки закончился: час без действий или 8 часов с входа. Войдите снова.") : null);
+  const [info, setInfo] = useState<string | null>(ended ? t(ENDED_TEXT[ended]) : null);
   const [backup, setBackup] = useState<string[]>([]);
-  const [saved, setSaved] = useState(false);
-  const [showKey, setShowKey] = useState(false);
-  const [copied, setCopied] = useState<string | null>(null);
 
   const restart = useCallback((why: string | null = null) => {
     savePending(null);
@@ -98,10 +104,32 @@ export function AdminLogin({ next, link, ended }: { next: string; link: string |
           .finally(() => setBusy(false));
         return;
       }
+      // резервные коды показаны, но ещё не подтверждены сохранёнными — после перезагрузки снова они
+      const stash = loadBackup();
+      if (stash) {
+        setBackup(stash.codes);
+        setEmail(stash.email);
+        setView("backup");
+        return;
+      }
       const p = loadPending();
-      if (p) void toSecondStep(p).catch(() => restart());
+      if (p) {
+        void toSecondStep(p).catch(() => restart());
+        return;
+      }
+      // сеанс уже открыт (закладка, ссылка из письма) — сразу в админку, без повторного входа
+      if (live)
+        getAdminMe()
+          .then(() => {
+            setAdminHint(true);
+            router.replace(next);
+          })
+          .catch(() => {
+            setAdminHint(false);
+            setView("password");
+          });
     });
-  }, [link, restart, router, t, toSecondStep]);
+  }, [link, live, next, restart, router, t, toSecondStep]);
 
   async function run(fn: () => Promise<void>) {
     setError(null);
@@ -119,7 +147,14 @@ export function AdminLogin({ next, link, ended }: { next: string; link: string |
 
   const submitPassword = (e: FormEvent) => {
     e.preventDefault();
-    void run(async () => toSecondStep(await adminLogin(email, password)));
+    void run(async () => {
+      const r = await adminLogin(email, password);
+      if (r.step !== "mail") return toSecondStep(r);
+      // пароль верный, но код ещё не настроен: настройка — только по ссылке (письмо или сервер)
+      setPassword("");
+      setMailStep(r);
+      setView("mail");
+    });
   };
 
   const submitMagic = (e: FormEvent) => {
@@ -135,7 +170,9 @@ export function AdminLogin({ next, link, ended }: { next: string; link: string |
     if (!pending) return;
     void run(async () => {
       const me = await adminSetupConfirm(pending.ticket, normalizeCode(code));
+      saveBackup({ codes: me.backup_codes, email: me.email }); // до галочки «сохранил(а)» — переживут перезагрузку
       savePending(null);
+      setEmail(me.email);
       setBackup(me.backup_codes);
       setView("backup");
     });
@@ -148,7 +185,8 @@ export function AdminLogin({ next, link, ended }: { next: string; link: string |
       try {
         await adminVerify(pending.ticket, normalizeCode(code));
       } catch (err) {
-        if (isWrongStep(err)) return toSecondStep({ ...pending, step: "setup" });
+        // защиту кодом успели выключить: первая настройка — только по ссылке, начинаем с первого шага
+        if (isWrongStep(err)) return restart(message(err, t("Начните вход заново.")));
         throw err;
       }
       savePending(null);
@@ -156,24 +194,9 @@ export function AdminLogin({ next, link, ended }: { next: string; link: string |
     });
   };
 
-  async function copy(text: string, what: string) {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(what);
-      setTimeout(() => setCopied(null), 2500);
-    } catch {
-      setCopied(null);
-    }
-  }
-
-  function download() {
-    const body = `PlatformSol — резервные коды для входа в админку (${email})\nКаждый код срабатывает один раз.\n\n${backup.join("\n")}\n`;
-    const url = URL.createObjectURL(new Blob([body], { type: "text/plain;charset=utf-8" }));
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "platformsol-admin-backup-codes.txt";
-    a.click();
-    URL.revokeObjectURL(url);
+  function backupSaved() {
+    saveBackup(null);
+    router.replace(next);
   }
 
   const setup: AdminSetup | undefined = pending?.setup;
@@ -193,7 +216,40 @@ export function AdminLogin({ next, link, ended }: { next: string; link: string |
   );
 
   let body;
-  if (view === "password") {
+  if (view === "check") {
+    body = (
+      <div className={s.form}>
+        <h1 className={s.title}>{t("Вход в админку")}</h1>
+        <p className={s.lead} role="status">
+          {t("Проверяем, открыт ли сеанс админки…")}
+        </p>
+      </div>
+    );
+  } else if (view === "mail" && mailStep) {
+    body = (
+      <div className={s.form}>
+        <p className={s.step}>{t("Шаг 1 из 2 · подтверждение почты")}</p>
+        <h1 className={s.title}>{mailStep.sent ? t("Проверьте почту") : t("Нужна ссылка для первой настройки")}</h1>
+        {mailStep.sent ? (
+          <p className={s.ok} role="status">
+            {t("Пароль верный. Код из телефона для админки ещё не настроен — первую настройку открывает ссылка из письма. Мы отправили её на {email}: она действует 10 минут и срабатывает один раз. Откройте ссылку на этом устройстве — появится QR-код.", { email: mailStep.email })}
+          </p>
+        ) : mailStep.mail ? (
+          <p className={s.info} role="status">
+            {t("Пароль верный. Письмо со ссылкой на {email} уже отправляли недавно — откройте последнее письмо. Новое можно запросить через час.", { email: mailStep.email })}
+          </p>
+        ) : (
+          <p className={s.info} role="status">
+            {t("Пароль верный. Код из телефона для админки ещё не настроен, а отправка писем на сервере выключена. Первую настройку открывает одноразовая ссылка с сервера — попросите её у разработчика (команда scripts/admin_link.py). Ссылка действует 30 минут.")}
+          </p>
+        )}
+        <p className={s.note}>{t("Зачем это: одного пароля мало, чтобы привязать к админке приложение с кодами. Так украденный пароль не откроет админку.")}</p>
+        <button type="button" className={s.link} onClick={() => restart()}>
+          {t("Назад к паролю")}
+        </button>
+      </div>
+    );
+  } else if (view === "password") {
     body = (
       <form className={s.form} onSubmit={submitPassword} noValidate aria-label={t("Вход в админку")}>
         <p className={s.step}>{t("Шаг 1 из 2 · пароль")}</p>
@@ -256,26 +312,7 @@ export function AdminLogin({ next, link, ended }: { next: string; link: string |
           <li>
             {t("Наведите камеру телефона на QR-код. Если эта страница открыта на самом телефоне — нажмите «Добавить код на этом устройстве».")}
             {setup ? (
-              <div className={s.qrBox}>
-                <div className={s.qr} data-testid="admin-qr">
-                  <QrCode size={setup.qr.size} path={setup.qr.path} label={t("QR-код для приложения-аутентификатора")} />
-                </div>
-                <a className={s.appLink} href={setup.otpauth_url}>
-                  {t("Добавить код на этом устройстве")}
-                </a>
-                <button type="button" className={s.link} aria-expanded={showKey} onClick={() => setShowKey(!showKey)}>
-                  {showKey ? t("Скрыть ключ") : t("Не получается? Ввести ключ вручную")}
-                </button>
-                {showKey && (
-                  <div className={s.key}>
-                    <code data-testid="admin-secret">{groupSecret(setup.secret)}</code>
-                    <Button size="sm" variant="ghost" onClick={() => void copy(setup.secret, "key")}>
-                      {copied === "key" ? t("Скопировано") : t("Скопировать ключ")}
-                    </Button>
-                    <span className={s.hint}>{t("Имя: PlatformSol, тип: по времени (TOTP).")}</span>
-                  </div>
-                )}
-              </div>
+              <SetupQr setup={setup} />
             ) : (
               <p className={s.hint}>{t("Готовим QR-код…")}</p>
             )}
@@ -314,27 +351,8 @@ export function AdminLogin({ next, link, ended }: { next: string; link: string |
       <div className={s.form}>
         <p className={s.step}>{t("Готово · защита включена")}</p>
         <h1 className={s.title}>{t("Сохраните резервные коды")}</h1>
-        <p className={s.lead}>{t("Если телефон потеряется, войти можно одним из этих кодов вместо кода из приложения. Каждый код срабатывает один раз. Больше мы их не покажем.")}</p>
-        <ul className={s.codes} data-testid="backup-codes" aria-label={t("Резервные коды")}>
-          {backup.map((c) => (
-            <li key={c}>{c}</li>
-          ))}
-        </ul>
-        <div className={s.row}>
-          <Button size="sm" onClick={() => void copy(backup.join("\n"), "codes")}>
-            {copied === "codes" ? t("Скопировано") : t("Скопировать коды")}
-          </Button>
-          <Button size="sm" variant="ghost" onClick={download}>
-            {t("Скачать файлом")}
-          </Button>
-        </div>
-        <label className={s.check}>
-          <input type="checkbox" checked={saved} onChange={(e) => setSaved(e.target.checked)} />
-          <span>{t("Я сохранил(а) коды в надёжном месте — например, в заметке в «Пароли» или на бумаге")}</span>
-        </label>
-        <Button variant="primary" block disabled={!saved} onClick={() => router.replace(next)}>
-          {t("Перейти в админку")}
-        </Button>
+        <p className={s.lead}>{t("Если телефон потеряется, войти можно одним из этих кодов вместо кода из приложения. Каждый код срабатывает один раз. После перехода в админку мы их больше не покажем — но там, в разделе «Защита входа», можно выпустить новые.")}</p>
+        <BackupCodes codes={backup} email={email} doneLabel={t("Перейти в админку")} onDone={backupSaved} />
       </div>
     );
   }

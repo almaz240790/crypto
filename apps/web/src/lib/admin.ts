@@ -22,6 +22,9 @@ export const getSignals = (status?: string) => api<AdminSignal[]>(`/v1/admin/sig
 export const cancelSignal = (id: string, reason: string) => api(`/v1/admin/signals/${id}/cancel`, { method: "POST", json: { reason } });
 export const getUsers = (q?: string) => api<AdminUser[]>(`/v1/admin/users${q ? `?q=${encodeURIComponent(q)}` : ""}`);
 export const patchUser = (id: number, body: Record<string, unknown>) => api(`/v1/admin/users/${id}`, { method: "PATCH", json: body });
+const ADMIN_ROLES = ["admin", "owner"];
+/** Выдача прав админки (роль admin/owner тому, у кого их нет) подтверждается кодом из приложения (ADR-0011). */
+export const needsCode = (from: string, to: string) => ADMIN_ROLES.includes(to) && !ADMIN_ROLES.includes(from);
 export const getSystem = () => api<SystemStatus>("/v1/admin/system");
 export const getAudit = () => api<AuditRow[]>("/v1/admin/audit");
 export const getPromos = () => api<Promo[]>("/v1/admin/promo");

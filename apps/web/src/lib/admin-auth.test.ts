@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ADMIN_SESSION_ENDED, adminApi, adminLogout, adminVerify, hasAdminHint, loadPending, savePending } from "./admin-auth";
+import { ADMIN_SESSION_ENDED, AdminApiError, adminApi, adminLogout, adminVerify, getAdminMe, hasAdminHint, loadBackup, loadPending, saveBackup, savePending, setAdminHint } from "./admin-auth";
 
 /** Клиент сеанса админки (ADR-0011): cookie, заголовок против CSRF, без токена сайта; конец сеанса. */
 type Call = { url: string; init: RequestInit };
@@ -8,11 +8,15 @@ let calls: Call[];
 let reply: () => Response;
 let cookie: string;
 let events: string[];
+let details: unknown[];
+let written: string[];
 let store: Map<string, string>;
 
 beforeEach(() => {
   calls = [];
   events = [];
+  details = [];
+  written = [];
   cookie = "";
   store = new Map();
   reply = () => new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } });
@@ -25,14 +29,29 @@ beforeEach(() => {
       return cookie;
     },
     set cookie(v: string) {
+      written.push(v);
       const [pair] = v.split(";");
       const [k, val] = pair!.split("=");
       const rest = cookie.split("; ").filter((c) => c && !c.startsWith(`${k}=`));
       cookie = (v.includes("max-age=0") ? rest : [...rest, `${k}=${val}`]).join("; ");
     },
   });
-  vi.stubGlobal("window", { dispatchEvent: (e: Event) => events.push(e.type) });
-  vi.stubGlobal("CustomEvent", class extends Event {});
+  vi.stubGlobal("window", {
+    dispatchEvent: (e: Event & { detail?: unknown }) => {
+      events.push(e.type);
+      details.push(e.detail);
+    },
+  });
+  vi.stubGlobal(
+    "CustomEvent",
+    class extends Event {
+      detail: unknown;
+      constructor(type: string, init?: { detail?: unknown }) {
+        super(type);
+        this.detail = init?.detail;
+      }
+    },
+  );
   vi.stubGlobal("sessionStorage", {
     getItem: (k: string) => store.get(k) ?? null,
     setItem: (k: string, v: string) => store.set(k, v),
@@ -64,6 +83,34 @@ describe("adminApi", () => {
     await expect(adminApi("/v1/admin/auth/login", { method: "POST", json: {} })).rejects.toMatchObject({ status: 401 });
     expect(events).toEqual([]);
   });
+  it("причина закрытия сеанса из заголовка X-Admin-Ended доходит до оболочки (в т. ч. 403 — нет прав)", async () => {
+    const ended = (status: number, reason: string) => () => new Response(JSON.stringify({ detail: "закрыт" }), { status, headers: { "x-admin-ended": reason } });
+    reply = ended(401, "password");
+    await expect(adminApi("/v1/admin/audit")).rejects.toMatchObject({ status: 401, ended: "password" });
+    reply = ended(403, "role");
+    await expect(adminApi("/v1/admin/users")).rejects.toBeInstanceOf(AdminApiError);
+    reply = ended(401, "brand-new-reason");
+    await expect(adminApi("/v1/admin/users")).rejects.toMatchObject({ ended: "gone" });
+    expect(details).toEqual(["password", "role", "gone"]);
+    // без причины 401 на данных — просто «закончился»
+    reply = () => new Response(JSON.stringify({ detail: "Нужен вход в админку." }), { status: 401 });
+    await expect(adminApi("/v1/admin/users")).rejects.toMatchObject({ ended: "gone" });
+  });
+  it("действия с кодом внутри админки: 401 без причины — неверный код (форма), с причиной — конец сеанса", async () => {
+    reply = () => new Response(JSON.stringify({ detail: "Код не подошёл." }), { status: 401 });
+    await expect(adminApi("/v1/admin/auth/2fa/backup-codes", { method: "POST", json: { code: "000000" } })).rejects.toMatchObject({ status: 401, ended: null });
+    expect(events).toEqual([]);
+    reply = () => new Response(JSON.stringify({ detail: "закрыт" }), { status: 401, headers: { "x-admin-ended": "idle" } });
+    await expect(adminApi("/v1/admin/auth/2fa/backup-codes", { method: "POST", json: { code: "000000" } })).rejects.toMatchObject({ ended: "idle" });
+    expect(details).toEqual(["idle"]);
+  });
+  it("проверка «кто вошёл» события не шлёт: причину читает тот, кто спрашивал", async () => {
+    cookie = "pl_admin_hint=1";
+    reply = () => new Response(JSON.stringify({ detail: "закрыт" }), { status: 401, headers: { "x-admin-ended": "expired" } });
+    await expect(getAdminMe()).rejects.toMatchObject({ status: 401, ended: "expired" });
+    expect(events).toEqual([]);
+    expect(hasAdminHint()).toBe(true);
+  });
 });
 
 describe("сеанс", () => {
@@ -85,5 +132,25 @@ describe("сеанс", () => {
     expect(loadPending()).toBeNull();
     store.set("pl-admin-login", JSON.stringify({ step: "other", ticket: 1 }));
     expect(loadPending()).toBeNull();
+  });
+  it("резервные коды до галочки «сохранил(а)» переживают перезагрузку вкладки, потом стираются", () => {
+    expect(loadBackup()).toBeNull();
+    saveBackup({ codes: ["ABCDEFGH23", "BCDEFGHJ34"], email: "o@example.com" });
+    expect(loadBackup()).toEqual({ codes: ["ABCDEFGH23", "BCDEFGHJ34"], email: "o@example.com" });
+    saveBackup(null);
+    expect(loadBackup()).toBeNull();
+    for (const junk of [{ codes: [], email: "o@example.com" }, { codes: [1, 2], email: "o@example.com" }, { codes: ["A"] }, "x"]) {
+      store.set("pl-admin-backup", JSON.stringify(junk));
+      expect(loadBackup()).toBeNull();
+    }
+    store.set("pl-admin-backup", "{не json");
+    expect(loadBackup()).toBeNull();
+  });
+  it("подсказка сеанса — SameSite=Lax и только путь /admin: по ссылке из письма админка открывается без нового входа", () => {
+    setAdminHint(true);
+    expect(written.at(-1)).toMatch(/^pl_admin_hint=1; path=\/admin; max-age=115200; samesite=lax$/);
+    setAdminHint(false);
+    expect(written.at(-1)).toContain("max-age=0");
+    expect(hasAdminHint()).toBe(false);
   });
 });

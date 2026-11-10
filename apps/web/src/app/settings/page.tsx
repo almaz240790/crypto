@@ -219,6 +219,8 @@ function TwoFactorPanel({ note }: { note: (text: string, kind?: "ok" | "error") 
               <Button type="button" size="sm" variant="ghost" onClick={() => setSetup(null)}>{t("Отмена")}</Button>
             </div>
           </form>
+        ) : st.admin ? (
+          <p className="text-2" style={{ margin: 0 }} data-testid="two-factor-admin">{t("Выключена. Для администратора защита кодом настраивается при входе в админку — по ссылке из письма.")}</p>
         ) : (
           <div className={s.actions}>
             <span className="text-2">{t("Выключена.")}</span>

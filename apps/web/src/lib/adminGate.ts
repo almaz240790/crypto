@@ -26,6 +26,28 @@ export function safeAdminNext(v: string | null | undefined): string {
   return v;
 }
 
+/** Почему закрылся сеанс админки — как отвечает API в заголовке `X-Admin-Ended` (ADR-0011). */
+export const ENDED_REASONS = ["idle", "expired", "logout", "password", "2fa", "role", "blocked", "gone"] as const;
+export type EndedReason = (typeof ENDED_REASONS)[number];
+
+/** Причина из заголовка или из адреса (`?ended=`); незнакомое значение — просто «закончился». */
+export function endedReason(v: string | null | undefined): EndedReason | null {
+  if (!v) return null;
+  return (ENDED_REASONS as readonly string[]).includes(v) ? (v as EndedReason) : "gone";
+}
+
+/** Что сказать владельцу на странице входа (ключи словаря; текст проходит через t()). */
+export const ENDED_TEXT: Record<EndedReason, string> = {
+  idle: "Сеанс админки закончился: больше часа без действий. Войдите снова.",
+  expired: "Сеанс админки закончился: прошло 8 часов с входа. Войдите снова.",
+  logout: "Вы вышли из админки в другой вкладке. Чтобы продолжить, войдите снова.",
+  password: "Сеанс админки закрыт: пароль аккаунта изменён. Войдите с новым паролем.",
+  "2fa": "Сеанс админки закрыт: защита кодом изменена. Войдите снова.",
+  role: "Сеанс админки закрыт: у аккаунта больше нет прав админки.",
+  blocked: "Сеанс админки закрыт: аккаунт заблокирован.",
+  gone: "Сеанс админки закончился. Войдите снова.",
+};
+
 /** Ключ для ручного ввода в приложение: группы по 4 символа. */
 export function groupSecret(secret: string): string {
   return secret.replace(/\s+/g, "").replace(/(.{4})(?=.)/g, "$1 ");

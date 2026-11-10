@@ -6,11 +6,12 @@ import { createContext, useCallback, useContext, useEffect, useState, type React
 import { Button, EmptyState, ThemeToggle } from "@/components/ui";
 import { Logo } from "@/components/site/Logo";
 import { useT } from "@/i18n/client";
-import { ApiError } from "@/lib/auth-client";
-import { ADMIN_SESSION_ENDED, adminLogout, getAdminMe, setAdminHint, type AdminMe } from "@/lib/admin-auth";
+import { ADMIN_SESSION_ENDED, AdminApiError, adminLogout, getAdminMe, loadBackup, setAdminHint, type AdminMe } from "@/lib/admin-auth";
+import { endedReason, type EndedReason } from "@/lib/adminGate";
 import s from "./AdminShell.module.css";
 
 const MeCtx = createContext<AdminMe | null>(null);
+const ReloadCtx = createContext<() => void>(() => {});
 
 /** Кто вошёл в админку (только внутри AdminShell — там сеанс уже проверен). */
 export function useAdminMe(): AdminMe {
@@ -18,6 +19,9 @@ export function useAdminMe(): AdminMe {
   if (!me) throw new Error("useAdminMe вне AdminShell");
   return me;
 }
+
+/** Перечитать «кто вошёл» (после выпуска новых резервных кодов — их счётчик в шапке). */
+export const useAdminReload = () => useContext(ReloadCtx);
 
 const ROLE: Record<string, string> = { owner: "владелец", admin: "администратор" };
 
@@ -31,11 +35,12 @@ export function AdminShell({ children }: { children: ReactNode }) {
   const [me, setMe] = useState<AdminMe | null>(null);
   const [failed, setFailed] = useState(false);
 
+  /** На страницу входа; `reason` — почему сеанс закрыт (страница объяснит), null — сеанса просто нет. */
   const toLogin = useCallback(
-    (ended: boolean) => {
+    (reason: EndedReason | null) => {
       setAdminHint(false);
       const here = `${window.location.pathname}${window.location.search}`;
-      router.replace(`/admin/login?next=${encodeURIComponent(here)}${ended ? "&ended=1" : ""}`);
+      router.replace(`/admin/login?next=${encodeURIComponent(here)}${reason ? `&ended=${reason}` : ""}`);
     },
     [router],
   );
@@ -44,15 +49,21 @@ export function AdminShell({ children }: { children: ReactNode }) {
     setFailed(false);
     getAdminMe()
       .then(setMe)
-      .catch((e) => (e instanceof ApiError && (e.status === 401 || e.status === 403) ? toLogin(true) : setFailed(true)));
+      .catch((e) => (e instanceof AdminApiError && (e.status === 401 || e.status === 403) ? toLogin(e.ended) : setFailed(true)));
   }, [toLogin]);
 
   useEffect(() => {
+    // резервные коды показаны, но не подтверждены сохранёнными — сначала вернуться к ним
+    if (loadBackup()) {
+      const here = `${window.location.pathname}${window.location.search}`;
+      router.replace(`/admin/login?next=${encodeURIComponent(here)}`);
+      return;
+    }
     queueMicrotask(load);
-    const ended = () => toLogin(true);
+    const ended = (e: Event) => toLogin(endedReason((e as CustomEvent<string>).detail) ?? "gone");
     window.addEventListener(ADMIN_SESSION_ENDED, ended);
     return () => window.removeEventListener(ADMIN_SESSION_ENDED, ended);
-  }, [load, toLogin]);
+  }, [load, router, toLogin]);
 
   async function logout() {
     try {
@@ -96,12 +107,17 @@ export function AdminShell({ children }: { children: ReactNode }) {
             </Button>
           </div>
         </header>
-        {me.backup_codes_left > 0 && me.backup_codes_left <= 3 && (
+        {me.backup_codes_left <= 3 && (
           <p className={s.warn} role="status">
-            {t("Осталось резервных кодов: {n}. Запасной способ входа почти закончился.", { n: me.backup_codes_left })}
+            {me.backup_codes_left > 0
+              ? t("Осталось резервных кодов: {n}. Запасной способ входа почти закончился.", { n: me.backup_codes_left })
+              : t("Резервных кодов не осталось: если телефон потеряется, войти будет нечем.")}{" "}
+            <Link href="/admin?tab=security">{t("Выпустить новые коды")}</Link>
           </p>
         )}
-        <main className={s.main}>{children}</main>
+        <ReloadCtx.Provider value={load}>
+          <main className={s.main}>{children}</main>
+        </ReloadCtx.Provider>
       </div>
     </MeCtx.Provider>
   );

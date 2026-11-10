@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
+import { cookies } from "next/headers";
 import { AdminLogin } from "@/components/admin/AdminLogin";
-import { safeAdminNext } from "@/lib/adminGate";
+import { ADMIN_HINT_COOKIE, endedReason, safeAdminNext } from "@/lib/adminGate";
 import { getT } from "@/i18n/server";
 
 export async function generateMetadata(): Promise<Metadata> {
@@ -8,8 +9,14 @@ export async function generateMetadata(): Promise<Metadata> {
   return { title: t("Вход в админку"), robots: { index: false, follow: false } };
 }
 
-/** Отдельный вход в админку (ADR-0011). Не связан со входом на сайт; ссылок на страницу на сайте нет. */
+/**
+ * Отдельный вход в админку (ADR-0011). Не связан со входом на сайт; ссылок на страницу на сайте нет.
+ * Если в браузере есть подсказка открытого сеанса — страница сначала проверит его и поведёт сразу в админку.
+ */
 export default async function AdminLoginPage({ searchParams }: { searchParams: Promise<{ next?: string; link?: string; ended?: string }> }) {
   const { next, link, ended } = await searchParams;
-  return <AdminLogin next={safeAdminNext(next)} link={link && /^[\w-]{10,200}$/.test(link) ? link : null} ended={ended === "1"} />;
+  const goodLink = link && /^[\w-]{10,200}$/.test(link) ? link : null;
+  const reason = endedReason(ended);
+  const hint = (await cookies()).get(ADMIN_HINT_COOKIE)?.value === "1";
+  return <AdminLogin next={safeAdminNext(next)} link={goodLink} ended={reason} live={hint && !reason && !goodLink} />;
 }
