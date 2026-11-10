@@ -114,6 +114,28 @@ def test_at_must_be_utc_close_of_signal_candle() -> None:
         occupying([], T0 + timedelta(hours=1))
 
 
+def test_no_future_leak_decision_uses_only_what_was_known_at_close() -> None:
+    """Утечка будущего (CLAUDE.md): ответ на ``at`` по сигналам, известным целиком (пересчёт
+    задним числом), совпадает с ответом по тому, что было известно на ``at``: сигналы,
+    опубликованные позже, отброшены, а закончившиеся позже ``at`` видны как открытые."""
+    rng = random.Random(2026)
+    statuses = ["closed_sl", "closed_tp3", "closed_be", "closed_time", "expired", "cancelled"]
+    for _ in range(2000):
+        spans = []
+        for k in range(rng.randint(0, 4)):
+            opened = T0 + H4 * rng.randint(0, 40)
+            ended = None if rng.random() < 0.2 else opened + M1 * rng.randint(1, 60 * 4 * 20)
+            status = rng.choice(sorted(OPEN_STATUSES)) if ended is None else rng.choice(statuses)
+            spans.append(TradeSpan(str(k), opened, status, ended))
+        at = T0 + H4 * rng.randint(1, 45)
+        known = [
+            s if s.ended_at is None or s.ended_at <= at else TradeSpan(s.ref, s.opened_at, "active")
+            for s in spans
+            if s.opened_at < at
+        ]
+        assert (occupying(spans, at) is None) == (occupying(known, at) is None)
+
+
 # --- сделки бэктеста ----------------------------------------------------------------------------
 
 
