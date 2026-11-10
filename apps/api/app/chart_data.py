@@ -19,6 +19,7 @@ from sqlalchemy import or_, select, text
 from sqlalchemy.orm import Session
 
 from app.analysis import params_for_version
+from app.corrections import current_event
 from app.models import Instrument, Signal, SignalEvent, StrategyVersion
 from app.signal_scope import scope_filter
 from engine.bias import context_at
@@ -375,8 +376,8 @@ def signal_layer(
     if ids:
         for e in db.scalars(
             select(SignalEvent)
-            .where(SignalEvent.signal_id.in_(ids))
-            .order_by(SignalEvent.occurred_at)
+            .where(SignalEvent.signal_id.in_(ids), current_event())  # без заменённых пересчётом
+            .order_by(SignalEvent.occurred_at, SignalEvent.id)
         ).all():
             events.setdefault(e.signal_id, []).append(
                 {"type": e.type, "p": _dec(e.price), "t": int(e.occurred_at.timestamp())}

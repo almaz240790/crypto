@@ -10,6 +10,8 @@
 - Результат пишется за вычетом комиссии и проскальзывания ``DEFAULT_EXECUTION`` — тех же, что
   в бэктесте (план 2.11); вычтенная величина — в ``signal_results.cost_r``. В состоянии
   ``signal_tracking.state`` результат хранится до вычета.
+- При старте, до догона, — разовый пересчёт форвард-сигналов, записанных с ошибкой учёта
+  (``app.retrack``, задание «сигналы», задачи 7 и 10): выполняется один раз, отметка в БД.
 - При старте и раз в минуту — догон: для открытых сигналов проигрываются все закрытые 1m-свечи
   после ``last_candle_time`` (или после сигнальной свечи), так что разрыв WebSocket не
   теряет касаний.
@@ -208,23 +210,27 @@ def apply_candles(session: Session, sig: Signal, candles: list[Candle], tf: Time
         sig.status = st.status.value
         if st.status.is_closed and session.get(SignalResult, sig.id) is None:
             closed_at = last_time + tf.delta if last_time else datetime.now(tz=UTC)
-            res = tracker.result(DEFAULT_EXECUTION)  # комиссии как в бэктесте (план 2.11)
-            session.add(
-                SignalResult(
-                    signal_id=sig.id,
-                    realized_r=res.realized_r,
-                    realized_r_tp1_only=res.r_if_tp1_only,
-                    realized_r_full_tp2=res.r_if_full_tp2,
-                    cost_r=res.cost_r,
-                    duration_hours=Decimal((closed_at - sig.candle_close_time).total_seconds())
-                    / 3600,
-                    max_favorable_r=st.mfe_r,
-                    max_adverse_r=st.mae_r,
-                    closed_at=closed_at,
-                    entry_type_used="market",
-                )
-            )
+            session.add(SignalResult(signal_id=sig.id, **result_values(sig, tracker, closed_at)))
     return total
+
+
+def result_values(sig: Signal, tracker: SignalTracker, closed_at: datetime) -> dict[str, Any]:
+    """Поля строки ``signal_results`` закрытой сделки: результат за вычетом комиссии и
+    проскальзывания ``DEFAULT_EXECUTION`` — как в бэктесте (план 2.11); MFE/MAE — движение цены.
+    Тот же расчёт использует пересчёт форварда (``app.retrack``)."""
+    st = tracker.state
+    res = tracker.result(DEFAULT_EXECUTION)
+    return {
+        "realized_r": res.realized_r,
+        "realized_r_tp1_only": res.r_if_tp1_only,
+        "realized_r_full_tp2": res.r_if_full_tp2,
+        "cost_r": res.cost_r,
+        "duration_hours": Decimal((closed_at - sig.candle_close_time).total_seconds()) / 3600,
+        "max_favorable_r": st.mfe_r,
+        "max_adverse_r": st.mae_r,
+        "closed_at": closed_at,
+        "entry_type_used": "market",
+    }
 
 
 def _candles_after(
@@ -321,6 +327,18 @@ def catch_up(tf: Timeframe = Timeframe.M1, instrument_id: int | None = None) -> 
     return total
 
 
+def retrack_once() -> None:
+    """Разовый пересчёт форвард-сигналов, записанных с ошибкой учёта (``app.retrack``), — при
+    старте, до догона. Выполненное задание отмечено в БД и не повторяется. Ошибка трекер не
+    останавливает: отметки нет, задание продолжится при следующем старте."""
+    from app import retrack  # app.retrack сам опирается на функции этого модуля
+
+    try:
+        retrack.run()
+    except Exception:
+        log.exception("пересчёт форварда не удался — повторится при следующем старте")
+
+
 class Tracker:
     def __init__(self) -> None:
         self.redis = aioredis.from_url(settings.redis_url)
@@ -356,6 +374,7 @@ class Tracker:
             await asyncio.sleep(CATCHUP_EVERY)
 
     async def run(self) -> None:
+        await asyncio.to_thread(retrack_once)
         tasks = [asyncio.create_task(self.listener()), asyncio.create_task(self.periodic())]
         await self.stop.wait()
         for t in tasks:
