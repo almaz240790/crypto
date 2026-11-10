@@ -71,6 +71,9 @@
 }
 
 .note {
+  /* плашка форварда — тоже <p> и стоит прямо перед пояснением: без этого глобальное p + p добавляло
+     отступ, и промежуток между ними был 28 px при 16 px между остальными блоками */
+  margin: 0;
   padding: var(--gap-2) var(--gap-3);
   border: 1px solid var(--border);
   border-left: 3px solid var(--warn);
@@ -80,12 +83,42 @@
   max-width: 90ch;
 }
 
+/* Плашка над форвард-статистикой: старые результаты недействительны (задание «сигналы», задача 2). */
+.notice {
+  margin: 0;
+  padding: var(--gap-2) var(--gap-3);
+  border: 1px solid var(--warn);
+  border-radius: var(--radius);
+  background: var(--warn-fill);
+  color: var(--text);
+  font-size: var(--fs-table);
+  font-weight: 500;
+  max-width: 90ch;
+}
+
+.low {
+  display: inline-flex;
+  margin-left: var(--gap-2);
+  vertical-align: middle;
+  font-family: var(--font-sans), sans-serif;
+}
+
 .cards {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--surface);
+}
+
+/* Пояснение к пометке «мало данных»: первая строка блока карточек во всю его ширину, видна без наведения. */
+.lowNote {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: var(--gap-2) var(--gap-3);
+  border-bottom: 1px solid var(--border);
+  font-size: var(--fs-caption);
+  color: var(--text-2);
 }
 
 .card {

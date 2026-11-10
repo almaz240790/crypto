@@ -267,13 +267,10 @@ def test_forward_history_stays_forward_after_version_goes_live(db: Session) -> N
     assert db.get(Signal, open_fwd.id).scope == "forward"  # type: ignore[union-attr]
     assert db.get(Signal, closed_fwd.id).scope == "forward"  # type: ignore[union-attr]
 
-    # статистика: live — только новый сигнал; форвард версии — обе её форвард-записи,
-    # в том числе в форварде без явной версии (версия теперь в live)
+    # статистика: live — только новый сигнал; форвард версии — обе её форвард-записи (форвард
+    # считается только по одной версии, задача 2; версия теперь в live)
     assert _ids(load_trades(db, "live", ver.id)) == {new_live.public_id}
     assert _ids(load_trades(db, "forward", ver.id)) == {open_fwd.public_id, closed_fwd.public_id}
-    fwd_all = _ids(load_trades(db, "forward"))
-    assert {open_fwd.public_id, closed_fwd.public_id} <= fwd_all
-    assert new_live.public_id not in fwd_all
     assert not {open_fwd.public_id, closed_fwd.public_id} & _ids(load_trades(db, "live"))
 
     # снимки статистики пересчитываются по области публикации
@@ -331,7 +328,6 @@ def test_replaced_live_version_keeps_live_history(db: Session) -> None:
 
     assert _ids(load_trades(db, "live", old.id)) == {old_live.public_id}
     assert old_live.public_id in _ids(load_trades(db, "live"))
-    assert old_live.public_id not in _ids(load_trades(db, "forward"))
     assert _ids(load_trades(db, "forward", old.id)) == set()
 
     after = _publish(db, old, inst, T0 + 30 * H4)

@@ -98,6 +98,13 @@ export function formatTimeUTC(
   return `${date} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())} UTC`;
 }
 
+/** Дата без времени из ISO ("2026-11-06" или полная метка) → "06.11.2026" (UTC). */
+export function formatDayUTC(iso: string): string {
+  const d = new Date(/^\d{4}-\d{2}-\d{2}$/.test(iso) ? `${iso}T00:00:00Z` : iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return `${pad(d.getUTCDate())}.${pad(d.getUTCMonth() + 1)}.${d.getUTCFullYear()}`;
+}
+
 /** Длительность в часах → "2 ч 14 мин", "3 д 5 ч", "40 мин". */
 export function formatDuration(hours: number | string | null | undefined): string {
   if (hours === null || hours === undefined || hours === "") return "—";

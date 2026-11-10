@@ -4,6 +4,7 @@
 по инструменту) тем же кодом, что бэктест (``stats_payload`` → ``engine.backtest.summarize``).
 ``recompute`` пишет снимки в БД по области целиком, по каждой версии в статусе области и по каждой
 версии, у которой есть сигналы этой области (``signals.scope`` — область на момент публикации);
+у форварда снимка «все версии» нет — он считается только по одной версии (план 2.11);
 ``find`` достаёт снимок для ``GET /v1/stats``, если запрос ложится на ключ.
 """
 
@@ -18,7 +19,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.models import Instrument, Signal, StatsSnapshot, StrategyVersion
-from app.stats import load_trades, stats_payload
+from app.stats import FORWARD, load_trades, stats_payload
 from engine.backtest import BacktestTrade
 
 log = logging.getLogger("snapshots")
@@ -64,7 +65,9 @@ def recompute(db: Session, now: datetime | None = None) -> int:
                 select(Signal.strategy_version_id).where(Signal.scope == scope).distinct()
             ).all()
         )
-        targets: list[int | None] = [None, *sorted(versions)]
+        # форвард — только по версиям: сумма по версиям смешивает правила (план 2.11)
+        ordered = sorted(versions)
+        targets: list[int | None] = list(ordered) if scope == FORWARD else [None, *ordered]
         db.execute(delete(StatsSnapshot).where(StatsSnapshot.scope == scope))
         for vid in targets:
             trades = load_trades(db, scope, vid)
