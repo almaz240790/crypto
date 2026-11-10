@@ -13,7 +13,14 @@ from engine.backtest import ExecutionParams, TradeStatus, simulate_trade
 from engine.candles import SIGNAL_TIMEFRAME, Candle, Timeframe
 from engine.params import TradeParams
 from engine.structure import Direction
-from engine.tracker import EventType, SignalStatus, SignalTracker, TrackerEvent, TrackerState
+from engine.tracker import (
+    EventType,
+    SignalStatus,
+    SignalTracker,
+    TrackerEvent,
+    TrackerResult,
+    TrackerState,
+)
 from engine.trade import TradeSetup
 
 D = Decimal
@@ -553,3 +560,70 @@ def test_legacy_limit_state_takes_activation_from_events() -> None:
         SignalTracker(LONG, TradeParams(), "limit", no_event, signal_close=SIGNAL_CLOSE).step(
             flat_minutes(SIGNAL_CLOSE + H4, 1)[0]
         )
+
+
+# --- комиссии и проскальзывание при записи результата (задача 3, план 2.11) ---------------------
+
+
+def test_execution_cost_formula_is_shared_with_simulate_trade() -> None:
+    from engine.backtest import DEFAULT_EXECUTION, execution_cost_r
+
+    expected = (D(2) * D("0.0005") + D("0.0003")) * D(100) / D(3)
+    assert execution_cost_r(D(100), D(3), DEFAULT_EXECUTION) == expected
+    assert execution_cost_r(D(100), D(3), NO_COST) == 0
+    # до входа комиссий нет: pending и expired дают 0, результат равен состоянию
+    pending = SignalTracker(LONG, TradeParams(), "limit")
+    assert pending.cost_r() == 0 and pending.result().realized_r == 0
+    expired = m1_tracker(entry_type="limit")
+    expired.run(flat_minutes(SIGNAL_CLOSE, 24 * 60 + 1))
+    assert expired.state.status is SignalStatus.EXPIRED
+    assert expired.result() == TrackerResult(D(0), None, None, D(0))
+    # после входа: риск от фактического входа (лимит 98.5 → риск 1.5), состояние не меняется
+    t = SignalTracker(LONG, TradeParams(), "limit")
+    t.step(Candle(T0, D(100), D(101), D(98), D(99), D(1)))
+    before = t.state
+    res = t.result()
+    assert res.cost_r == execution_cost_r(D("98.5"), D("1.5"), DEFAULT_EXECUTION)
+    assert res.realized_r == before.realized_r - res.cost_r and t.state == before
+    assert t.result(NO_COST).realized_r == before.realized_r
+
+
+def test_tracker_result_matches_simulate_trade_with_default_costs() -> None:
+    """Свойство (≥ 300 сценариев на H4): трекер вместе с записью результата совпадает с
+    ``simulate_trade(DEFAULT_EXECUTION)`` точно, в Decimal, по ``realized_r``, ``r_if_tp1_only``,
+    ``r_if_full_tp2`` и ``cost_r``."""
+    from engine.backtest import DEFAULT_EXECUTION
+
+    rng = random.Random(20261105 + 3)
+    seen: dict[TradeStatus, int] = {}
+    for trial in range(320):
+        setup = LONG if trial % 2 == 0 else SHORT
+        params = TradeParams(be_after_tp1=trial % 3 != 0, time_stop_candles=rng.choice([5, 15]))
+        entry_type = "limit" if trial % 4 == 0 else "market"
+        path = random_path(rng, rng.randint(1, 30))
+        if trial % 6 == 0:  # спокойный путь без касаний: time stop и истечение лимита
+            path = [
+                Candle(
+                    T0 + H4 * i,
+                    D(100),
+                    D("100.5"),
+                    D("99.5"),
+                    D(100) + D("0.1") * (i % 3 - 1),
+                    D(1),
+                )
+                for i in range(params.time_stop_candles + 1)
+            ]
+        sim = simulate_trade(setup, path, params, ExecutionParams(entry_type=entry_type))
+        tracker = SignalTracker(setup, params, entry_type)
+        tracker.run(path)
+        res = tracker.result(DEFAULT_EXECUTION)
+        ctx = (trial, entry_type, sim, tracker.state.status, res)
+        assert res.cost_r == sim.cost_r, ctx
+        assert res.realized_r == sim.realized_r, ctx
+        if sim.status is not TradeStatus.OPEN:  # у открытой simulate_trade отдаёт r_if_* до вычета
+            assert res.r_if_tp1_only == sim.r_if_tp1_only, ctx
+            assert res.r_if_full_tp2 == sim.r_if_full_tp2, ctx
+        if sim.closed:
+            assert res.cost_r > 0 and res.realized_r < tracker.state.realized_r, ctx
+        seen[sim.status] = seen.get(sim.status, 0) + 1
+    assert all(seen.get(s, 0) >= 10 for s in TradeStatus), seen

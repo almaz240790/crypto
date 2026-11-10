@@ -7,7 +7,8 @@
   стоп, и тейк — считается стоп; после TP1 стоп переносится в безубыток;
 - TP1/TP2/TP3 закрывают доли ``split`` (40/40/20); ``time_stop_candles`` без TP1 — выход
   по закрытию свечи;
-- комиссия и проскальзывание вычитаются в R: ``(2 × fee + slippage) × вход / риск``.
+- комиссия и проскальзывание вычитаются в R: ``(2 × fee + slippage) × вход / риск`` —
+  формула одна, ``execution_cost_r``; её же вычитает трекер при записи результата.
 
 Исполнять можно по любым свечам после сигнальной (H4 или 1m — чем мельче, тем точнее).
 Статистика (``summarize``) — по закрытым сделкам в хронологическом порядке.
@@ -71,6 +72,16 @@ class TradeResult:
 DEFAULT_EXECUTION = ExecutionParams()
 
 
+def execution_cost_r(entry_price: Decimal, risk: Decimal, exec_params: ExecutionParams) -> Decimal:
+    """Комиссия и проскальзывание сделки в R: ``(2 × fee + slippage) × вход / риск`` (план 2.11).
+
+    Единственное место формулы: её вычитают ``simulate_trade`` (бэктест) и
+    ``SignalTracker.result`` (форвард и live), поэтому результаты считаются одинаково.
+    ``risk`` — расстояние от фактического входа до стопа, положительное.
+    """
+    return (2 * exec_params.fee_rate + exec_params.slippage) * entry_price / risk
+
+
 def simulate_trade(
     setup: TradeSetup,
     candles: Sequence[Candle],
@@ -128,7 +139,7 @@ def simulate_trade(
 
     # риск считается от фактического входа, чтобы R был честным и для лимита
     risk = (entry_price - setup.stop_loss) * sign
-    cost_r = (2 * exec_params.fee_rate + exec_params.slippage) * entry_price / risk
+    cost_r = execution_cost_r(entry_price, risk, exec_params)
 
     def r_at(price: Decimal) -> Decimal:
         return (price - entry_price) * sign / risk
