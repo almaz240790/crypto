@@ -1166,6 +1166,10 @@ def test_granting_admin_role_needs_fresh_code(world: World) -> None:
     assert r.status_code == 200, r.text
     world.db.expire_all()
     assert world.db.get(User, target.id).role == "admin"  # type: ignore[union-attr]
+    # admin → owner — тоже повышение: без кода нельзя
+    assert c.patch(url, json={"role": "owner"}, headers=CSRF).status_code == 403
+    world.db.expire_all()
+    assert world.db.get(User, target.id).role == "admin"  # type: ignore[union-attr]
     # понижение и роль support — без кода
     assert c.patch(url, json={"role": "support"}, headers=CSRF).status_code == 200
     assert "user.role_code_failed" in [a for a, _ in world.audit(owner.id)]

@@ -407,6 +407,7 @@ class UserUpdateIn(BaseModel):
 
 
 STEP_UP_FAILED = "Чтобы выдать права админки, введите свежий код из приложения."
+ROLE_RANK = {"user": 0, "support": 1, "admin": 2, "owner": 3}
 
 
 @router.patch("/users/{user_id}")
@@ -424,10 +425,10 @@ def update_user(
             raise HTTPException(403, "роли меняет только владелец")
         if u.id == user.id:
             raise HTTPException(400, "свою роль менять нельзя")
-        step_up = body.role in admin_auth.ADMIN_ROLES and u.role not in admin_auth.ADMIN_ROLES
+        step_up = body.role in admin_auth.ADMIN_ROLES and ROLE_RANK[body.role] > ROLE_RANK[u.role]
         if step_up:
-            # выдача прав админки — только с кодом из телефона: скрипт на странице сайта
-            # (XSS) при открытом сеансе админки не сделает своего админа
+            # повышение до admin или owner — только с кодом из телефона: скрипт на странице сайта
+            # (XSS) при открытом сеансе админки не сделает своего админа и не поднимет чужого
             if not body.code:
                 raise HTTPException(403, STEP_UP_FAILED)
             attempt = admin_auth.take_code_attempt(user.id)  # перебор кода скриптом — 429

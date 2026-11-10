@@ -61,10 +61,11 @@ describe("причина закрытия сеанса", () => {
 });
 
 describe("выдача прав админки", () => {
-  it("код из приложения нужен, только когда роль admin/owner получает тот, у кого её не было", () => {
+  it("код из приложения нужен для повышения до admin или owner", () => {
     expect(needsCode("user", "admin")).toBe(true);
     expect(needsCode("support", "owner")).toBe(true);
-    expect(needsCode("admin", "owner")).toBe(false);
+    expect(needsCode("admin", "owner")).toBe(true);
+    expect(needsCode("owner", "admin")).toBe(false);
     expect(needsCode("admin", "user")).toBe(false);
     expect(needsCode("user", "support")).toBe(false);
   });
