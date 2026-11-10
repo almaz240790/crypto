@@ -56,6 +56,39 @@
   box-shadow: inset 2px 0 0 var(--accent);
 }
 
+/* пометка у пункта меню: «тест» у сигналов (ADR-0013) — те же токены, что у плашки «Тестовый режим» */
+.navBadge,
+.railBadge {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--warn);
+  border-radius: var(--radius);
+  background: var(--warn-fill);
+  color: var(--warn);
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.navBadge {
+  height: 16px;
+  margin-left: auto;
+  padding: 0 5px;
+  font-size: 11px;
+}
+
+/* в рейке — поверх нижней части иконки, подпись остаётся в подсказке и sr-only */
+.railBadge {
+  position: absolute;
+  bottom: -2px;
+  left: 50%;
+  transform: translateX(-50%);
+  height: 12px;
+  padding: 0 3px;
+  font-size: 9px;
+  pointer-events: none;
+}
+
 .coins {
   margin-top: var(--gap-4);
   padding: 0 var(--gap-4);
@@ -391,6 +424,10 @@
 
   .mobileBar a[aria-current="page"] {
     color: var(--text);
+  }
+
+  .mobileBar .navBadge {
+    margin-left: 0;
   }
 
   /* иконки разделов на телефоне не нужны; знак логотипа остаётся */

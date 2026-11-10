@@ -12,17 +12,8 @@ import { Logo } from "@/components/site/Logo";
 import { getWatchlist } from "@/lib/user";
 import { api } from "@/lib/auth-client";
 import { formatPrice } from "@/lib/format";
+import { navFor } from "./nav";
 
-/**
- * Меню кабинета (ADR-0006): только инструменты анализа. Сигналы, статистика, журнал и калькулятор
- * убраны из меню (страницы доступны по ссылкам); тариф, настройки и поддержка — в блоке аккаунта.
- * Ссылки на админку здесь нет и не должно быть: у неё свой вход по адресу /admin/login (ADR-0011).
- */
-const NAV: { href: string; label: string; icon: string }[] = [
-  { href: "/chart", label: "График", icon: "M4 17l5-5 4 4 7-8M4 21h16" },
-  { href: "/screener", label: "Скринер", icon: "M4 5h16l-6 7v6l-4 2v-8z" },
-  { href: "/alerts", label: "Алерты", icon: "M6 16V11a6 6 0 0 1 12 0v5l2 2H4zM10 20a2 2 0 0 0 4 0" },
-];
 const ACCOUNT: { href: string; label: string }[] = [
   { href: "/billing", label: "Подписка" },
   { href: "/settings", label: "Настройки" },
@@ -95,9 +86,20 @@ function MyCoins() {
   );
 }
 
+/** Пометка у пункта меню; в рейке — маленькая плашка поверх иконки. */
+function NavBadge({ text, rail = false }: { text: string; rail?: boolean }) {
+  return (
+    <span className={rail ? s.railBadge : s.navBadge} data-testid="nav-badge">
+      {text}
+    </span>
+  );
+}
+
 function useNav() {
   const path = usePathname();
-  const nav = NAV;
+  const { user } = useAuth();
+  const authed = Boolean(user);
+  const nav = useMemo(() => navFor(authed), [authed]);
   const isCurrent = useCallback((href: string) => path === href || path.startsWith(href + "/"), [path]);
   return { nav, isCurrent, path };
 }
@@ -118,6 +120,7 @@ function SidebarContent() {
           <Link key={n.href} href={n.href} aria-current={isCurrent(n.href) ? "page" : undefined}>
             <Icon d={n.icon} />
             {t(n.label)}
+            {n.badge && <NavBadge text={t(n.badge)} />}
           </Link>
         ))}
       </nav>
@@ -184,9 +187,10 @@ function Rail({ menuOpen, onMenu, menuButton }: { menuOpen: boolean; onMenu: () 
       </Link>
       <nav className={s.railNav} aria-label={t("разделы")}>
         {nav.map((n) => (
-          <Link key={n.href} href={n.href} className={s.railLink} data-tip={t(n.label)} aria-current={isCurrent(n.href) ? "page" : undefined}>
+          <Link key={n.href} href={n.href} className={s.railLink} data-tip={n.badge ? `${t(n.label)} · ${t(n.badge)}` : t(n.label)} aria-current={isCurrent(n.href) ? "page" : undefined}>
             <Icon d={n.icon} />
-            <span className="sr-only">{t(n.label)}</span>
+            <span className="sr-only">{n.badge ? `${t(n.label)} (${t(n.badge)})` : t(n.label)}</span>
+            {n.badge && <NavBadge text={t(n.badge)} rail />}
           </Link>
         ))}
       </nav>
@@ -274,6 +278,7 @@ export function AppShell({ title, actions, children, flush = false, rail = false
     <Link key={n.href} href={n.href} aria-current={isCurrent(n.href) ? "page" : undefined}>
       <Icon d={n.icon} />
       {t(n.label)}
+      {n.badge && <NavBadge text={t(n.badge)} />}
     </Link>
   ));
 
