@@ -61,7 +61,8 @@ RANK_CHECK_EVERY = 3600
 DIGEST_HOUR_UTC = 6
 KEY_DIGEST = "notifier:digest:"
 DIGEST_RETRY_AFTER = 900
-"""После ошибки прохода дайджестов отметка за день живёт столько секунд, затем — повтор."""
+"""Аренда отметки дайджестов: пока идёт проход и после его ошибки отметка за день живёт
+столько секунд, затем — повтор (``Notifier.digests``)."""
 HEARTBEAT_KEY = "notifier:heartbeat"
 KEY_SIGNAL = "notifier:last_signal_id"
 KEY_EVENT = "notifier:last_event_id"
