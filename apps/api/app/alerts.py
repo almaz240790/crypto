@@ -26,8 +26,8 @@ from sqlalchemy.orm import Session
 
 from app.chart_data import PAGE, bucket_start, load_candles
 from app.config import settings
+from app.mail import MailError, send_mail
 from app.mail import configured as mail_configured
-from app.mail import send_mail
 from app.models import (
     Alert,
     AlertTrigger,
@@ -401,7 +401,8 @@ def _set_delivery(trig: AlertTrigger, **fields: Any) -> None:
 
 
 def _alert_mail(to: str, subject: str, text: str, idempotency_key: str | None = None) -> None:
-    """Письмо алерта: временный отказ провайдера — исключение, срабатывание доставят повторно."""
+    """Письмо алерта в строгом режиме: отказ провайдера — исключение (``MailError``), и
+    срабатывание не отмечается доставленным; временный отказ — повтор, постоянный — ``failed``."""
     send_mail(to, subject, text, idempotency_key=idempotency_key, strict=True)
 
 
@@ -542,14 +543,19 @@ def deliver_pending(
 
 
 def _count_failure(db: Session, tid: int, exc: Exception, now: datetime) -> None:
+    """Засчитать попытку: повтор через паузу, после последней (или при постоянном отказе
+    почты — неверный адрес) — ``failed``."""
     try:
         trig = db.get(AlertTrigger, tid, with_for_update=True)
-        if trig is None or trig.notified:
+        if trig is None or trig.notified or delivery_state(trig).get("status") != QUEUED:
             db.rollback()
             return
         attempts = int(delivery_state(trig).get("attempts", 0)) + 1
         fields: dict[str, Any] = {"attempts": attempts, "error": str(exc)[:200]}
-        if attempts >= DELIVERY_MAX_ATTEMPTS:
+        if isinstance(exc, MailError) and exc.permanent:
+            fields["status"] = FAILED
+            log.error("срабатывание %s: письмо отклонено (%s), не повторяем", tid, exc)
+        elif attempts >= DELIVERY_MAX_ATTEMPTS:
             fields["status"] = FAILED
             log.error("срабатывание %s: %d ошибок доставки, больше не пытаемся", tid, attempts)
         else:

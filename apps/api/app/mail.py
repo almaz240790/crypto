@@ -17,8 +17,22 @@ def configured() -> bool:
     return bool(settings.resend_api_key)
 
 
+PERMANENT_CODES = frozenset({400, 422})
+"""Ответы Resend, после которых повтор того же письма не поможет: неверный адрес или поля
+письма. Остальные ошибки (401/403 — ключ или домен, 429 — лимит, 5xx — сбой) проходят сами
+или после исправления настроек: письмо стоит отправить позже."""
+
+
 class MailError(RuntimeError):
-    """Временный отказ провайдера (429 или 5xx): письмо не отправлено, отправку стоит повторить."""
+    """Письмо не принято провайдером (только в строгом режиме ``send_mail``).
+
+    ``permanent`` — повтор не поможет (``PERMANENT_CODES``); иначе отправку стоит повторить.
+    """
+
+    def __init__(self, status_code: int) -> None:
+        super().__init__(f"Resend {status_code}")
+        self.status_code = status_code
+        self.permanent = status_code in PERMANENT_CODES
 
 
 def send_mail(
@@ -32,9 +46,11 @@ def send_mail(
     """Отправить письмо. Ошибка HTTP пишется в лог; сетевая ошибка — исключение.
 
     ``idempotency_key`` — ключ идемпотентности Resend (действует сутки): повтор того же письма
-    после сбоя между отправкой и фиксацией в БД не даёт второго письма. ``strict`` — временный
-    отказ провайдера (429, 5xx) поднимает ``MailError``, чтобы вызывающий повторил отправку
-    (доставка алертов); иначе он, как и прочие ошибки HTTP, только пишется в лог.
+    после сбоя между отправкой и фиксацией в БД не даёт второго письма. Ответ 409 на запрос с
+    ключом значит, что письмо с этим ключом уже отправлено (или отправляется), — это успех.
+    ``strict`` — любой другой отказ провайдера поднимает ``MailError``: вызывающий не отмечает
+    письмо отправленным и решает, повторять ли (``MailError.permanent``). Без ``strict`` отказ,
+    как и раньше, только пишется в лог.
     """
     if not configured():
         log.info("письмо (не отправлено, нет ключа) → %s | %s\n%s", to, subject, text)
@@ -48,7 +64,11 @@ def send_mail(
         json={"from": settings.mail_from, "to": [to], "subject": subject, "text": text},
         timeout=15,
     )
-    if resp.status_code >= 300:
-        log.error("Resend %s: %s", resp.status_code, resp.text[:200])
-        if strict and (resp.status_code == 429 or resp.status_code >= 500):
-            raise MailError(f"Resend {resp.status_code}")
+    if resp.status_code < 300:
+        return
+    if resp.status_code == 409 and idempotency_key:
+        log.info("Resend 409 по ключу %s: письмо уже отправлено", idempotency_key)
+        return
+    log.error("Resend %s: %s", resp.status_code, resp.text[:200])
+    if strict:
+        raise MailError(resp.status_code)
