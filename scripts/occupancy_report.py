@@ -339,14 +339,22 @@ def render_example(
         (ci, float(c.stop), ci + PAD_AFTER // 2, float(c.stop), WARN, "--"),
         (ci, float(c.tp1), ci + PAD_AFTER // 2, float(c.tp1), WARN, ":"),
     ]
+
+    # render_png подписывает лонг под ценой метки, шорт и выход — над ней: метки ставятся на край
+    # свечи, чтобы подписи кандидата и выхода на одной свече (случай «свеча выхода») не слились
+    def edge(i: int, d: Direction, label_below: bool) -> Decimal:
+        candle = candles[i]
+        return candle.low if (d is Direction.UP) == label_below else candle.high
+
     bdir = "up" if b.direction is Direction.UP else "down"
     cdir = "up" if c.direction is Direction.UP else "down"
     marks = [
-        (bi, bi, b.entry, "открытая сделка", bdir),
-        (ci, ci, c.entry, "подавлен", cdir),
+        (bi, bi, edge(bi, b.direction, True), "открытая сделка", bdir),
+        (ci, ci, edge(ci, c.direction, True), "подавлен", cdir),
     ]
     if b.result.exit_index is not None:
-        marks.append((bx, bx, h4[bx + shift].close, f"выход {b.result.status.value}", None))
+        exit_price = edge(bx, c.direction, False)
+        marks.append((bx, bx, exit_price, f"выход {b.result.status.value}", None))
     title = (
         f"{num:02d}. {c.symbol} H4 — кандидат {_t(c.at)} UTC ({_dir(c.direction)} {c.grade}) "
         f"подавлен: открыта сделка {_t(b.at)} ({_dir(b.direction)}), "
