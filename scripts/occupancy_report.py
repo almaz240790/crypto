@@ -427,7 +427,7 @@ def write_report(
         "|---|---|---|---|---|",
     ]
     per_symbol = sorted(
-        with_history,
+        (r for r in with_history if r.candidates),
         key=lambda r: (-sum(c.blocked_by is not None for c in r.candidates), r.symbol),
     )
     for r in per_symbol[:15]:
@@ -466,8 +466,8 @@ def write_report(
             f"{_fmt_r(c.result.realized_r)} {c.result.status.value} | "
             f"[{name}]({png_dir.name}/{name}) |"
         )
-    out.with_suffix(".md").write_text("\n".join(lines) + "\n")
-    with out.with_suffix(".csv").open("w") as f:
+    (out.parent / f"{out.name}.md").write_text("\n".join(lines) + "\n")
+    with (out.parent / f"{out.name}.csv").open("w") as f:
         f.write(
             "symbol,candidate_time,direction,grade,blocked_by_signal,blocker_exit,"
             "blocker_status,candidate_status,candidate_realized_r\n"
@@ -479,7 +479,7 @@ def write_report(
                 f"{b.at.isoformat()},{b.exit_time.isoformat() if b.exit_time else ''},"
                 f"{b.result.status.value},{c.result.status.value},{c.result.realized_r:.4f}\n"
             )
-    print(f"готово: {out.with_suffix('.md')}", flush=True)
+    print(f"готово: {out.parent / f'{out.name}.md'}", flush=True)
 
 
 def main() -> int:
