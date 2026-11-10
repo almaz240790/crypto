@@ -63,7 +63,7 @@ def test_new_version_reaches_forward_only_by_admin_request() -> None:
 def test_skipped_version_logged_once_per_process(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    monkeypatch.setattr(scheduler, "_reported_skips", set())
+    monkeypatch.setattr(scheduler, "_reported_skips", {})
     caplog.set_level(logging.INFO, logger="scheduler")
     rows = {"s@1.2.0": _row("backtest"), "s@1.0.0": _row("forward")}
     for _ in range(3):  # scheduler зовёт это на каждый инструмент
@@ -77,6 +77,31 @@ def test_skipped_version_logged_once_per_process(
     assert [r.getMessage() for r in caplog.records][1:] == [
         "версия s@1.2.0 в статусе archived — не оценивается"
     ]
+
+
+def test_skipped_version_logged_again_when_it_returns_to_a_skipped_status(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(scheduler, "_reported_skips", {})
+    caplog.set_level(logging.INFO, logger="scheduler")
+    line = "версия s@1.2.0 в статусе backtest — не оценивается"
+    # backtest → forward → backtest: версия снова перестала оцениваться — строка снова
+    for status in ("backtest", "backtest", "forward", "forward", "backtest", "backtest"):
+        scheduler.report_skipped_versions({"s@1.2.0": _row(status)})
+    assert [r.getMessage() for r in caplog.records] == [line, line]
+    # backtest → archived → backtest: прежний статус через другой неоцениваемый — тоже строка
+    caplog.clear()
+    for status in ("archived", "backtest", "backtest"):
+        scheduler.report_skipped_versions({"s@1.2.0": _row(status)})
+    assert [r.getMessage() for r in caplog.records] == [
+        "версия s@1.2.0 в статусе archived — не оценивается",
+        line,
+    ]
+    # версии, которой нет в переданных строках, память не касается
+    caplog.clear()
+    scheduler.report_skipped_versions({"s@9.9.9": _row("forward")})
+    scheduler.report_skipped_versions({"s@1.2.0": _row("backtest")})
+    assert caplog.records == []
 
 
 # --- на БД --------------------------------------------------------------------------------------
@@ -121,7 +146,7 @@ def code_versions(monkeypatch: pytest.MonkeyPatch) -> dict[str, StrategyParams]:
     monkeypatch.setattr(forward, "STRATEGY_SLUG", SLUG)
     monkeypatch.setattr(forward, "STRATEGIES", strategies)
     monkeypatch.setattr(scheduler, "STRATEGIES", strategies)
-    monkeypatch.setattr(scheduler, "_reported_skips", set())
+    monkeypatch.setattr(scheduler, "_reported_skips", {})
     return strategies
 
 

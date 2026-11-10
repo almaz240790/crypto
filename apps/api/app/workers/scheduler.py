@@ -48,22 +48,26 @@ FALLBACK_DELAY = timedelta(seconds=90)
 FALLBACK_EVERY = 30
 HEARTBEAT_KEY = "scheduler:heartbeat"
 
-# (версия, статус), о которых уже написали «не оценивается»: process_symbol идёт в потоках
-_reported_skips: set[tuple[str, str]] = set()
+# версия → статус, о котором уже написали «не оценивается»: process_symbol идёт в потоках
+_reported_skips: dict[str, str] = {}
 _reported_lock = threading.Lock()
 
 
 def report_skipped_versions(rows: dict[str, StrategyVersion]) -> None:
-    """Один раз за запуск процесса на пару (версия, статус) пишет, что версия не оценивается.
+    """Один раз за запуск процесса на статус версии пишет, что версия не оценивается.
 
     Вызывается на каждый инструмент, поэтому без памяти строка повторялась бы десятки раз за
-    закрытие H4. Если статус версии сменится (например, backtest → archived), строка будет снова.
+    закрытие H4. Строка пишется снова при каждой смене статуса: backtest → archived, а также
+    когда версия возвращается в неоцениваемый статус после оценки (backtest → forward → backtest)
+    или в прежний неоцениваемый статус через другой (backtest → archived → backtest).
     """
-    for key, status in skipped_versions(rows).items():
-        with _reported_lock:
-            if (key, status) in _reported_skips:
-                continue
-            _reported_skips.add((key, status))
+    skipped = skipped_versions(rows)
+    with _reported_lock:
+        for key in [k for k in _reported_skips if k in rows and k not in skipped]:
+            del _reported_skips[key]  # версия снова оценивается — следующий пропуск новый
+        fresh = [(k, st) for k, st in skipped.items() if _reported_skips.get(k) != st]
+        _reported_skips.update(fresh)
+    for key, status in fresh:
         log.info(SKIPPED_VERSION_LOG, key, status)
 
 
