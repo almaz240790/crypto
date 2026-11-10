@@ -242,7 +242,7 @@ def _publish_status(changes: list[dict[str, Any]]) -> None:
     """Смена статуса → Redis ``signals.status`` (для WebSocket API). Ошибка Redis не критична.
 
     В событии есть ``scope``: WebSocket API рассылает клиентам только live-события
-    (``live.LiveHub.handle_event``), форвард построчно не публикуется (план 2.11)."""
+    (``live.Hub.handle_event``), форвард построчно не публикуется (план 2.11)."""
     if not changes:
         return
     try:
