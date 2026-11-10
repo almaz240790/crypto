@@ -144,7 +144,9 @@ def _setup(close: Decimal, up: bool = True) -> TradeSetup:
     )
 
 
-def _candidate(at: datetime, setup: TradeSetup | None = None) -> SignalCandidate:
+def _candidate(
+    at: datetime, setup: TradeSetup | None = None, publishable: bool = True, deferred: bool = False
+) -> SignalCandidate:
     """Настоящий ``SignalCandidate`` с полями, которые читают scheduler, forward и бэктест."""
     trade = setup or _setup(D(100))
     return SignalCandidate(
@@ -158,13 +160,14 @@ def _candidate(at: datetime, setup: TradeSetup | None = None) -> SignalCandidate
         score=SimpleNamespace(  # type: ignore[arg-type]
             total=75,
             grade=SimpleNamespace(value="B"),
-            publishable=True,
+            publishable=publishable,
             components={"trend": 30},
         ),
         filters=SimpleNamespace(flags=[]),  # type: ignore[arg-type]
         bias=None,  # type: ignore[arg-type]
         input_hash="h" * 64,
         facts=(f"тест {at:%d.%m %H:%M}",),
+        deferred=deferred,
     )
 
 
@@ -345,6 +348,51 @@ def test_rule_is_per_instrument_and_version_not_per_scope(
         assert live.scope == "live"
 
 
+def test_signals_the_backtest_does_not_trade_do_not_occupy(
+    make_session: Callable[[], Session], code_version: str
+) -> None:
+    """Кандидат ниже C (хранится для анализа, план 2.7) и отложенный — не сделки бэктеста:
+    записываются на свободном закрытии, но инструмент не занимают. Сделка занимает — и тогда
+    не пишется даже кандидат ниже C (бэктест такие закрытия не оценивает вовсе)."""
+    with make_session() as s:
+        ver, inst = _seed(s, code_version)
+        assert forward.write_candidate(s, ver, inst, _candidate(T0, publishable=False))
+        assert forward.write_candidate(s, ver, inst, _candidate(T0 + H4, deferred=True))
+        s.commit()
+        assert forward.trade_spans(s, ver.id, inst.id, T0 + 2 * H4) == []
+        trade = _publish(s, ver, inst, T0 + 2 * H4)
+        assert not forward.write_candidate(s, ver, inst, _candidate(T0 + 3 * H4, publishable=False))
+        spans = forward.trade_spans(s, ver.id, inst.id, T0 + 3 * H4)
+        assert [x.ref for x in spans] == [trade.public_id]
+        # строка без пометок publishable/deferred (старый формат) считается сделкой
+        other = _instrument(s)
+        old = Signal(
+            public_id=secrets.token_hex(5),
+            strategy_version_id=ver.id,
+            instrument_id=other.id,
+            direction="short",
+            candle_close_time=T0,
+            entry_market=D(100),
+            stop_loss=D(103),
+            tp1=D(97),
+            tp2=D(93),
+            tp3=D(88),
+            rr_tp2=D(2),
+            score=60,
+            grade="B",
+            score_breakdown={},
+            rationale_facts={},
+            status="active",
+            scope="forward",
+            input_hash="o" * 64,
+        )
+        s.add(old)
+        s.flush()
+        assert [x.ref for x in forward.trade_spans(s, ver.id, other.id, T0 + 3 * H4)] == [
+            old.public_id
+        ]
+
+
 # --- сквозной прогон: scheduler + трекер H4 против run_backtest -----------------------------------
 
 
@@ -377,11 +425,12 @@ def test_scheduler_with_tracker_reproduces_backtest_signals(
     closes = {c.close_time(Timeframe.H4): c.close for c in h4}
     picks = {at: rng.random() < 0.4 for at in closes}
     sides = {at: rng.random() < 0.5 for at in closes}
+    below_c = {at: rng.random() < 0.3 for at in closes}
 
     def fake_evaluate(_inp: Any, at: datetime, _params: Any) -> SignalCandidate | NoSignal:
         if not picks[at]:
             return NoSignal("trigger", "нет слома")
-        return _candidate(at, _setup(closes[at], up=sides[at]))
+        return _candidate(at, _setup(closes[at], up=sides[at]), publishable=not below_c[at])
 
     start, end = h4[0].close_time(Timeframe.H4), h4[-1].close_time(Timeframe.H4)
     monkeypatch.setattr(bt, "evaluate", fake_evaluate)
@@ -410,7 +459,12 @@ def test_scheduler_with_tracker_reproduces_backtest_signals(
 
     with make_session() as s:
         rows = s.execute(
-            select(Signal.candle_close_time, Signal.status, SignalResult.closed_at)
+            select(
+                Signal.candle_close_time,
+                Signal.status,
+                SignalResult.closed_at,
+                Signal.rationale_facts["publishable"].as_boolean(),
+            )
             .outerjoin(SignalResult, SignalResult.signal_id == Signal.id)
             .where(Signal.instrument_id == inst.id)
             .order_by(Signal.candle_close_time)
@@ -421,6 +475,9 @@ def test_scheduler_with_tracker_reproduces_backtest_signals(
             st if st.startswith("closed") or st == "expired" else "open",
             None if closed is None else closed.astimezone(UTC),
         )
-        for t, st, closed in rows
+        for t, st, closed, publishable in rows
+        if publishable
     ]
     assert got == expected
+    # кандидаты ниже C записаны для анализа (план 2.7), но сделками не стали и никого не заняли
+    assert any(not publishable for *_, publishable in rows)

@@ -27,7 +27,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import func, or_, select, text
+from sqlalchemy import Boolean, false, func, or_, select, text, true
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -366,9 +366,18 @@ BUSY_LOG = (
 def trade_spans(
     session: Session, version_id: int, instrument_id: int, at: datetime
 ) -> list[TradeSpan]:
-    """Сигналы версии по инструменту, опубликованные раньше ``at``, которые могут занимать его
+    """Сделки версии по инструменту, опубликованные раньше ``at``, которые могут занимать его
     на ``at`` (``engine.occupancy``): открытые и закончившиеся позже ``at − H4``. Конец сделки —
-    ``signal_results.closed_at``, для истёкшего лимита и отмены — время этого события."""
+    ``signal_results.closed_at``, для истёкшего лимита и отмены — время этого события.
+
+    Сделка — то, что торгует бэктест: публикуемый (градация не ниже C) и не отложенный сигнал.
+    Кандидаты ниже C forward хранит для анализа (план 2.7), отложенные бэктест пропускает —
+    инструмент они не занимают, иначе форвард разошёлся бы с бэктестом. Строки без этих пометок
+    в ``rationale_facts`` считаются сделками."""
+    facts = Signal.rationale_facts
+    tradable = func.coalesce(facts["publishable"].astext.cast(Boolean), true()) & ~func.coalesce(
+        facts["deferred"].astext.cast(Boolean), false()
+    )
     ended_event = (
         select(func.max(SignalEvent.occurred_at))
         .where(SignalEvent.signal_id == Signal.id, SignalEvent.type.in_(ENDING_EVENTS))
@@ -383,6 +392,7 @@ def trade_spans(
             Signal.strategy_version_id == version_id,
             Signal.instrument_id == instrument_id,
             Signal.candle_close_time < at,
+            tradable,
             or_(Signal.status.in_(OPEN_STATUSES), ended > at - SIGNAL_TIMEFRAME.delta),
         )
         .order_by(Signal.candle_close_time)
