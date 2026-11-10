@@ -5,7 +5,8 @@ import { blockBinance } from "./helpers/binance";
  * Отдельный вход в админку (ADR-0011) с заглушкой API на уровне браузера: первая настройка кода (письмо со
  * ссылкой, QR, резервные коды и их перезагрузка), обычный вход, неверный код, не-админ, ссылка из письма,
  * открытый сеанс (закладка, ссылка с другого сайта), причина закрытия сеанса, раздельный выход, «Защита входа»
- * (новые резервные коды, перенос кода), выдача роли с кодом, нет ссылки на админку в меню сайта.
+ * (новые резервные коды, перенос кода), выдача роли с кодом, нет ссылки на админку в меню сайта; переходный режим —
+ * владелец без кода, вошедший на сайт, видит админку с плашкой «Настройте защиту» до первой настройки.
  * Компьютер и телефон (390×844, касание).
  */
 
@@ -14,7 +15,11 @@ const PASSWORD = "correct horse battery";
 const GENERIC = "Не получилось войти. Проверьте email и пароль.";
 const CODE_FAILED = "Код не подошёл. Введите свежий код из приложения — он меняется каждые 30 секунд.";
 const STEP_UP_FAILED = "Чтобы выдать права админки, введите свежий код из приложения.";
-const ME = { id: 1, email: ADMIN_EMAIL, name: null, role: "owner", method: "password", started_at: "2026-11-05T10:00:00Z", expires_at: "2026-11-05T18:00:00Z", idle_minutes: 60, backup_codes_left: 10 };
+const STEP_UP_NEEDS_SETUP = "Чтобы выдать права админки, сначала настройте защиту входа кодом.";
+const GRACE_BANNER = "Вход в админку пока без защиты кодом.";
+const ME = { id: 1, email: ADMIN_EMAIL, name: null, role: "owner", method: "password", grace: false, started_at: "2026-11-05T10:00:00Z", expires_at: "2026-11-05T18:00:00Z", idle_minutes: 60, backup_codes_left: 10 };
+/** Переходный режим: тот же владелец по токену сайта, код ещё не настроен — сроков сеанса нет. */
+const GRACE_ME = { id: 1, email: ADMIN_EMAIL, name: null, role: "owner", method: "site", grace: true, setup_required: true, backup_codes_left: 0 };
 const SITE_ME = { id: 1, email: ADMIN_EMAIL, name: null, email_verified: true, role: "owner", locale: "ru", timezone: "UTC", theme: "system", risk: { deposit: null, risk_pct: "1.00", exchange: "binance", market_type: "futures", default_leverage: 3, experience: null } };
 const BACKUP = ["ABCDEFGH23", "BCDEFGHJ34", "CDEFGHJK45", "DEFGHJKL56", "EFGHJKLM67", "FGHJKLMN78", "GHJKLMNP89", "HJKLMNPQ92", "JKLMNPQR23", "KLMNPQRS34"];
 const BACKUP_NEW = BACKUP.map((c) => "N" + c.slice(1));
@@ -43,7 +48,11 @@ async function mockApi(page: Page, calls: string[], opts: Opts = {}): Promise<St
     /** Сеанса нет: 401 и, если сервер знает почему, причина в заголовке X-Admin-Ended. */
     const noSession = () => json(401, { detail: "Сеанс админки закончился. Войдите снова." }, state.ended ? { "x-admin-ended": state.ended } : {});
     const me = () => ({ ...ME, backup_codes_left: state.codesLeft });
-    if (p.startsWith("/v1/admin/") && req.headers()["authorization"]) calls.push(`SITE-TOKEN ${p}`);
+    const siteToken = Boolean(req.headers()["authorization"]);
+    if (p.startsWith("/v1/admin/") && siteToken) calls.push(`SITE-TOKEN ${p}`);
+    /** Как API: сеанс админки (cookie) — или токен сайта, пока код не настроен (переходный режим). */
+    const grace = !state.session && siteToken && !state.twoFactor;
+    const allowed = state.session || grace;
     if (p === "/v1/admin/auth/config") return json(200, { mail: opts.mail ?? true, idle_minutes: 60, session_hours: 8 });
     if (p === "/v1/admin/auth/login") {
       const b = body();
@@ -70,7 +79,12 @@ async function mockApi(page: Page, calls: string[], opts: Opts = {}): Promise<St
       state.ended = null;
       return json(200, me());
     }
-    if (p === "/v1/admin/auth/me") return state.session ? json(200, me()) : noSession();
+    if (p === "/v1/admin/auth/me") {
+      if (state.session) return json(200, me());
+      if (grace) return json(200, GRACE_ME);
+      // код настроен — токен сайта не подходит: «нужен вход в админку», без причины закрытия сеанса
+      return siteToken ? json(401, { detail: "Нужен вход в админку." }) : noSession();
+    }
     if (p === "/v1/admin/auth/logout") {
       state.session = false;
       return route.fulfill({ status: 204 });
@@ -90,13 +104,15 @@ async function mockApi(page: Page, calls: string[], opts: Opts = {}): Promise<St
       state.codesLeft = 10;
       return json(200, { backup_codes: BACKUP_NEW, backup_codes_left: 10 });
     }
-    if (p === "/v1/admin/strategies") return state.session ? json(200, { versions: [], runs: [], requests: [], me: { id: 1, role: "owner" } }) : noSession();
-    if (p === "/v1/admin/audit") return state.session ? json(200, []) : noSession();
-    if (p === "/v1/admin/tickets") return state.session ? json(200, []) : noSession();
-    if (p === "/v1/admin/users" && req.method() === "GET") return state.session ? json(200, USERS) : noSession();
+    if (p === "/v1/admin/strategies") return allowed ? json(200, { versions: [], runs: [], requests: [], me: { id: 1, role: "owner" } }) : noSession();
+    if (p === "/v1/admin/audit") return allowed ? json(200, []) : noSession();
+    if (p === "/v1/admin/tickets") return allowed ? json(200, []) : noSession();
+    if (p === "/v1/admin/users" && req.method() === "GET") return allowed ? json(200, USERS) : noSession();
     if (p === "/v1/admin/users/2" && req.method() === "PATCH") {
       const b = req.postDataJSON() as Record<string, unknown>;
       state.patches.push(b);
+      if (!allowed) return noSession();
+      if (grace && (b.role === "admin" || b.role === "owner")) return json(403, { detail: STEP_UP_NEEDS_SETUP });
       if (b.role === "admin" && b.code !== "123456") return json(403, { detail: STEP_UP_FAILED });
       return json(200, { id: 2, role: b.role, blocked: false });
     }
@@ -263,7 +279,7 @@ test.describe("вход в админку — компьютер", () => {
     expect(calls2.some((c) => c.includes("/setup"))).toBe(false);
   });
 
-  test("/admin без сеанса админки — на /admin/login, даже если вошли на сайт", async ({ page }) => {
+  test("владелец с настроенным кодом без сеанса админки — на /admin/login, даже если вошёл на сайт", async ({ page }) => {
     const calls: string[] = [];
     await mockApi(page, calls, { sessionAlive: false });
     await page.context().addCookies([{ name: "pl_auth", value: "1", domain: "localhost", path: "/" }]);
@@ -277,7 +293,9 @@ test.describe("вход в админку — компьютер", () => {
     await expect(page).toHaveURL(/\/admin\/login\?next=%2Fadmin$/);
     await ready(page);
     expect(await hint(page.context(), "pl_admin_hint")).toBeNull();
-    expect(calls.filter((c) => c.startsWith("SITE-TOKEN"))).toEqual([]);
+    // токен сайта спрашивали только «кто вошёл» (переходный режим?) — API ответил «нужен вход в админку»
+    expect(new Set(calls.filter((c) => c.startsWith("SITE-TOKEN")))).toEqual(new Set(["SITE-TOKEN /v1/admin/auth/me"]));
+    await expect(page.getByText(GRACE_BANNER)).toHaveCount(0);
   });
 
   test("сеанс закрыт — страница входа называет настоящую причину", async ({ page }) => {
@@ -448,6 +466,79 @@ test.describe("вход в админку — компьютер", () => {
     await expect(twoFactor.getByTestId("two-factor-admin")).toContainText("настраивается при входе в админку");
     await expect(twoFactor.getByRole("button", { name: "Включить 2FA" })).toHaveCount(0);
     await expect(page.locator('a[href^="/admin"]')).toHaveCount(0);
+    // код включён: отключить его на сайте админ не может (иначе вернулся бы переходный режим)
+    await page.route("**/v1/me/2fa", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ enabled: true, backup_codes_left: 7, admin: true }) }));
+    await page.reload();
+    await expect(twoFactor.getByTestId("two-factor-admin")).toContainText("Администратору защита кодом не отключается");
+    await expect(twoFactor.getByRole("button", { name: "Отключить 2FA" })).toHaveCount(0);
+  });
+
+  test("переходный режим: владелец без кода вошёл на сайт — админка с плашкой, «Настроить» → письмо → QR → после настройки нужен сеанс админки", async ({ page }) => {
+    const calls: string[] = [];
+    const state = await mockApi(page, calls, { twoFactor: false, sessionAlive: false });
+    await page.context().addCookies([{ name: "pl_auth", value: "1", domain: "localhost", path: "/" }]);
+    await page.goto("/admin?tab=users");
+    await expect(page).toHaveURL(/\/admin\?tab=users$/); // без редиректа на вход
+    const banner = page.getByTestId("admin-grace");
+    await expect(banner).toContainText(GRACE_BANNER);
+    await expect(banner).toContainText("Настройте защиту — это одна минута.");
+    await expect(page.getByTestId("admin-who")).toContainText(ADMIN_EMAIL);
+    await expect(page.getByRole("button", { name: "Выйти из админки" })).toHaveCount(0); // выходить отдельно не из чего
+    await expect(page.getByText("Резервных кодов не осталось")).toHaveCount(0);
+    // данные админки идут с токеном сайта, как до отдельного входа
+    await expect(page.getByLabel("роль helper@example.com")).toBeVisible();
+    expect(calls).toContain("SITE-TOKEN /v1/admin/users");
+    // выдать права админки без кода нельзя: код не спрашиваем (его нет), API отвечает «сначала настройте защиту»
+    const asked: string[] = [];
+    page.on("dialog", (d) => {
+      asked.push(d.message());
+      void d.dismiss();
+    });
+    await page.getByLabel("роль helper@example.com").selectOption("admin");
+    await expect(page.getByRole("status").filter({ hasText: STEP_UP_NEEDS_SETUP })).toBeVisible();
+    expect(asked).toEqual([]);
+    expect(state.patches).toEqual([{ role: "admin" }]);
+    // «Защита входа» — сначала настройка
+    await page.getByRole("tab", { name: "Защита входа" }).click();
+    await expect(page.getByTestId("admin-security")).toContainText("Защита входа не настроена");
+    await expect(page.getByRole("link", { name: "Настроить защиту" })).toHaveAttribute("href", "/admin/login?setup=1");
+    // «Настроить» на плашке → та же страница входа, шаг настройки; email уже подставлен
+    await banner.getByRole("link", { name: "Настроить" }).click();
+    await expect(page).toHaveURL(/\/admin\/login\?setup=1$/);
+    await expect(page.getByRole("heading", { name: "Настройка защиты входа" })).toBeVisible();
+    await ready(page);
+    await expect(page.getByLabel("Email")).toHaveValue(ADMIN_EMAIL);
+    await expect(page.getByRole("link", { name: "Вернуться в админку" })).toHaveAttribute("href", "/admin");
+    await page.getByLabel("Пароль").fill(PASSWORD);
+    await page.getByRole("button", { name: "Продолжить" }).click();
+    // без письма код не настроить: шаг «Проверьте почту», но админка пока открыта, письмо можно повторить
+    await expect(page.getByRole("heading", { name: "Проверьте почту" })).toBeVisible();
+    const mail = page.getByTestId("admin-grace-mail");
+    await expect(mail).toContainText("Админка пока открыта по адресу /admin");
+    await expect(mail.getByRole("link", { name: "Открыть админку" })).toHaveAttribute("href", "/admin");
+    await mail.getByRole("button", { name: "Отправить письмо ещё раз" }).click();
+    await expect(mail.getByRole("status")).toContainText(`Отправили новое письмо на ${ADMIN_EMAIL}`);
+    expect(calls).toContain("POST /v1/admin/auth/magic");
+    await expect(page.getByTestId("admin-qr")).toHaveCount(0);
+    expect(calls.some((c) => c.includes("/setup"))).toBe(false);
+    // ссылка из письма → QR → код → резервные коды → админка уже по сеансу, без плашки
+    await page.goto("/admin/login?link=good-link-123456");
+    await expect(page.getByRole("heading", { name: "Защитите вход кодом из телефона" })).toBeVisible();
+    await page.getByLabel("Код из приложения").fill("123456");
+    await page.getByRole("button", { name: "Включить защиту и войти" }).click();
+    await page.getByLabel(/Я сохранил\(а\) коды/).check();
+    await page.getByRole("button", { name: "Перейти в админку" }).click();
+    await expect(page).toHaveURL(/\/admin$/);
+    await expect(page.getByRole("button", { name: "Выйти из админки" })).toBeVisible();
+    await expect(page.getByText(GRACE_BANNER)).toHaveCount(0);
+    // переходный режим закончился: без сеанса админки вход на сайт админку больше не открывает
+    await page.getByRole("button", { name: "Выйти из админки" }).click();
+    await expect(page).toHaveURL(/\/admin\/login$/);
+    await page.goto("/admin");
+    await expect(page).toHaveURL(/\/admin\/login\?next=%2Fadmin$/);
+    await ready(page);
+    await expect(page.getByText(GRACE_BANNER)).toHaveCount(0);
+    expect(await hint(page.context(), "pl_auth")).toBe("1"); // с сайта не вывело
   });
 });
 
@@ -512,6 +603,28 @@ test.describe("вход в админку — телефон", () => {
     await page.getByLabel("Пароль").fill(PASSWORD);
     await page.getByRole("button", { name: "Продолжить" }).click();
     await expect(page.getByRole("main").getByRole("alert")).toHaveText(GENERIC);
+  });
+
+  test("переходный режим на телефоне: плашка и «Настроить» помещаются, шаг письма — без бокового скролла", async ({ page }) => {
+    const calls: string[] = [];
+    await mockApi(page, calls, { twoFactor: false, sessionAlive: false });
+    await page.context().addCookies([{ name: "pl_auth", value: "1", domain: "localhost", path: "/" }]);
+    await page.goto("/admin");
+    const banner = page.getByTestId("admin-grace");
+    await expect(banner).toContainText(GRACE_BANNER);
+    const setup = banner.getByRole("link", { name: "Настроить" });
+    expect((await setup.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    await noSideScroll(page);
+    await setup.click();
+    await expect(page.getByRole("heading", { name: "Настройка защиты входа" })).toBeVisible();
+    await ready(page);
+    await expect(page.getByLabel("Email")).toHaveValue(ADMIN_EMAIL);
+    await page.getByLabel("Пароль").fill(PASSWORD);
+    await page.getByRole("button", { name: "Продолжить" }).click();
+    await expect(page.getByTestId("admin-grace-mail")).toBeVisible();
+    await noSideScroll(page);
+    await page.getByRole("link", { name: "Открыть админку" }).click();
+    await expect(page.getByTestId("admin-grace")).toBeVisible();
   });
 
   test("«Защита входа» на телефоне: новые коды и QR-код переноса помещаются в экран", async ({ page }) => {
