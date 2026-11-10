@@ -46,6 +46,7 @@ from app.stats import (
     FORWARD,
     default_forward_version,
     filter_trades,
+    forward_versions,
     load_trades,
     stats_payload,
     trade_rows,
@@ -542,8 +543,10 @@ def _forward_version(
 ) -> StrategyVersion | None:
     """Версия, по которой считается форвард (план 2.11: версии не смешиваются).
 
-    Явная версия (id или номер) — она, а если её нет — 404. Без версии — версия по умолчанию:
-    наибольший id среди версий в статусе forward (``None``, если таких нет).
+    Явная версия (id или номер) — она, в каком бы статусе ни была (версия в архиве отдаёт свою
+    записанную форвард-историю, см. ``stats.FORWARD_HISTORY_SQL``), а если её нет — 404. Без
+    версии — версия по умолчанию: наибольший id среди версий в статусе forward (``None``, если
+    таких нет).
     """
     if strategy_version_id is None and not version:
         return default_forward_version(db)
@@ -575,12 +578,15 @@ def _version_ref(db: Session, sv: StrategyVersion | None) -> dict[str, Any] | No
 
 
 def _forward_meta(db: Session, sv: StrategyVersion | None, closed: int) -> dict[str, Any]:
-    """Что сопровождает форвард-статистику: какая версия посчитана, плашка о недействительных
-    результатах (настройки ``FORWARD_NOTICE``, ``FORWARD_NOTICE_UNTIL``) и пометка «мало данных»
-    при числе закрытых сделок меньше ``LOW_N`` (план 2A.10.4). Числа не скрываются."""
+    """Что сопровождает форвард-статистику: какая версия посчитана, какие версии можно выбрать
+    (``versions``: в форварде сейчас и ушедшие из него с записанной форвард-историей), плашка о
+    недействительных результатах (настройки ``FORWARD_NOTICE``, ``FORWARD_NOTICE_UNTIL``) и
+    пометка «мало данных» при числе закрытых сделок меньше ``LOW_N`` (план 2A.10.4). Числа не
+    скрываются."""
     until = settings.forward_notice_until
     return {
         "strategy_version": _version_ref(db, sv),
+        "versions": forward_versions(db),
         "notice": (
             {"invalid_until": until.isoformat() if until else None}
             if settings.forward_notice
@@ -610,7 +616,8 @@ def stats(
     ``backtest`` — сохранённый прогон бэктеста. Ручного ввода нет.
 
     Форвард всегда по одной версии: без версии — форвард-версия по умолчанию; какая именно,
-    сказано в поле ``strategy_version``. Там же ``notice`` (плашка) и ``low_data``."""
+    сказано в поле ``strategy_version``. Там же ``versions`` (что можно выбрать), ``notice``
+    (плашка) и ``low_data``."""
     s, u = _since_until(days, since, until)
     fwd: StrategyVersion | None = None
     if scope == FORWARD:

@@ -30,6 +30,34 @@ def _trade(r: str, signal_h: float, exit_h: float, sym: str = "X") -> BacktestTr
     )  # fmt: skip
 
 
+def _main_worst_drawdowns(closed: list[BacktestTrade], n: int = 3) -> list[dict[str, Any]]:
+    """Расчёт «худших периодов» из origin/main слово в слово, кроме порядка сделок: порядок
+    задаёт вызывающий. Эталон для проверки, что правка меняет только порядок (п. 4 задачи)."""
+    eq = peak = Decimal(0)
+    peak_t: datetime | None = None
+    cur: dict[str, Any] | None = None
+    out: list[dict[str, Any]] = []
+    for t in closed:
+        eq += t.realized_r
+        when = t.exit_time or t.signal_time
+        if eq >= peak:
+            if cur is not None:
+                out.append(cur)
+                cur = None
+            peak, peak_t = eq, when
+        else:
+            depth = peak - eq
+            if cur is None or depth > cur["depth_r"]:
+                cur = {
+                    "start": (peak_t or when).isoformat(),
+                    "trough": when.isoformat(),
+                    "depth_r": float(round(depth, 2)),
+                }
+    if cur is not None:
+        out.append(cur)
+    return sorted(out, key=lambda d: -d["depth_r"])[:n]
+
+
 def test_worst_drawdowns_follow_close_time_not_signal_time() -> None:
     """Сделки закрываются не в порядке открытия: долгая прибыльная открыта первой, а две быстрые
     убыточные после неё закрываются раньше. Дно не может оказаться раньше пика."""
@@ -39,29 +67,75 @@ def test_worst_drawdowns_follow_close_time_not_signal_time() -> None:
         _trade("-1", 24, 28),
     ]
     dd = worst_drawdowns(trades)
-    assert dd == [
-        {
-            # до первой сделки итог 0, пик — начало учёта (первый сигнал)
-            "start": T0.isoformat(),
-            "trough": (T0 + timedelta(hours=28)).isoformat(),
-            "depth_r": 2.0,
-        }
-    ]
+    # в порядке закрытия: −1 (16 ч), −1 (28 ч), +2 (48 ч) → одна просадка 2 R с дном в 28 ч;
+    # до первой прибыльной сделки пика ещё не было — начало периода подписано, как и раньше,
+    # временем дна
+    at_28h = (T0 + timedelta(hours=28)).isoformat()
+    assert dd == [{"start": at_28h, "trough": at_28h, "depth_r": 2.0}]
     # прежний порядок (по сигналу) давал пик 28.10 00:00 и дно 27.10 04:00 — дно раньше пика
-    for d in dd:
-        assert d["start"] <= d["trough"]
+    by_signal = _main_worst_drawdowns(sorted(trades, key=lambda t: t.signal_time))
+    assert by_signal[0]["start"] > by_signal[0]["trough"]
     # метрики движка не меняются: max_drawdown_r по-прежнему в порядке сигналов
     assert stats_payload(trades)["metrics"]["max_drawdown_r"] == float(
         round(summarize(trades).max_drawdown_r, 4)
     )
 
 
-def test_worst_drawdowns_same_close_time_counted_together() -> None:
-    """Две сделки закрылись одной свечой (+1 и −1): порядок внутри свечи ничего не значит,
-    просадки «внутри минуты» нет — итог в этот момент не изменился."""
-    a = [_trade("1", 0, 8, "A"), _trade("-1", 4, 8, "B")]
-    assert worst_drawdowns(a) == []
-    assert worst_drawdowns(list(reversed(a))) == []
+def test_worst_drawdowns_peak_then_losses_closed_out_of_order() -> None:
+    """Пик уже был: период начинается временем закрытия сделки, давшей пик, и идёт до дна."""
+    trades = [
+        _trade("1", 0, 4, "A"),  # пик +1 в 4 ч
+        _trade("-1", 8, 40, "B"),  # открыта раньше, закрыта позже следующей
+        _trade("-1", 12, 16, "C"),
+        _trade("3", 44, 48, "D"),
+    ]
+    assert worst_drawdowns(trades) == [
+        {
+            "start": (T0 + timedelta(hours=4)).isoformat(),
+            "trough": (T0 + timedelta(hours=40)).isoformat(),
+            "depth_r": 2.0,
+        }
+    ]
+
+
+def test_worst_drawdowns_same_close_time_keeps_input_order() -> None:
+    """Две сделки закрылись одной свечой: каждая — свой шаг итога, как и раньше. Их взаимный
+    порядок — порядок входного списка (``load_trades`` и ``trades_from_run`` отдают сделки в
+    порядке сигналов), сортировка по закрытию его не трогает."""
+    at_4h, at_8h = ((T0 + timedelta(hours=h)).isoformat() for h in (4, 8))
+    first = _trade("1", 0, 4, "A")  # пик +1 в 4 ч
+    loss, win = _trade("-1", 4, 8, "B"), _trade("3", 4, 8, "C")  # обе закрыты в 8 ч
+    assert worst_drawdowns([first, loss, win]) == [
+        {"start": at_4h, "trough": at_8h, "depth_r": 1.0}
+    ]
+    assert worst_drawdowns([first, win, loss]) == [
+        {"start": at_8h, "trough": at_8h, "depth_r": 1.0}
+    ]
+
+
+def test_worst_drawdowns_differ_from_main_only_by_order() -> None:
+    """Критерий приёмки задачи: блок «худшие периоды» меняется только из-за порядка (п. 4).
+
+    На наборах, похожих на бэктест H4 (60 инструментов, выходы на закрытиях H4, много сделок с
+    одним временем закрытия), результат равен прежнему расчёту, которому сделки поданы в порядке
+    закрытия, — на любом входе, в том числе не упорядоченном по сигналу.
+    """
+    rng = random.Random(11)
+    reordered = 0
+    for _ in range(200):
+        trades = []
+        for i in range(rng.randint(1, 240)):
+            s = rng.randint(0, 2000) * 4
+            r = rng.choice(["-1.05", "-1.05", "-0.6", "0.35", "0.9", "2.4"])
+            trades.append(_trade(r, s, s + rng.randint(1, 15) * 4, f"S{i % 60}"))
+        dd = worst_drawdowns(trades)
+        by_close = sorted(trades, key=lambda t: t.exit_time or t.signal_time)  # устойчивая
+        assert dd == _main_worst_drawdowns(by_close)
+        by_signal = sorted(trades, key=lambda t: t.signal_time)
+        reordered += dd != _main_worst_drawdowns(by_signal)
+        for d in dd:
+            assert d["start"] <= d["trough"] and d["depth_r"] > 0
+    assert reordered > 100  # порядок закрытия действительно отличается от порядка сигналов
 
 
 def test_worst_drawdowns_random_paths_start_before_trough() -> None:
@@ -77,10 +151,6 @@ def test_worst_drawdowns_random_paths_start_before_trough() -> None:
         assert [d["depth_r"] for d in dd] == sorted((d["depth_r"] for d in dd), reverse=True)
         for d in dd:
             assert d["start"] <= d["trough"] and d["depth_r"] > 0
-        # перестановка входа не меняет результат (порядок задаёт только время закрытия)
-        shuffled = trades[:]
-        rng.shuffle(shuffled)
-        assert worst_drawdowns(shuffled) == dd
 
 
 def test_worst_drawdowns_open_and_expired_ignored() -> None:
@@ -92,10 +162,9 @@ def test_worst_drawdowns_open_and_expired_ignored() -> None:
         "Y", Direction.UP, T0, Grade.B, 60, Decimal(2), Decimal(1), Decimal(0), Decimal(2),
         Decimal(3), Decimal(4), open_res, None, ("sig2", "market"),
     )  # fmt: skip
+    at_4h = (T0 + timedelta(hours=4)).isoformat()
     assert worst_drawdowns([still_open]) == []
-    assert worst_drawdowns([still_open, t]) == [
-        {"start": T0.isoformat(), "trough": (T0 + timedelta(hours=4)).isoformat(), "depth_r": 1.0}
-    ]
+    assert worst_drawdowns([still_open, t]) == [{"start": at_4h, "trough": at_4h, "depth_r": 1.0}]
 
 
 def test_forward_notice_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -114,6 +183,99 @@ def test_forward_notice_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FORWARD_NOTICE", "false")
     s = Settings(_env_file=None)  # type: ignore[call-arg]
     assert s.forward_notice is False and s.forward_notice_until == date(2026, 11, 6)
+
+
+def _notice_settings(monkeypatch: pytest.MonkeyPatch, **env: str) -> Any:
+    """Настройки плашки, как их прочитает сервис при старте с такими переменными окружения."""
+    from app.config import Settings
+
+    monkeypatch.delenv("FORWARD_NOTICE", raising=False)
+    monkeypatch.delenv("FORWARD_NOTICE_UNTIL", raising=False)
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    return Settings(_env_file=None)  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "2026-11-06",
+        "06.11.2026",  # так дата написана на самой плашке
+        "6.11.2026",
+        "2026-11-6",
+        " 2026-11-06 ",  # пробелы по краям при вставке
+        "2026-11-06\n",
+        '"2026-11-06"',  # кавычки из .env
+        "'06.11.2026'",
+        "2026-11-06T00:00:00Z",
+    ],
+)
+def test_forward_notice_until_accepts_how_people_write_dates(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, raw: str
+) -> None:
+    from datetime import date
+
+    with caplog.at_level("WARNING", logger="app.config"):
+        s = _notice_settings(monkeypatch, FORWARD_NOTICE_UNTIL=raw)
+    assert s.forward_notice_until == date(2026, 11, 6) and s.forward_notice is True
+    assert not caplog.records  # распознано — предупреждать не о чем
+
+
+def test_forward_notice_until_timestamp_is_taken_in_utc(monkeypatch: pytest.MonkeyPatch) -> None:
+    from datetime import date
+
+    s = _notice_settings(monkeypatch, FORWARD_NOTICE_UNTIL="2026-11-06T01:00:00+03:00")
+    assert s.forward_notice_until == date(2026, 11, 5)  # 05.11 22:00 UTC
+
+
+@pytest.mark.parametrize(
+    "raw", ["6 ноября", "завтра", "2026-13-45", "31.02.2026", "06/11/2026", "2026.11.06", "-"]
+)
+def test_forward_notice_until_typo_does_not_stop_the_service(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, raw: str
+) -> None:
+    """Опечатка в дате не роняет сервис при старте: плашка остаётся включённой и выводится без
+    даты («результаты недействительны» без срока — не преуменьшает), в журнале — предупреждение
+    с тем, что было задано."""
+    with caplog.at_level("WARNING", logger="app.config"):
+        s = _notice_settings(monkeypatch, FORWARD_NOTICE_UNTIL=raw)
+    assert s.forward_notice is True and s.forward_notice_until is None
+    assert len(caplog.records) == 1 and caplog.records[0].levelname == "WARNING"
+    msg = caplog.records[0].getMessage()
+    assert "FORWARD_NOTICE_UNTIL" in msg and raw in msg and "без даты" in msg
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("true", True), ("True", True), ("1", True), ("yes", True), ("on", True), ("да", True),
+        ("false", False), ("FALSE", False), ("0", False), ("no", False), ("off", False),
+        ("нет", False), (" false ", False), ('"false"', False), ("off\n", False),
+        ("", True),  # пустое значение — как незаданное: по умолчанию плашка включена
+    ],
+)  # fmt: skip
+def test_forward_notice_flag_values(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, raw: str, expected: bool
+) -> None:
+    with caplog.at_level("WARNING", logger="app.config"):
+        s = _notice_settings(monkeypatch, FORWARD_NOTICE=raw)
+    assert s.forward_notice is expected
+    assert not caplog.records
+
+
+@pytest.mark.parametrize("raw", ["fasle", "выкл", "disabled", "2", "-"])
+def test_forward_notice_flag_typo_keeps_the_plaque_on(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, raw: str
+) -> None:
+    """Опечатка при выключении не роняет сервис и не снимает плашку молча: она остаётся
+    включённой (лишнее предупреждение безопаснее недействительных чисел без него), а в журнале
+    сказано, что значение не распознано."""
+    with caplog.at_level("WARNING", logger="app.config"):
+        s = _notice_settings(monkeypatch, FORWARD_NOTICE=raw, FORWARD_NOTICE_UNTIL="06.11.2026")
+    assert s.forward_notice is True and s.forward_notice_until is not None
+    assert len(caplog.records) == 1
+    msg = caplog.records[0].getMessage()
+    assert "FORWARD_NOTICE=" in msg and raw in msg and "включённой" in msg
 
 
 def test_load_trades_forward_requires_version() -> None:
@@ -355,3 +517,135 @@ def test_forward_trades_and_no_forward_versions(fx: Fixture) -> None:
     fx.db.flush()
     empty = _get("/v1/stats?scope=forward")
     assert empty["strategy_version"] is None and empty["metrics"]["closed"] == 0
+    assert empty["notice"] is not None and empty["low_data"] is True
+    # …но записанная форвард-история ушедших версий остаётся доступной: они перечислены для
+    # селектора и открываются по явной версии
+    assert _own_versions(fx, empty) == [(fx.v_old.id, "archived"), (fx.v_new.id, "archived")]
+    assert _get(f"/v1/stats?scope=forward&version={fx.v_old.version}")["metrics"]["closed"] == 4
+
+
+def _own_versions(fx: Fixture, payload: dict[str, Any]) -> list[tuple[int, str]]:
+    """``versions`` из ответа — только версии стратегии этого теста (в БД могут быть и другие)."""
+    slug = _get(f"/v1/stats?scope=forward&strategy_version_id={fx.v_old.id}")["strategy_version"][
+        "strategy"
+    ]
+    return [(v["id"], v["status"]) for v in payload["versions"] if v["strategy"] == slug]
+
+
+def _set_version(fx: Fixture, sv: Any, **values: Any) -> None:
+    from sqlalchemy import update
+
+    from app.models import StrategyVersion
+
+    fx.db.execute(update(StrategyVersion).where(StrategyVersion.id == sv.id).values(**values))
+    fx.db.flush()
+
+
+@db_only
+def test_forward_versions_listed_for_selector(fx: Fixture) -> None:
+    """``versions`` — что можно выбрать на вкладке форварда: версии в статусе forward по
+    возрастанию id, в том же виде, что ``strategy_version``; live-версии среди них нет."""
+    d = _get("/v1/stats?scope=forward")
+    assert _own_versions(fx, d) == [(fx.v_old.id, "forward"), (fx.v_new.id, "forward")]
+    assert d["strategy_version"] in d["versions"]
+    assert [v["id"] for v in d["versions"]] == sorted(v["id"] for v in d["versions"])
+    # тот же список при любой выбранной версии и при фильтрах
+    for q in (f"version={fx.v_old.version}", "grade=B", "days=30"):
+        assert _own_versions(fx, _get(f"/v1/stats?scope=forward&{q}")) == _own_versions(fx, d)
+
+
+@db_only
+def test_forward_archived_version_keeps_recorded_history(fx: Fixture) -> None:
+    """Версию перевели из форварда в архив (решение владельца по 1.0.0). Её форвард-сделки
+    записаны и никуда не делись: по явной версии ответ тот же, что до архивации, а не «0 сделок»
+    под её именем. По умолчанию по-прежнему показывается версия в статусе forward."""
+    from types import SimpleNamespace
+
+    from app.main import app
+    from app.routers.public import optional_user
+    from app.snapshots import recompute
+
+    url = f"/v1/stats?scope=forward&version={fx.v_old.version}"
+    before = _get(url)
+    assert before["metrics"]["closed"] == 4 and before["strategy_version"]["status"] == "forward"
+
+    _set_version(fx, fx.v_old, status="archived")
+    after = _get(url)
+    assert after["strategy_version"] == {**before["strategy_version"], "status": "archived"}
+    for k in ("metrics", "by_symbol", "by_grade", "equity", "r_histogram", "worst_drawdowns"):
+        assert after[k] == before[k], k
+    assert after["low_data"] is True and after["notice"] == before["notice"]
+    # в селекторе она остаётся — с пометкой статуса; по умолчанию — версия в форварде
+    default = _get("/v1/stats?scope=forward")
+    assert default["strategy_version"]["id"] == fx.v_new.id
+    assert _own_versions(fx, default) == [(fx.v_old.id, "archived"), (fx.v_new.id, "forward")]
+    # фильтры и построчная история (admin) работают так же
+    sym = next(iter(before["by_symbol"]))
+    assert _get(f"{url}&symbol={sym}")["metrics"] == before["by_symbol"][sym]
+    app.dependency_overrides[optional_user] = lambda: SimpleNamespace(role="admin")
+    try:
+        assert _get(f"/v1/stats/trades?scope=forward&version={fx.v_old.version}")["total"] == 4
+    finally:
+        app.dependency_overrides.pop(optional_user, None)
+    # пересчёт снимков пишет форвард только по версиям в статусе forward: у архивной снимка нет,
+    # её история считается на лету и даёт те же числа
+    recompute(fx.db)
+    again = _get(url)
+    assert again["source"] == "live" and again["metrics"] == before["metrics"]
+    assert _get("/v1/stats?scope=forward")["source"] == "snapshot"
+
+    # версия вернулась из форварда в backtest — её записанная история тоже форвардная
+    _set_version(fx, fx.v_old, status="backtest")
+    assert _get(url)["metrics"] == before["metrics"]
+    assert (fx.v_old.id, "backtest") in _own_versions(fx, _get("/v1/stats?scope=forward"))
+
+
+@db_only
+def test_forward_history_never_takes_live_signals(fx: Fixture) -> None:
+    """Форвард-история ушедшей версии — только то, что точно записано в форварде. Сигналы
+    live-версии и версии, которая побывала в live (``activated_at`` задан), в форвард не
+    попадают: отличить её форвард-сигналы от live без области сигнала (задача 5) нельзя."""
+    live = _get(f"/v1/stats?scope=forward&version={fx.v_live.version}")
+    assert live["strategy_version"]["status"] == "live" and live["metrics"]["signals"] == 0
+    assert fx.v_live.id not in [i for i, _ in _own_versions(fx, live)]
+
+    _set_version(fx, fx.v_live, status="archived", activated_at=T0)
+    was_live = _get(f"/v1/stats?scope=forward&version={fx.v_live.version}")
+    assert was_live["strategy_version"]["status"] == "archived"
+    assert was_live["metrics"]["signals"] == 0
+    assert fx.v_live.id not in [i for i, _ in _own_versions(fx, was_live)]
+    # live при этом не меняется: сигналы архивной версии в область live не попадают, как и раньше
+    assert _get(f"/v1/stats?scope=live&version={fx.v_live.version}")["metrics"]["closed"] == 0
+
+
+@db_only
+def test_forward_versions_skip_departed_without_history(fx: Fixture) -> None:
+    """Версия без единого сигнала, которая не в форварде (новая в backtest или архив), в селектор
+    не попадает: показывать по ней нечего. По явному адресу ответ пустой и называет её статус."""
+    from app.models import StrategyVersion
+
+    tag = fx.v_old.version.split("-")[-1]
+    blank = StrategyVersion(
+        strategy_id=fx.v_old.strategy_id, version=f"9.9-{tag}", params={}, status="backtest"
+    )
+    fx.db.add(blank)
+    fx.db.flush()
+    d = _get(f"/v1/stats?scope=forward&strategy_version_id={blank.id}")
+    assert d["strategy_version"]["status"] == "backtest" and d["metrics"]["signals"] == 0
+    assert blank.id not in [i for i, _ in _own_versions(fx, d)]
+    _set_version(fx, blank, status="forward")  # в форварде и без сделок — в селекторе есть
+    assert (blank.id, "forward") in _own_versions(fx, _get("/v1/stats?scope=forward"))
+
+
+@db_only
+def test_forward_notice_with_mistyped_settings(
+    fx: Fixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Плашка при опечатках в настройках: сервис стартует, API отвечает, плашка на месте и без
+    даты."""
+    from app.config import settings
+
+    bad = _notice_settings(monkeypatch, FORWARD_NOTICE="fasle", FORWARD_NOTICE_UNTIL="6 ноября")
+    monkeypatch.setattr(settings, "forward_notice", bad.forward_notice)
+    monkeypatch.setattr(settings, "forward_notice_until", bad.forward_notice_until)
+    assert _get("/v1/stats?scope=forward")["notice"] == {"invalid_until": None}

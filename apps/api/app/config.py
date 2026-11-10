@@ -1,7 +1,66 @@
-from datetime import date
+import logging
+import re
+from datetime import UTC, date, datetime
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+log = logging.getLogger("app.config")
+
+_ON = frozenset({"1", "true", "t", "yes", "y", "on", "да"})
+_OFF = frozenset({"0", "false", "f", "no", "n", "off", "нет"})
+_ISO_DAY = re.compile(r"(\d{4})-(\d{1,2})-(\d{1,2})")
+_RU_DAY = re.compile(r"(\d{1,2})\.(\d{1,2})\.(\d{4})")
+
+
+def _plain(v: str) -> str:
+    """Значение из окружения без пробелов и кавычек по краям (их легко занести при вставке)."""
+    return v.strip().strip("\"'").strip()
+
+
+def parse_notice_flag(v: object) -> object:
+    """``FORWARD_NOTICE`` из окружения. Опечатка не должна ронять сервис: нераспознанное значение
+    оставляет плашку включённой (безопасная сторона: лишнее предупреждение лучше недействительных
+    чисел без него) и пишется в журнал. Пустое значение — как незаданное, то есть «включена»."""
+    if not isinstance(v, str):
+        return v
+    s = _plain(v).lower()
+    if s in _OFF:
+        return False
+    if s and s not in _ON:
+        log.warning(
+            "FORWARD_NOTICE=%r не распознано (ожидается true или false): плашка над "
+            "форвард-статистикой остаётся включённой",
+            v[:40],
+        )
+    return True
+
+
+def parse_notice_date(v: object) -> object:
+    """``FORWARD_NOTICE_UNTIL`` из окружения: ГГГГ-ММ-ДД, ДД.ММ.ГГГГ (как на плашке) или метка
+    времени ISO (берётся дата в UTC). Пусто — без даты. Опечатка не должна ронять сервис:
+    нераспознанное значение даёт плашку без даты (она говорит «результаты недействительны» без
+    срока — это не преуменьшает) и пишется в журнал."""
+    if isinstance(v, datetime):
+        return (v.astimezone(UTC) if v.tzinfo else v).date()
+    if not isinstance(v, str):
+        return v
+    s = _plain(v)
+    if not s:
+        return None
+    try:
+        if m := _ISO_DAY.fullmatch(s):
+            return date(int(m[1]), int(m[2]), int(m[3]))
+        if m := _RU_DAY.fullmatch(s):
+            return date(int(m[3]), int(m[2]), int(m[1]))
+        return parse_notice_date(datetime.fromisoformat(s))
+    except ValueError:
+        log.warning(
+            "FORWARD_NOTICE_UNTIL=%r не распознано (ожидается ГГГГ-ММ-ДД или ДД.ММ.ГГГГ): "
+            "плашка над форвард-статистикой выводится без даты",
+            v[:40],
+        )
+        return None
 
 
 class Settings(BaseSettings):
@@ -44,14 +103,16 @@ class Settings(BaseSettings):
     forward_notice: bool = True
     """Плашка над форвард-статистикой на /stats: старые результаты форварда недействительны
     (трекер закрывал сделки через 15 минут вместо 60 часов). Снимает человек после пересчёта или
-    пометки старых результатов (задание «сигналы», задачи 2 и 10)."""
+    пометки старых результатов (задание «сигналы», задачи 2 и 10). Значения: true/false (также
+    1/0, yes/no, on/off); нераспознанное — плашка включена, в журнале предупреждение."""
     forward_notice_until: date | None = None
-    """До какой даты (ГГГГ-ММ-ДД) результаты форварда недействительны. Пусто — плашка без даты."""
+    """До какой даты результаты форварда недействительны: ГГГГ-ММ-ДД или ДД.ММ.ГГГГ. Пусто —
+    плашка без даты; нераспознанное значение — тоже без даты, в журнале предупреждение."""
 
-    @field_validator("forward_notice_until", mode="before")
-    @classmethod
-    def _empty_date_is_none(cls, v: object) -> object:
-        return None if v == "" else v
+    # Обе настройки человек правит руками на Railway (дата после задачи 1, выключение после
+    # задачи 10): опечатка в них не должна останавливать ни API, ни воркеры.
+    _notice_flag = field_validator("forward_notice", mode="before")(parse_notice_flag)
+    _notice_date = field_validator("forward_notice_until", mode="before")(parse_notice_date)
 
     @property
     def owner_email_set(self) -> set[str]:

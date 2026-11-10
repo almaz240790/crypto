@@ -6,7 +6,6 @@ from __future__ import annotations
 from dataclasses import asdict
 from datetime import datetime
 from decimal import Decimal
-from itertools import groupby
 from typing import Any
 
 from sqlalchemy import select, text
@@ -37,6 +36,22 @@ HITS = {"closed_tp3": 3, "tp2_hit": 2, "tp1_hit": 1}
 FORWARD = "forward"
 HIST_EDGES = [Decimal(x) for x in ("-1.5", "-1", "-0.5", "0", "0.5", "1", "1.5", "2", "3", "4")]
 """Границы корзин гистограммы R; крайние корзины открытые."""
+FORWARD_HISTORY_SQL = (
+    "(sv.status = 'forward' or (sv.status in ('archived', 'backtest') and sv.activated_at is null))"
+)
+"""Чьи сигналы — форвард-история (условие на ``strategy_versions sv``).
+
+Области сигнала в БД пока нет (её вводит задача 5, ``signals.scope``), поэтому область выводится
+из версии:
+
+- версия в статусе forward — её сигналы форвардные (как и раньше);
+- версия ушла из форварда в архив или backtest и в live не была (``activated_at`` пуст) — все её
+  сигналы записаны в форварде, это её форвард-история: она остаётся доступной по явной версии
+  (план 2.11, правило 4: публикуется полная история);
+- версия в live — её сигналы считаются областью live, в форвард не попадают;
+- версия побывала в live и ушла в архив — отличить её форвард-сигналы от live без
+  ``signals.scope`` нельзя, поэтому они не показываются ни там, ни там (как и раньше).
+"""
 
 
 def load_trades(
@@ -49,16 +64,17 @@ def load_trades(
     grade: str | None = None,
     entry_type: str | None = None,
 ) -> list[BacktestTrade]:
-    """Сигналы версий стратегии в статусе ``scope`` (live/forward) как сделки бэктеста.
+    """Сигналы области ``scope`` (live/forward) как сделки бэктеста.
 
     ``facts`` каждой сделки = (public_id, тип входа) — для ссылок и разбивки по типу входа.
-    Форвард считается только по одной версии (план 2.11: версии не смешиваются), поэтому для
-    ``forward`` версия обязательна — см. ``default_forward_version``.
+    live — сигналы версий в статусе live. Форвард считается только по одной версии (план 2.11:
+    версии не смешиваются), поэтому для ``forward`` версия обязательна — см.
+    ``default_forward_version``; какие её сигналы относятся к форварду — ``FORWARD_HISTORY_SQL``.
     """
     if scope == FORWARD and strategy_version_id is None:
         raise ValueError("форвард считается по одной версии стратегии: укажите версию")
-    where = ["sv.status = :scope"]
-    params: dict[str, Any] = {"scope": scope}
+    where = [FORWARD_HISTORY_SQL if scope == FORWARD else "sv.status = :scope"]
+    params: dict[str, Any] = {} if scope == FORWARD else {"scope": scope}
     if grade:
         where.append("s.grade = :grade")
         params["grade"] = grade.upper()
@@ -139,6 +155,24 @@ def default_forward_version(session: Session) -> StrategyVersion | None:
         .order_by(StrategyVersion.id.desc())
         .limit(1)
     ).first()
+
+
+def forward_versions(session: Session) -> list[dict[str, Any]]:
+    """Версии, у которых есть что показать на вкладке форварда, по возрастанию id — для
+    селектора: версии в статусе forward (в том числе ещё без сделок) и версии, которые ушли из
+    форварда, но оставили форвард-историю (``FORWARD_HISTORY_SQL``). Вид — как в
+    ``/v1/strategies``."""
+    rows = session.execute(
+        text(
+            "select sv.id, st.slug, st.name, sv.version, sv.status from strategy_versions sv "
+            "join strategies st on st.id = sv.strategy_id "
+            f"where {FORWARD_HISTORY_SQL} and (sv.status = 'forward' or exists "
+            "(select 1 from signals s where s.strategy_version_id = sv.id)) order by sv.id"
+        )
+    ).all()
+    return [
+        {"id": r[0], "strategy": r[1], "name": r[2], "version": r[3], "status": r[4]} for r in rows
+    ]
 
 
 STATUS_FROM_VALUE = {s.value: s for s in TradeStatus}
@@ -276,35 +310,30 @@ def stats_payload(trades: list[BacktestTrade]) -> dict[str, Any]:
     }
 
 
-def _closed_at(t: BacktestTrade) -> datetime:
-    """Момент, когда результат сделки попал в накопленный итог: закрытие (или сигнал, если
-    времени закрытия нет — так было в ``equity_curve``)."""
-    return t.exit_time or t.signal_time
-
-
 def worst_drawdowns(trades: list[BacktestTrade], n: int = 3) -> list[dict[str, Any]]:
     """Три самые глубокие просадки с датами (план 3.10 «Худшие периоды»).
 
     Накопленный результат строится в порядке **закрытия** сделок: пик и дно подписаны временем
     закрытия, поэтому и считать нужно по нему, иначе дно оказывается раньше пика
-    («30.10 17:28 → 30.10 16:15»). Сделки с одинаковым временем закрытия входят в итог вместе:
-    их взаимный порядок ничего не значит и не должен рождать «просадку внутри минуты». До первой
-    сделки итог равен 0, и пиком считается начало учёта — время первого сигнала.
+    («30.10 17:28 → 30.10 16:15»). От прежнего расчёта отличается только ключ сортировки:
+    остальное не тронуто, чтобы блок на вкладке бэктеста менялся только из-за порядка. Сделки с
+    одинаковым временем закрытия остаются в порядке входного списка (сортировка устойчивая), а
+    ``load_trades`` и ``trades_from_run`` отдают сделки в порядке сигналов.
 
     Метрики движка (``summarize``, ``max_drawdown_r``) считаются в порядке сигналов, как в
     отчётах бэктеста, и здесь не меняются; поэтому глубина худшего периода может немного
     отличаться от карточки «макс. просадка».
     """
-    closed = sorted((t for t in trades if t.result.closed), key=_closed_at)
-    if not closed:
-        return []
+    closed = sorted(
+        (t for t in trades if t.result.closed), key=lambda t: t.exit_time or t.signal_time
+    )
     eq = peak = Decimal(0)
-    peak_t = min(t.signal_time for t in closed)
+    peak_t: datetime | None = None
     cur: dict[str, Any] | None = None
-    cur_depth = Decimal(0)
     out: list[dict[str, Any]] = []
-    for when, group in groupby(closed, key=_closed_at):
-        eq += sum((t.realized_r for t in group), Decimal(0))
+    for t in closed:
+        eq += t.realized_r
+        when = t.exit_time or t.signal_time
         if eq >= peak:
             if cur is not None:
                 out.append(cur)
@@ -312,10 +341,9 @@ def worst_drawdowns(trades: list[BacktestTrade], n: int = 3) -> list[dict[str, A
             peak, peak_t = eq, when
         else:
             depth = peak - eq
-            if cur is None or depth > cur_depth:
-                cur_depth = depth
+            if cur is None or depth > cur["depth_r"]:
                 cur = {
-                    "start": peak_t.isoformat(),
+                    "start": (peak_t or when).isoformat(),
                     "trough": when.isoformat(),
                     "depth_r": float(round(depth, 2)),
                 }
