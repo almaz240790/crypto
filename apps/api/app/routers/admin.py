@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -44,6 +45,7 @@ router = APIRouter(
     prefix="/v1/admin", tags=["admin"], dependencies=[Depends(admin_auth.site_proxy_only)]
 )
 ADMIN = admin_auth.require_admin
+log = logging.getLogger(__name__)
 OPEN = ("pending", "active", "tp1_hit", "tp2_hit")
 
 
@@ -532,7 +534,21 @@ def system(user: User = Depends(ADMIN), db: Session = Depends(auth.get_db)) -> d
         "last_event_at": last_event.isoformat() if last_event else None,
         "notifications_sent_today": int(sent_today or 0),
         "mail": "resend" if settings.resend_api_key else "лог (ключ не задан)",
+        # полный снимок монитора — с движком сигналов и трекером сделок, которых нет на публичной
+        # статус-странице, пока сигналы закрыты (ADR-0013)
+        "monitor": _monitor_snapshot(),
+        "signals_public": settings.signals_public,
     }
+
+
+def _monitor_snapshot() -> dict[str, Any] | None:
+    from app.monitor import current_status
+
+    try:
+        return current_status()
+    except Exception:
+        log.exception("снимок монитора для админки")
+        return None
 
 
 @router.get("/audit")

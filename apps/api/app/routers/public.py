@@ -1,5 +1,10 @@
 """/v1/instruments, /v1/signals, /v1/stats — публичные данные (план 3.4, 3.5, 3.10).
 
+Сигналы, их статистика и версии стратегии, пока владелец не открыл продажи, — только для admin и
+owner (ADR-0013, ``SIGNALS_PUBLIC``): остальным такие эндпоинты отвечают 404 (``signals_viewer``,
+``signals_member``). Отработка паттернов и фигур, инструменты, цены и скринер открыты всем.
+Ниже — правила, которые действуют, когда сигналы видны.
+
 Видны только live-сигналы: ``signals.scope = 'live'``, область зафиксирована при публикации
 (``app.signal_scope``, план 2.11, правило 5); форвард — по правам (Premium, admin/owner).
 Задержка для Free и доступ к активным сигналам — этап 3 (тарифы); сейчас все эндпоинты без
@@ -43,6 +48,7 @@ from app.models import (
 from app.patterns import LOW_N
 from app.screener import CSV_COLUMNS, csv_rows, screener_cached
 from app.signal_scope import scope_filter
+from app.signals_access import signals_open
 from app.snapshots import find as find_snapshot
 from app.stats import (
     FORWARD,
@@ -134,8 +140,38 @@ def optional_user(request: Request, db: Session = Depends(auth.get_db)) -> User 
     return db.get(User, int(payload["sub"]))
 
 
+def signals_viewer(user: User | None = Depends(optional_user)) -> User | None:
+    """Пользователь эндпоинта сигналов. Пока сигналы закрыты (ADR-0013, ``SIGNALS_PUBLIC``) —
+    только admin и owner; остальным 404, как будто адреса нет."""
+    if not signals_open(user):
+        raise HTTPException(404)
+    return user
+
+
+def signals_member(request: Request, db: Session = Depends(auth.get_db)) -> User:
+    """Как ``auth.current_user`` (вход или API-ключ), но пока сигналы закрыты (ADR-0013) — 404
+    всем, кроме admin и owner, в том числе без входа: адрес выглядит отсутствующим, а не
+    закрытым паролем."""
+    if settings.signals_public:
+        return auth.current_user(request, db)
+    try:
+        user = auth.current_user(request, db)
+    except HTTPException:
+        raise HTTPException(404) from None
+    if not signals_open(user):
+        raise HTTPException(404)
+    return user
+
+
 def _dec(x: Decimal | None) -> str | None:
     return None if x is None else format(x.normalize(), "f")
+
+
+@router.get("/features")
+def features(user: User | None = Depends(optional_user)) -> dict[str, bool]:
+    """Что открыто этому посетителю (без входа — всем). ``signals`` — сигналы, их статистика и
+    версии стратегии (ADR-0013): сайт по этому флагу показывает или прячет ссылки и разделы."""
+    return {"signals": signals_open(user)}
 
 
 @router.get("/instruments")
@@ -228,7 +264,7 @@ def signals(
     order: str = Query("desc", pattern="^(asc|desc)$"),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
-    user: User | None = Depends(optional_user),
+    user: User | None = Depends(signals_viewer),
     db: Session = Depends(auth.get_db),
 ) -> dict[str, Any]:
     now = datetime.now(tz=UTC)
@@ -308,7 +344,7 @@ def signals(
 @router.get("/signals/summary")
 def signals_summary(
     scope: str = Query("live", pattern="^(live|forward)$"),
-    user: User | None = Depends(optional_user),
+    user: User | None = Depends(signals_viewer),
     db: Session = Depends(auth.get_db),
 ) -> dict[str, Any]:
     """Счётчики для шапки ленты: активных, новых сегодня, следующее закрытие H4 (план 3.4)."""
@@ -363,7 +399,7 @@ def _forward_hidden(db: Session, user: User | None) -> bool:
 @router.get("/signals/{public_id}")
 def signal_detail(
     public_id: str,
-    user: User | None = Depends(optional_user),
+    user: User | None = Depends(signals_viewer),
     db: Session = Depends(auth.get_db),
 ) -> dict[str, Any]:
     row = db.execute(
@@ -416,7 +452,7 @@ def signal_detail(
 @router.get("/signals/{public_id}/analysis")
 def signal_analysis(
     public_id: str,
-    user: User | None = Depends(optional_user),
+    user: User | None = Depends(signals_viewer),
     db: Session = Depends(auth.get_db),
 ) -> dict[str, Any]:
     """Структура, зоны и уровни на момент сигнала — для отрисовки на графике карточки."""
@@ -441,7 +477,7 @@ def signal_candles(
     tf: str = "4h",
     before: int = Query(150, ge=20, le=400),
     after: int = Query(60, ge=0, le=400),
-    user: User | None = Depends(optional_user),
+    user: User | None = Depends(signals_viewer),
     db: Session = Depends(auth.get_db),
 ) -> dict[str, Any]:
     """Свечи вокруг сигнальной — для графика в карточке."""
@@ -633,6 +669,7 @@ def stats(
     days: int | None = Query(None, ge=1, le=3650),
     since: str | None = None,
     until: str | None = None,
+    _viewer: User | None = Depends(signals_viewer),
     db: Session = Depends(auth.get_db),
 ) -> dict[str, Any]:
     """Публичная статистика (план 2.11, 3.10). Три области помечены явно и не смешиваются:
@@ -749,7 +786,7 @@ def stats_trades(
     days: int | None = Query(None, ge=1, le=3650),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
-    user: User | None = Depends(optional_user),
+    user: User | None = Depends(signals_viewer),
     db: Session = Depends(auth.get_db),
 ) -> dict[str, Any]:
     """Полная таблица сделок с пагинацией, новые сверху. Форвард построчно — admin/owner."""
@@ -784,7 +821,7 @@ def stats_export(
     version: str | None = Query(None, max_length=32),
     run_id: int | None = None,
     symbol: str | None = None,
-    user: User = Depends(auth.current_user),
+    user: User = Depends(signals_member),
     db: Session = Depends(auth.get_db),
 ) -> StreamingResponse:
     """Экспорт полной истории в CSV — Pro и выше (раздел 4)."""
@@ -835,7 +872,9 @@ def stats_export(
 
 @router.get("/stats/runs")
 def stats_runs(
-    limit: int = Query(20, ge=1, le=100), db: Session = Depends(auth.get_db)
+    limit: int = Query(20, ge=1, le=100),
+    _viewer: User | None = Depends(signals_viewer),
+    db: Session = Depends(auth.get_db),
 ) -> list[dict[str, Any]]:
     """Сохранённые прогоны бэктеста — для переключателя на /stats."""
     runs = db.scalars(select(BacktestRun).order_by(BacktestRun.id.desc()).limit(limit)).all()
@@ -902,7 +941,9 @@ def screener_export(
 
 
 @router.get("/strategies")
-def strategies(db: Session = Depends(auth.get_db)) -> list[dict[str, Any]]:
+def strategies(
+    _viewer: User | None = Depends(signals_viewer), db: Session = Depends(auth.get_db)
+) -> list[dict[str, Any]]:
     """Версии стратегии и их статус (backtest / forward / live / retired)."""
     rows = db.execute(
         select(StrategyVersion, Strategy.name, Strategy.slug)

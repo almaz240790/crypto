@@ -36,6 +36,24 @@ def parse_notice_flag(v: object) -> object:
     return True
 
 
+def parse_public_flag(v: object) -> object:
+    """``SIGNALS_PUBLIC`` из окружения (ADR-0013). Опечатка не должна ни ронять сервис, ни
+    открывать сигналы: открывает только явное «да» (true, 1, yes, on), всё остальное — закрыто;
+    нераспознанное значение пишется в журнал. Пустое — как незаданное, то есть «закрыто»."""
+    if not isinstance(v, str):
+        return v
+    s = _plain(v).lower()
+    if s in _ON:
+        return True
+    if s and s not in _OFF:
+        log.warning(
+            "SIGNALS_PUBLIC=%r не распознано (ожидается true или false): сигналы остаются "
+            "закрытыми для всех, кроме admin и owner",
+            v[:40],
+        )
+    return False
+
+
 def parse_notice_date(v: object) -> object:
     """``FORWARD_NOTICE_UNTIL`` из окружения: ГГГГ-ММ-ДД, ДД.ММ.ГГГГ (как на плашке) или метка
     времени ISO (берётся дата в UTC). Пусто — без даты. Опечатка не должна ронять сервис:
@@ -113,10 +131,18 @@ class Settings(BaseSettings):
     """До какой даты результаты форварда недействительны: ГГГГ-ММ-ДД или ДД.ММ.ГГГГ. Пусто —
     плашка без даты; нераспознанное значение — тоже без даты, в журнале предупреждение."""
 
-    # Обе настройки человек правит руками на Railway (дата после задачи 1, выключение после
-    # задачи 10): опечатка в них не должна останавливать ни API, ни воркеры.
+    signals_public: bool = False
+    """Открыты ли сигналы всем (ADR-0013). Пока владелец не начал продажи — False: ленту,
+    карточки, статистику сигналов (live, форвард, бэктест), версии стратегии, события сигналов в
+    сокете, письма и push о сигналах видят только admin и owner; остальным эндпоинты отвечают 404.
+    Открыть для продажи — SIGNALS_PUBLIC=true у сервисов API и воркеров (см. ADR-0013)."""
+
+    # Настройки ниже человек правит руками на Railway (дата после задачи 1, выключение после
+    # задачи 10, открытие сигналов к продажам): опечатка в них не должна останавливать ни API, ни
+    # воркеры.
     _notice_flag = field_validator("forward_notice", mode="before")(parse_notice_flag)
     _notice_date = field_validator("forward_notice_until", mode="before")(parse_notice_date)
+    _public_flag = field_validator("signals_public", mode="before")(parse_public_flag)
 
     @property
     def owner_email_set(self) -> set[str]:

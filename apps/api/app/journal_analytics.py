@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
@@ -28,6 +28,12 @@ class TradeRow:
     signal_id: int | None
     grade: str | None  # градация связанного сигнала (A/B/C) или None
     system_r: Decimal | None  # результат того же сигнала по трекеру
+
+
+def without_signal(r: TradeRow) -> TradeRow:
+    """Строка без связи с сигналом: ни градации, ни результата сигнала. Для тех, кому сигналы не
+    видны (ADR-0013): аналитика журнала не раскрывает сигналы и их результаты."""
+    return replace(r, signal_id=None, grade=None, system_r=None)
 
 
 def _fmt(x: Decimal | None) -> str | None:

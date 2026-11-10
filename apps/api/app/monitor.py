@@ -274,6 +274,27 @@ def run_monitor(db: Session, r: Any | None) -> dict[str, Any]:
     return payload
 
 
+def current_status() -> dict[str, Any]:
+    """Полный снимок статуса: из Redis (уведомитель кладёт его раз в минуту), а если кэша нет —
+    расчёт на месте без инцидентов и алертов (чтобы API не слал письма). Публичная страница
+    показывает его без компонентов сигналов, пока они закрыты (ADR-0013); админка — целиком."""
+    import redis
+
+    from app.db import SessionLocal
+
+    r: Any | None
+    try:
+        r = redis.from_url(settings.redis_url, socket_timeout=2)
+        cached = r.get("monitor:status")
+        if cached:
+            return dict(json.loads(cached))
+    except Exception:
+        r = None
+    with SessionLocal() as db:
+        snap = collect(db, r)
+        return status_payload(db, evaluate(snap), snap.now)
+
+
 def status_payload(db: Session, comps: list[Component], now: datetime) -> dict[str, Any]:
     since = now - timedelta(days=7)
     incidents = db.scalars(
