@@ -7,6 +7,9 @@
   Для time stop и истечения в ``signal_events.note`` пишутся срок, фактическое время и цена.
 - Новые события → ``signal_events``, смена статуса → ``signals.status``, закрытие →
   ``signal_results``. Статусы и события те же, что в бэктесте (эквивалентность доказана тестом).
+- Результат пишется за вычетом комиссии и проскальзывания ``DEFAULT_EXECUTION`` — тех же, что
+  в бэктесте (план 2.11); вычтенная величина — в ``signal_results.cost_r``. В состоянии
+  ``signal_tracking.state`` результат хранится до вычета.
 - При старте и раз в минуту — догон: для открытых сигналов проигрываются все закрытые 1m-свечи
   после ``last_candle_time`` (или после сигнальной свечи), так что разрыв WebSocket не
   теряет касаний.
@@ -37,6 +40,7 @@ from app.db import SessionLocal
 from app.forward import _setup_from_row
 from app.models import Signal, SignalEvent, SignalResult, SignalTracking, StrategyVersion
 from app.workers.market_data import CHANNEL_CLOSED
+from engine.backtest import DEFAULT_EXECUTION
 from engine.candles import SIGNAL_TIMEFRAME, Candle, Timeframe
 from engine.strategies import STRATEGIES
 from engine.tracker import EventType, SignalStatus, SignalTracker, TrackerEvent, TrackerState
@@ -204,12 +208,14 @@ def apply_candles(session: Session, sig: Signal, candles: list[Candle], tf: Time
         sig.status = st.status.value
         if st.status.is_closed and session.get(SignalResult, sig.id) is None:
             closed_at = last_time + tf.delta if last_time else datetime.now(tz=UTC)
+            res = tracker.result(DEFAULT_EXECUTION)  # комиссии как в бэктесте (план 2.11)
             session.add(
                 SignalResult(
                     signal_id=sig.id,
-                    realized_r=st.realized_r,
-                    realized_r_tp1_only=st.r_if_tp1_only,
-                    realized_r_full_tp2=st.r_if_full_tp2,
+                    realized_r=res.realized_r,
+                    realized_r_tp1_only=res.r_if_tp1_only,
+                    realized_r_full_tp2=res.r_if_full_tp2,
+                    cost_r=res.cost_r,
                     duration_hours=Decimal((closed_at - sig.candle_close_time).total_seconds())
                     / 3600,
                     max_favorable_r=st.mfe_r,

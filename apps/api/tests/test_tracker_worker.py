@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import uuid
+from collections import Counter
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -22,6 +24,7 @@ from sqlalchemy.orm import sessionmaker
 
 import app.workers.tracker as worker
 from app.db import engine
+from app.forward import _setup_from_row
 from app.models import (
     Instrument,
     Signal,
@@ -34,6 +37,7 @@ from app.models import (
 from app.models.market import Candle as CandleRow
 from app.workers.scheduler import done_key
 from app.workers.tracker import apply_candles, state_from_json, state_to_json
+from engine.backtest import DEFAULT_EXECUTION, TradeStatus, execution_cost_r, simulate_trade
 from engine.candles import Candle, Timeframe
 from engine.params import TradeParams
 from engine.structure import Direction
@@ -46,6 +50,9 @@ LONG = TradeSetup(
 )
 SIGNAL_CLOSE = datetime(2026, 11, 4, 8, tzinfo=UTC)
 M1 = Timeframe.M1.delta
+H4 = Timeframe.H4.delta
+COST = execution_cost_r(D(100), D(3), DEFAULT_EXECUTION)
+"""Комиссия и проскальзывание сигнала ``_signal``: вход 100, стоп 97 — риск 3 (план 2.11)."""
 
 
 def test_state_roundtrip_after_events() -> None:
@@ -196,6 +203,10 @@ def test_legacy_json_state_is_read_and_closed_by_time() -> None:
     assert res.closed_at == SIGNAL_CLOSE + timedelta(hours=60)
     assert res.duration_hours is not None and res.duration_hours.quantize(D("0.01")) == D("60.00")
     assert sig.status == "closed_time"
+    # старое состояние хранит результат до вычета; комиссии вычитаются при записи (задача 3)
+    gross = (session.events()[0].price - D(100)) / D(3)
+    assert res.cost_r == COST and res.realized_r == gross - COST
+    assert res.realized_r_tp1_only == res.realized_r_full_tp2 == gross - COST
 
 
 def test_missing_deadline_minute_closes_on_next_and_notes_it() -> None:
@@ -214,6 +225,134 @@ def test_missing_deadline_minute_closes_on_next_and_notes_it() -> None:
     assert stop.note is not None and "свечи на сроке нет" in stop.note
     assert "выход 2026-11-06 20:03 UTC" in stop.note and "после срока 20:02–20:03" in stop.note
     assert _result(session).closed_at == SIGNAL_CLOSE + timedelta(hours=60, minutes=3)
+
+
+# --- комиссии и проскальзывание в результате (задача 3, план 2.11) ------------------------------
+
+
+def test_result_is_net_of_costs_and_state_keeps_gross() -> None:
+    """В ``signal_results`` — результат за вычетом ``cost_r`` из ``DEFAULT_EXECUTION`` (как в
+    ``simulate_trade``), сам ``cost_r`` — в своём столбце. В ``signal_tracking.state`` результат
+    остаётся до вычета: формула комиссий в сохранённое состояние не попадает."""
+    assert (2 * D("0.0005") + D("0.0003")) * D(100) / D(3) == COST
+    sig = _signal()
+    session = _session(sig)
+    minutes = _minutes(SIGNAL_CLOSE, 61 * 60)
+    apply_candles(session, sig, minutes, Timeframe.M1)  # type: ignore[arg-type]
+    state = state_from_json(session.get(SignalTracking, 1).state)
+    gross = (minutes[60 * 60 - 1].close - D(100)) / D(3)
+    assert state.status is SignalStatus.CLOSED_TIME and state.realized_r == gross
+    assert state.r_if_tp1_only == state.r_if_full_tp2 == gross
+    res = _result(session)
+    assert res.cost_r == COST
+    assert res.realized_r == gross - COST
+    assert res.realized_r_tp1_only == res.realized_r_full_tp2 == gross - COST
+    # MFE/MAE — движение цены, комиссии их не касаются (как в simulate_trade)
+    assert res.max_favorable_r == state.mfe_r and res.max_adverse_r == state.mae_r
+
+
+def test_stop_loss_result_is_minus_one_r_minus_costs() -> None:
+    sig = _signal()
+    session = _session(sig)
+    apply_candles(session, sig, _minutes_to_stop(SIGNAL_CLOSE), Timeframe.M1)  # type: ignore[arg-type]
+    assert sig.status == "closed_sl"
+    res = _result(session)
+    assert res.realized_r == D(-1) - COST and res.cost_r == COST
+
+
+def _short_signal(sid: int = 1) -> Signal:
+    """Зеркало ``_signal``: шорт от 100, стоп 103, тейки 97 / 93 / 88."""
+    sig = _signal(sid=sid)
+    sig.direction = "short"
+    sig.entry_limit, sig.stop_loss = D("101.5"), D(103)
+    sig.tp1, sig.tp2, sig.tp3 = D(97), D(93), D(88)
+    return sig
+
+
+def _h4_path(rng: random.Random, n: int, calm: bool) -> list[Candle]:
+    """Случайный путь H4 от закрытия сигнальной свечи; ``calm`` — у 100 ± 0.5, без касаний
+    стопа и тейков (сделка доживает до time stop)."""
+    out: list[Candle] = []
+    price = 100.0
+    for i in range(n):
+        if calm:
+            out.append(
+                Candle(
+                    SIGNAL_CLOSE + H4 * i,
+                    D(100),
+                    D("100.5"),
+                    D("99.5"),
+                    D(100) + D("0.1") * (i % 3 - 1),
+                    D(1),
+                )
+            )
+            continue
+        o, c = price, price + rng.uniform(-4, 4)
+        h, lo = max(o, c) + rng.uniform(0, 3), min(o, c) - rng.uniform(0, 3)
+        out.append(
+            Candle(
+                SIGNAL_CLOSE + H4 * i,
+                D(f"{o:.2f}"),
+                D(f"{h:.2f}"),
+                D(f"{lo:.2f}"),
+                D(f"{c:.2f}"),
+                D(1),
+            )
+        )
+        price = c
+    return out
+
+
+def test_recorded_result_matches_simulate_trade_with_default_costs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Свойство (≥ 300 сценариев на H4): воркер — трекер вместе с записью результата в
+    ``signal_results`` — даёт ровно то же, что ``simulate_trade(DEFAULT_EXECUTION)``, в Decimal, до
+    округления ``Numeric(8, 3)`` при записи в БД: статус, ``realized_r``, ``realized_r_tp1_only``,
+    ``realized_r_full_tp2``, ``cost_r``, MFE/MAE и время закрытия. Свечи подаются порциями, как
+    при догоне, поэтому между порциями состояние проходит через JSON ``signal_tracking.state``.
+    Вход в воркере всегда рыночный; лимитный вход проверяет такой же тест движка
+    (``test_tracker_result_matches_simulate_trade_with_default_costs``)."""
+    rng = random.Random(20261110)
+    seen: Counter[TradeStatus] = Counter()
+    for trial in range(360):
+        sig = _signal() if trial % 2 == 0 else _short_signal()
+        params = TradeParams(be_after_tp1=trial % 3 != 0, time_stop_candles=rng.choice([5, 15]))
+        monkeypatch.setattr(worker, "_params_for", lambda _s, _sig, p=params: p)
+        calm = trial % 7 == 0
+        path = _h4_path(rng, params.time_stop_candles + 1 if calm else rng.randint(1, 30), calm)
+        session = _session(sig)
+        i = 0
+        while i < len(path) and sig.status in worker.OPEN:
+            k = rng.randint(1, 6)
+            apply_candles(session, sig, path[i : i + k], Timeframe.H4)  # type: ignore[arg-type]
+            i += k
+        sim = simulate_trade(_setup_from_row(sig), path, params, DEFAULT_EXECUTION)
+        res = session.get(SignalResult, sig.id)
+        ctx = (trial, sig.direction, params, sim, res and vars(res))
+        seen[sim.status] += 1
+        if sim.status is TradeStatus.OPEN:
+            assert res is None, ctx
+            assert sig.status == ("active", "tp1_hit", "tp2_hit")[sim.tp_hits], ctx
+            continue
+        assert isinstance(res, SignalResult), ctx
+        assert sig.status == sim.status.value, ctx
+        assert res.realized_r == sim.realized_r, ctx
+        assert res.realized_r_tp1_only == sim.r_if_tp1_only, ctx
+        assert res.realized_r_full_tp2 == sim.r_if_full_tp2, ctx
+        assert res.cost_r == sim.cost_r and sim.cost_r > 0, ctx
+        assert res.max_favorable_r == sim.max_favorable_r, ctx
+        assert res.max_adverse_r == sim.max_adverse_r, ctx
+        assert sim.exit_index is not None, ctx
+        assert res.closed_at == path[sim.exit_index].close_time(Timeframe.H4), ctx
+    closed = (
+        TradeStatus.CLOSED_SL,
+        TradeStatus.CLOSED_BE,
+        TradeStatus.CLOSED_TP3,
+        TradeStatus.CLOSED_TIME,
+        TradeStatus.OPEN,
+    )
+    assert all(seen[s] >= 10 for s in closed), seen
 
 
 # --- catch_up: ошибка одного сигнала не останавливает проход (T1-R1) ---------------------------
@@ -495,6 +634,14 @@ def test_catch_up_isolates_failed_signals_with_real_savepoints(
                     s.get(SignalTracking, sig.id) is not None,
                     s.get(SignalResult, sig.id) is not None,
                 )
+                if name == "before":
+                    # результат в БД — за вычетом комиссий, cost_r в своём столбце (миграция 0025);
+                    # Numeric(8, 3) округляет: −1 − 0.04333… → −1.043
+                    stored = s.get(SignalResult, sig.id)
+                    assert stored is not None
+                    assert stored.cost_r == COST.quantize(D("0.001")) == D("0.043")
+                    assert stored.realized_r == (D(-1) - COST).quantize(D("0.001")) == D("-1.043")
+                    assert stored.realized_r_tp1_only == stored.realized_r_full_tp2 == D("-1.043")
         closed = ("closed_sl", ["activated", "sl"], True, True)
         untouched = ("pending", [], False, False)
         assert got == {

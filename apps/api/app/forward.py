@@ -499,6 +499,7 @@ def track_open_signals(session: Session, versions: dict[str, StrategyVersion]) -
                     realized_r=result.realized_r,
                     realized_r_tp1_only=result.r_if_tp1_only,
                     realized_r_full_tp2=result.r_if_full_tp2,
+                    cost_r=result.cost_r,
                     duration_hours=Decimal((last_time - sig.candle_close_time).total_seconds())
                     / 3600,
                     max_favorable_r=result.max_favorable_r,

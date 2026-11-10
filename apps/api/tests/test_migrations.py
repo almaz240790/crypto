@@ -52,3 +52,9 @@ def test_single_head_and_linear_history() -> None:
 def test_admin_login_revision_follows_strategy_archive() -> None:
     """ADR-0011: ревизия входа в админку при сведении веток встала после 0023."""
     assert "0024" in _revisions()
+
+
+def test_cost_r_revision_follows_admin_login() -> None:
+    """Задача 3: ``signal_results.cost_r`` писалась на базе 0021 как 0023; при сведении с архивом
+    версии 1.0.0 (0023) и входом в админку (0024) стала ревизией 0025 после 0024."""
+    assert _revisions()["0025"] == "0024"
