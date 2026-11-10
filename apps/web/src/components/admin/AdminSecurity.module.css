@@ -1,0 +1,79 @@
+/* «Защита входа» в админке (ADR-0011): резервные коды, перенос кода на другой телефон, что делать при потере. */
+.grid {
+  display: grid;
+  gap: var(--gap-4);
+  max-width: 640px;
+}
+
+.form {
+  display: grid;
+  gap: var(--gap-3);
+  justify-items: start;
+}
+
+.form > label,
+.form > div {
+  width: min(100%, 360px);
+}
+
+.form input {
+  min-height: var(--touch-min);
+  font-size: 16px;
+}
+
+.text {
+  margin: 0;
+  font-size: var(--fs-table);
+  line-height: 1.5;
+}
+
+.muted {
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--fs-table);
+  line-height: 1.5;
+}
+
+.count {
+  font-weight: 700;
+}
+
+.error {
+  margin: 0;
+  padding: var(--gap-2) var(--gap-3);
+  border: 1px solid var(--down);
+  border-radius: var(--radius);
+  background: var(--down-fill);
+  color: var(--down);
+  font-size: var(--fs-table);
+  line-height: 1.45;
+}
+
+.ok {
+  margin: 0;
+  padding: var(--gap-2) var(--gap-3);
+  border: 1px solid var(--up);
+  border-radius: var(--radius);
+  background: var(--up-fill);
+  font-size: var(--fs-table);
+  line-height: 1.45;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gap-2);
+}
+
+.row button {
+  min-height: var(--touch-min);
+}
+
+.list {
+  display: grid;
+  gap: var(--gap-2);
+  margin: 0;
+  padding-left: 1.25em;
+  font-size: var(--fs-table);
+  line-height: 1.5;
+}

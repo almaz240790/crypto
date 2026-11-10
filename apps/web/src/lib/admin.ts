@@ -1,6 +1,6 @@
 "use client";
 
-import { api } from "./auth-client";
+import { adminApi as api } from "./admin-auth";
 
 export type AdminVersion = { id: number; strategy: string; name: string; version: string; status: string; params: Record<string, unknown>; created_by: string | null; approved_by: string | null; activated_at: string | null; signals: number };
 export type AdminRun = { id: number; strategy_version: string; period: [string, string]; instruments: number; note: string | null; metrics: Record<string, number | null> };
@@ -22,6 +22,9 @@ export const getSignals = (status?: string) => api<AdminSignal[]>(`/v1/admin/sig
 export const cancelSignal = (id: string, reason: string) => api(`/v1/admin/signals/${id}/cancel`, { method: "POST", json: { reason } });
 export const getUsers = (q?: string) => api<AdminUser[]>(`/v1/admin/users${q ? `?q=${encodeURIComponent(q)}` : ""}`);
 export const patchUser = (id: number, body: Record<string, unknown>) => api(`/v1/admin/users/${id}`, { method: "PATCH", json: body });
+const ROLE_RANK: Record<string, number> = { user: 0, support: 1, admin: 2, owner: 3 };
+/** Повышение до admin или owner подтверждается кодом из приложения (ADR-0011); понижение и support — нет. */
+export const needsCode = (from: string, to: string) => (ROLE_RANK[to] ?? 0) >= 2 && (ROLE_RANK[to] ?? 0) > (ROLE_RANK[from] ?? 0);
 export const getSystem = () => api<SystemStatus>("/v1/admin/system");
 export const getAudit = () => api<AuditRow[]>("/v1/admin/audit");
 export const getPromos = () => api<Promo[]>("/v1/admin/promo");
@@ -35,4 +38,5 @@ export type LabelStats = { labelers: { id: number; email: string | null; n: numb
 export const getNextLabel = () => api<{ candidate: LabelCandidate | null; message?: string }>("/v1/admin/labels/next");
 export const submitLabel = (body: { figure_id: number; label: "figure" | "not_figure" | "unsure"; figure_type?: string | null; time_spent_s: number }) => api("/v1/admin/labels", { method: "POST", json: body });
 export const getLabelStats = () => api<LabelStats>("/v1/admin/labels/stats");
+/** Картинка кандидата: браузер сам отправит cookie админки (путь /v1/admin), заголовок не нужен. */
 export const labelImageUrl = (figureId: number) => `/v1/admin/labels/${figureId}/image.png`;

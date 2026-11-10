@@ -84,6 +84,10 @@ class Settings(BaseSettings):
     """Ключи Web Push (base64url, P-256). Без них push не отправляется."""
     vapid_subject: str = "mailto:support@platform.local"
     owner_emails: str = ""
+    proxy_secret: str | None = None
+    """Общий секрет прокси сайта (/v1 в Next, тот же PROXY_SECRET у сервиса web, ADR-0011): с ним
+    API берёт IP клиента из подписанного заголовка прокси, а /v1/admin/* открывается только через
+    сайт. Без него IP — из первого значения X-Forwarded-For (клиент может его подставить)."""
     sentry_dsn: str | None = None
     api_public_url: str = "http://localhost:8000"
     """Публичный адрес API — для вебхуков провайдера оплаты."""

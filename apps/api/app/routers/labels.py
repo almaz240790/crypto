@@ -11,14 +11,16 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app import auth
+from app import admin_auth, auth
 from app.labeling import LABELS, next_candidate, stats
 from app.models import FigureRow, Instrument, MlLabel, User
 from app.routers.admin import ADMIN
 from engine.candles import Timeframe
 from engine.figures import TITLES, FigureType
 
-router = APIRouter(prefix="/v1/admin/labels", tags=["admin"])
+router = APIRouter(
+    prefix="/v1/admin/labels", tags=["admin"], dependencies=[Depends(admin_auth.site_proxy_only)]
+)
 CONTEXT_BEFORE, CONTEXT_AFTER = 25, 15
 
 

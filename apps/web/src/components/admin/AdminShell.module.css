@@ -1,0 +1,155 @@
+/* Оболочка админки (ADR-0011): своя шапка без меню сайта; на телефоне строка «кто вошёл» переносится. */
+.shell {
+  min-height: 100dvh;
+  background: var(--bg);
+}
+
+.head {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-nav);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gap-2) var(--gap-4);
+  padding: var(--gap-2) var(--gap-4);
+  padding-top: max(var(--gap-2), env(safe-area-inset-top));
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.left {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-3);
+  min-width: 0;
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--touch-min);
+  color: var(--text);
+}
+
+.title {
+  margin: 0;
+  font-size: var(--fs-h3);
+  font-weight: 700;
+}
+
+.who {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--gap-2);
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-table);
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-2);
+}
+
+.email {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.role {
+  flex: none;
+  padding: 1px var(--gap-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  color: var(--text-2);
+  font-size: var(--fs-caption);
+}
+
+/* «Защита входа» — резервные коды и перенос кода: видна всегда, не только в ленте вкладок */
+.sec {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--touch-min);
+  color: var(--accent);
+  font-size: var(--fs-table);
+  white-space: nowrap;
+}
+
+.warn {
+  margin: 0;
+  padding: var(--gap-2) var(--gap-4);
+  border-bottom: 1px solid var(--warn);
+  background: var(--warn-fill);
+  font-size: var(--fs-table);
+}
+
+.main {
+  max-width: var(--container);
+  margin: 0 auto;
+  padding: var(--gap-4);
+}
+
+.wait {
+  min-height: 60dvh;
+  display: grid;
+  place-items: center;
+  padding: var(--gap-4);
+}
+
+@media (max-width: 560px) {
+  .head {
+    padding-left: var(--gap-3);
+    padding-right: var(--gap-3);
+  }
+
+  /* телефон: строка 1 — знак, «Админка», выход; строка 2 — кто вошёл */
+  .who {
+    order: 3;
+    flex-basis: 100%;
+    justify-content: flex-start;
+  }
+
+  .email {
+    max-width: none;
+  }
+
+  .main {
+    padding: var(--gap-3);
+  }
+}
+
+/* Переходный режим: вход в админку пока без кода из телефона — плашка на всех вкладках, не закрывается */
+.grace {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gap-2) var(--gap-4);
+  padding: var(--gap-2) var(--gap-4);
+  border-bottom: 1px solid var(--warn);
+  background: var(--warn-fill);
+}
+
+.graceText {
+  flex: 1 1 280px;
+  min-width: 0;
+  margin: 0;
+  font-size: var(--fs-table);
+}
+
+@media (max-width: 560px) {
+  .grace {
+    padding-left: var(--gap-3);
+    padding-right: var(--gap-3);
+  }
+}

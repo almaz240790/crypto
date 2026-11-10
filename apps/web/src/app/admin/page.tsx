@@ -2,8 +2,8 @@
 
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useState } from "react";
-import { AppShell } from "@/components/app/AppShell";
-import { useAuth } from "@/components/auth/AuthProvider";
+import { AdminSecurity } from "@/components/admin/AdminSecurity";
+import { AdminShell, useAdminMe } from "@/components/admin/AdminShell";
 import t from "@/components/tools/tools.module.css";
 import { Badge, Button, EmptyState, Input, Panel, Select, StatusBadge, Table, Td, Th } from "@/components/ui";
 import * as A from "@/lib/admin";
@@ -21,6 +21,7 @@ const TABS = [
   ["labeling", "Разметка"],
   ["system", "Система"],
   ["audit", "Аудит"],
+  ["security", "Защита входа"],
 ] as const;
 type Tab = (typeof TABS)[number][0];
 type Run = (fn: () => Promise<unknown>, ok: string, after?: () => void) => Promise<void>;
@@ -353,7 +354,7 @@ function Signals({ run }: { run: Run }) {
   );
 }
 
-function Users({ run, me }: { run: Run; me: { id: number; role: string } }) {
+function Users({ run, me }: { run: Run; me: { id: number; role: string; grace?: boolean } }) {
   const [rows, setRows] = useState<A.AdminUser[] | null>(null);
   const [q, setQ] = useState("");
   const load = useCallback(() => A.getUsers(q).then((x) => setRows(x)).catch(() => setRows([])), [q]);
@@ -390,7 +391,22 @@ function Users({ run, me }: { run: Run; me: { id: number; role: string } }) {
                   </Td>
                   <Td>
                     {me.role === "owner" && u.id !== me.id ? (
-                      <select aria-label={`роль ${u.email}`} value={u.role} onChange={(e) => void run(() => A.patchUser(u.id, { role: e.target.value }), "Роль изменена", () => void load())}>
+                      <select
+                        aria-label={`роль ${u.email}`}
+                        value={u.role}
+                        onChange={(e) => {
+                          const role = e.target.value;
+                          const body: Record<string, unknown> = { role };
+                          // выдача прав админки — только с кодом из приложения (ADR-0011)
+                          // в переходном режиме кода ещё нет — API сам ответит «сначала настройте защиту»
+                          if (A.needsCode(u.role, role) && !me.grace) {
+                            const code = prompt(`Чтобы выдать роль ${role} для ${u.email}, введите 6 цифр из приложения на телефоне (или резервный код):`);
+                            if (!code) return;
+                            body.code = code;
+                          }
+                          void run(() => A.patchUser(u.id, body), "Роль изменена", () => void load());
+                        }}
+                      >
                         {["user", "support", "admin", "owner"].map((r) => (
                           <option key={r} value={r}>
                             {r}
@@ -819,11 +835,9 @@ function Audit() {
 function AdminInner() {
   const sp = useSearchParams();
   const router = useRouter();
-  const { user, loading } = useAuth();
+  const me = useAdminMe();
   const tab = (TABS.find(([k]) => k === sp.get("tab"))?.[0] ?? "strategies") as Tab;
   const { msg, run } = useToast();
-  if (loading) return <EmptyState text="Загрузка…" />;
-  if (!user || (user.role !== "admin" && user.role !== "owner")) return <EmptyState text="Раздел доступен только администраторам." />;
   return (
     <>
       <div className={s.tabs} role="tablist">
@@ -841,22 +855,24 @@ function AdminInner() {
       {tab === "strategies" && <Strategies run={run} />}
       {tab === "instruments" && <Instruments run={run} />}
       {tab === "signals" && <Signals run={run} />}
-      {tab === "users" && <Users run={run} me={{ id: user.id, role: user.role }} />}
+      {tab === "users" && <Users run={run} me={{ id: me.id, role: me.role, grace: me.grace }} />}
       {tab === "billing" && <Billing run={run} />}
       {tab === "tickets" && <Tickets run={run} />}
       {tab === "labeling" && <Labeling run={run} />}
       {tab === "system" && <System />}
       {tab === "audit" && <Audit />}
+      {tab === "security" && <AdminSecurity />}
     </>
   );
 }
 
+/** Админка (ADR-0011): по сеансу админки (вход /admin/login), а пока код не настроен — по входу на сайт с плашкой «Настройте защиту»; своя шапка, без меню сайта. */
 export default function AdminPage() {
   return (
-    <AppShell title="Админка">
+    <AdminShell>
       <Suspense fallback={<EmptyState text="Загрузка…" />}>
         <AdminInner />
       </Suspense>
-    </AppShell>
+    </AdminShell>
   );
 }

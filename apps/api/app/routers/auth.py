@@ -11,7 +11,7 @@ from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import auth, ratelimit, twofactor
+from app import admin_auth, auth, ratelimit, twofactor
 from app.config import settings
 from app.mail import send_mail
 from app.models import EmailToken, RiskProfile, TwoFactor, User
@@ -121,7 +121,13 @@ def _email_token(db: Session, user: User, purpose: str, ttl: timedelta) -> str:
 
 
 def _consume_email_token(db: Session, raw: str, purpose: str) -> User:
-    row = db.scalar(select(EmailToken).where(EmailToken.token_hash == auth.sha256(raw)))
+    # под блокировкой до commit: два запроса с одной ссылкой или билетом не пройдут оба
+    row = db.scalar(
+        select(EmailToken)
+        .where(EmailToken.token_hash == auth.sha256(raw))
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     now = datetime.now(tz=UTC)
     if row is None or row.purpose != purpose or row.used_at is not None or row.expires_at < now:
         raise HTTPException(400, "ссылка недействительна или устарела")
@@ -175,7 +181,7 @@ def login_two_factor(
     """Второй шаг входа: билет из /login + код TOTP или резервный код."""
     ratelimit.guard(request, "2fa", None, ratelimit.TWO_FACTOR_PER_IP, ratelimit.TWO_FACTOR_PER_IP)
     user = _consume_email_token(db, body.ticket, "2fa")
-    row = db.get(TwoFactor, user.id)
+    row = twofactor.locked(db, user.id)  # код TOTP — один раз, общая отметка с админкой
     if not twofactor.is_enabled(row) or row is None or not twofactor.verify_code(row, body.code):
         db.commit()  # билет сгорает даже при неверном коде
         raise HTTPException(401, "неверный код")
@@ -288,6 +294,9 @@ class ResetIn(BaseModel):
 def reset_confirm(body: ResetIn, db: Session = Depends(auth.get_db)) -> Response:
     user = _consume_email_token(db, body.token, "reset")
     user.password_hash = auth.hash_password(body.password)
+    if user.email_verified_at is None:
+        user.email_verified_at = datetime.now(tz=UTC)  # ссылка сброса пришла на этот адрес
+    admin_auth.revoke_user_sessions(db, user.id, "password")  # новый пароль закрывает админку
     db.commit()
     return Response(status_code=204)
 
