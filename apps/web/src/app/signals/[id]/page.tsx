@@ -21,7 +21,7 @@ type Detail = SignalRow & {
   facts: string[];
   zone: { kind: string; top: string; bottom: string } | null;
   score_breakdown: Record<string, number> | null;
-  events: { type: string; price: string | null; at: string; source: string }[];
+  events: { type: string; price: string | null; at: string; source: string; note?: string | null }[];
 };
 
 type AnalysisFull = Analysis & {
@@ -40,7 +40,12 @@ const EVENT_LABEL: Record<string, string> = {
   sl: "стоп сработал",
   time_stop: "закрыт по времени",
   expired: "вход не исполнен, сигнал истёк",
+  corrected: "результат пересчитан",
+  voided: "результат недействителен",
 };
+
+/** События исправления исхода (пересчёт форварда): пояснение показывается под строкой. */
+const NOTE_EVENTS = new Set(["corrected", "voided"]);
 
 const SCORE_LABEL: Record<string, string> = {
   bias: "Контекст D1/W1",
@@ -347,11 +352,14 @@ export default function SignalPage() {
               <table className={s.events}>
                 <tbody>
                   {d.events.map((e) => (
-                    <tr key={e.at + e.type}>
+                    <tr key={e.at + e.type + e.source}>
                       <td className="num" style={{ textAlign: "left" }}>
                         {formatTimeUTC(e.at)}
                       </td>
-                      <td>{t(EVENT_LABEL[e.type] ?? e.type)}</td>
+                      <td>
+                        {t(EVENT_LABEL[e.type] ?? e.type)}
+                        {NOTE_EVENTS.has(e.type) && e.note ? <div className="caption">{e.note}</div> : null}
+                      </td>
                       <td className="num">{e.price ? formatPrice(e.price, tick) : ""}</td>
                       <td className="caption">{e.source}</td>
                     </tr>

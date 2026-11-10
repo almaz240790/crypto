@@ -35,7 +35,22 @@ const ANALYSIS = {
   atr: "1.9",
 };
 
-async function mock(page: Page, calls: string[]) {
+/** Исход пересчитан (пересчёт форварда): прежние события заменены, пояснение — в событии corrected. */
+const NOTE = "Исход пересчитан 10.11.2026: закрыт по времени 27.10.2026 20:15 UTC — через 15 мин после сигнала, раньше срока.";
+const CORRECTED = {
+  ...DETAIL,
+  status: "closed_sl",
+  result: { realized_r: "-1.043", closed_at: SIG_T, duration_hours: "5.02", max_favorable_r: "0.2", max_adverse_r: "-1" },
+  events: [
+    { type: "created", price: null, at: SIG_T, source: "engine", note: null },
+    { type: "activated", price: "104.50", at: SIG_T, source: "retrack", note: null },
+    { type: "sl", price: "102.20", at: new Date((T0 + 101 * 14400) * 1000).toISOString(), source: "retrack", note: null },
+    { type: "corrected", price: null, at: new Date((T0 + 119 * 14400) * 1000).toISOString(), source: "retrack", note: NOTE },
+  ],
+};
+const VOIDED = { ...DETAIL, status: "voided", result: null, events: [{ type: "created", price: null, at: SIG_T, source: "engine" }, { type: "voided", price: null, at: SIG_T, source: "retrack", note: "Результат недействителен (10.11.2026): нет 1m-свечей." }] };
+
+async function mock(page: Page, calls: string[], detail: object = DETAIL) {
   await page.context().addCookies([{ name: "pl_auth", value: "1", url: "http://localhost:3101" }]);
   await page.route("**/v1/**", (route) => {
     const u = new URL(route.request().url());
@@ -46,7 +61,7 @@ async function mock(page: Page, calls: string[]) {
     if (p === "/v1/auth/me") return json(200, ME);
     if (p === "/v1/instruments") return json(200, [{ symbol: "BTCUSDT", tick_size: "0.1" }]);
     if (p === "/v1/prices") return json(200, { BTCUSDT: { p: "105.30", at: "" } });
-    if (p === "/v1/signals/abc") return json(200, DETAIL);
+    if (p === "/v1/signals/abc") return json(200, detail);
     if (p === "/v1/signals/abc/analysis") return json(200, ANALYSIS);
     if (p === "/v1/chart/patterns") {
       const close = Math.floor(new Date(SIG_T).getTime() / 1000);
@@ -97,4 +112,19 @@ test("карточка: график, параметры, подсветка ф�
   await expect(page.getByRole("status")).toContainText("Запись в журнале создана");
   expect(calls).toContain("POST /v1/journal");
   await page.screenshot({ path: testInfo.outputPath("card.png"), fullPage: true });
+});
+
+test("карточка: исход пересчитан — пояснение под событием; недействительный результат", async ({ page }) => {
+  const calls: string[] = [];
+  await mock(page, calls, CORRECTED);
+  await page.goto("/signals/abc");
+  const history = page.locator("table").filter({ hasText: "результат пересчитан" });
+  await expect(history).toBeVisible();
+  await expect(history).toContainText(NOTE);
+  await expect(history).toContainText("стоп сработал");
+  await page.unrouteAll({ behavior: "ignoreErrors" });
+  await mock(page, calls, VOIDED);
+  await page.goto("/signals/abc");
+  await expect(page.getByText("недействителен", { exact: true }).first()).toBeVisible();
+  await expect(page.locator("table").filter({ hasText: "результат недействителен" })).toContainText("нет 1m-свечей");
 });

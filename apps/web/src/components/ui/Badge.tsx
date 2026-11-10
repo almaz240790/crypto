@@ -23,7 +23,8 @@ export function Badge({
   );
 }
 
-/** Статусы сигнала из API (план 2.10): pending/active/tp1_hit/.../closed_sl/expired/cancelled. */
+/** Статусы сигнала из API (план 2.10): pending/active/tp1_hit/.../closed_sl/expired/cancelled;
+ * voided — результат недействителен (исход записан с ошибкой учёта и не пересчитан). */
 export const STATUS_LABEL: Record<string, { text: string; tone: Tone }> = {
   pending: { text: "ожидает", tone: "neutral" },
   active: { text: "в работе", tone: "accent" },
@@ -35,6 +36,7 @@ export const STATUS_LABEL: Record<string, { text: string; tone: Tone }> = {
   closed_time: { text: "по времени", tone: "muted" },
   expired: { text: "не вошёл", tone: "muted" },
   cancelled: { text: "отменён", tone: "muted" },
+  voided: { text: "недействителен", tone: "muted" },
 };
 
 export function StatusBadge({ status }: { status: string }) {
