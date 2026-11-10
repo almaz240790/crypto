@@ -1,4 +1,5 @@
 import type { NextRequest } from "next/server";
+import { proxyTrust } from "@/lib/proxyTrust";
 
 /**
  * Прокси браузерных запросов к API на том же домене: /v1/* → ${API_URL}/v1/*.
@@ -9,7 +10,8 @@ export const dynamic = "force-dynamic";
 
 // x-requested-with — заголовок админки против CSRF (ADR-0011): без него изменяющие запросы к /v1/admin/* — 403
 const PASS_REQ = ["content-type", "authorization", "cookie", "accept", "user-agent", "accept-language", "x-requested-with"];
-const PASS_RES = ["content-type", "cache-control", "content-disposition", "retry-after"];
+// x-admin-ended — почему закрыт сеанс админки (страница входа объясняет владельцу)
+const PASS_RES = ["content-type", "cache-control", "content-disposition", "retry-after", "x-admin-ended"];
 
 async function proxy(req: NextRequest, ctx: { params: Promise<{ path: string[] }> }): Promise<Response> {
   const base = process.env.API_URL ?? process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -24,6 +26,9 @@ async function proxy(req: NextRequest, ctx: { params: Promise<{ path: string[] }
   }
   const ip = req.headers.get("x-forwarded-for");
   if (ip) headers.set("x-forwarded-for", ip);
+  // Общий секрет с API (PROXY_SECRET, ADR-0011): API верит адресу клиента только от этого прокси и открывает
+  // /v1/admin/* только через сайт. Заголовки x-pl-* от браузера сюда не попадают — список PASS_REQ закрытый.
+  for (const [k, v] of Object.entries(proxyTrust(req.headers, process.env.PROXY_SECRET))) headers.set(k, v);
 
   const hasBody = !["GET", "HEAD"].includes(req.method);
   let upstream: Response;
