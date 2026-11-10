@@ -36,6 +36,8 @@ HITS = {"closed_tp3": 3, "tp2_hit": 2, "tp1_hit": 1}
 FORWARD = "forward"
 HIST_EDGES = [Decimal(x) for x in ("-1.5", "-1", "-0.5", "0", "0.5", "1", "1.5", "2", "3", "4")]
 """Границы корзин гистограммы R; крайние корзины открытые."""
+
+
 def load_trades(
     session: Session,
     scope: str = "live",
