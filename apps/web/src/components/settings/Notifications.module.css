@@ -1,0 +1,39 @@
+/* Подписка на тестовые сигналы (ADR-0013): отдельная группа с плашкой «Тестовый режим». Цвета — только токены. */
+.optIn {
+  display: grid;
+  gap: var(--gap-2);
+  min-width: 0;
+  margin: 0;
+  padding: var(--gap-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.optIn legend {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--gap-2);
+  padding: 0 4px;
+  font-size: var(--fs-table);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.optIn p {
+  margin: 0;
+}
+
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  font-size: 14px;
+}
+
+@media (pointer: coarse) {
+  .check {
+    min-height: 44px;
+  }
+}

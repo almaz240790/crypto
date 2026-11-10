@@ -35,6 +35,7 @@ import { usePlan } from "./state/usePlan";
 import { useTrend } from "./state/useTrend";
 import { useDrawings } from "./useDrawings";
 import { getCandles, toCandle, type FigureOnChart, type PatternOnChart } from "@/lib/chart";
+import { signalsLinkOf } from "@/lib/signals";
 import { useTerminalData } from "./useTerminalData";
 import { useT } from "@/i18n/client";
 import { TerminalHeader, type HeaderFacts } from "./chrome/TerminalHeader";
@@ -244,7 +245,10 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
 
   const indicatorIds = useMemo(() => new Set(st.indicators.map((i) => i.id)), [st.indicators]);
   const lastClose = data.candles?.length ? data.candles[data.candles.length - 1]!.close : null;
-  const signalsLinkN = authed ? (data.layers?.signals.length ?? 0) : 0;
+  // ссылка «сигналов по инструменту»: test — все сигналы слоя тестовые (ADR-0013); в мемо — примитивы
+  const signalsLink = authed ? signalsLinkOf(symbol, data.layers?.signals) : null;
+  const signalsLinkN = signalsLink?.n ?? 0;
+  const signalsLinkTest = signalsLink?.test ?? false;
   const foundData: FoundData = useMemo(
     () => ({
       symbol,
@@ -257,11 +261,11 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
       patternStats: data.patterns?.stats ?? NO_STATS,
       canExplain: authed,
       askAccess,
-      signals: signalsLinkN > 0 ? { symbol, n: signalsLinkN } : null,
+      signals: signalsLinkN > 0 ? { symbol, n: signalsLinkN, test: signalsLinkTest } : null,
       onLevel: pickLevel,
       onFocus: focusObject,
     }),
-    [symbol, tf, data.tick, lastClose, figures, data.figures?.stats, patterns, data.patterns?.stats, authed, askAccess, signalsLinkN, pickLevel, focusObject],
+    [symbol, tf, data.tick, lastClose, figures, data.figures?.stats, patterns, data.patterns?.stats, authed, askAccess, signalsLinkN, signalsLinkTest, pickLevel, focusObject],
   );
   const sel = dr.selected;
   /** Стопка карточек поверх графика (выбранный рисунок, лимит): её прямоугольник — препятствие для подписей на графике. */
@@ -304,7 +308,6 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
   const zoom = useCallback((f: number) => controls.current?.zoom(f), []);
   const reset = useCallback(() => controls.current?.reset(), []);
   const syncText = user && dr.sync !== "off" ? (dr.sync === "ok" ? t("синхронизировано") : dr.sync === "queued" ? t("в очереди") : t("ошибка синхронизации")) : null;
-  const signalsLink = data.layers?.signals.length ? { symbol, n: data.layers.signals.length } : null;
   const clearCrosshair = useCallback(() => controls.current?.clearCrosshair(), []);
   const liqLayerOn = resolved.layers.liq_map;
   // наложенный инструмент — строкой легенды: на графике его линия без подписи (D4)

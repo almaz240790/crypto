@@ -138,6 +138,18 @@ export function statusToast(ev: { scope?: string }, symbol: string, label: strin
   return `${ev.scope === "forward" ? `${testBadge} · ` : ""}${symbol}: ${label}`;
 }
 
+/** Ссылка «сигналов по инструменту» из слоя графика. `test` — все сигналы тестовые (ADR-0013): ведёт в тестовую область. */
+export type SignalsLink = { symbol: string; n: number; test: boolean };
+
+export function signalsLinkOf(symbol: string, signals: readonly { scope?: string }[] | null | undefined): SignalsLink | null {
+  if (!signals?.length) return null;
+  return { symbol, n: signals.length, test: signals.every((x) => x.scope === "forward") };
+}
+
+export function signalsLinkHref(l: SignalsLink): string {
+  return `/signals?symbol=${l.symbol}&tab=all${l.test ? "&scope=forward" : ""}`;
+}
+
 export function addToWatchlist(symbol: string): Promise<unknown> {
   return api("/v1/watchlist/items", { method: "POST", json: { symbol } });
 }

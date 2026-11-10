@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 import s from "@/components/tools/tools.module.css";
+import n from "./Notifications.module.css";
+import { TestModeBadge } from "@/components/signals/TestMode";
 import { Button, EmptyState, Input, Panel, Select } from "@/components/ui";
 import { api } from "@/lib/auth-client";
 import { currentSubscription, pushSupported, subscribePush, testPush, unsubscribePush } from "@/lib/push";
@@ -20,6 +22,10 @@ export type NotificationSettings = {
   push_events: boolean;
   email_alerts: boolean;
   push_alerts: boolean;
+  /** Письма о тестовых сигналах (форвард, ADR-0013): новые и смены статуса. По умолчанию выключено. */
+  email_test_signals?: boolean;
+  /** Push о тестовых сигналах — так же, по желанию. */
+  push_test_signals?: boolean;
   telegram_linked: boolean;
 };
 
@@ -174,6 +180,26 @@ export function NotificationsPanel({ userId, onMessage }: { userId: number; onMe
             </div>
           </div>
         </div>
+        <fieldset className={n.optIn} data-testid="test-signals-settings">
+          <legend>
+            {t("Тестовые сигналы")} <TestModeBadge />
+          </legend>
+          <p className="caption">
+            {t("О новых тестовых сигналах и сменах их статуса — с пометкой «Тестовый режим». Стратегия проходит проверку на живых данных, результаты не подтверждены, это не инвестиционная рекомендация. По умолчанию выключено.")}
+          </p>
+          <div className={s.actions}>
+            {(
+              [
+                ["email_test_signals", "Письма"],
+                ["push_test_signals", "Push"],
+              ] as const
+            ).map(([k, label]) => (
+              <label key={k} className={n.check}>
+                <input type="checkbox" checked={Boolean(v(k))} onChange={(e) => set(k, e.target.checked)} /> {t(label)}
+              </label>
+            ))}
+          </div>
+        </fieldset>
         <ul style={{ margin: 0, paddingLeft: 18, fontSize: 14, color: "var(--text-2)" }}>
           <li>
             Telegram —{" "}

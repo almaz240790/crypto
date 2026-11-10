@@ -11,9 +11,10 @@ import Link from "next/link";
 import { api, getAccessToken } from "@/lib/auth-client";
 import { getPatterns, type PatternOnChart } from "@/lib/chart";
 import { formatDuration, formatPct, formatPrice, formatR, formatTimeUTC } from "@/lib/format";
-import { journalFromSignal, unrealizedR, type SignalRow } from "@/lib/signals";
+import { journalFromSignal, TEST_BADGE, unrealizedR, type SignalRow } from "@/lib/signals";
 import { TF_LABEL } from "@/lib/timeframes";
 import { useLive } from "@/lib/useLive";
+import { TestModeBadge, TestModeNote } from "@/components/signals/TestMode";
 import s from "./page.module.css";
 import { useT } from "@/i18n/client";
 
@@ -228,9 +229,11 @@ export default function SignalPage() {
   const split = an?.trade_params.split ?? ["0.4", "0.4", "0.2"];
   const factsByGroup = new Map<string, string[]>();
   d.facts.forEach((f) => factsByGroup.set(t(groupOf(f)), [...(factsByGroup.get(t(groupOf(f))) ?? []), f]));
+  // тестовый сигнал (форвард, ADR-0013): пометка везде, где он виден, — и в скопированном тексте
+  const test = d.scope === "forward";
   const copyParams = () =>
     navigator.clipboard.writeText(
-      `${d.symbol} ${d.direction.toUpperCase()} (${d.grade}, ${d.score})\n${t("вход")} ${d.entry_limit ?? d.entry_market}\n${t("стоп")} ${d.stop_loss}\nTP1 ${d.tp1} / TP2 ${d.tp2} / TP3 ${d.tp3}\n${window.location.href}`,
+      `${test ? `[${t(TEST_BADGE)}] ` : ""}${d.symbol} ${d.direction.toUpperCase()} (${d.grade}, ${d.score})\n${t("вход")} ${d.entry_limit ?? d.entry_market}\n${t("стоп")} ${d.stop_loss}\nTP1 ${d.tp1} / TP2 ${d.tp2} / TP3 ${d.tp3}\n${window.location.href}`,
     );
 
   return (
@@ -238,6 +241,7 @@ export default function SignalPage() {
       title={title}
       actions={
         <div className={s.head}>
+          {test && <TestModeBadge />}
           <DirectionBadge direction={d.direction} />
           <GradeBadge grade={d.grade} />
           <StatusBadge status={d.status} />
@@ -245,6 +249,11 @@ export default function SignalPage() {
         </div>
       }
     >
+      {test && (
+        <div style={{ marginBottom: 12 }}>
+          <TestModeNote />
+        </div>
+      )}
       <div className={s.meta} style={{ marginBottom: 12 }}>
         <span>свеча {formatTimeUTC(d.candle_close_time)}</span>
         <span>стратегия {d.strategy_version}</span>

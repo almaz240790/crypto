@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useEffect, useState, type ReactNode } from "react";
 import { useT } from "@/i18n/client";
 import { formatPct, formatPrice } from "@/lib/format";
+import { signalsLinkHref, type SignalsLink } from "@/lib/signals";
 import { INTRADAY, TF_LABEL, TIMEFRAMES } from "@/lib/timeframes";
 import type { Instrument } from "@/lib/user";
 import type { HeaderFacts } from "./TerminalHeader";
@@ -135,7 +136,7 @@ type BottomProps = {
   onRedo: () => void;
   drawingsCount: number;
   sync: string | null;
-  signalsLink: { symbol: string; n: number } | null;
+  signalsLink: SignalsLink | null;
 };
 
 export function PhoneBottom(p: BottomProps) {
@@ -178,8 +179,8 @@ export function PhoneBottom(p: BottomProps) {
         </span>
       )}
       {p.signalsLink && (
-        <Link className="caption" href={`/signals?symbol=${p.signalsLink.symbol}&tab=all`}>
-          {t("сигналов по инструменту: {n}", { n: p.signalsLink.n })}
+        <Link className="caption" href={signalsLinkHref(p.signalsLink)}>
+          {p.signalsLink.test ? t("тестовых сигналов по инструменту: {n}", { n: p.signalsLink.n }) : t("сигналов по инструменту: {n}", { n: p.signalsLink.n })}
         </Link>
       )}
     </div>

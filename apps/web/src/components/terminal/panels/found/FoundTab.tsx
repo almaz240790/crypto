@@ -6,6 +6,7 @@ import { memo, useCallback, useState } from "react";
 import { SegmentedControl } from "@/components/ui";
 import { useT } from "@/i18n/client";
 import type { FigureOnChart, FigureStat, PatternOnChart, PatternStat } from "@/lib/chart";
+import { signalsLinkHref, type SignalsLink } from "@/lib/signals";
 import type { Timeframe } from "@/lib/timeframes";
 import { useChartStore } from "../../chart/useChartStore";
 import { AskBox } from "./AskBox";
@@ -29,7 +30,7 @@ export type FoundData = {
   canExplain: boolean;
   askAccess: "guest" | "plan" | "ok" | null;
   /** «сигналов по инструменту: N» (вошедшим, если сигналы есть). */
-  signals: { symbol: string; n: number } | null;
+  signals: SignalsLink | null;
   /** Строка уровня → выбрать объект и показать его (повторно — снять). */
   onLevel: (id: string | null) => void;
   /** Фигура или паттерн → выбрать и прокрутить к времени, если за кадром. */
@@ -70,8 +71,8 @@ export const FoundTab = memo(function FoundTab({ store, data, ask = true }: { st
         {section === "figures" && <FiguresList items={data.figures} stats={data.figureStats} selected={figureSel} onSelect={onFigure} tick={data.tick} visibleFrom={visibleFrom} />}
         {section === "patterns" && <PatternsList items={data.patterns} stats={data.patternStats} selected={patternSel} onSelect={onPattern} tf={data.tf} symbol={data.symbol} canExplain={data.canExplain} visibleFrom={visibleFrom} />}
         {data.signals && data.signals.n > 0 && (
-          <Link className={p.signals} href={`/signals?symbol=${data.signals.symbol}&tab=all`}>
-            {t("сигналов по инструменту: {n}", { n: data.signals.n })}
+          <Link className={p.signals} href={signalsLinkHref(data.signals)}>
+            {data.signals.test ? t("тестовых сигналов по инструменту: {n}", { n: data.signals.n }) : t("сигналов по инструменту: {n}", { n: data.signals.n })}
           </Link>
         )}
       </div>

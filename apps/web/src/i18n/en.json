@@ -1591,5 +1591,8 @@
   "Тестовый режим": "Test mode",
   "Это сигналы стратегии, которая проходит проверку на живых данных. Результаты не подтверждены. Не является инвестиционной рекомендацией.": "These are signals from a strategy being tested on live data. Results are not verified. Not investment advice.",
   "Стратегия проходит проверку на живых данных. Результаты не подтверждены. Не является инвестиционной рекомендацией.": "The strategy is being tested on live data. Results are not verified. Not investment advice.",
-  "тест": "test"
+  "тест": "test",
+  "О новых тестовых сигналах и сменах их статуса — с пометкой «Тестовый режим». Стратегия проходит проверку на живых данных, результаты не подтверждены, это не инвестиционная рекомендация. По умолчанию выключено.": "About new test signals and their status changes, marked “Test mode”. The strategy is being tested on live data, results are not verified, this is not investment advice. Off by default.",
+  "тестовых сигналов по инструменту: {n}": "test signals for this instrument: {n}",
+  "Письма": "Emails"
 }
