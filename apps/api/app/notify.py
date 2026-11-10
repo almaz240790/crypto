@@ -5,7 +5,8 @@
   записывается в ``notification_log`` (повтор невозможен).
 - ``run_digest`` — ежедневный/еженедельный дайджест: закрытые сигналы за период, активные,
   метрики за 30 дней, ссылка отписки.
-Тексты — простые, без обещаний (план 8). Без ключа Resend письма уходят в лог.
+Тексты — простые, без обещаний (план 8). Без ключа Resend письма уходят в лог — кроме рассылок
+в production: там процесс без ключа их пропускает, не отмечая отправленными (``mail_ready``).
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.journal_analytics import TradeRow, analytics
+from app.mail import configured as mail_configured
 from app.mail import send_mail
 from app.models import (
     Instrument,
@@ -56,6 +58,18 @@ EVENT_TEXT = {
     "time_stop": "закрыт по времени",
     "expired": "вход не исполнен, сигнал истёк",
 }
+
+
+def mail_ready() -> bool:
+    """Можно ли рассылать из этого процесса (дайджест, отчёт по журналу).
+
+    Ключ почты есть — да. Нет ключа: локально и на staging письма пишутся в лог (это и есть
+    доставка), а в production рассылка пропускается — и не отмечается отправленной, чтобы её
+    отправил процесс с ключом (уведомитель). На Railway у cron-сервиса ``digest`` ключа нет:
+    раньше он «отправлял» в лог и писал ``notification_log``, и пользователь терял дайджест
+    за день.
+    """
+    return mail_configured() or not settings.is_production
 
 
 def settings_for(db: Session, user: User) -> NotificationSettings:
@@ -332,7 +346,14 @@ def digest_text(db: Session, user: User, period: str, now: datetime) -> str | No
 
 
 def run_digest(db: Session, period: str = "daily", now: datetime | None = None) -> int:
-    """Рассылает дайджест всем с подходящей настройкой; одна отправка на день/пользователя."""
+    """Рассылает дайджест всем с подходящей настройкой; одна отправка на день/пользователя.
+
+    Отметка в ``notification_log`` фиксируется после каждого письма: повторный или параллельный
+    проход (уведомитель и cron-скрипт, два экземпляра при выкладке) не шлёт дубль тем, кому уже
+    отправлено, а сбой на одном адресе не откатывает отметки остальных."""
+    if not mail_ready():
+        log.warning("дайджест %s: нет ключа почты — пропуск, отправит процесс с ключом", period)
+        return 0
     now = now or datetime.now(tz=UTC)
     ref = f"{period}:{now.strftime('%Y-%m-%d')}"
     rows = db.execute(
@@ -349,6 +370,7 @@ def run_digest(db: Session, period: str = "daily", now: datetime | None = None) 
         send_mail(
             user.email, f"Platform: дайджест {now.strftime('%d.%m')}", text + unsubscribe_footer(ns)
         )
+        db.commit()
         sent += 1
     db.commit()
     log.info("дайджест %s: отправлено %d из %d", period, sent, len(rows))
@@ -445,7 +467,10 @@ def journal_report_text(db: Session, user: User, now: datetime) -> str | None:
 
 def run_journal_reports(db: Session, now: datetime | None = None) -> int:
     """Еженедельно (по понедельникам, вместе с дайджестом): всем, у кого письма не выключены
-    и за неделю есть закрытые сделки. Одна отправка на дату."""
+    и за неделю есть закрытые сделки. Одна отправка на дату; отметка — после каждого письма."""
+    if not mail_ready():
+        log.warning("отчёт по журналу: нет ключа почты — пропуск, отправит процесс с ключом")
+        return 0
     now = now or datetime.now(tz=UTC)
     ref = f"journal:{now.strftime('%Y-%m-%d')}"
     rows = db.execute(
@@ -464,6 +489,7 @@ def run_journal_reports(db: Session, now: datetime | None = None) -> int:
             f"Platform: отчёт по журналу {now.strftime('%d.%m')}",
             text + unsubscribe_footer(ns),
         )
+        db.commit()
         sent += 1
     db.commit()
     log.info("отчёт по журналу: отправлено %d из %d", sent, len(rows))
