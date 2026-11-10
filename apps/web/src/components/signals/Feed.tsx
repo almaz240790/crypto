@@ -5,27 +5,33 @@ import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "@/components/auth/AuthProvider";
-import { DirectionBadge, EmptyState, GradeBadge, Panel, StatusBadge, Table, Td, Th } from "@/components/ui";
+import { Button, DirectionBadge, EmptyState, GradeBadge, Panel, STATUS_LABEL, StatusBadge, Table, Td, Th } from "@/components/ui";
 import { getAccessToken } from "@/lib/auth-client";
 import { formatPrice, formatR, formatTimeUTC } from "@/lib/format";
 import {
   addToWatchlist,
+  effectiveScope,
   fetchFeed,
   fetchSummary,
   filtersFromSearch,
   filtersToSearch,
   journalFromSignal,
   PAGE,
+  scopeTabs,
+  statusToast,
+  TEST_BADGE,
   unrealizedR,
   type FeedFilters,
   type FeedResponse,
+  type Scope,
   type SignalRow,
   type Summary,
 } from "@/lib/signals";
-import { useLive } from "@/lib/useLive";
+import { useLive, type LiveSignal } from "@/lib/useLive";
 import { Countdown } from "./Countdown";
 import s from "./Feed.module.css";
 import { Sparkline } from "./Sparkline";
+import { TestModeBadge, TestModeNote } from "./TestMode";
 import { useT } from "@/i18n/client";
 import type { T } from "@/i18n";
 const GRADES = ["A", "B", "C"];
@@ -53,8 +59,11 @@ export function Feed({ instruments }: { instruments: { symbol: string; tick_size
   const sp = useSearchParams();
   const { user } = useAuth();
   const filters = useMemo(() => filtersFromSearch(new URLSearchParams(sp.toString())), [sp]);
-  const canForward = user?.role === "admin" || user?.role === "owner";
 
+  // сводка по live: есть ли live и тестовые сигналы и что открывать без явного выбора (ADR-0013);
+  // undefined — ещё не пришла, null — не удалось получить (тогда live, как раньше)
+  const [meta, setMeta] = useState<Summary | null | undefined>(undefined);
+  const scope = effectiveScope(filters, meta);
   const [data, setData] = useState<FeedResponse | null>(null);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -62,6 +71,8 @@ export function Feed({ instruments }: { instruments: { symbol: string; tick_size
   const [now, setNow] = useState(() => Date.now());
   const [tick, setTick] = useState(0);
   const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const toastRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const itemsRef = useRef<SignalRow[]>([]);
 
   const setFilters = useCallback(
     (patch: Partial<FeedFilters>) => {
@@ -73,7 +84,18 @@ export function Feed({ instruments }: { instruments: { symbol: string; tick_size
 
   useEffect(() => {
     let alive = true;
-    fetchFeed(filters)
+    fetchSummary("live")
+      .then((x) => alive && setMeta(x))
+      .catch(() => alive && setMeta(null));
+    return () => {
+      alive = false;
+    };
+  }, [user?.id]);
+
+  useEffect(() => {
+    if (!scope) return;
+    let alive = true;
+    fetchFeed(filters, scope)
       .then((d) => {
         if (!alive) return;
         setData(d);
@@ -81,13 +103,13 @@ export function Feed({ instruments }: { instruments: { symbol: string; tick_size
         setNow(Date.now());
       })
       .catch((e: Error) => alive && setError(e.message));
-    fetchSummary(filters.scope)
+    fetchSummary(scope)
       .then((x) => alive && setSummary(x))
       .catch(() => {});
     return () => {
       alive = false;
     };
-  }, [filters, tick]);
+  }, [filters, scope, tick]);
 
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 30_000);
@@ -102,7 +124,20 @@ export function Feed({ instruments }: { instruments: { symbol: string; tick_size
   }, []);
 
   const symbols = useMemo(() => Array.from(new Set((data?.items ?? []).map((i) => i.symbol))), [data]);
-  const onSignal = useCallback(() => setTick((t) => t + 1), []);
+  const showToast = useCallback((text: string, kind: "ok" | "error" = "ok") => {
+    setToast({ text, kind });
+    clearTimeout(toastRef.current);
+    toastRef.current = setTimeout(() => setToast(null), 4000);
+  }, []);
+  // смена статуса по WebSocket: лента перечитывается, а о сигнале из неё — сообщение; у тестового — с пометкой
+  const onSignal = useCallback(
+    (ev: LiveSignal) => {
+      setTick((n) => n + 1);
+      const row = itemsRef.current.find((i) => i.id === ev.id);
+      if (row) showToast(statusToast(ev, row.symbol, t(STATUS_LABEL[ev.status]?.text ?? ev.status), t(TEST_BADGE)));
+    },
+    [showToast, t],
+  );
   const { prices: livePrices, connected, online } = useLive(symbols, getAccessToken(), { onSignal });
   // «live» — тики идут; без строк в ленте цены не нужны, достаточно открытого соединения
   const live = online || (connected && symbols.length === 0);
@@ -126,15 +161,22 @@ export function Feed({ instruments }: { instruments: { symbol: string; tick_size
   async function act(fn: () => Promise<unknown>, okText: string) {
     try {
       await fn();
-      setToast({ text: okText, kind: "ok" });
+      showToast(okText);
     } catch (e) {
-      setToast({ text: e instanceof Error ? e.message : t("ошибка"), kind: "error" });
+      showToast(e instanceof Error ? e.message : t("ошибка"), "error");
     }
-    setTimeout(() => setToast(null), 4000);
   }
 
-  const items = data?.items ?? [];
+  const items = useMemo(() => data?.items ?? [], [data]);
+  useEffect(() => {
+    itemsRef.current = items;
+  }, [items]);
   const pages = data ? Math.ceil(data.total / PAGE) : 0;
+  const test = scope === "forward";
+  const tabs = scope ? scopeTabs(scope, meta) : [];
+  const SCOPE_LABEL: Record<Scope, string> = { live: "Live", forward: t("Тестовые") };
+  // пока в ленте нет ни одного сигнала области: live — «версия не выпущена», тестовые — «сигналы редкие»
+  const noFilters = !filters.symbol && !filters.grade && !filters.direction && !filters.days;
 
   return (
     <div className={s.wrap}>
@@ -149,6 +191,17 @@ export function Feed({ instruments }: { instruments: { symbol: string; tick_size
           <i data-on={live} /> {live ? "live" : "offline"}
         </span>
       </div>
+
+      {tabs.length > 0 && (
+        <div className={s.tabs} role="group" aria-label={t("какие сигналы")} data-testid="scope-tabs">
+          {tabs.map((v) => (
+            <button key={v} type="button" aria-pressed={scope === v} onClick={() => setFilters({ scope: v })}>
+              {SCOPE_LABEL[v]}
+            </button>
+          ))}
+        </div>
+      )}
+      {test && <TestModeNote />}
 
       <div className={s.bar} role="group" aria-label={t("фильтры")}>
         <div className={s.tabs}>
@@ -198,12 +251,6 @@ export function Feed({ instruments }: { instruments: { symbol: string; tick_size
             </option>
           ))}
         </select>
-        {canForward && (
-          <select aria-label={t("стратегия")} value={filters.scope} onChange={(e) => setFilters({ scope: e.target.value as "live" | "forward" })}>
-            <option value="live">live</option>
-            <option value="forward">{t("форвард (только админ)")}</option>
-          </select>
-        )}
         {filtersToSearch(filters) && (
           <button type="button" className={s.sortBtn} onClick={() => router.replace(pathname)}>{t("сбросить")}</button>
         )}
@@ -222,19 +269,43 @@ export function Feed({ instruments }: { instruments: { symbol: string; tick_size
           <Link href="/pricing">{t("Подписка")}</Link>
         </p>
       )}
-      <Panel flush title={data ? `${data.total} ${data.scope === "forward" ? t("форвард-") : ""}${t("сигналов")}` : t("Сигналы")} actions={<span>{t("обновляется по WebSocket и каждую свечу H4")}</span>}>
+      <Panel flush title={data ? (data.scope === "forward" ? t("Тестовые сигналы: {n}", { n: data.total }) : `${data.total} ${t("сигналов")}`) : t("Сигналы")} actions={<span>{t("обновляется по WebSocket и каждую свечу H4")}</span>}>
         {error ? (
           <EmptyState text={t("Не удалось загрузить ленту: {error}", { error })} />
         ) : !data ? (
           <EmptyState text={t("Загрузка…")} />
-        ) : items.length === 0 ? (
+        ) : items.length === 0 && !test && noFilters && meta && meta.live_available === false ? (
+          <EmptyState
+            text={
+              meta.test_available
+                ? t("Live-сигналов пока нет: ни одна версия стратегии не выпущена. Сейчас доступны тестовые сигналы — с пометкой «Тестовый режим».")
+                : t("Live-сигналов пока нет: ни одна версия стратегии не выпущена.")
+            }
+            action={
+              meta.test_available ? (
+                <Button size="sm" onClick={() => setFilters({ scope: "forward" })}>
+                  {t("Открыть тестовые сигналы")}
+                </Button>
+              ) : undefined
+            }
+          />
+        ) : items.length === 0 && test && noFilters ? (
           <EmptyState
             text={
               filters.tab === "open"
+                ? t("Сейчас нет активных тестовых сигналов. Так бывает часто: правила строгие, по всем монетам выходит примерно 1–2 сигнала в неделю. Проверка — после закрытия каждой свечи H4, следующая через")
+                : t("Тестовых сигналов пока нет. Правила строгие: по всем монетам выходит примерно 1–2 сигнала в неделю. Проверка — после закрытия каждой свечи H4, следующая через")
+            }
+            action={<Countdown until={summary?.next_h4_close ?? null} />}
+          />
+        ) : items.length === 0 ? (
+          <EmptyState
+            text={
+              filters.tab === "open" && noFilters
                 ? t("Нет активных сигналов. Следующая проверка через {rest}", { rest: summary ? "" : "—" })
                 : t("По этим фильтрам сигналов нет.")
             }
-            action={filters.tab === "open" ? <Countdown until={summary?.next_h4_close ?? null} /> : undefined}
+            action={filters.tab === "open" && noFilters ? <Countdown until={summary?.next_h4_close ?? null} /> : undefined}
           />
         ) : (
           <Table clickable compact>
@@ -272,7 +343,12 @@ export function Feed({ instruments }: { instruments: { symbol: string; tick_size
                         <strong>{r.symbol}</strong>
                         <DirectionBadge direction={r.direction} />
                         <Sparkline values={data.sparklines[String(r.instrument_id)] ?? []} up={r.direction === "long"} width={56} height={18} />
+                        {(r.scope ?? data.scope) === "forward" && <TestModeBadge />}
                       </span>
+                    </Td>
+                    <Td mobile="secondary" className={s.phoneOnly} data-testid="row-levels">
+                      {t("градация {g}", { g: r.grade })} · SL <span className="num down">{formatPrice(r.stop_loss, tick)}</span> · TP{" "}
+                      <span className="num">{[r.tp1, r.tp2, r.tp3].map((x) => formatPrice(x, tick)).join(" / ")}</span>
                     </Td>
                     <Td mobile="hidden">
                       <GradeBadge grade={r.grade} /> <span className="caption">{r.score}</span>

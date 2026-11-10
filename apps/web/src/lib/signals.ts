@@ -6,12 +6,19 @@ import type { SignalRow } from "./api";
 
 export type { SignalRow };
 
+/** Область сигнала: live — выпущенные версии; forward — «тестовые сигналы» (ADR-0013). */
+export type Scope = "live" | "forward";
+
+/** Плашка у каждого тестового сигнала и одна строка пояснения (ADR-0013). Меняются только вместе с ADR. */
+export const TEST_BADGE = "Тестовый режим";
+export const TEST_LINE = "Это сигналы стратегии, которая проходит проверку на живых данных. Результаты не подтверждены. Не является инвестиционной рекомендацией.";
+
 export type FeedResponse = {
   items: SignalRow[];
   sparklines: Record<string, string[]>;
   prices: Record<string, { p: string; at: string }>;
   total: number;
-  scope: "live" | "forward";
+  scope: Scope;
   limit: number;
   offset: number;
   restrictions?: { plan: string; grades: string[] | null; delay_hours: number; all_instruments: boolean } | null;
@@ -23,6 +30,12 @@ export type Summary = {
   next_h4_close: string;
   now: string;
   scope: string;
+  /** Есть live-версия или live-сигналы. */
+  live_available?: boolean;
+  /** Пользователю видны тестовые сигналы, и версия в тестовом режиме есть. */
+  test_available?: boolean;
+  /** Что лента открывает без явного выбора: тестовые, пока нет live. */
+  default_scope?: Scope;
 };
 
 export type FeedFilters = {
@@ -30,7 +43,8 @@ export type FeedFilters = {
   symbol: string;
   grade: string;
   direction: string;
-  scope: "live" | "forward";
+  /** "" — без явного выбора: область решает сервер (default_scope сводки). */
+  scope: Scope | "";
   days: string;
   sort: string;
   order: "asc" | "desc";
@@ -44,7 +58,7 @@ export const DEFAULT_FILTERS: FeedFilters = {
   symbol: "",
   grade: "",
   direction: "",
-  scope: "live",
+  scope: "",
   days: "",
   sort: "time",
   order: "desc",
@@ -60,7 +74,7 @@ export function filtersFromSearch(sp: URLSearchParams): FeedFilters {
     symbol: (sp.get("symbol") ?? "").toUpperCase(),
     grade: sp.get("grade") ?? "",
     direction: sp.get("direction") ?? "",
-    scope: scope === "forward" ? "forward" : "live",
+    scope: scope === "forward" || scope === "live" ? scope : "",
     days: sp.get("days") ?? "",
     sort: sp.get("sort") ?? "time",
     order: order === "asc" ? "asc" : "desc",
@@ -78,10 +92,28 @@ export function filtersToSearch(f: FeedFilters): string {
   return s ? `?${s}` : "";
 }
 
-export function fetchFeed(f: FeedFilters): Promise<FeedResponse> {
+/**
+ * Область ленты: явный выбор из адреса, иначе — по сводке сервера (тестовые, пока нет live). null — сводка ещё не
+ * пришла, запрашивать рано. Сводка без новых полей (старый API) — live, как раньше.
+ */
+export function effectiveScope(f: Pick<FeedFilters, "scope">, meta: Pick<Summary, "default_scope"> | null | undefined): Scope | null {
+  if (f.scope) return f.scope;
+  if (meta === undefined) return null;
+  return meta?.default_scope === "forward" ? "forward" : "live";
+}
+
+/** Вкладки «Live» / «Тестовые»: когда есть обе области или открыта не та, что по умолчанию (чтобы было куда вернуться). */
+export function scopeTabs(scope: Scope, meta: Pick<Summary, "default_scope" | "live_available" | "test_available"> | null | undefined): Scope[] {
+  if (!meta?.test_available) return [];
+  const def: Scope = meta.default_scope === "forward" ? "forward" : "live";
+  return meta.live_available || scope !== def ? ["live", "forward"] : [];
+}
+
+/** `scope` — область запроса; без неё — явный выбор из фильтров, иначе live (вотчлист считает live-сигналы). */
+export function fetchFeed(f: FeedFilters, scope: Scope = f.scope || "live"): Promise<FeedResponse> {
   const sp = new URLSearchParams({
     status: f.tab,
-    scope: f.scope,
+    scope,
     sort: f.sort,
     order: f.order,
     limit: String(PAGE),
@@ -94,8 +126,16 @@ export function fetchFeed(f: FeedFilters): Promise<FeedResponse> {
   return api<FeedResponse>(`/v1/signals?${sp}`);
 }
 
-export function fetchSummary(scope: string): Promise<Summary> {
+export function fetchSummary(scope: Scope = "live"): Promise<Summary> {
   return api<Summary>(`/v1/signals/summary?scope=${scope}`);
+}
+
+/**
+ * Текст всплывающего сообщения о смене статуса по WebSocket: у тестового сигнала — с пометкой «Тестовый режим».
+ * `label` — уже переведённый статус («в работе», «TP1»).
+ */
+export function statusToast(ev: { scope?: string }, symbol: string, label: string, testBadge: string): string {
+  return `${ev.scope === "forward" ? `${testBadge} · ` : ""}${symbol}: ${label}`;
 }
 
 export function addToWatchlist(symbol: string): Promise<unknown> {

@@ -123,6 +123,8 @@ export type SignalRow = {
   symbol: string;
   instrument_id: number;
   strategy_version: string;
+  /** Область на момент публикации: forward — тестовый сигнал (ADR-0013). */
+  scope?: "live" | "forward";
   last_event_at: string | null;
   direction: "long" | "short";
   candle_close_time: string;

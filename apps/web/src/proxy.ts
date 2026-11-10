@@ -2,7 +2,14 @@ import { NextResponse, type NextRequest } from "next/server";
 import { ADMIN_HINT_COOKIE, adminGate, isAdminPath } from "@/lib/adminGate";
 
 /** Редиректы по cookie-подсказке (без секретов). Настоящая проверка — на API по токену. */
-const PROTECTED = ["/signals", "/onboarding", "/settings", "/watchlist", "/alerts", "/journal", "/calculator", "/screener", "/billing"];
+const PROTECTED = ["/onboarding", "/settings", "/watchlist", "/alerts", "/journal", "/calculator", "/screener", "/billing"];
+/**
+ * Только после входа. Сама /signals открыта гостю: там объяснение, что такое тестовые сигналы, и призыв войти —
+ * без данных сигналов (ADR-0013). Карточки /signals/… — только вошедшим.
+ */
+export function needsLogin(pathname: string): boolean {
+  return pathname.startsWith("/signals/") || PROTECTED.some((p) => pathname === p || pathname.startsWith(p + "/"));
+}
 const GUEST_ONLY = ["/login", "/register"];
 
 export function proxy(req: NextRequest) {
@@ -16,7 +23,7 @@ export function proxy(req: NextRequest) {
     res.headers.set("x-robots-tag", "noindex, nofollow");
     return res;
   }
-  if (!authed && PROTECTED.some((p) => pathname === p || pathname.startsWith(p + "/"))) {
+  if (!authed && needsLogin(pathname)) {
     const url = req.nextUrl.clone();
     url.pathname = "/login";
     url.searchParams.set("next", pathname);

@@ -1,0 +1,26 @@
+/* «Тестовый режим» (ADR-0013): плашка и строка пояснения. Цвета — только токены. */
+.badge {
+  display: inline-flex;
+  flex: none;
+  vertical-align: middle;
+}
+
+.note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--gap-2);
+  margin: 0;
+  padding: var(--gap-2) var(--gap-3);
+  border: 1px solid var(--warn);
+  border-radius: var(--radius);
+  background: var(--warn-fill);
+  color: var(--text);
+  font-size: var(--fs-table);
+  line-height: 1.4;
+}
+
+.note > span:last-child {
+  flex: 1 1 28ch;
+  min-width: 0;
+}

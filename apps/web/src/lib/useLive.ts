@@ -22,7 +22,8 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 
-export type LiveSignal = { id: string; instrument_id: number; status: string; at: string };
+/** Смена статуса сигнала; `scope: "forward"` — тестовый сигнал (ADR-0013), показывается с пометкой. */
+export type LiveSignal = { id: string; instrument_id: number; status: string; at: string; scope?: "live" | "forward" };
 /** Минутная свеча; у формирующейся `at` — момент снимка на сервере. */
 export type LiveBarMsg = { t: number; o: string; h: string; l: string; c: string; v: string; at?: string };
 /** Минутная свеча: закрытая (`candle`) или формирующаяся (`forming`). */
@@ -49,7 +50,7 @@ export type LiveMsg =
   | { t: "ticks"; at: string; p: Record<string, string> }
   | ({ t: "candle" } & LiveCandle)
   | ({ t: "forming" } & LiveCandle)
-  | { t: "signal"; id: string; instrument_id: number; status: string; at: string }
+  | ({ t: "signal" } & LiveSignal)
   | { t: "subscribed"; n: number }
   | { t: "pong" };
 

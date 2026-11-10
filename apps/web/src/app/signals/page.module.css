@@ -1,0 +1,31 @@
+/* Страница сигналов для гостя (ADR-0013): объяснение и вход. Цвета — только токены. */
+.guestTitle {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--gap-2);
+}
+
+.guest {
+  display: grid;
+  gap: var(--gap-3);
+  max-width: 68ch;
+  font-size: var(--fs-body);
+  line-height: 1.5;
+  color: var(--text-2);
+}
+
+.guest p {
+  margin: 0;
+}
+
+.guestCall {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.guestActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gap-2);
+}

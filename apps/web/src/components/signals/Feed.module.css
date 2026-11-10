@@ -103,8 +103,20 @@
 
 .sym {
   display: inline-flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: var(--gap-2);
+  gap: 4px var(--gap-2);
+}
+
+/* на телефоне стоп и цели скрыты столбцами — показываем их одной строкой под инструментом */
+.phoneOnly {
+  display: none;
+}
+
+@media (max-width: 720px) {
+  td.phoneOnly {
+    display: block;
+  }
 }
 
 .sym strong {
