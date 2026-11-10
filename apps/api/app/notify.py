@@ -1,8 +1,11 @@
 """Уведомления по email (план 3.11, задача 2.13).
 
-- ``notify_new_signal`` / ``notify_event`` — мгновенные письма по live-сигналам с учётом настроек:
+- ``notify_new_signal`` / ``notify_event`` — мгновенные письма и push по сигналам с учётом настроек:
   градации, инструменты (все / вотчлист), тихие часы (UTC), суточный лимит; каждая отправка
-  записывается в ``notification_log`` (повтор невозможен).
+  записывается в ``notification_log`` (повтор невозможен). Live-сигналы — по настройкам
+  ``email_signals`` / ``email_events`` / ``push_*``; форвард («тестовые сигналы», ADR-0013) —
+  только тем, кто сам включил ``email_test_signals`` / ``push_test_signals``, и с пометкой
+  «Тестовый режим» в теме и тексте.
 - ``run_digest`` — ежедневный/еженедельный дайджест: закрытые сигналы за период, активные,
   метрики за 30 дней, ссылка отписки.
 Тексты — простые, без обещаний (план 8). Без ключа Resend письма уходят в лог.
@@ -46,6 +49,13 @@ DISCLAIMER = (
     "Информация носит образовательный характер и не является инвестиционной рекомендацией. "
     "Торговля связана с риском потери всех средств. Прошлые результаты не гарантируют будущих."
 )
+TEST_LABEL = "Тестовый режим"
+TEST_NOTE = (
+    "Тестовый режим: это сигнал стратегии, которая проходит проверку на живых данных. "
+    "Результаты не подтверждены. Не является инвестиционной рекомендацией."
+)
+TEST_FLAGS = {"email": "email_test_signals", "push": "push_test_signals"}
+"""Настройки-подписки на тестовые сигналы: одна на канал — и новые сигналы, и события."""
 EVENT_TEXT = {
     "activated": "вход исполнен",
     "tp1": "достигнут TP1 — по правилам стоп переносится в безубыток",
@@ -123,7 +133,8 @@ def signal_text(sig: Signal, symbol: str, risk: RiskProfile | None) -> str:
     ]
     w = max(len(k) for k, _ in rows)
     table = "\n".join(f"{k.ljust(w)}  {v}" for k, v in rows)
-    return f"Новый сигнал\n\n{table}\n\nКарточка: {url}\n\n{DISCLAIMER}"
+    head = f"Новый тестовый сигнал\n\n{TEST_NOTE}" if sig.scope == "forward" else "Новый сигнал"
+    return f"{head}\n\n{table}\n\nКарточка: {url}\n\n{DISCLAIMER}"
 
 
 def _watchlist_ids(db: Session, user_id: int) -> set[int]:
@@ -170,44 +181,65 @@ def _record_push(db: Session, user_id: int, kind: str, ref: str) -> bool:
 
 
 def _live_signal(sig: Signal) -> bool:
-    """Уведомления — только по live-сигналам. Область зафиксирована при публикации
-    (``signals.scope``): по форвард-сигналу версии, ставшей потом live, писем и push нет."""
+    """Обычные уведомления — только по live-сигналам. Область зафиксирована при публикации
+    (``signals.scope``): форвард-сигнал версии, ставшей потом live, остаётся тестовым."""
     return sig.scope == "live"
 
 
-def _recipients(db: Session, flag: str) -> list[tuple[User, NotificationSettings]]:
-    """Получатели мгновенных уведомлений: Free получает только дневной дайджест (раздел 4)."""
-    from app.entitlements import entitlements_for
+def _flag(sig: Signal, channel: str, live_flag: str) -> str | None:
+    """Какая настройка включает уведомление по сигналу в канале: live — прежняя (``live_flag``),
+    форвард — подписка на тестовые сигналы; иная область — уведомлений нет."""
+    if _live_signal(sig):
+        return live_flag
+    return TEST_FLAGS[channel] if sig.scope == "forward" else None
 
+
+def _recipients(
+    db: Session, flag: str | None, test: bool = False
+) -> list[tuple[User, NotificationSettings]]:
+    """Получатели мгновенных уведомлений: Free получает только дневной дайджест (раздел 4).
+    ``test`` — тестовые сигналы: ещё и флаг тарифа ``test_signals`` (ADR-0013)."""
+    from app.entitlements import entitlements_for, forward_visible
+
+    if flag is None:
+        return []
     rows = db.execute(
         select(User, NotificationSettings)
         .join(NotificationSettings, NotificationSettings.user_id == User.id)
         .where(User.deleted_at.is_(None), User.email_verified_at.is_not(None))
         .where(getattr(NotificationSettings, flag).is_(True))
     ).all()
-    return [(u, ns) for u, ns in rows if entitlements_for(db, u).instant_notifications]
+    out = []
+    for u, ns in rows:
+        ent = entitlements_for(db, u)
+        if ent.instant_notifications and (not test or forward_visible(u, ent)):
+            out.append((u, ns))
+    return out
 
 
 def notify_new_signal(db: Session, sig: Signal, now: datetime | None = None) -> int:
-    """Письма всем, у кого включены письма о сигналах. Возвращает число отправок."""
+    """Письма и push всем, у кого включены уведомления о сигналах этой области. Возвращает число
+    отправок."""
     now = now or datetime.now(tz=UTC)
-    if not _live_signal(sig):
+    test = sig.scope == "forward"
+    if not _live_signal(sig) and not test:
         return 0
     symbol = db.scalar(select(Instrument.symbol).where(Instrument.id == sig.instrument_id)) or "?"
+    mark = f"[{TEST_LABEL}] " if test else ""
     sent = 0
-    for user, ns in _recipients(db, "email_signals"):
+    for user, ns in _recipients(db, _flag(sig, "email", "email_signals"), test):
         if not should_notify(ns, sig, now, _watchlist_ids(db, user.id)):
             continue
         if not _record(db, user.id, "signal", sig.public_id):
             continue
         send_mail(
             user.email,
-            f"Сигнал {symbol} {sig.direction.upper()} {sig.grade}",
+            f"{mark}Сигнал {symbol} {sig.direction.upper()} {sig.grade}",
             signal_text(sig, symbol, db.get(RiskProfile, user.id)) + unsubscribe_footer(ns),
         )
         ns.sent_today += 1
         sent += 1
-    for user, ns in _recipients(db, "push_signals"):
+    for user, ns in _recipients(db, _flag(sig, "push", "push_signals"), test):
         if not should_notify(ns, sig, now, _watchlist_ids(db, user.id)):
             continue
         if not _record_push(db, user.id, "signal", sig.public_id):
@@ -216,7 +248,7 @@ def notify_new_signal(db: Session, sig: Signal, now: datetime | None = None) -> 
             db,
             user.id,
             {
-                "title": f"{symbol} {sig.direction.upper()} · {sig.grade}",
+                "title": f"{mark}{symbol} {sig.direction.upper()} · {sig.grade}",
                 "body": f"вход {_dec(sig.entry_limit or sig.entry_market)}, "
                 f"стоп {_dec(sig.stop_loss)}, TP2 {_dec(sig.tp2)} (R:R {_dec(sig.rr_tp2)})",
                 "url": f"/signals/{sig.public_id}",
@@ -230,11 +262,16 @@ def notify_new_signal(db: Session, sig: Signal, now: datetime | None = None) -> 
 def notify_event(db: Session, ev: SignalEvent, now: datetime | None = None) -> int:
     now = now or datetime.now(tz=UTC)
     sig = db.get(Signal, ev.signal_id)
-    if sig is None or ev.type not in EVENT_TEXT or not _live_signal(sig):
+    if sig is None or ev.type not in EVENT_TEXT:
+        return 0
+    test = sig.scope == "forward"
+    if not _live_signal(sig) and not test:
         return 0
     symbol = db.scalar(select(Instrument.symbol).where(Instrument.id == sig.instrument_id)) or "?"
+    mark = f"[{TEST_LABEL}] " if test else ""
+    note = f"{TEST_NOTE}\n\n" if test else ""
     sent = 0
-    for user, ns in _recipients(db, "email_events"):
+    for user, ns in _recipients(db, _flag(sig, "email", "email_events"), test):
         if not should_notify(ns, sig, now, _watchlist_ids(db, user.id)):
             continue
         if not _record(db, user.id, "event", str(ev.id)):
@@ -243,25 +280,26 @@ def notify_event(db: Session, ev: SignalEvent, now: datetime | None = None) -> i
         text = (
             f"{symbol} {sig.direction.upper()}: {EVENT_TEXT[ev.type]}{price}.\n"
             f"Время: {ev.occurred_at.strftime('%d.%m %H:%M UTC')}\n"
-            f"Карточка: {settings.frontend_url}/signals/{sig.public_id}\n\n{DISCLAIMER}"
+            f"Карточка: {settings.frontend_url}/signals/{sig.public_id}\n\n{note}{DISCLAIMER}"
         )
         send_mail(
             user.email,
-            f"{symbol}: {EVENT_TEXT[ev.type].split(' — ')[0]}",
+            f"{mark}{symbol}: {EVENT_TEXT[ev.type].split(' — ')[0]}",
             text + unsubscribe_footer(ns),
         )
         ns.sent_today += 1
         sent += 1
-    for user, ns in _recipients(db, "push_events"):
+    for user, ns in _recipients(db, _flag(sig, "push", "push_events"), test):
         if not should_notify(ns, sig, now, _watchlist_ids(db, user.id)):
             continue
         if not _record_push(db, user.id, "event", str(ev.id)):
             continue
+        head = EVENT_TEXT[ev.type].split(" — ")[0]
         sent += send_to_user(
             db,
             user.id,
             {
-                "title": f"{symbol} {sig.direction.upper()}: {EVENT_TEXT[ev.type].split(' — ')[0]}",
+                "title": f"{mark}{symbol} {sig.direction.upper()}: {head}",
                 "body": f"{_dec(ev.price)}" if ev.price is not None else "",
                 "url": f"/signals/{sig.public_id}",
                 "tag": f"event-{ev.id}",
@@ -494,6 +532,7 @@ def unsubscribe(db: Session, token: str) -> bool:
     ns.email_digest = "off"
     ns.email_signals = False
     ns.email_events = False
+    ns.email_test_signals = False
     db.commit()
     return True
 
@@ -512,5 +551,7 @@ def settings_dict(ns: NotificationSettings) -> dict[str, Any]:
         "push_events": ns.push_events,
         "email_alerts": ns.email_alerts,
         "push_alerts": ns.push_alerts,
+        "email_test_signals": ns.email_test_signals,
+        "push_test_signals": ns.push_test_signals,
         "telegram_linked": ns.telegram_chat_id is not None,
     }

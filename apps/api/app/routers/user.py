@@ -941,6 +941,8 @@ class NotificationsIn(BaseModel):
     push_events: bool | None = None
     email_alerts: bool | None = None
     push_alerts: bool | None = None
+    email_test_signals: bool | None = None
+    push_test_signals: bool | None = None
     clear_quiet: bool = False
 
 
