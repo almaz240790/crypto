@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
 from itertools import pairwise
+from typing import Final
 
 
 class Timeframe(StrEnum):
@@ -37,6 +38,12 @@ _DELTAS: dict[Timeframe, timedelta] = {
     Timeframe.D1: timedelta(days=1),
     Timeframe.W1: timedelta(weeks=1),
 }
+
+SIGNAL_TIMEFRAME: Final = Timeframe.H4
+"""Сигнальный таймфрейм движка (план 2.6): сигнал формируется на закрытии свечи H4, а сроки
+сделки (``TradeParams.limit_expiry_candles``, ``time_stop_candles``) заданы в свечах этого
+таймфрейма, какие бы свечи ни подавались трекеру. Это свойство движка, а не параметр версии,
+поэтому в ``StrategyParams`` его нет."""
 
 
 @dataclass(frozen=True, slots=True)

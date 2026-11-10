@@ -1,12 +1,17 @@
-"""Трекер сигналов по 1m-свечам (этап 2.3, план 2.10/6.3).
+"""Трекер сигналов по 1m-свечам (этап 2.3, план 2.6, 2.10, 6.3).
 
 - Подписка на ``candles.closed`` с ``tf == 1m``; для каждого открытого сигнала инструмента —
   один шаг ``engine.tracker.SignalTracker``; состояние хранится в ``signal_tracking``.
+- Сроки (лимит 6 × H4, time stop 15 × H4) трекер считает по времени от
+  ``signals.candle_close_time`` в свечах сигнального таймфрейма, а не в штуках 1m-свечей.
+  Для time stop и истечения в ``signal_events.note`` пишутся срок, фактическое время и цена.
 - Новые события → ``signal_events``, смена статуса → ``signals.status``, закрытие →
   ``signal_results``. Статусы и события те же, что в бэктесте (эквивалентность доказана тестом).
 - При старте и раз в минуту — догон: для открытых сигналов проигрываются все закрытые 1m-свечи
   после ``last_candle_time`` (или после сигнальной свечи), так что разрыв WebSocket не
   теряет касаний.
+- Ошибка в данных одного сигнала не останавливает проход: его шаг откатывается до точки
+  сохранения и пишется в лог, остальные сигналы ведутся (``catch_up``).
 """
 
 from __future__ import annotations
@@ -24,6 +29,7 @@ from typing import Any
 import redis as redis_sync
 import redis.asyncio as aioredis
 from sqlalchemy import select, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -31,9 +37,9 @@ from app.db import SessionLocal
 from app.forward import _setup_from_row
 from app.models import Signal, SignalEvent, SignalResult, SignalTracking, StrategyVersion
 from app.workers.market_data import CHANNEL_CLOSED
-from engine.candles import Candle, Timeframe
+from engine.candles import SIGNAL_TIMEFRAME, Candle, Timeframe
 from engine.strategies import STRATEGIES
-from engine.tracker import SignalStatus, SignalTracker, TrackerEvent, TrackerState
+from engine.tracker import EventType, SignalStatus, SignalTracker, TrackerEvent, TrackerState
 
 log = logging.getLogger("tracker")
 OPEN = ("pending", "active", "tp1_hit", "tp2_hit")
@@ -54,21 +60,34 @@ EVENT_TYPE = {
 # --- сериализация состояния --------------------------------------------------------------------
 
 
+def _dt(x: object) -> datetime | None:
+    return None if x is None else datetime.fromisoformat(str(x)).astimezone(UTC)
+
+
 def state_to_json(state: TrackerState) -> dict[str, Any]:
     d = asdict(state)
     d["events"] = [
-        {"type": e.type.value, "price": str(e.price), "candle_index": e.candle_index}
+        {
+            "type": e.type.value,
+            "price": str(e.price),
+            "candle_index": e.candle_index,
+            "at": None if e.at is None else e.at.isoformat(),
+        }
         for e in state.events
     ]
     for k, v in d.items():
         if isinstance(v, Decimal):
             d[k] = str(v)
+        elif isinstance(v, datetime):
+            d[k] = v.isoformat()
     d["status"] = state.status.value
     return d
 
 
 def state_from_json(d: dict[str, Any]) -> TrackerState:
-    from engine.tracker import EventType
+    """Читает и новое состояние, и сохранённое до сроков по времени (без ``activated_at``,
+    ``deadline_at``, ``last_candle_at`` и времени событий): недостающий срок трекер
+    восстанавливает из ``signals.candle_close_time`` при первом шаге."""
 
     def dec(x: object) -> Decimal | None:
         return None if x is None else Decimal(str(x))
@@ -87,9 +106,17 @@ def state_from_json(d: dict[str, Any]) -> TrackerState:
         r_if_tp1_only=dec(d.get("r_if_tp1_only")),
         r_if_full_tp2=dec(d.get("r_if_full_tp2")),
         events=tuple(
-            TrackerEvent(EventType(e["type"]), Decimal(e["price"]), int(e["candle_index"]))
+            TrackerEvent(
+                EventType(e["type"]),
+                Decimal(e["price"]),
+                int(e["candle_index"]),
+                _dt(e.get("at")),
+            )
             for e in d.get("events", [])
         ),
+        activated_at=_dt(d.get("activated_at")),
+        deadline_at=_dt(d.get("deadline_at")),
+        last_candle_at=_dt(d.get("last_candle_at")),
     )
 
 
@@ -102,11 +129,48 @@ def _params_for(session: Session, sig: Signal) -> Any:
     return STRATEGIES[key].trade if key else STRATEGIES["trend-ob-retest@1.0.0"].trade
 
 
+def _hm(t: datetime) -> str:
+    return f"{t:%Y-%m-%d %H:%M} UTC"
+
+
+def _price(p: Decimal) -> str:
+    """Цена без хвостовых нулей Numeric из БД: 100.1000000000 → 100.1."""
+    return format(p.normalize(), "f")
+
+
+def event_note(e: TrackerEvent, tracker: SignalTracker) -> str | None:
+    """Пояснение к time stop и истечению лимита: срок, фактическое время и цена выхода."""
+    deadline = tracker.state.deadline_at
+    if e.type not in (EventType.TIME_STOP, EventType.EXPIRED) or e.at is None or deadline is None:
+        return None
+    tf = tracker.timeframe
+    if e.type is EventType.TIME_STOP:
+        what, n = "time stop", tracker.params.time_stop_candles
+    else:
+        what, n = "истечение лимита", tracker.params.limit_expiry_candles
+    candle = f"{e.at - tf.delta:%H:%M}–{e.at:%H:%M}"
+    if e.at == deadline:
+        where = f"по close свечи {tf.value} {candle}"
+    else:
+        where = f"свечи на сроке нет — по close первой свечи {tf.value} после срока {candle}"
+    return (
+        f"{what}: срок {_hm(deadline)} ({n} свечей {SIGNAL_TIMEFRAME.value}); "
+        f"выход {_hm(e.at)} {where}: {_price(e.price)}"
+    )
+
+
 def apply_candles(session: Session, sig: Signal, candles: list[Candle], tf: Timeframe) -> int:
     """Проигрывает свечи для сигнала, пишет события/статус/результат. Возвращает число событий."""
     row = session.get(SignalTracking, sig.id)
     state = state_from_json(row.state) if row else None
-    tracker = SignalTracker(_setup_from_row(sig), _params_for(session, sig), "market", state)
+    tracker = SignalTracker(
+        _setup_from_row(sig),
+        _params_for(session, sig),
+        "market",
+        state,
+        signal_close=sig.candle_close_time.astimezone(UTC),
+        timeframe=tf,
+    )
     total = 0
     last_time = row.last_candle_time if row else None
     for c in candles:
@@ -122,6 +186,7 @@ def apply_candles(session: Session, sig: Signal, candles: list[Candle], tf: Time
                     price=e.price,
                     occurred_at=when,
                     source="tracker",
+                    note=event_note(e, tracker),
                 )
             )
         total += len(events)
@@ -188,8 +253,26 @@ def _publish_status(changes: list[dict[str, Any]]) -> None:
         log.warning("не удалось опубликовать смену статуса", exc_info=True)
 
 
+def _advance(session: Session, sig: Signal, tf: Timeframe) -> int:
+    """Догон одного сигнала: закрытые свечи после последней обработанной. Число событий."""
+    row = session.get(SignalTracking, sig.id)
+    since = (
+        (row.last_candle_time + tf.delta) if row and row.last_candle_time else sig.candle_close_time
+    )
+    candles = _candles_after(session, sig.instrument_id, since, tf)
+    return apply_candles(session, sig, candles, tf) if candles else 0
+
+
 def catch_up(tf: Timeframe = Timeframe.M1, instrument_id: int | None = None) -> int:
-    """Догон по всем открытым сигналам (или одного инструмента)."""
+    """Догон по всем открытым сигналам (или одного инструмента).
+
+    Каждый сигнал ведётся в своей точке сохранения. Ошибка одного сигнала (трекер отвергает
+    ``candle_close_time`` не на границе сигнального таймфрейма и свечу не на сетке потока,
+    повреждено сохранённое состояние) откатывает только его шаг и пишется в лог; остальные
+    сигналы прохода ведутся и фиксируются. Сам сигнал остаётся открытым и будет повторён на
+    следующем проходе. Потеря соединения с БД — не ошибка сигнала: проход прерывается целиком,
+    как и раньше.
+    """
     total = 0
     changes: list[dict[str, Any]] = []
     with SessionLocal() as session:
@@ -197,25 +280,32 @@ def catch_up(tf: Timeframe = Timeframe.M1, instrument_id: int | None = None) -> 
         if instrument_id is not None:
             q = q.where(Signal.instrument_id == instrument_id)
         for sig in session.scalars(q).all():
-            row = session.get(SignalTracking, sig.id)
-            since = (
-                (row.last_candle_time + tf.delta)
-                if row and row.last_candle_time
-                else sig.candle_close_time
-            )
-            candles = _candles_after(session, sig.instrument_id, since, tf)
-            if candles:
-                before = sig.status
-                total += apply_candles(session, sig, candles, tf)
-                if sig.status != before:
-                    changes.append(
-                        {
-                            "id": sig.public_id,
-                            "instrument_id": sig.instrument_id,
-                            "status": sig.status,
-                            "at": datetime.now(tz=UTC).isoformat(),
-                        }
-                    )
+            # до точки сохранения: после её отката изменённые поля объекта сбрасываются
+            ref = (sig.public_id, sig.id, sig.instrument_id)
+            before = sig.status
+            savepoint = session.begin_nested()
+            try:
+                n = _advance(session, sig, tf)
+                savepoint.commit()
+            except Exception as exc:
+                if isinstance(exc, DBAPIError) and exc.connection_invalidated:
+                    raise
+                savepoint.rollback()
+                log.exception(
+                    "сигнал %s (id %s, инструмент %s): ошибка трекера, в этом проходе пропущен",
+                    *ref,
+                )
+                continue
+            total += n
+            if sig.status != before:
+                changes.append(
+                    {
+                        "id": sig.public_id,
+                        "instrument_id": sig.instrument_id,
+                        "status": sig.status,
+                        "at": datetime.now(tz=UTC).isoformat(),
+                    }
+                )
         session.commit()
     _publish_status(changes)
     return total
