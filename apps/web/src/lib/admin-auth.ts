@@ -4,11 +4,13 @@
  * Сеанс админки (ADR-0011): отдельно от сессии сайта. Токен — в httpOnly-cookie `pl_admin` на /v1/admin
  * (скрипт страницы его не видит); здесь — запросы к /v1/admin/* с этой cookie и заголовком против CSRF,
  * cookie-подсказка `pl_admin_hint` для редиректов (src/proxy.ts) и шаги входа /admin/login.
- * Токен сайта (Authorization) в админку не отправляется.
+ * Токен сайта (Authorization) в админку не отправляется — кроме переходного режима: пока у админа или
+ * владельца код из телефона не настроен, API пускает в админку по обычному входу на сайт (`grace: true`),
+ * и запросы идут с токеном сайта, как до отдельного входа. Первый верный код этот режим закрывает.
  */
 
 import { ADMIN_HINT_COOKIE, endedReason, type EndedReason } from "./adminGate";
-import { ApiError, readError } from "./auth-client";
+import { ApiError, getAccessToken, hasHint, readError, refresh } from "./auth-client";
 
 export const ADMIN_CSRF = { name: "x-requested-with", value: "platformsol-admin" };
 /** Заголовок ответа API: почему сеанс закрыт (см. ENDED_REASONS). */
@@ -33,10 +35,14 @@ export type AdminMe = {
   email: string;
   name: string | null;
   role: string;
-  method: "password" | "magic";
-  started_at: string;
-  expires_at: string;
-  idle_minutes: number;
+  /** site — переходный режим: вход по сеансу сайта, код из телефона ещё не настроен. */
+  method: "password" | "magic" | "site";
+  grace: boolean;
+  setup_required?: boolean;
+  /** Сроки есть только у сеанса админки; в переходном режиме их нет. */
+  started_at?: string;
+  expires_at?: string;
+  idle_minutes?: number;
   backup_codes_left: number;
 };
 /** Первый фактор пройден: билет на код или на первую настройку кода. */
@@ -65,20 +71,36 @@ export function hasAdminHint(): boolean {
   return typeof document !== "undefined" && document.cookie.includes(`${ADMIN_HINT_COOKIE}=1`);
 }
 
-/** fetch к /v1/admin/*: cookie админки, заголовок против CSRF, без токена сайта. */
-export async function adminApi<T>(path: string, init: RequestInit & { json?: unknown } = {}): Promise<T> {
-  const { json, ...rest } = init;
+/** Переходный режим этой вкладки: запросы админки идут с токеном сайта (ставит `getAdminAccess`). */
+let grace = false;
+export const isAdminGrace = () => grace;
+
+/**
+ * fetch к /v1/admin/*: cookie админки и заголовок против CSRF; токен сайта — только в переходном режиме
+ * (`site`, по умолчанию — режим вкладки). Токен сайта живёт 15 минут: истёк — один раз обновить и повторить.
+ */
+export async function adminApi<T>(path: string, init: RequestInit & { json?: unknown; site?: boolean } = {}): Promise<T> {
+  const { json, site = grace, ...rest } = init;
   const headers = new Headers(rest.headers);
   headers.set("accept", "application/json");
   headers.set(ADMIN_CSRF.name, ADMIN_CSRF.value);
   if (json !== undefined) headers.set("content-type", "application/json");
-  const res = await fetch(path, {
-    ...rest,
-    headers,
-    credentials: "same-origin",
-    cache: "no-store",
-    body: json !== undefined ? JSON.stringify(json) : rest.body,
-  });
+  const send = (token: string | null) => {
+    if (token) headers.set("authorization", `Bearer ${token}`);
+    return fetch(path, {
+      ...rest,
+      headers,
+      credentials: "same-origin",
+      cache: "no-store",
+      body: json !== undefined ? JSON.stringify(json) : rest.body,
+    });
+  };
+  const kept = site ? getAccessToken() : null;
+  let res = await send(site ? (kept ?? (await refresh())) : null);
+  if (site && kept && res.status === 401) {
+    const fresh = await refresh();
+    if (fresh) res = await send(fresh);
+  }
   if (!res.ok) {
     const message = await readError(res);
     const reason = endedReason(res.headers.get(ADMIN_ENDED_HEADER));
@@ -114,7 +136,35 @@ export async function adminVerify(ticket: string, code: string): Promise<AdminMe
   return me;
 }
 
-export const getAdminMe = () => adminApi<AdminMe>("/v1/admin/auth/me");
+/** Сеанс админки (только cookie): страница входа спрашивает именно его, переходный режим ей не подходит. */
+export const getAdminMe = () => adminApi<AdminMe>("/v1/admin/auth/me", { site: false });
+
+/** Переходный режим: вошли на сайт админом или владельцем, код ещё не настроен. Иначе — null. */
+export async function getGraceMe(): Promise<AdminMe | null> {
+  if (!hasHint()) return null;
+  try {
+    const me = await adminApi<AdminMe>("/v1/admin/auth/me", { site: true });
+    return me.grace ? me : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Кто открыл админку: сеанс админки, а без него — переходный режим (вход на сайт, код не настроен).
+ * Ни того ни другого — ошибка сеанса с причиной: оболочка ведёт на /admin/login.
+ */
+export async function getAdminAccess(): Promise<AdminMe> {
+  grace = false;
+  try {
+    return await getAdminMe();
+  } catch (e) {
+    const me = e instanceof AdminApiError && (e.status === 401 || e.status === 403) ? await getGraceMe() : null;
+    if (!me) throw e;
+    grace = true;
+    return me;
+  }
+}
 
 /** Выход только из админки: сессия сайта (refresh-cookie на /v1/auth) остаётся. */
 export async function adminLogout(): Promise<void> {

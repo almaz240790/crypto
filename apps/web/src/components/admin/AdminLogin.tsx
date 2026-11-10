@@ -16,6 +16,7 @@ import {
   adminVerify,
   getAdminConfig,
   getAdminMe,
+  getGraceMe,
   loadBackup,
   loadPending,
   saveBackup,
@@ -23,6 +24,7 @@ import {
   setAdminHint,
   type AdminConfig,
   type AdminMailStep,
+  type AdminMe,
   type AdminSetup,
   type PendingLogin,
 } from "@/lib/admin-auth";
@@ -43,8 +45,12 @@ const isWrongStep = (e: unknown) => e instanceof ApiError && e.status === 409;
  * Первый вход: подтверждение почты ссылкой из письма, QR-код для «Пароли» на iPhone / Google Authenticator,
  * первый код, резервные коды. `live` — в браузере есть подсказка открытого сеанса: сначала проверяем его
  * и ведём сразу в админку (закладка на /admin/login, ссылка из письма о тикете).
+ * `setup` — пришли из плашки переходного режима («Настроить»): тот же вход, но с объяснением, что это настройка
+ * защиты. Если владелец в переходном режиме (вошёл на сайт, кода нет), а письмо не пришло, шаг «Проверьте почту»
+ * напоминает, что админка пока открыта по адресу /admin, и даёт отправить письмо ещё раз. Настроить код без
+ * письма нельзя.
  */
-export function AdminLogin({ next, link, ended, live }: { next: string; link: string | null; ended: EndedReason | null; live: boolean }) {
+export function AdminLogin({ next, link, ended, live, setup: setupMode = false }: { next: string; link: string | null; ended: EndedReason | null; live: boolean; setup?: boolean }) {
   const t = useT();
   const router = useRouter();
   const [view, setView] = useState<View>(live ? "check" : "password");
@@ -58,6 +64,8 @@ export function AdminLogin({ next, link, ended, live }: { next: string; link: st
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(ended ? t(ENDED_TEXT[ended]) : null);
   const [backup, setBackup] = useState<string[]>([]);
+  /** Переходный режим: вошли на сайт админом или владельцем, код ещё не настроен (админка открыта по входу на сайт). */
+  const [grace, setGrace] = useState<AdminMe | null>(null);
 
   const restart = useCallback((why: string | null = null) => {
     savePending(null);
@@ -94,6 +102,11 @@ export function AdminLogin({ next, link, ended, live }: { next: string; link: st
     getAdminConfig()
       .then(setConfig)
       .catch(() => setConfig({ mail: false, idle_minutes: 60, session_hours: 8 }));
+    if (setupMode)
+      void getGraceMe().then((g) => {
+        setGrace(g);
+        if (g) setEmail((e) => e || g.email);
+      });
     queueMicrotask(() => {
       if (link) {
         router.replace("/admin/login");
@@ -129,7 +142,7 @@ export function AdminLogin({ next, link, ended, live }: { next: string; link: st
             setView("password");
           });
     });
-  }, [link, live, next, restart, router, t, toSecondStep]);
+  }, [link, live, next, restart, router, setupMode, t, toSecondStep]);
 
   async function run(fn: () => Promise<void>) {
     setError(null);
@@ -154,6 +167,18 @@ export function AdminLogin({ next, link, ended, live }: { next: string; link: st
       setPassword("");
       setMailStep(r);
       setView("mail");
+      // вошли на сайт этим же аккаунтом — админка пока открыта и без письма (переходный режим)
+      const g = await getGraceMe();
+      setGrace(g && g.email.toLowerCase() === r.email.toLowerCase() ? g : null);
+    });
+  };
+
+  /** Письмо со ссылкой ещё раз (те же лимиты, что у входа по ссылке: 3 письма в час на адрес). */
+  const resend = () => {
+    if (!mailStep) return;
+    void run(async () => {
+      await adminMagic(mailStep.email);
+      setInfo(t("Отправили новое письмо на {email}. Откройте ссылку из самого свежего письма — она действует 10 минут.", { email: mailStep.email }));
     });
   };
 
@@ -244,6 +269,22 @@ export function AdminLogin({ next, link, ended, live }: { next: string; link: st
           </p>
         )}
         <p className={s.note}>{t("Зачем это: одного пароля мало, чтобы привязать к админке приложение с кодами. Так украденный пароль не откроет админку.")}</p>
+        {grace && (
+          <div className={s.grace} data-testid="admin-grace-mail">
+            <p className={s.note}>{t("Письмо не пришло? Проверьте папку «Спам». Админка пока открыта по адресу /admin — до настройки защиты туда пускает вход на сайт.")}</p>
+            {alerts}
+            <div className={s.actions}>
+              {mailStep.mail && (
+                <Button type="button" disabled={busy} onClick={resend}>
+                  {t("Отправить письмо ещё раз")}
+                </Button>
+              )}
+              <Button variant="ghost" href="/admin">
+                {t("Открыть админку")}
+              </Button>
+            </div>
+          </div>
+        )}
         <button type="button" className={s.link} onClick={() => restart()}>
           {t("Назад к паролю")}
         </button>
@@ -251,10 +292,19 @@ export function AdminLogin({ next, link, ended, live }: { next: string; link: st
     );
   } else if (view === "password") {
     body = (
-      <form className={s.form} onSubmit={submitPassword} noValidate aria-label={t("Вход в админку")}>
+      <form className={s.form} onSubmit={submitPassword} noValidate aria-label={setupMode ? t("Настройка защиты входа") : t("Вход в админку")}>
         <p className={s.step}>{t("Шаг 1 из 2 · пароль")}</p>
-        <h1 className={s.title}>{t("Вход в админку")}</h1>
-        <p className={s.lead}>{t("Только для владельца и администраторов. Сначала email и пароль, затем 6-значный код из приложения на телефоне.")}</p>
+        {setupMode ? (
+          <>
+            <h1 className={s.title}>{t("Настройка защиты входа")}</h1>
+            <p className={s.lead}>{t("Защитите админку кодом из телефона — это одна минута. Введите email и пароль от сайта: мы пришлём письмо со ссылкой, по ней откроется QR-код для приложения «Пароли» или Google Authenticator.")}</p>
+          </>
+        ) : (
+          <>
+            <h1 className={s.title}>{t("Вход в админку")}</h1>
+            <p className={s.lead}>{t("Только для владельца и администраторов. Сначала email и пароль, затем 6-значный код из приложения на телефоне.")}</p>
+          </>
+        )}
         {alerts}
         <Input label="Email" type="email" name="email" autoComplete="username" required value={email} onChange={(e) => setEmail(e.target.value)} />
         <Input label={t("Пароль")} type="password" name="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} />
@@ -268,6 +318,11 @@ export function AdminLogin({ next, link, ended, live }: { next: string; link: st
         ) : config ? (
           <p className={s.note}>{t("Вход по ссылке на почту сейчас недоступен: на сервере не настроена отправка писем. Войдите по паролю.")}</p>
         ) : null}
+        {grace && (
+          <Link href="/admin" className={s.link}>
+            {t("Вернуться в админку")}
+          </Link>
+        )}
       </form>
     );
   } else if (view === "magic") {

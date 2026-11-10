@@ -6,7 +6,7 @@ import { createContext, useCallback, useContext, useEffect, useState, type React
 import { Button, EmptyState, ThemeToggle } from "@/components/ui";
 import { Logo } from "@/components/site/Logo";
 import { useT } from "@/i18n/client";
-import { ADMIN_SESSION_ENDED, AdminApiError, adminLogout, getAdminMe, loadBackup, setAdminHint, type AdminMe } from "@/lib/admin-auth";
+import { ADMIN_SESSION_ENDED, AdminApiError, adminLogout, getAdminAccess, loadBackup, setAdminHint, type AdminMe } from "@/lib/admin-auth";
 import { endedReason, type EndedReason } from "@/lib/adminGate";
 import s from "./AdminShell.module.css";
 
@@ -25,9 +25,14 @@ export const useAdminReload = () => useContext(ReloadCtx);
 
 const ROLE: Record<string, string> = { owner: "владелец", admin: "администратор" };
 
+/** Куда ведёт «Настроить» в переходном режиме: страница входа на шаге настройки защиты. */
+export const ADMIN_SETUP_HREF = "/admin/login?setup=1";
+
 /**
  * Оболочка админки (ADR-0011): своя шапка, свой сеанс. Без сеанса админки — на /admin/login (не на вход сайта).
  * В шапке — кто вошёл и «Выйти из админки» (сайт при этом остаётся открытым).
+ * Переходный режим (`grace`): админ или владелец вошёл на сайт, а код из телефона ещё не настроен — админка
+ * открыта по входу на сайт, сверху постоянная плашка «Настройте защиту»; выйти из админки отдельно нечего.
  */
 export function AdminShell({ children }: { children: ReactNode }) {
   const t = useT();
@@ -47,7 +52,7 @@ export function AdminShell({ children }: { children: ReactNode }) {
 
   const load = useCallback(() => {
     setFailed(false);
-    getAdminMe()
+    getAdminAccess()
       .then(setMe)
       .catch((e) => (e instanceof AdminApiError && (e.status === 401 || e.status === 403) ? toLogin(e.ended) : setFailed(true)));
   }, [toLogin]);
@@ -99,18 +104,23 @@ export function AdminShell({ children }: { children: ReactNode }) {
               {me.email}
             </span>
             <span className={s.role}>{t(ROLE[me.role] ?? me.role)}</span>
-            <Link href="/admin?tab=security" className={s.sec}>
-              {t("Защита входа")}
-            </Link>
+            {!me.grace && (
+              <Link href="/admin?tab=security" className={s.sec}>
+                {t("Защита входа")}
+              </Link>
+            )}
           </div>
           <div className={s.actions}>
             <ThemeToggle />
-            <Button size="sm" onClick={() => void logout()}>
-              {t("Выйти из админки")}
-            </Button>
+            {!me.grace && (
+              <Button size="sm" onClick={() => void logout()}>
+                {t("Выйти из админки")}
+              </Button>
+            )}
           </div>
         </header>
-        {me.backup_codes_left <= 3 && (
+        {me.grace && <GraceBanner />}
+        {!me.grace && me.backup_codes_left <= 3 && (
           <p className={s.warn} role="status">
             {me.backup_codes_left > 0
               ? t("Осталось резервных кодов: {n}. Запасной способ входа почти закончился.", { n: me.backup_codes_left })
@@ -123,5 +133,23 @@ export function AdminShell({ children }: { children: ReactNode }) {
         </ReloadCtx.Provider>
       </div>
     </MeCtx.Provider>
+  );
+}
+
+/**
+ * Плашка переходного режима: вход в админку пока без кода из телефона. Видна на каждой вкладке, не закрывается —
+ * исчезнет сама, когда защита будет настроена.
+ */
+function GraceBanner() {
+  const t = useT();
+  return (
+    <div className={s.grace} role="status" data-testid="admin-grace">
+      <p className={s.graceText}>
+        <strong>{t("Вход в админку пока без защиты кодом.")}</strong> {t("Настройте защиту — это одна минута.")}
+      </p>
+      <Button size="sm" variant="primary" href={ADMIN_SETUP_HREF}>
+        {t("Настроить")}
+      </Button>
+    </div>
   );
 }

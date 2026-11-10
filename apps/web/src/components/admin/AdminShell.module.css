@@ -127,3 +127,29 @@
     padding: var(--gap-3);
   }
 }
+
+/* Переходный режим: вход в админку пока без кода из телефона — плашка на всех вкладках, не закрывается */
+.grace {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gap-2) var(--gap-4);
+  padding: var(--gap-2) var(--gap-4);
+  border-bottom: 1px solid var(--warn);
+  background: var(--warn-fill);
+}
+
+.graceText {
+  flex: 1 1 280px;
+  min-width: 0;
+  margin: 0;
+  font-size: var(--fs-table);
+}
+
+@media (max-width: 560px) {
+  .grace {
+    padding-left: var(--gap-3);
+    padding-right: var(--gap-3);
+  }
+}

@@ -1,7 +1,9 @@
 /**
  * Вход в админку (ADR-0011): куда вести со страниц /admin без сеанса админки. Проверка по
  * cookie-подсказке `pl_admin_hint` (без секретов, путь /admin); настоящая проверка — на API по
- * httpOnly-cookie `pl_admin`. Чистые функции — их использует src/proxy.ts и страница входа.
+ * httpOnly-cookie `pl_admin`. Подсказка входа на сайт (`pl_auth`) тоже пропускает к оболочке админки:
+ * она спросит API, действует ли переходный режим (админ без настроенного кода), и без него уведёт на вход.
+ * Чистые функции — их использует src/proxy.ts и страница входа.
  */
 
 export const ADMIN_HINT_COOKIE = "pl_admin_hint";
@@ -11,10 +13,13 @@ export function isAdminPath(pathname: string): boolean {
   return pathname === "/admin" || pathname.startsWith("/admin/");
 }
 
-/** Адрес страницы входа для пути без подсказки сеанса; null — пропустить (вход или подсказка есть). */
-export function adminGate(pathname: string, search: string, hasHint: boolean): string | null {
+/**
+ * Адрес страницы входа для пути без подсказок; null — пропустить (страница входа, подсказка сеанса админки
+ * или подсказка входа на сайт `siteHint` — возможен переходный режим, решит API).
+ */
+export function adminGate(pathname: string, search: string, hasHint: boolean, siteHint = false): string | null {
   if (!isAdminPath(pathname) || pathname === ADMIN_LOGIN || pathname.startsWith(ADMIN_LOGIN + "/")) return null;
-  if (hasHint) return null;
+  if (hasHint || siteHint) return null;
   return `${ADMIN_LOGIN}?next=${encodeURIComponent(pathname + search)}`;
 }
 

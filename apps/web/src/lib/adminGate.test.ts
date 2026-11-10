@@ -14,6 +14,11 @@ describe("adminGate", () => {
     expect(adminGate("/admin/anything", "", false)).toBe("/admin/login?next=%2Fadmin%2Fanything");
     expect(adminGate("/admin", "", true)).toBeNull();
   });
+  it("вход на сайт пропускает к оболочке админки: переходный режим (код не настроен) решает API", () => {
+    expect(adminGate("/admin", "?tab=users", false, true)).toBeNull();
+    expect(adminGate("/admin/login", "", false, true)).toBeNull();
+    expect(adminGate("/admin", "", false, false)).toBe("/admin/login?next=%2Fadmin");
+  });
   it("страница входа доступна всегда; чужие пути не трогает", () => {
     expect(adminGate("/admin/login", "", false)).toBeNull();
     expect(adminGate("/administrator", "", false)).toBeNull();
@@ -109,9 +114,10 @@ describe("src/proxy.ts для админки", () => {
     expect(login.headers.get("location")).toBeNull();
     expect(login.headers.get("x-robots-tag")).toBe("noindex, nofollow");
   });
-  it("вход на сайт (pl_auth) админку не открывает; подсказка сеанса админки — открывает", () => {
+  it("вход на сайт (pl_auth) пропускает к оболочке — она спросит API о переходном режиме; подсказка сеанса админки — тоже", () => {
     const site = proxy(new NextRequest("http://localhost/admin", { headers: { cookie: "pl_auth=1" } }));
-    expect(site.headers.get("location")).toContain("/admin/login");
+    expect(site.headers.get("location")).toBeNull();
+    expect(site.headers.get("x-robots-tag")).toBe("noindex, nofollow");
     const admin = proxy(new NextRequest("http://localhost/admin", { headers: { cookie: "pl_admin_hint=1" } }));
     expect(admin.headers.get("location")).toBeNull();
   });

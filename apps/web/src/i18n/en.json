@@ -1556,5 +1556,20 @@
   "цель — ноль или ниже": "target is zero or below",
   "параметры": "parameters",
   "Место по капитализации среди монет скринера: 1 — самая крупная": "Market cap rank among screener coins: 1 is the largest",
-  "место по капитализации": "market cap rank"
+  "место по капитализации": "market cap rank",
+  "Вход в админку пока без защиты кодом.": "Admin sign-in has no code protection yet.",
+  "Настройте защиту — это одна минута.": "Set up protection — it takes one minute.",
+  "Настроить": "Set up",
+  "Защита входа не настроена": "Sign-in protection is not set up",
+  "Сейчас админку открывает обычный вход на сайт. Настройте код из телефона: после этого в админку можно будет войти только с ним — украденного пароля или забытого входа на чужом компьютере будет мало.": "Right now the admin panel opens with your regular site sign-in. Set up a code from your phone: after that the admin panel only opens with it — a stolen password or a sign-in left open on someone else's computer won't be enough.",
+  "Настройка: пароль → ссылка из письма → QR-код в приложении «Пароли» или Google Authenticator → 6 цифр → резервные коды.": "Setup: password → link from the email → QR code in the Passwords app or Google Authenticator → 6 digits → backup codes.",
+  "Настроить защиту": "Set up protection",
+  "Отправили новое письмо на {email}. Откройте ссылку из самого свежего письма — она действует 10 минут.": "We sent a new email to {email}. Open the link from the most recent email — it works for 10 minutes.",
+  "Письмо не пришло? Проверьте папку «Спам». Админка пока открыта по адресу /admin — до настройки защиты туда пускает вход на сайт.": "No email? Check your spam folder. The admin panel is still open at /admin — until protection is set up, your site sign-in lets you in.",
+  "Отправить письмо ещё раз": "Send the email again",
+  "Открыть админку": "Open the admin panel",
+  "Настройка защиты входа": "Set up sign-in protection",
+  "Защитите админку кодом из телефона — это одна минута. Введите email и пароль от сайта: мы пришлём письмо со ссылкой, по ней откроется QR-код для приложения «Пароли» или Google Authenticator.": "Protect the admin panel with a code from your phone — it takes one minute. Enter your site email and password: we'll email you a link that opens a QR code for the Passwords app or Google Authenticator.",
+  "Вернуться в админку": "Back to the admin panel",
+  "Администратору защита кодом не отключается: новый телефон и новые резервные коды — в админке, раздел «Защита входа».": "Code protection can't be turned off for an administrator: a new phone and new backup codes are in the admin panel, under “Sign-in protection”."
 }

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ADMIN_SESSION_ENDED, AdminApiError, adminApi, adminLogout, adminVerify, getAdminMe, hasAdminHint, loadBackup, loadPending, saveBackup, savePending, setAdminHint } from "./admin-auth";
+import { ADMIN_SESSION_ENDED, AdminApiError, adminApi, adminLogout, adminVerify, getAdminAccess, getAdminMe, getGraceMe, hasAdminHint, isAdminGrace, loadBackup, loadPending, saveBackup, savePending, setAdminHint } from "./admin-auth";
 
 /** Клиент сеанса админки (ADR-0011): cookie, заголовок против CSRF, без токена сайта; конец сеанса. */
 type Call = { url: string; init: RequestInit };
@@ -110,6 +110,71 @@ describe("adminApi", () => {
     await expect(getAdminMe()).rejects.toMatchObject({ status: 401, ended: "expired" });
     expect(events).toEqual([]);
     expect(hasAdminHint()).toBe(true);
+  });
+});
+
+describe("переходный режим (код не настроен)", () => {
+  const ok = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+  const GRACE = { id: 1, email: "o@example.com", name: null, role: "owner", method: "site", grace: true, setup_required: true, backup_codes_left: 0 };
+  /** Ответы по адресу: обновление токена сайта, «кто вошёл» по cookie и по токену сайта. */
+  function serve(opts: { session?: boolean; grace?: boolean; refresh?: boolean }) {
+    reply = () => new Response(null, { status: 500 });
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      calls.push({ url, init });
+      const token = new Headers(init.headers).get("authorization");
+      if (url === "/v1/auth/refresh") return opts.refresh === false ? new Response("{}", { status: 401 }) : ok({ access_token: "site.jwt" });
+      if (url === "/v1/admin/auth/me") {
+        if (!token) return opts.session ? ok({ ...GRACE, method: "password", grace: false }) : new Response(JSON.stringify({ detail: "Нужен вход в админку." }), { status: 401 });
+        return opts.grace ? ok(GRACE) : new Response(JSON.stringify({ detail: "Нужен вход в админку." }), { status: 401 });
+      }
+      return ok([]);
+    });
+  }
+  it("сеанс админки есть — токен сайта не нужен и не отправляется", async () => {
+    cookie = "pl_auth=1";
+    serve({ session: true, grace: true });
+    const me = await getAdminAccess();
+    expect(me.grace).toBe(false);
+    expect(isAdminGrace()).toBe(false);
+    await adminApi("/v1/admin/users");
+    expect(calls.every((c) => new Headers(c.init.headers).get("authorization") === null)).toBe(true);
+    expect(calls.map((c) => c.url)).not.toContain("/v1/auth/refresh");
+  });
+  it("сеанса нет, вошли на сайт, кода нет — админка по токену сайта, дальше запросы с ним", async () => {
+    cookie = "pl_auth=1";
+    serve({ grace: true });
+    const me = await getAdminAccess();
+    expect(me).toMatchObject({ grace: true, method: "site", setup_required: true });
+    expect(isAdminGrace()).toBe(true);
+    await adminApi("/v1/admin/users");
+    expect(new Headers(calls.at(-1)!.init.headers).get("authorization")).toBe("Bearer site.jwt");
+    expect(events).toEqual([]); // первый отказ по cookie — не «сеанс закончился»
+  });
+  it("код уже настроен (API не пускает по токену сайта) — ошибка сеанса: оболочка ведёт на вход", async () => {
+    cookie = "pl_auth=1";
+    serve({ grace: false });
+    await expect(getAdminAccess()).rejects.toMatchObject({ status: 401 });
+    expect(isAdminGrace()).toBe(false);
+  });
+  it("без входа на сайт токен сайта не спрашиваем вовсе", async () => {
+    serve({ grace: true });
+    expect(await getGraceMe()).toBeNull();
+    expect(calls).toEqual([]);
+  });
+  it("токен сайта истёк (15 минут) — один раз обновить и повторить", async () => {
+    cookie = "pl_auth=1";
+    serve({ grace: true });
+    await getAdminAccess();
+    let n = 0;
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      calls.push({ url, init });
+      if (url === "/v1/auth/refresh") return ok({ access_token: "fresh.jwt" });
+      n += 1;
+      return n === 1 ? new Response(JSON.stringify({ detail: "недействительный токен" }), { status: 401 }) : ok([]);
+    });
+    await adminApi("/v1/admin/users");
+    expect(new Headers(calls.at(-1)!.init.headers).get("authorization")).toBe("Bearer fresh.jwt");
+    expect(events).toEqual([]);
   });
 });
 

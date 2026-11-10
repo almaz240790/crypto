@@ -354,7 +354,7 @@ function Signals({ run }: { run: Run }) {
   );
 }
 
-function Users({ run, me }: { run: Run; me: { id: number; role: string } }) {
+function Users({ run, me }: { run: Run; me: { id: number; role: string; grace?: boolean } }) {
   const [rows, setRows] = useState<A.AdminUser[] | null>(null);
   const [q, setQ] = useState("");
   const load = useCallback(() => A.getUsers(q).then((x) => setRows(x)).catch(() => setRows([])), [q]);
@@ -398,7 +398,8 @@ function Users({ run, me }: { run: Run; me: { id: number; role: string } }) {
                           const role = e.target.value;
                           const body: Record<string, unknown> = { role };
                           // выдача прав админки — только с кодом из приложения (ADR-0011)
-                          if (A.needsCode(u.role, role)) {
+                          // в переходном режиме кода ещё нет — API сам ответит «сначала настройте защиту»
+                          if (A.needsCode(u.role, role) && !me.grace) {
                             const code = prompt(`Чтобы выдать роль ${role} для ${u.email}, введите 6 цифр из приложения на телефоне (или резервный код):`);
                             if (!code) return;
                             body.code = code;
@@ -854,7 +855,7 @@ function AdminInner() {
       {tab === "strategies" && <Strategies run={run} />}
       {tab === "instruments" && <Instruments run={run} />}
       {tab === "signals" && <Signals run={run} />}
-      {tab === "users" && <Users run={run} me={{ id: me.id, role: me.role }} />}
+      {tab === "users" && <Users run={run} me={{ id: me.id, role: me.role, grace: me.grace }} />}
       {tab === "billing" && <Billing run={run} />}
       {tab === "tickets" && <Tickets run={run} />}
       {tab === "labeling" && <Labeling run={run} />}
@@ -865,7 +866,7 @@ function AdminInner() {
   );
 }
 
-/** Админка (ADR-0011): только по сеансу админки — вход /admin/login, своя шапка, без меню сайта. */
+/** Админка (ADR-0011): по сеансу админки (вход /admin/login), а пока код не настроен — по входу на сайт с плашкой «Настройте защиту»; своя шапка, без меню сайта. */
 export default function AdminPage() {
   return (
     <AdminShell>

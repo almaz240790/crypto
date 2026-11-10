@@ -7,14 +7,15 @@ const GUEST_ONLY = ["/login", "/register"];
 
 export function proxy(req: NextRequest) {
   const { pathname, search } = req.nextUrl;
-  // Админка (ADR-0011): свой вход /admin/login и свой сеанс; вход на сайт сюда не пускает
+  const authed = req.cookies.get("pl_auth")?.value === "1";
+  // Админка (ADR-0011): свой вход /admin/login и свой сеанс. Вход на сайт пропускает только к оболочке
+  // админки: она спросит API, действует ли переходный режим (код ещё не настроен), иначе уведёт на вход.
   if (isAdminPath(pathname)) {
-    const to = adminGate(pathname, search, req.cookies.get(ADMIN_HINT_COOKIE)?.value === "1");
+    const to = adminGate(pathname, search, req.cookies.get(ADMIN_HINT_COOKIE)?.value === "1", authed);
     const res = to ? NextResponse.redirect(new URL(to, req.url)) : NextResponse.next();
     res.headers.set("x-robots-tag", "noindex, nofollow");
     return res;
   }
-  const authed = req.cookies.get("pl_auth")?.value === "1";
   if (!authed && PROTECTED.some((p) => pathname === p || pathname.startsWith(p + "/"))) {
     const url = req.nextUrl.clone();
     url.pathname = "/login";

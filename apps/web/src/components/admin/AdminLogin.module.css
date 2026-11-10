@@ -155,6 +155,8 @@
 
 .link {
   justify-self: start;
+  display: inline-flex;
+  align-items: center;
   min-height: var(--touch-min);
   padding: 0;
   border: 0;
@@ -168,6 +170,21 @@
 
 .link:hover {
   text-decoration: underline;
+}
+
+/* Переходный режим на шаге «Проверьте почту»: админка пока открыта, письмо можно отправить ещё раз */
+.grace {
+  display: grid;
+  gap: var(--gap-3);
+  padding: var(--gap-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gap-2);
 }
 
 .note {

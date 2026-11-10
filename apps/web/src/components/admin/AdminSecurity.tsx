@@ -5,7 +5,7 @@ import { Button, Input, Panel } from "@/components/ui";
 import { useT } from "@/i18n/client";
 import { adminNewBackupCodes, adminRotateConfirm, adminRotateStart, saveBackup, type AdminSetup } from "@/lib/admin-auth";
 import { codeReady, normalizeCode } from "@/lib/adminGate";
-import { useAdminMe, useAdminReload } from "./AdminShell";
+import { ADMIN_SETUP_HREF, useAdminMe, useAdminReload } from "./AdminShell";
 import { BackupCodes } from "./BackupCodes";
 import { SetupQr } from "./SetupQr";
 import s from "./AdminSecurity.module.css";
@@ -85,6 +85,23 @@ export function AdminSecurity() {
       show(r.backup_codes, setMoved);
     });
   };
+
+  if (me.grace) {
+    // переходный режим: кода ещё нет — выпускать и переносить нечего, сначала настройка (по ссылке из письма)
+    return (
+      <div className={s.grid} data-testid="admin-security">
+        <Panel title={t("Защита входа не настроена")}>
+          <div className={s.form}>
+            <p className={s.text}>{t("Сейчас админку открывает обычный вход на сайт. Настройте код из телефона: после этого в админку можно будет войти только с ним — украденного пароля или забытого входа на чужом компьютере будет мало.")}</p>
+            <p className={s.muted}>{t("Настройка: пароль → ссылка из письма → QR-код в приложении «Пароли» или Google Authenticator → 6 цифр → резервные коды.")}</p>
+            <Button variant="primary" href={ADMIN_SETUP_HREF}>
+              {t("Настроить защиту")}
+            </Button>
+          </div>
+        </Panel>
+      </div>
+    );
+  }
 
   return (
     <div className={s.grid} data-testid="admin-security">
