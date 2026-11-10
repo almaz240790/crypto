@@ -234,8 +234,11 @@ def test_device_cookie_and_rotation_tokens_are_bound() -> None:
     assert dev is not None and dev[0] == 7
     owner = User(id=7, email="o@x.io", role="owner")
     stranger = User(id=8, email="s@x.io", role="owner")
-    assert aa.limit_key("admin-login", "o@x.io", owner, dev).startswith("admin-login:dev:")
-    assert aa.limit_key("admin-login", "s@x.io", stranger, dev) == "admin-login:s:s@x.io"
+    assert aa.limit_keys("admin-login", "o@x.io", owner, dev, r)[0].startswith("admin-login:dev:")
+    assert aa.limit_keys("admin-login", "s@x.io", stranger, dev, r) == (
+        "admin-login:s:s@x.io",
+        None,
+    )
     # cookie устройства — не сеанс: подписана своим ключом, токеном админки не служит
     with pytest.raises(HTTPException):
         aa.decode_token(token)
@@ -938,6 +941,61 @@ def test_strangers_cannot_lock_the_owner_out(world: World) -> None:
     for i in range(ratelimit.ADMIN_LOGIN_PER_EMAIL[0]):
         assert _login(owner_browser, u.email, f"typo {i}").status_code == 401
     assert _login(owner_browser, u.email).status_code == 429
+
+
+@db_only
+def test_behind_site_proxy_guessing_from_other_ips_does_not_lock_new_device(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SEC-3 с PROXY_SECRET: IP клиента называет прокси сайта, лимит пароля и писем — на пару
+    «адрес + IP». Перебор с чужих IP не запирает владельца даже с нового устройства; общий
+    потолок по адресу ограничивает распределённый перебор."""
+    monkeypatch.setattr(settings, "proxy_secret", "proxy-secret-test")
+
+    def via(ip: str) -> dict[str, str]:
+        return {ratelimit.PROXY_HEADER: "proxy-secret-test", ratelimit.PROXY_IP_HEADER: ip}
+
+    u, _, _ = world.user(two_factor=True)
+    attacker = world.client()
+
+    def guess(ip: str, password: str = "guess") -> int:
+        r = attacker.post(
+            "/v1/admin/auth/login", json={"email": u.email, "password": password}, headers=via(ip)
+        )
+        return int(r.status_code)
+
+    per_email = ratelimit.ADMIN_LOGIN_PER_EMAIL[0]
+    assert [guess("203.0.113.5") for _ in range(per_email)] == [401] * per_email
+    assert guess("203.0.113.5") == 429 and guess("203.0.113.5", PASSWORD) == 429  # сам себя запер
+    # подставленный клиентом X-Forwarded-For ничего не меняет: IP — от прокси
+    forged = {**via("203.0.113.5"), "x-forwarded-for": "198.51.100.77"}
+    r = attacker.post(
+        "/v1/admin/auth/login", json={"email": u.email, "password": "guess"}, headers=forged
+    )
+    assert r.status_code == 429
+    for _ in range(ratelimit.ADMIN_MAIL_PER_EMAIL[0]):
+        m = attacker.post(
+            "/v1/admin/auth/magic", json={"email": u.email}, headers=via("203.0.113.5")
+        )
+        assert m.status_code == 202
+    m = attacker.post("/v1/admin/auth/magic", json={"email": u.email}, headers=via("203.0.113.5"))
+    assert m.status_code == 429
+    # владелец: новое устройство (cookie устройства нет), свой IP — пароль и ссылка работают
+    owner = world.client()
+    ok = owner.post(
+        "/v1/admin/auth/login",
+        json={"email": u.email, "password": PASSWORD},
+        headers=via("198.51.100.7"),
+    )
+    assert ok.status_code == 200 and ok.json()["step"] == "code"
+    link = owner.post("/v1/admin/auth/magic", json={"email": u.email}, headers=via("198.51.100.7"))
+    assert link.status_code == 202
+    # распределённый перебор упирается в общий потолок по адресу
+    ratelimit._memory.values.clear()
+    total = ratelimit.ADMIN_LOGIN_PER_EMAIL_ALL[0]
+    codes = {guess(f"10.{i // 250}.{i % 250}.9") for i in range(total)}
+    assert codes == {401}
+    assert guess("10.200.0.1") == 429
 
 
 @db_only

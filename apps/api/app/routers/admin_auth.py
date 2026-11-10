@@ -70,6 +70,9 @@ class RotateConfirmIn(BaseModel):
     code: str = Field(min_length=6, max_length=16)
 
 
+LOGIN_ALL = ratelimit.ADMIN_LOGIN_PER_EMAIL_ALL
+
+
 def _too_many(window: int) -> NoReturn:
     raise HTTPException(429, f"слишком много попыток, подождите {max(1, window // 60)} мин")
 
@@ -191,9 +194,10 @@ def login(
 ) -> dict[str, Any]:
     """Email и пароль → билет на код; без включённой 2FA — ссылка на почту (шаг ``mail``).
 
-    Лимиты по адресу и по IP считают только неудачи (верный пароль владельца их не тратит), а
-    лимит по адресу не действует на браузер, где этот админ уже входил (cookie устройства):
-    иначе чужой перебор по известному адресу запирал бы владельца."""
+    Лимиты считают только неудачи (верный пароль владельца их не тратит). Чужой перебор по
+    известному адресу владельца не запирает: браузер, где этот админ уже входил, считается по
+    cookie устройства, а через прокси сайта лимит идёт на пару «адрес + IP»
+    (:func:`admin_auth.limit_keys`)."""
     email = body.email.strip().lower()
     ip_ok, ip_bucket = ratelimit.take(
         f"admin-login:ip:{ratelimit.client_ip(request)}", *ratelimit.ADMIN_LOGIN_PER_IP
@@ -202,10 +206,15 @@ def login(
         _too_many(ratelimit.ADMIN_LOGIN_PER_IP[1])
     user = db.scalar(select(User).where(User.email == email))
     device = aa.read_device(request)
-    key = aa.limit_key("admin-login", email, user, device)
-    ok_subject, bucket = ratelimit.take(key, *ratelimit.ADMIN_LOGIN_PER_EMAIL)
-    if not ok_subject:
-        _too_many(ratelimit.ADMIN_LOGIN_PER_EMAIL[1])
+    key, total_key = aa.limit_keys("admin-login", email, user, device, request)
+    taken = [ip_bucket]
+    for k, limit in ((key, ratelimit.ADMIN_LOGIN_PER_EMAIL), (total_key, LOGIN_ALL)):
+        if k is None:
+            continue
+        ok_subject, bucket = ratelimit.take(k, *limit)
+        if not ok_subject:
+            _too_many(limit[1])
+        taken.append(bucket)
     ok = aa.check_password(user, body.password)
     if ok and user is not None and auth.promote_owner(user, settings.owner_email_set):
         db.commit()
@@ -221,8 +230,8 @@ def login(
         db.commit()
         raise HTTPException(401, aa.LOGIN_FAILED)
     assert user is not None
-    ratelimit.give_back(bucket)  # верный пароль попыток не тратит
-    ratelimit.give_back(ip_bucket)
+    for bucket in taken:  # верный пароль попыток не тратит
+        ratelimit.give_back(bucket)
     if user.role in aa.ADMIN_ROLES and twofactor.is_enabled(db.get(TwoFactor, user.id)):
         out = _step_out(db, user, "password")
         aa.audit(db, request, "admin_login.password_ok", user, next=out["step"])
@@ -230,11 +239,7 @@ def login(
         return out
     # 2FA ещё не настроена (или адрес владельца не подтверждён): настройка — только по ссылке
     mail = aa.mail_ready()
-    sent = mail and ratelimit.hit(
-        aa.limit_key("admin-magic", email, user, device),
-        *ratelimit.ADMIN_MAIL_PER_EMAIL,
-        strict=True,
-    )
+    sent = mail and aa.mail_allowed(email, user, device, request)
     aa.audit(
         db, request, "admin_login.password_ok", user, next="mail" if sent else "mail_unavailable"
     )
@@ -261,8 +266,7 @@ def magic(
     if not aa.mail_ready():
         raise HTTPException(503, aa.MAIL_OFF)
     user = db.scalar(select(User).where(User.email == email))
-    key = aa.limit_key("admin-magic", email, user, aa.read_device(request))
-    if not ratelimit.hit(key, *ratelimit.ADMIN_MAIL_PER_EMAIL, strict=True):
+    if not aa.mail_allowed(email, user, aa.read_device(request), request):
         _too_many(ratelimit.ADMIN_MAIL_PER_EMAIL[1])
     if not aa.can_receive_link(user):
         problem = aa.account_problem(user)

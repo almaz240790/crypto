@@ -29,12 +29,17 @@ TWO_FACTOR_PER_IP = (10, 900)
 REGISTER_PER_IP = (5, 3600)
 MAIL_PER_EMAIL = (5, 3600)  # письма: magic link, сброс пароля, повторная отправка
 # Вход в админку (ADR-0011): строже, чем на сайте; при сбое Redis — счётчик в памяти (strict)
-ADMIN_LOGIN_PER_EMAIL = (5, 900)  # 5 попыток пароля за 15 минут на адрес
+ADMIN_LOGIN_PER_EMAIL = (
+    5,
+    900,
+)  # 5 неверных паролей за 15 минут на адрес (с прокси — на адрес + IP)
+ADMIN_LOGIN_PER_EMAIL_ALL = (50, 900)  # потолок по адресу со всех IP, когда лимит считается по IP
 ADMIN_LOGIN_PER_IP = (10, 900)
 ADMIN_CODE_PER_USER = (10, 900)  # 10 кодов за 15 минут на аккаунт (TOTP — 6 цифр)
 ADMIN_CODE_PER_IP = (20, 900)
 ADMIN_WRONG_CODES_PER_TICKET = 5  # 5-й неверный код сжигает билет — снова пароль или ссылка
-ADMIN_MAIL_PER_EMAIL = (3, 3600)  # письма со ссылкой входа в админку
+ADMIN_MAIL_PER_EMAIL = (3, 3600)  # письма со ссылкой входа в админку (с прокси — на адрес + IP)
+ADMIN_MAIL_PER_EMAIL_ALL = (10, 3600)  # не больше писем в час на один ящик со всех IP
 ADMIN_MAIL_PER_IP = (10, 3600)
 
 

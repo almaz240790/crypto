@@ -425,11 +425,38 @@ def set_device_cookie(response: Response, token: str) -> None:
     )
 
 
-def limit_key(scope: str, email: str, user: User | None, device: tuple[int, str] | None) -> str:
-    """Ключ лимита первого шага: своё устройство админа — по метке устройства, иначе — по адресу."""
+def limit_keys(
+    scope: str,
+    email: str,
+    user: User | None,
+    device: tuple[int, str] | None,
+    request: Request,
+) -> tuple[str, str | None]:
+    """Ключ лимита первого шага и ключ общего потолка по адресу (или None).
+
+    - своё устройство админа (cookie устройства) — по метке устройства: чужой перебор по адресу
+      его не запирает;
+    - запрос пришёл через прокси сайта (PROXY_SECRET) — IP клиенту не подставить, поэтому лимит
+      считается на пару «адрес почты + IP»: перебор с одного IP запирает только сам себя, а
+      владелец со своего IP входит и с нового устройства. Распределённый перебор ограничивает
+      общий потолок по адресу (он в десять раз выше);
+    - иначе (IP верить нельзя) — по адресу почты, как раньше."""
     if device is not None and user is not None and device[0] == user.id:
-        return f"{scope}:dev:{device[1]}"
-    return f"{scope}:s:{email}"
+        return f"{scope}:dev:{device[1]}", None
+    if ratelimit.from_site_proxy(request):
+        return f"{scope}:s:{email}:ip:{ratelimit.client_ip(request)}", f"{scope}:all:{email}"
+    return f"{scope}:s:{email}", None
+
+
+def mail_allowed(
+    email: str, user: User | None, device: tuple[int, str] | None, request: Request
+) -> bool:
+    """Можно ли отправить ещё одно письмо со ссылкой входа на этот адрес (лимиты писем)."""
+    key, total = limit_keys("admin-magic", email, user, device, request)
+    ok = ratelimit.hit(key, *ratelimit.ADMIN_MAIL_PER_EMAIL, strict=True)
+    if total is not None:
+        ok = ratelimit.hit(total, *ratelimit.ADMIN_MAIL_PER_EMAIL_ALL, strict=True) and ok
+    return ok
 
 
 def mail_ready() -> bool:
