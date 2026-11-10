@@ -15,13 +15,14 @@ export type Structure = {
   bias: { bias: string; d1_trend: string; w1_trend: string; ema50_d1: string | null } | null;
   atr: string | null;
 };
-export type SignalOnChart = { id: string; version: string; dir: "long" | "short"; t: number; status: string; grade: string; entry: string | null; sl: string | null; tp: (string | null)[]; zone: { top: string; bottom: string; kind?: string } | null; events: { type: string; p: string | null; t: number }[] };
+/** `scope` — область сигнала на момент публикации: `forward` — тестовый сигнал (ADR-0013), в подсказке пометка «Тестовый режим». */
+export type SignalOnChart = { id: string; version: string; scope?: "live" | "forward"; dir: "long" | "short"; t: number; status: string; grade: string; entry: string | null; sl: string | null; tp: (string | null)[]; zone: { top: string; bottom: string; kind?: string } | null; events: { type: string; p: string | null; t: number }[] };
 export type PatternOnChart = { id: number; type: string; title: string; direction: "up" | "down" | null; status: string; significant: boolean; t: number; start_t: number; confirm_t: number; price: string | null; atr: string | null; context: Record<string, unknown>; source: string; tf: string };
 export type FigureOnChart = { id: number; type: string; title: string; direction: "up" | "down" | null; status: "forming" | "confirmed" | "invalidated"; scale: number; start_t: number; end_t: number; known_t: number; confirm_t: number | null; invalidated_t: number | null; points: [number, string][]; lines: { name: string; a: [number, string]; b: [number, string] }[]; breakout_level: string | null; target: string | null; invalidation: string | null; quality: number; metrics: Record<string, number>; source: string; tf: string };
 
 /** Поля структуры, которые читает сцена (без свингов и тренда). */
 export type SceneStructure = Pick<Structure, "events" | "zones" | "levels" | "equal_levels" | "sweeps" | "atr">;
-export type SceneSignal = Pick<SignalOnChart, "id" | "dir" | "t" | "status" | "grade" | "entry" | "sl" | "tp">;
+export type SceneSignal = Pick<SignalOnChart, "id" | "dir" | "t" | "status" | "grade" | "entry" | "sl" | "tp" | "scope">;
 export type ScenePattern = Pick<PatternOnChart, "id" | "type" | "title" | "direction" | "significant" | "t" | "price">;
 export type SceneFigure = Pick<FigureOnChart, "id" | "type" | "title" | "status" | "known_t" | "confirm_t" | "end_t" | "points" | "lines" | "target" | "invalidation">;
 

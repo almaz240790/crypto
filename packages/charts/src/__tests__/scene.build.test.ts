@@ -362,6 +362,26 @@ describe("buildScene: инварианты", () => {
     expect(byLayer(scene("btc-4h-rich", { preset: "clean", overrides: { signals: true } }, { authed: false }), "signals")).toHaveLength(0);
   });
 
+  it("тестовые сигналы (scope = forward): плашка «Тестовый режим» и пояснение в подсказке значка и уровней; у live — нет", () => {
+    const fx = loadFixture("btc-4h-rich");
+    const markup: MarkupSettings = { preset: "clean", overrides: { signals: true } };
+    const build = (scope: "live" | "forward" | undefined) =>
+      buildScene(makeInput({ ...fx, signals: fx.signals.map((x) => ({ ...x, scope })) }, { authed: true }), resolvePreset(markup, "desktop", { authed: true }));
+    const test = build("forward");
+    for (const id of ["sig:s-open", "sig:s-open:entry", "sig:s-open:stop", "sig:s-open:tp1", "sig:s-closed"]) {
+      const h = sceneHover(test, id)!;
+      expect(h.badge).toBe("Тестовый режим");
+      expect(h.note).toBe(RU_TEXT["hover.signal.test.note"]);
+    }
+    expect(RU_TEXT["hover.signal.test.note"]).toMatch(/проверку на живых данных.*не подтверждены.*Не является инвестиционной рекомендацией/);
+    expect(sceneHover(test, "sig:s-open")?.title).toBe("Сигнал A, лонг");
+    for (const scope of ["live", undefined] as const) {
+      const s = build(scope);
+      expect(sceneHover(s, "sig:s-open")?.badge).toBeUndefined();
+      expect(sceneHover(s, "sig:s-open:entry")?.note).toBeUndefined();
+    }
+  });
+
   it("«Разбор»: внешние линии и зоны с группой шкалы topdown", () => {
     const external: ExternalObject[] = [
       { id: "h1", owner: "topdown", sourceTf: "1h", kind: "hline", price: 79000, from: null, tone: "down", label: "Н1 сопротивление", hover: { title: "Н1 сопротивление" }, priority: 65 },

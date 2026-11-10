@@ -52,6 +52,13 @@ export function ObjectTooltip({ store, coarse }: { store: ChartStore; coarse: bo
   const lines = rows(hover, text);
   return (
     <div ref={ref} role="tooltip" data-testid="object-tooltip" data-docked={docked || undefined} data-pinned={hover.pinned || undefined} className={c.tooltip}>
+      {hover.info.badge && (
+        <div>
+          <span className={c.tipBadge} data-testid="tooltip-badge">
+            {hover.info.badge}
+          </span>
+        </div>
+      )}
       <div className={c.tipTitle} style={{ color: `var(--chart-${hover.tone})` }}>
         {hover.info.title}
       </div>

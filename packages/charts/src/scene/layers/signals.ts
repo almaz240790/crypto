@@ -6,6 +6,11 @@ import type { SceneSignal } from "../wire";
 
 export const signalId = (s: Pick<SceneSignal, "id">): string => `sig:${s.id}`;
 
+/** Тестовый сигнал (форвард, ADR-0013): плашка «Тестовый режим» и одна строка пояснения в подсказке. */
+function testMark(ctx: LayerCtx, s: SceneSignal): { badge?: string; note?: string } {
+  return s.scope === "forward" ? { badge: ctx.text["hover.signal.test"], note: ctx.text["hover.signal.test.note"] } : {};
+}
+
 function levels(ctx: LayerCtx, s: SceneSignal, at: number, selected: boolean, out: Built[]): void {
   const text = ctx.text;
   const subtitle = text.fill(s.dir === "long" ? text["hover.signal.long"] : text["hover.signal.short"], { grade: s.grade });
@@ -29,7 +34,7 @@ function levels(ctx: LayerCtx, s: SceneSignal, at: number, selected: boolean, ou
       style: r.style,
       label: { text: r.word, tone: "position", priority: 90, slots: lineSlots(price >= ctx.ref), font: "sans", show: "always" },
       axis: { text: ctx.input.fmt.axis(price), tone: "position", style: "outline", priority: r.axisPriority, group: "position" },
-      hover: { title: r.word, subtitle, price },
+      hover: { title: r.word, subtitle, price, ...testMark(ctx, s) },
     });
     out.push({ obj: emphasize(obj, selected), legend: "position" });
   }
@@ -37,7 +42,8 @@ function levels(ctx: LayerCtx, s: SceneSignal, at: number, selected: boolean, ou
 
 /**
  * Сигналы стратегии (только вошедшим; гостю слой выключает resolvePreset): значок у свечи сигнала,
- * у открытых — линии «Вход», «Стоп», «Цель n» с контурной ценой на шкале.
+ * у открытых — линии «Вход», «Стоп», «Цель n» с контурной ценой на шкале. Тестовые сигналы (scope = forward)
+ * несут в подсказке плашку «Тестовый режим» и пояснение.
  */
 export const buildSignals: LayerBuilder = (ctx) => {
   const out: Built[] = [];
@@ -62,7 +68,7 @@ export const buildSignals: LayerBuilder = (ctx) => {
       price: Number.isFinite(entry) ? entry : null,
       side: long ? "below" : "above",
       shape: long ? "triangle-up" : "triangle-down",
-      hover: { title: capitalize(subtitle), price: Number.isFinite(entry) ? entry : undefined, detail: text.date(s.t) },
+      hover: { title: capitalize(subtitle), price: Number.isFinite(entry) ? entry : undefined, detail: text.date(s.t), ...testMark(ctx, s) },
     };
     out.push({ obj: emphasize(glyph, selected), legend: "position" });
     if (!CLOSED_SIGNAL_STATUSES.includes(s.status)) levels(ctx, s, at, selected, out);

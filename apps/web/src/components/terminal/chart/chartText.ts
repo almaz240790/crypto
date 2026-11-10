@@ -77,6 +77,8 @@ function strings(t: T): { readonly [K in TextKey]: string } {
     "hover.patternFound": t("найден"),
     "hover.signal.long": t("сигнал {grade}, лонг"),
     "hover.signal.short": t("сигнал {grade}, шорт"),
+    "hover.signal.test": t("Тестовый режим"),
+    "hover.signal.test.note": t("Стратегия проходит проверку на живых данных. Результаты не подтверждены. Не является инвестиционной рекомендацией."),
     "hover.alert.up": t("Алерт: пересечение вверх"),
     "hover.alert.down": t("Алерт: пересечение вниз"),
     "hover.alert.range": t("Алерт: вход в диапазон"),

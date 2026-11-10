@@ -42,6 +42,8 @@ export interface HoverInfo {
   /** Строка с датой: «с 12.10.26 08:00 UTC», «закрытие за уровнем …». */
   detail?: string;
   note?: string;
+  /** Пометка-плашка над заголовком: «Тестовый режим» у тестовых сигналов (ADR-0013). */
+  badge?: string;
 }
 
 export interface LabelSpec {

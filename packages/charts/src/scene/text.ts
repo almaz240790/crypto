@@ -78,6 +78,8 @@ export type TextKey =
   | "hover.patternFound"
   | "hover.signal.long"
   | "hover.signal.short"
+  | "hover.signal.test"
+  | "hover.signal.test.note"
   | "hover.alert.up"
   | "hover.alert.down"
   | "hover.alert.range"
@@ -244,6 +246,8 @@ export const RU_STRINGS: { readonly [K in TextKey]: string } = {
   "hover.patternFound": "найден",
   "hover.signal.long": "сигнал {grade}, лонг",
   "hover.signal.short": "сигнал {grade}, шорт",
+  "hover.signal.test": "Тестовый режим",
+  "hover.signal.test.note": "Стратегия проходит проверку на живых данных. Результаты не подтверждены. Не является инвестиционной рекомендацией.",
   "hover.alert.up": "Алерт: пересечение вверх",
   "hover.alert.down": "Алерт: пересечение вниз",
   "hover.alert.range": "Алерт: вход в диапазон",
