@@ -34,7 +34,7 @@ import redis.asyncio as aioredis
 import sentry_sdk
 from sqlalchemy import func, select
 
-from app.alerts import CHANNEL_TRIGGERED, deliver_pending
+from app.alerts import CHANNEL_TRIGGERED, DELIVERY_BATCH, deliver_pending
 from app.coin_rank import refresh_if_due
 from app.config import settings
 from app.db import SessionLocal
@@ -191,13 +191,15 @@ class Notifier:
     async def alerts_loop(self) -> None:
         while not self.stop.is_set():
             self.alerts_wake.clear()
+            n = 0
             try:
                 n = await asyncio.to_thread(alerts_once)
                 if n:
                     log.info("алерты: доставлено срабатываний %d", n)
             except Exception:
                 log.exception("доставка алертов")
-            await self._wait_alerts(ALERTS_POLL)
+            if n < DELIVERY_BATCH:  # полный проход — в очереди есть ещё, берём сразу
+                await self._wait_alerts(ALERTS_POLL)
 
     async def _wait_alerts(self, timeout: float) -> None:
         """До сообщения воркера алертов, остановки или ``timeout`` секунд."""

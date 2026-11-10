@@ -69,11 +69,16 @@ DELIVERY_MAX_ATTEMPTS = 6
 """Попыток доставки; после последней ошибки — ``failed``, строка больше не берётся."""
 DELIVERY_RETRY_AFTER = timedelta(seconds=30)
 """Пауза перед повтором; удваивается с каждой попыткой (30 с … 8 мин, всего ~15 мин)."""
-DELIVERY_MAX_AGE = timedelta(hours=6)
+DELIVERY_MAX_AGE = timedelta(hours=24)
 """Срабатывание старше (по ``created_at``) не доставляется — ``expired``: уведомление о цене
-многочасовой давности уже вводит в заблуждение. Простой уведомителя на минуты ничего не теряет."""
+суточной давности уже вводит в заблуждение. Простой уведомителя (выкладка, перезапуск, сбой на
+часы) ничего не теряет: строки ждут в БД, после старта уходят с пометкой времени."""
+DELIVERY_LATE = timedelta(minutes=5)
+"""Доставлено позже этого после записи срабатывания — в push добавляется время срабатывания (в
+письме оно есть всегда): уведомление «с опозданием» не выдаётся за свежее."""
 DELIVERY_BATCH = 200
 """Сколько срабатываний уведомитель берёт за один проход."""
+_not_ready_warned = False
 
 
 class MailSender(Protocol):
@@ -375,6 +380,17 @@ def can_deliver_inline() -> bool:
     return mail_configured() and push_enabled()
 
 
+def delivery_ready() -> bool:
+    """Может ли этот процесс разбирать очередь срабатываний (``deliver_pending``).
+
+    Локально и на staging — всегда: без ключей письмо пишется в лог, push пропускается, как и
+    раньше. В production — только с ключом почты и ключами Web Push: иначе письмо ушло бы в лог,
+    push молча пропустился бы, а срабатывание отметилось бы доставленным. Без ключей строки ждут
+    в очереди процесс, у которого они есть (до ``DELIVERY_MAX_AGE``), в лог — предупреждение.
+    """
+    return can_deliver_inline() or not settings.is_production
+
+
 def delivery_state(trig: AlertTrigger) -> dict[str, Any]:
     """Служебная отметка доставки ``details.delivery`` (в API не отдаётся, см. ``trigger_dict``)."""
     return dict(trig.details.get("delivery") or {})
@@ -429,10 +445,18 @@ def notify_trigger(
         return 0
     sent = 0
     if ns.push_alerts:
+        late = ""
+        if trig.created_at is not None and now - trig.created_at > DELIVERY_LATE:
+            late = f" (сработал {trig.triggered_at:%d.%m %H:%M} UTC)"
         sent += push(
             db,
             user.id,
-            {"title": "Алерт", "body": f"{text}{price}", "url": url, "tag": f"alert-{trig.id}"},
+            {
+                "title": "Алерт",
+                "body": f"{text}{price}{late}",
+                "url": url,
+                "tag": f"alert-{trig.id}",
+            },
         )
     if ns.email_alerts and user.email_verified_at is not None:
         mail(
@@ -482,7 +506,16 @@ def deliver_pending(
     ``DELIVERY_MAX_ATTEMPTS`` — ``failed``, и «ядовитое» срабатывание не держит очередь. Сбой
     между отправкой и фиксацией даёт повтор, но не второе письмо: ключ идемпотентности тот же.
     Тихие часы и лимит проверяются на момент доставки. Возвращает число решённых срабатываний.
+    В production без ключей почты и Web Push ничего не делает (``delivery_ready``).
     """
+    global _not_ready_warned
+    if not delivery_ready():
+        if not _not_ready_warned:
+            log.warning(
+                "доставка алертов: нет ключа почты или Web Push — очередь ждёт процесс с ними"
+            )
+            _not_ready_warned = True
+        return 0
     now = now or datetime.now(tz=UTC)
     done = 0
     for tid in pending_ids(db, now, limit):
