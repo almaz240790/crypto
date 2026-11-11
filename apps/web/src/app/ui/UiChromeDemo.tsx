@@ -160,7 +160,7 @@ export function UiChromeDemo() {
               <option value="line">Линия</option>
               <option value="heikin">Heikin Ashi</option>
             </Select>
-            {type === "heikin" && <p className="caption">Паттерны и сигналы считаются по обычным свечам</p>}
+            {type === "heikin" && <p className="caption">Паттерны считаются по обычным свечам</p>}
           </Popover>
           <span className="caption" data-testid="ui-demo-log">
             последнее действие: {log}

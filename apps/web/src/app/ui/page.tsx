@@ -133,8 +133,8 @@ export default function UiPage() {
           <h2>Заголовок h2, 20px</h2>
           <h3>Заголовок h3, 16px</h3>
           <p>
-            Основной текст 15px, IBM Plex Sans. Сигналы публикуются через 60 секунд после закрытия
-            свечи H4. Система убыточна в периоды затяжного флэта.
+            Основной текст 15px, IBM Plex Sans. Разметка графика строится по закрытым свечам;
+            незакрытая свеча на неё не влияет.
           </p>
           <p className="caption">Подпись 12px, вторичный цвет. Время: {formatTimeUTC("2026-10-25T16:00:00Z")}</p>
           <div className={s.nums} style={{ marginTop: 12 }}>
@@ -227,14 +227,14 @@ export default function UiPage() {
 
         <Panel title="Пустое состояние">
           <EmptyState
-            text="Нет активных сигналов. Следующая проверка через 2 ч 14 мин."
+            text="Алертов пока нет. Добавьте первый с графика."
             action={<Button size="sm">История</Button>}
           />
         </Panel>
       </div>
 
       <Panel
-        title="Таблица сигналов"
+        title="Таблица сделок"
         actions={<span>обновлено {formatTimeUTC("2026-10-25T16:01:00Z")}</span>}
         footer="На узком экране строки превращаются в двухстрочный список."
         flush
