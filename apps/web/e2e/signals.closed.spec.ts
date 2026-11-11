@@ -29,10 +29,14 @@ const me = (role: Exclude<Role, "guest">) => ({
   signals: role === "admin",
 });
 
-/** Вход: cookie-подсказка и перехват /v1/auth/*. Токен admin — «staff»: по нему заглушка API отдаёт сигналы. */
+/**
+ * Вход: cookie-подсказки и перехват /v1/auth/*. Токен admin — «staff»: по нему заглушка API отдаёт сигналы. Подсказку
+ * доступа pl_x браузер ставит сам по ответу /v1/auth/me (lib/auth-client.ts); здесь — сразу, как после прошлого визита.
+ */
 async function as(page: Page, role: Role) {
   await blockBinance(page.context());
   if (role !== "guest") await page.context().addCookies([{ name: "pl_auth", value: "1", url: BASE }]);
+  if (role === "admin") await page.context().addCookies([{ name: "pl_x", value: "1", url: BASE }]);
   await page.route("**/v1/auth/**", (route) => {
     const p = new URL(route.request().url()).pathname;
     const json = (status: number, body: unknown) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
@@ -75,15 +79,20 @@ for (const vp of VIEWPORTS) {
         await noSignalWords(page);
       });
 
-      test(`${role}: /signals и карточка — «страница не найдена»`, async ({ page }) => {
+      test(`${role}: /signals и карточка — 404, как несуществующий адрес`, async ({ page }) => {
         await as(page, role);
-        const res = await page.goto("/signals");
-        if (role === "guest") expect(res?.status()).toBe(404);
-        await expect(page.getByRole("heading", { name: "Страница не найдена" })).toBeVisible();
-        await expect(page.getByTestId("not-found")).toBeVisible();
-        const card = await page.goto("/signals/abc123");
-        if (role === "guest") expect(card?.status()).toBe(404);
-        await expect(page.getByRole("heading", { name: "Страница не найдена" })).toBeVisible();
+        const missing = await page.goto("/no-such-page");
+        expect(missing?.status()).toBe(404);
+        const title404 = await page.title();
+        expect(title404).toBe("404 — PlatformSol");
+        for (const path of ["/signals", "/signals/abc123"]) {
+          const res = await page.goto(path);
+          // и гостю, и вошедшему без прав — настоящий 404 с сервера (подсказки доступа у пользователя нет)
+          expect(res?.status(), path).toBe(404);
+          await expect(page.getByRole("heading", { name: "Страница не найдена" })).toBeVisible();
+          await expect(page.getByTestId("not-found")).toBeVisible();
+          await expect(page).toHaveTitle(title404);
+        }
         await expect(page.locator(SIGNAL_LINKS)).toHaveCount(0);
       });
 
@@ -158,10 +167,14 @@ for (const vp of VIEWPORTS) {
       await page.getByRole("link", { name: "Форвард-тест", exact: true }).click();
       await expect(page).toHaveURL(/scope=forward/);
       await expect(page.getByText(/Показана версия Trend OB retest 1\.2\.0/)).toBeVisible();
+      // открытые страницы для всех одинаковы: решает сервер, и пока сигналы закрыты, о них там нет ни строки (и в
+      // исходном коде страницы); к ленте и статистике владелец попадает из админки
       await page.goto("/stats/patterns");
-      await expect(page.getByRole("link", { name: "Статистика сигналов" })).toBeVisible();
+      await expect(page.getByRole("heading", { name: "Отработка свечных паттернов" })).toBeVisible();
+      await expect(page.getByRole("link", { name: "Статистика сигналов" })).toHaveCount(0);
       await page.goto("/api-docs");
-      await expect(page.getByText("GET /v1/signals", { exact: true })).toBeVisible();
+      await expect(page.getByText("GET /v1/stats/patterns", { exact: true })).toBeVisible();
+      await expect(page.getByText("GET /v1/signals", { exact: true })).toHaveCount(0);
       await screenerStub(page);
       await page.goto("/screener");
       await expect(page.getByRole("link", { name: "BTCUSDT" })).toHaveAttribute("href", "/signals?symbol=BTCUSDT&tab=all");
@@ -187,18 +200,114 @@ test.describe("десктоп: график", () => {
   }
 });
 
-test("admin: в админке — ссылки на ленту и статистику сигналов, во вкладке «Система» — движок и трекер", async ({ page }) => {
+const SIGNAL_PAGES = [
+  ["Лента сигналов", "/signals"],
+  ["Статистика: Live", "/stats?scope=live"],
+  ["Статистика: форвард", "/stats?scope=forward"],
+  ["Статистика: бэктест", "/stats?scope=backtest"],
+] as const;
+
+test("admin: только сеанс админки — ссылки «Сигналы на сайте» ведут на вход сайта с возвратом, «Система» — движок и трекер", async ({ page }) => {
   await adminStub(page);
   await page.goto("/admin?tab=signals");
   const pages = page.getByRole("navigation", { name: "страницы сигналов на сайте" });
-  await expect(pages.getByRole("link", { name: "Лента сигналов" })).toHaveAttribute("href", "/signals");
-  await expect(pages.getByRole("link", { name: "Статистика: Live" })).toHaveAttribute("href", "/stats?scope=live");
-  await expect(pages.getByRole("link", { name: "Статистика: форвард" })).toHaveAttribute("href", "/stats?scope=forward");
-  await expect(pages.getByRole("link", { name: "Статистика: бэктест" })).toHaveAttribute("href", "/stats?scope=backtest");
+  for (const [name, path] of SIGNAL_PAGES) await expect(pages.getByRole("link", { name })).toHaveAttribute("href", `/login?next=${encodeURIComponent(path)}`);
+  await expect(pages.getByRole("link", { name: "Отработка паттернов" })).toHaveAttribute("href", "/stats/patterns");
+  await expect(page.getByText("На сайте вы не вошли: ссылка откроет вход на сайт")).toBeVisible();
   await page.getByRole("tab", { name: "Система" }).click();
   await expect(page.getByRole("row").filter({ hasText: "Движок сигналов" })).toBeVisible();
   await expect(page.getByRole("row").filter({ hasText: "Трекер сделок" })).toBeVisible();
   await expect(page.getByText("только admin и owner (SIGNALS_PUBLIC выключен)")).toBeVisible();
+});
+
+test("admin: вход на сайт есть (owner) — ссылки «Сигналы на сайте» прямые", async ({ page }) => {
+  await as(page, "admin");
+  await adminStub(page);
+  await page.goto("/admin?tab=strategies");
+  const pages = page.getByRole("navigation", { name: "страницы сигналов на сайте" });
+  for (const [name, path] of SIGNAL_PAGES) await expect(pages.getByRole("link", { name })).toHaveAttribute("href", path);
+  await expect(page.getByText("На сайте вы не вошли")).toHaveCount(0);
+});
+
+test("admin: на сайте вошли под обычным аккаунтом — ссылки через вход и подсказка сменить аккаунт", async ({ page }) => {
+  await as(page, "user");
+  await adminStub(page);
+  await page.goto("/admin?tab=signals");
+  const pages = page.getByRole("navigation", { name: "страницы сигналов на сайте" });
+  await expect(pages.getByRole("link", { name: "Лента сигналов" })).toHaveAttribute("href", "/login?next=%2Fsignals");
+  await expect(page.getByRole("status").filter({ hasText: "user@example.com — у этого аккаунта нет доступа к сигналам" })).toBeVisible();
+});
+
+for (const [name, path, check] of [
+  ["Лента сигналов", "/signals", "feed"],
+  ["Статистика: форвард", "/stats?scope=forward", "stats"],
+] as const) {
+  test(`admin: из админки без входа на сайт — «${name}» → вход сайта → ${path}`, async ({ page }) => {
+    await blockBinance(page.context());
+    await adminStub(page);
+    let authed = false;
+    await page.route("**/v1/auth/**", (route) => {
+      const p = new URL(route.request().url()).pathname;
+      const json = (status: number, body: unknown) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
+      if (p === "/v1/auth/login") {
+        authed = true;
+        return json(200, { access_token: "staff" });
+      }
+      if (!authed) return json(401, { detail: "нужен вход" });
+      if (p === "/v1/auth/refresh") return json(200, { access_token: "staff" });
+      if (p === "/v1/auth/me") return json(200, me("admin"));
+      return json(404, { detail: "нет заглушки" });
+    });
+    await page.goto("/admin?tab=signals");
+    await page.getByRole("navigation", { name: "страницы сигналов на сайте" }).getByRole("link", { name }).click();
+    await expect(page).toHaveURL(`${BASE}/login?next=${encodeURIComponent(path)}`);
+    await page.getByLabel("Email").fill("admin@example.com");
+    await page.getByLabel("Пароль").fill("correct horse battery");
+    await page.getByRole("button", { name: "Войти", exact: true }).click();
+    await expect(page).toHaveURL(`${BASE}${path}`);
+    await expect(page.getByRole("heading", { name: "Страница не найдена" })).toHaveCount(0);
+    if (check === "feed") await expect(page.getByText("Сигналы").first()).toBeVisible();
+    else await expect(page.getByText(/Показана версия Trend OB retest 1\.2\.0/)).toBeVisible();
+    // браузер поставил подсказку доступа по ответу /v1/auth/me: следующий заход сразу открывает страницу с сервера
+    expect((await page.context().cookies(BASE)).find((c) => c.name === "pl_x")?.value).toBe("1");
+    const again = await page.goto(path);
+    expect(again?.status()).toBe(200);
+  });
+}
+
+test("подделанная подсказка доступа: страница «не найдена» с заголовком 404, данных нет", async ({ page }) => {
+  await as(page, "user");
+  await page.context().addCookies([{ name: "pl_x", value: "1", url: BASE }]);
+  await page.goto("/signals");
+  await expect(page.getByRole("heading", { name: "Страница не найдена" })).toBeVisible();
+  await expect(page).toHaveTitle("404 — PlatformSol");
+  await page.goto("/stats?scope=live");
+  await expect(page).toHaveURL(/\/stats\/patterns$/);
+});
+
+test.describe("исходный код и JS публичных страниц — без сигналов", () => {
+  const TELLS = ["Статистика сигналов", "Лента сигналов", "Карточка сигнала", "/v1/signals", "Движок сигналов", "Трекер сделок", "сигнал публикуется", "Signal statistics", "Signal engine", "Trade tracker"];
+  const PAGES = ["/", "/pricing", "/stats/patterns", "/status", "/api-docs", "/login", "/ui", "/chart/BTCUSDT/4h"];
+
+  test("гость: HTML (с данными RSC) и все подключённые JS-файлы", async ({ request }) => {
+    const scripts = new Set<string>();
+    for (const path of PAGES) {
+      const res = await request.get(path);
+      expect(res.status(), path).toBe(200);
+      const html = await res.text();
+      for (const tell of TELLS) expect(html.includes(tell), `${path}: ${tell}`).toBe(false);
+      for (const m of html.matchAll(/<script[^>]+src="([^"]+\.js)"/g)) scripts.add(m[1]);
+    }
+    expect(scripts.size).toBeGreaterThan(3);
+    for (const src of scripts) {
+      const js = await (await request.get(src)).text();
+      for (const tell of TELLS.filter((x) => x !== "/v1/signals")) expect(js.includes(tell), `${src}: ${tell}`).toBe(false);
+    }
+  });
+
+  test("гость: /v1/features через сайт — сигналы закрыты", async ({ request }) => {
+    expect(await (await request.get("/v1/features")).json()).toEqual({ signals: false });
+  });
 });
 
 async function screenerStub(page: Page) {
@@ -266,6 +375,26 @@ test.describe("снимки", () => {
           await page.goto("/status");
           await expect(page.getByRole("row").filter({ hasText: "Данные с биржи" }).first()).toBeVisible();
           await page.screenshot({ path: join(SHOTS!, `${tag}-${role}-status.png`), fullPage: true });
+        });
+      }
+
+      for (const site of ["без входа на сайт", "с входом на сайт"] as const) {
+        test(`admin: блок «Сигналы на сайте», ${site}`, async ({ browser }) => {
+          mkdirSync(SHOTS!, { recursive: true });
+          // телефон — сенсорный экран, как в бою (390×844, touch)
+          const ctx = await browser.newContext({ baseURL: BASE, viewport: vp.viewport, deviceScaleFactor: 2, hasTouch: tag === "phone", isMobile: tag === "phone", locale: "ru-RU" });
+          const page = await ctx.newPage();
+          if (site === "с входом на сайт") await as(page, "admin");
+          else await blockBinance(ctx);
+          await adminStub(page);
+          await page.goto("/admin?tab=signals");
+          const nav = page.getByRole("navigation", { name: "страницы сигналов на сайте" });
+          await expect(nav.getByRole("link", { name: "Лента сигналов" })).toHaveAttribute("href", site === "с входом на сайт" ? "/signals" : "/login?next=%2Fsignals");
+          const panel = page.locator("section").filter({ has: nav });
+          const suffix = site === "с входом на сайт" ? "site" : "admin-only";
+          await panel.screenshot({ path: join(SHOTS!, `${tag}-admin-signal-pages-${suffix}.png`) });
+          await page.screenshot({ path: join(SHOTS!, `${tag}-admin-signal-pages-${suffix}-full.png`), fullPage: true });
+          await ctx.close();
         });
       }
 
