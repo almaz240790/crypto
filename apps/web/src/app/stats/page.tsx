@@ -5,6 +5,7 @@ import { Footer, Header } from "@/components/site";
 import { StaffStats } from "@/components/stats/StaffStats";
 import { loadStats, parseStatsQuery, StatsView } from "@/components/stats/StatsView";
 import { getRuns, getSignalsPublic, getStatsFor, getStatsTrades, getStrategies } from "@/lib/api";
+import { ACCESS_HINT_COOKIE, signalsRoute } from "@/lib/signalsAccess";
 import { getT } from "@/i18n/server";
 
 export const dynamic = "force-dynamic";
@@ -25,14 +26,16 @@ type Search = Record<string, string | string[] | undefined>;
 
 /**
  * Статистика сигналов (план 2.11, 3.10). Пока сигналы закрыты (ADR-0013), их видят только admin и owner:
- * гостя сервер сразу уводит на открытую статистику паттернов, вошедшему страница загружает данные в браузере
- * с его токеном (StaffStats) — без прав API ответит 404, и страница уведёт туда же.
+ * гостя и вошедшего без подсказки доступа (lib/signalsAccess.ts) сервер сразу уводит на открытую статистику
+ * паттернов, остальным страница загружает данные в браузере с токеном (StaffStats) — без прав API ответит 404,
+ * и страница уведёт туда же.
  */
 export default async function StatsPage({ searchParams }: { searchParams: Promise<Search> }) {
   const tr = await getT();
   const { scope, q, page } = parseStatsQuery(await searchParams);
   if (!(await getSignalsPublic())) {
-    if ((await cookies()).get("pl_auth")?.value !== "1") redirect("/stats/patterns");
+    const jar = await cookies();
+    if (signalsRoute(false, jar.get("pl_auth")?.value === "1", jar.get(ACCESS_HINT_COOKIE)?.value === "1") !== "show") redirect("/stats/patterns");
     return (
       <>
         <Header />

@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useEffect } from "react";
 import { useT } from "@/i18n/client";
 import { Footer } from "./Footer";
 import { Header } from "./Header";
@@ -11,6 +12,10 @@ import { Header } from "./Header";
  */
 export function NotFound() {
   const t = useT();
+  // заголовок вкладки — как у настоящего 404 (app/not-found.tsx: «404» по шаблону корневого layout)
+  useEffect(() => {
+    document.title = "404 — PlatformSol";
+  }, []);
   return (
     <>
       <Header />

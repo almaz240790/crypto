@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { SignalsOnly } from "@/components/auth/signalsAccess";
 import { DISCLAIMER, Footer, Header } from "@/components/site";
 import { EmptyState, Panel, Table, Td, Th } from "@/components/ui";
 import { getFigureStats, getPatternStats, getSignalsPublic, type PatternStatItem } from "@/lib/api";
@@ -71,10 +70,13 @@ export default async function PatternStatsPage({ searchParams }: { searchParams:
             <h1>{t("Отработка свечных паттернов")}</h1>
             <p className="text-2">
               {t("Доля случаев, когда после подтверждения паттерна на закрытии свечи цена прошла ≥ 1 ATR в его сторону за {h} {candles}. Считается автоматически из отметок детектора, без ручного ввода. При n < 30 процент не показывается. Паттерны не являются сигналами.", { h: horizon, candles: horizon === 3 ? t("свечи") : t("свечей") })}{" "}
-              {/* статистика сигналов — пока они закрыты (ADR-0013), ссылку видят только admin и owner */}
-              <SignalsOnly pub={pub}>
-                <Link href="/stats">{t("Статистика сигналов")}</Link>.
-              </SignalsOnly>
+              {/* статистика сигналов — пока они закрыты (ADR-0013), ссылки нет ни у кого: решает сервер, чтобы её не было
+                  и в исходном коде страницы; admin и owner попадают туда из админки */}
+              {pub && (
+                <>
+                  <Link href="/stats">{t("Статистика сигналов")}</Link>.
+                </>
+              )}
             </p>
           </div>
           <nav className={s.scopes} aria-label={t("область статистики")}>

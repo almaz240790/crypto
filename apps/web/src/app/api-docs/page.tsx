@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { SignalsOnly } from "@/components/auth/signalsAccess";
 import { Footer, Header } from "@/components/site";
 import { Panel, Table, Td, Th } from "@/components/ui";
 import { getSignalsPublic } from "@/lib/api";
@@ -21,7 +20,10 @@ const WRAP = { whiteSpace: "normal", paddingBlock: 6 } as const;
 
 const BASE = "https://api.platformsol.com";
 
-/** signals — эндпоинт сигналов: пока они закрыты (ADR-0013), строка видна только admin и owner. */
+/**
+ * signals — эндпоинт сигналов: пока они закрыты (ADR-0013), строки нет на странице ни у кого — решает сервер, чтобы
+ * её не было и в исходном коде страницы (данные RSC); admin и owner видят сами сигналы в разделах сайта.
+ */
 const ENDPOINTS: { path: string; what: string; params: string; signals?: true }[] = [
   { path: "/v1/signals", what: "Лента сигналов с фильтрами и пагинацией", params: "status, symbol, grade, direction, days, sort, order, limit, offset", signals: true },
   { path: "/v1/signals/{public_id}", what: "Карточка сигнала: уровни, обоснование, события", params: "—", signals: true },
@@ -63,18 +65,11 @@ ${python}`;
           <p className="text-2">{t("Те же данные, что на сайте, для ваших скриптов и таблиц. Доступно на тарифе Premium: ключ создаётся в")}{" "}<Link href="/settings">{t("настройках")}</Link>{t(", передаётся в заголовке")}{" "}<code>X-API-Key</code>{" "}{t("и даёт только чтение (запросы GET). Лимит — 600 запросов в минуту на ключ, не больше 5 активных ключей.")}</p>
         </div>
         <Panel title={t("Пример")}>
-          <SignalsOnly
-            pub={pub}
-            fallback={
-              <pre style={{ margin: 0, whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: 13 }}>
-                {example("/v1/chart/candles?symbol=BTCUSDT&tf=4h&limit=200", `r = requests.get("${BASE}/v1/stats/patterns", params={"tf": "4h"}, headers={"X-API-Key": "${key}"})\nprint(r.json()["items"])`)}
-              </pre>
-            }
-          >
-            <pre style={{ margin: 0, whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: 13 }}>
-              {example("/v1/signals?status=closed&limit=50", `r = requests.get("${BASE}/v1/stats", params={"scope": "live"}, headers={"X-API-Key": "${key}"})\nprint(r.json()["metrics"])`)}
-            </pre>
-          </SignalsOnly>
+          <pre style={{ margin: 0, whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: 13 }}>
+            {pub
+              ? example("/v1/signals?status=closed&limit=50", `r = requests.get("${BASE}/v1/stats", params={"scope": "live"}, headers={"X-API-Key": "${key}"})\nprint(r.json()["metrics"])`)
+              : example("/v1/chart/candles?symbol=BTCUSDT&tf=4h&limit=200", `r = requests.get("${BASE}/v1/stats/patterns", params={"tf": "4h"}, headers={"X-API-Key": "${key}"})\nprint(r.json()["items"])`)}
+          </pre>
           <p className="caption" style={{ margin: "8px 0 0" }}>{t("Ответы — JSON, цены и объёмы — строками (без потери точности), время — ISO 8601 в UTC или unix-секунды в полях")}{" "}<code>t</code>{t(". Ошибки: 401 — ключ неверный или отозван, 403 — тариф без API или запрос не на чтение, 429 — превышен лимит.")}</p>
         </Panel>
         <Panel title={t("Эндпоинты")} flush>
@@ -87,26 +82,17 @@ ${python}`;
               </tr>
             </thead>
             <tbody>
-              {ENDPOINTS.map((e) => {
-                const row = (
-                  <tr key={e.path}>
-                    <Td>
-                      <code>GET {e.path}</code>
-                    </Td>
-                    <Td style={WRAP}>{t(e.what)}</Td>
-                    <Td className="text-2" style={{ ...WRAP, minWidth: 180 }}>
-                      {e.params}
-                    </Td>
-                  </tr>
-                );
-                return e.signals ? (
-                  <SignalsOnly key={e.path} pub={pub}>
-                    {row}
-                  </SignalsOnly>
-                ) : (
-                  row
-                );
-              })}
+              {ENDPOINTS.filter((e) => pub || !e.signals).map((e) => (
+                <tr key={e.path}>
+                  <Td>
+                    <code>GET {e.path}</code>
+                  </Td>
+                  <Td style={WRAP}>{t(e.what)}</Td>
+                  <Td className="text-2" style={{ ...WRAP, minWidth: 180 }}>
+                    {e.params}
+                  </Td>
+                </tr>
+              ))}
             </tbody>
           </Table>
         </Panel>

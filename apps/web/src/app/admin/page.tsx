@@ -4,12 +4,14 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useState } from "react";
 import { AdminSecurity } from "@/components/admin/AdminSecurity";
+import { useAuth } from "@/components/auth/AuthProvider";
 import { AdminShell, useAdminMe } from "@/components/admin/AdminShell";
 import t from "@/components/tools/tools.module.css";
 import { Badge, Button, EmptyState, Input, Panel, Select, StatusBadge, Table, Td, Th } from "@/components/ui";
 import * as A from "@/lib/admin";
 import { getAdminTickets, replyTicket, setTicketStatus, type Ticket } from "@/lib/support";
 import { formatTimeUTC } from "@/lib/format";
+import { canSeeSignals, siteSignalsHref } from "@/lib/signalsAccess";
 import s from "./page.module.css";
 
 const TABS = [
@@ -48,21 +50,40 @@ function useToast() {
   return { msg, run };
 }
 
+/** Страницы сигналов на сайте: лента и вкладки статистики сигналов; паттерны открыты всем. */
+const SIGNAL_PAGES: [string, string][] = [
+  ["/signals", "Лента сигналов"],
+  ["/stats?scope=live", "Статистика: Live"],
+  ["/stats?scope=forward", "Статистика: форвард"],
+  ["/stats?scope=backtest", "Статистика: бэктест"],
+];
+
 /**
  * Страницы сигналов на сайте (ADR-0013). Пока сигналы закрыты (SIGNALS_PUBLIC выключен), лента, карточки и
  * статистика сигналов открываются только admin и owner — при входе на сайт под этим аккаунтом; остальным
- * они отвечают «страница не найдена», ссылок на них на сайте нет. Отсюда к ним — в один клик.
+ * они отвечают «страница не найдена», ссылок на них на сайте нет. Сеанс админки на сайт не переносится
+ * (ADR-0011): без входа на сайт ссылки ведут на вход сайта с возвратом на нужную страницу, а не на 404.
  */
 function SignalPages() {
+  const { user, loading } = useAuth();
+  // вошли на сайт под аккаунтом без доступа к сигналам — вход сайта сразу уведёт на график, надо сменить аккаунт
+  const other = !loading && user !== null && !canSeeSignals(user);
   return (
-    <Panel title="Сигналы на сайте" footer="Пока продажи не открыты, эти страницы видят только admin и owner (вход на сайт под этим же аккаунтом). Открыть всем — переменная SIGNALS_PUBLIC, см. ADR-0013.">
+    <Panel title="Сигналы на сайте" footer="Пока продажи не открыты, эти страницы видят только admin и owner — после входа на сайт под этим же аккаунтом (вход в админку на сайт не переносится). Открыть всем — переменная SIGNALS_PUBLIC, см. ADR-0013.">
       <nav aria-label="страницы сигналов на сайте" style={{ display: "flex", flexWrap: "wrap", gap: "8px 16px" }}>
-        <Link href="/signals">Лента сигналов</Link>
-        <Link href="/stats?scope=live">Статистика: Live</Link>
-        <Link href="/stats?scope=forward">Статистика: форвард</Link>
-        <Link href="/stats?scope=backtest">Статистика: бэктест</Link>
+        {SIGNAL_PAGES.map(([path, label]) => (
+          <Link key={path} href={siteSignalsHref(path, user)}>
+            {label}
+          </Link>
+        ))}
         <Link href="/stats/patterns">Отработка паттернов</Link>
       </nav>
+      {!loading && user === null && <p className="caption" style={{ margin: "8px 0 0" }}>На сайте вы не вошли: ссылка откроет вход на сайт и после него — нужную страницу.</p>}
+      {other && user && (
+        <p className="caption" role="status" style={{ margin: "8px 0 0" }}>
+          На сайте выполнен вход под {user.email} — у этого аккаунта нет доступа к сигналам. Выйдите на сайте и войдите под аккаунтом admin или owner.
+        </p>
+      )}
     </Panel>
   );
 }
