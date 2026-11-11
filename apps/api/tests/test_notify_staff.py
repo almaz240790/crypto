@@ -14,13 +14,16 @@ from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
+import httpx
 import pytest
 from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
+import app.mail as mail
 import app.notify as notify
 import app.workers.notifier as notifier
+from app.config import settings
 from app.db import engine
 from app.models import (
     Instrument,
@@ -302,3 +305,144 @@ def test_notifier_sends_forward_to_staff_and_skips_corrections(
     ]
     assert not [m for m in mails if m[0] in (p.user.email, p.support.email)]
     assert sent == 4  # письма владельцу и админу о сигнале и о входе; push без ключей не уходит
+
+
+def test_staff_retry_backs_off_and_gives_up(caplog: pytest.LogCaptureFixture) -> None:
+    """Повтор неушедшего: через ``STAFF_RETRY_FIRST``, интервал удваивается до
+    ``STAFF_RETRY_MAX``; через ``STAFF_RETRY_FOR`` после первой неудачи — ошибка в лог, без
+    повтора; ушедшее — из очереди."""
+    clock = [0.0]
+    retry = notifier.StaffRetry(clock=lambda: clock[0])
+    key = ("event", 7)
+    retry.failed(key)
+    assert retry.due() == []
+    attempts = []
+    while key in retry.items:
+        clock[0] = retry.items[key].due
+        assert retry.due() == [key]
+        attempts.append(clock[0])
+        retry.failed(key)
+    gaps = [b - a for a, b in zip([0.0, *attempts], attempts, strict=False)]
+    assert gaps[:6] == [60, 120, 240, 480, 960, 1800] and set(gaps[6:]) == {1800}
+    assert attempts[-1] >= notifier.STAFF_RETRY_FOR > attempts[-2]
+    assert "без повтора" in caplog.records[-1].getMessage()
+    retry.failed(("signal", 1))
+    retry.done(("signal", 1))
+    assert retry.items == {}
+
+
+@db_only
+def test_one_failed_mail_does_not_stop_other_staff_and_is_retried(
+    factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Сетевая ошибка письма владельцу (таймаут Resend) не мешает остальным: админ получает
+    письмо, все — push, ушедшее отмечено. Письмо владельцу не отмечено и повторяется уведомителем
+    с растущим интервалом, пока не уйдёт; ушедшее другим не повторяется."""
+    db = factory()
+    last_signal = db.scalar(text("select coalesce(max(id), 0) from signals"))
+    last_event = db.scalar(text("select coalesce(max(id), 0) from signal_events"))
+    p = People(db)
+    sig = p.signal(db)
+    ev = SignalEvent(signal_id=sig.id, type="tp1", price=sig.tp1, occurred_at=T)
+    db.add(ev)
+    db.commit()
+
+    down = [True]
+    delivered: list[tuple[str, str]] = []
+    attempts: list[str] = []
+
+    def post(_url: str, **kw: object) -> httpx.Response:
+        body = kw["json"]
+        assert isinstance(body, dict)
+        to = body["to"][0]
+        attempts.append(to)
+        if to == p.owner.email and down[0]:
+            raise httpx.ConnectTimeout("timed out")
+        delivered.append((to, body["subject"]))
+        return httpx.Response(200, json={"id": "x"})
+
+    pushes: list[int] = []
+
+    def push(_db: Session, user_id: int, _payload: dict[str, str]) -> int:
+        pushes.append(user_id)
+        return 1
+
+    monkeypatch.setattr(settings, "resend_api_key", "dummy")
+    monkeypatch.setattr(mail.httpx, "post", post)
+    monkeypatch.setattr(notify, "send_to_user", push)
+    monkeypatch.setattr(notifier, "SessionLocal", factory)
+    clock = [1000.0]
+    retry = notifier.StaffRetry(clock=lambda: clock[0])
+
+    def emails(kind: str) -> set[int]:
+        return {u for u, ch, _ in _log(db, kind) if ch == "email"}
+
+    new_signal, new_event, sent, _ = notifier.process(last_signal, last_event, retry)
+    assert (new_signal, new_event) == (sig.id, ev.id)
+    head = f"{p.inst.symbol} SHORT"
+    assert sorted(delivered) == sorted(
+        [(p.admin.email, f"Новый сигнал: {head} · B"), (p.admin.email, f"{head}: достигнут TP1")]
+    )
+    assert sorted(pushes) == sorted([*p.staff_ids(), *p.staff_ids()])
+    assert sent == 2 + 6
+    assert emails(notify.STAFF_SIGNAL) == emails(notify.STAFF_EVENT) == {p.admin.id}
+    assert {u for u, ch, _ in _log(db, notify.STAFF_EVENT) if ch == "push"} == p.staff_ids()
+    assert set(retry.items) == {("signal", sig.id), ("event", ev.id)}
+
+    # срок повтора не подошёл — ничего; подошёл, а почта ещё лежит — повтор позже
+    attempts.clear()
+    assert notifier.process(sig.id, ev.id, retry)[2] == 0 and attempts == []
+    clock[0] += notifier.STAFF_RETRY_FIRST
+    assert notifier.process(sig.id, ev.id, retry)[2] == 0
+    assert attempts == [p.owner.email, p.owner.email]  # только неушедшее, админу не повторно
+    assert set(retry.items) == {("signal", sig.id), ("event", ev.id)}
+
+    # почта поднялась: на следующем сроке письма владельцу уходят, очередь пуста
+    down[0] = False
+    clock[0] += 2 * notifier.STAFF_RETRY_FIRST
+    pushes.clear()
+    delivered.clear()
+    assert notifier.process(sig.id, ev.id, retry)[2] == 2
+    assert sorted(delivered) == sorted(
+        [(p.owner.email, f"Новый сигнал: {head} · B"), (p.owner.email, f"{head}: достигнут TP1")]
+    )
+    assert pushes == [] and retry.items == {}
+    assert emails(notify.STAFF_SIGNAL) == emails(notify.STAFF_EVENT) == {p.owner.id, p.admin.id}
+
+
+@db_only
+def test_staff_delivery_error_reports_what_was_sent(
+    factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Прямой вызов: сбой одной отправки — ``StaffDeliveryError`` после попытки всем, с числом
+    ушедших и списком неушедших; повтор того же вызова отправляет только неушедшее."""
+    db = factory()
+    p = People(db)
+    sig = p.signal(db)
+    db.commit()
+    sent_to: list[str] = []
+
+    def flaky(to: str, _subject: str, _body: str) -> None:
+        if to == p.owner.email and not sent_to:
+            raise httpx.ReadTimeout("timed out")
+        sent_to.append(to)
+
+    def broken_push(_db: Session, user_id: int, _payload: dict[str, str]) -> int:
+        if user_id == p.admin_unverified.id:
+            raise RuntimeError("push-сервис недоступен")
+        return 1
+
+    monkeypatch.setattr(notify, "send_mail", flaky)
+    monkeypatch.setattr(notify, "send_to_user", broken_push)
+    with pytest.raises(notify.StaffDeliveryError) as err:
+        notify.notify_staff_signal(db, sig)
+    assert err.value.sent == 1 + 2  # письмо админу, push владельцу и админу
+    assert err.value.failed == [
+        f"email пользователю {p.owner.id}",
+        f"push пользователю {p.admin_unverified.id}",
+    ]
+    assert sent_to == [p.admin.email]
+    monkeypatch.setattr(notify, "send_to_user", lambda *_a: 1)
+    assert notify.notify_staff_signal(db, sig) == 2  # письмо владельцу и push третьему
+    assert sent_to == [p.admin.email, p.owner.email]
+    assert notify.notify_staff_signal(db, sig) == 0

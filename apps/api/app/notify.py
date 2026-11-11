@@ -6,7 +6,9 @@
 - ``notify_staff_signal`` / ``notify_staff_event`` — письма и push владельцам и администраторам о
   новых сигналах форварда и смене их статуса (вход, TP1–TP3, стоп, выход по времени); форвард
   видят только они, обычные пользователи этих уведомлений не получают; исправления исхода
-  (пересчёт форварда) не рассылаются.
+  (пересчёт форварда) не рассылаются. Каждая отправка (адресат × канал) — отдельно: сбой одной
+  не мешает остальным, неудавшиеся не отмечаются и повторяются уведомителем
+  (``StaffDeliveryError``).
 - ``run_digest`` — ежедневный/еженедельный дайджест: закрытые сигналы за период, активные,
   метрики за 30 дней, ссылка отписки.
 Тексты — простые, без обещаний (план 8). Без ключа Resend письма уходят в лог.
@@ -16,8 +18,10 @@ from __future__ import annotations
 
 import logging
 import secrets
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from functools import partial
 from typing import Any
 
 from sqlalchemy import or_, select
@@ -360,43 +364,104 @@ def staff_event_text(sig: Signal, ev: SignalEvent, head: str, result: SignalResu
     return "\n".join(lines)
 
 
+class StaffDeliveryError(RuntimeError):
+    """Часть отправок владельцу и администраторам не удалась (сеть, сбой почты или push).
+    Остальные адресаты и каналы уведомление получили, их отметки в ``notification_log``
+    зафиксированы; неудавшиеся не отмечены — повтор того же вызова отправит только их
+    (уведомитель повторяет, ``app.workers.notifier.StaffRetry``)."""
+
+    def __init__(self, what: str, sent: int, failed: list[str]) -> None:
+        super().__init__(f"{what}: не отправлено — {', '.join(failed)}")
+        self.sent = sent
+        self.failed = failed
+
+
+def _staff_send(
+    db: Session, user_id: int, channel: str, kind: str, ref: str, send: Callable[[], int]
+) -> int | None:
+    """Одна отправка сотруднику по одному каналу. Отметка в ``notification_log`` пишется в точке
+    сохранения до отправки и фиксируется сразу после неё. Уже отмечено (отправлено раньше) — 0,
+    без отправки. Ошибка отправки откатывает только эту отметку и пишется в лог — ``None``:
+    не отправлено и не отмечено, остальные отправки не затронуты."""
+    savepoint = db.begin_nested()
+    db.add(NotificationLog(user_id=user_id, channel=channel, kind=kind, ref=ref))
+    try:
+        db.flush()
+    except IntegrityError:
+        savepoint.rollback()
+        return 0
+    try:
+        n = send()
+    except Exception:
+        savepoint.rollback()
+        log.exception("%s %s → пользователь %s (%s): не отправлено", kind, ref, user_id, channel)
+        return None
+    savepoint.commit()
+    db.commit()
+    return n
+
+
+def _mail_one(to: str, subject: str, text: str) -> int:
+    send_mail(to, subject, text)
+    return 1
+
+
+def _deliver_staff(
+    db: Session, kind: str, ref: str, subject: str, text: str, push: dict[str, str]
+) -> int:
+    """Письмо (с подтверждённым адресом) и push каждому владельцу и администратору — каждая
+    отправка отдельно (``_staff_send``). Возвращает число отправок; если какие-то не удались, —
+    ``StaffDeliveryError`` после попытки всем."""
+    sent = 0
+    failed: list[str] = []
+    for user in _staff(db):
+        uid = user.id
+        sends: list[tuple[str, Callable[[], int]]] = []
+        if user.email_verified_at is not None:
+            sends.append(("email", partial(_mail_one, user.email, subject, text)))
+        sends.append(("push", partial(send_to_user, db, uid, push)))
+        for channel, send in sends:
+            n = _staff_send(db, uid, channel, kind, ref, send)
+            if n is None:
+                failed.append(f"{channel} пользователю {uid}")
+            else:
+                sent += n
+    db.commit()
+    if failed:
+        raise StaffDeliveryError(f"{kind} {ref}", sent, failed)
+    return sent
+
+
 def notify_staff_signal(db: Session, sig: Signal) -> int:
     """Письмо и push о новом сигнале форварда — владельцам и администраторам (обычные
-    пользователи форвард не получают). Возвращает число отправок."""
+    пользователи форвард не получают). Возвращает число отправок; часть не ушла —
+    ``StaffDeliveryError`` (ушедшие отмечены, повтор отправит остальные)."""
     if not _forward_signal(sig):
         return 0
     symbol, head = _signal_head(db, sig)
     version = db.scalar(
         select(StrategyVersion.version).where(StrategyVersion.id == sig.strategy_version_id)
     )
-    sent = 0
-    for user in _staff(db):
-        if user.email_verified_at is not None and _record(db, user.id, STAFF_SIGNAL, sig.public_id):
-            send_mail(
-                user.email,
-                f"Новый сигнал: {head} · {sig.grade}",
-                staff_signal_text(sig, symbol, version or "?"),
-            )
-            sent += 1
-        if _record_push(db, user.id, STAFF_SIGNAL, sig.public_id):
-            sent += send_to_user(
-                db,
-                user.id,
-                {
-                    "title": f"Новый сигнал: {head} · {sig.grade}",
-                    "body": _levels_line(sig),
-                    "url": f"/signals/{sig.public_id}",
-                    "tag": f"signal-{sig.public_id}",
-                },
-            )
-    db.commit()
-    return sent
+    title = f"Новый сигнал: {head} · {sig.grade}"
+    return _deliver_staff(
+        db,
+        STAFF_SIGNAL,
+        sig.public_id,
+        title,
+        staff_signal_text(sig, symbol, version or "?"),
+        {
+            "title": title,
+            "body": _levels_line(sig),
+            "url": f"/signals/{sig.public_id}",
+            "tag": f"signal-{sig.public_id}",
+        },
+    )
 
 
 def notify_staff_event(db: Session, ev: SignalEvent) -> int:
     """Письмо и push о смене статуса сигнала форварда (вход, TP1–TP3, безубыток, стоп, выход по
     времени, истечение) — владельцам и администраторам. Исправления исхода (``source =
-    'retrack'``) не рассылаются."""
+    'retrack'``) не рассылаются. Часть отправок не ушла — ``StaffDeliveryError``."""
     if ev.type not in EVENT_TEXT or ev.source == CORRECTION_SOURCE:
         return 0
     sig = db.get(Signal, ev.signal_id)
@@ -405,31 +470,22 @@ def notify_staff_event(db: Session, ev: SignalEvent) -> int:
     _, head = _signal_head(db, sig)
     what = EVENT_TEXT[ev.type].split(" — ")[0]
     result = db.get(SignalResult, sig.id) if ev.type in CLOSING_EVENTS else None
-    sent = 0
-    for user in _staff(db):
-        if user.email_verified_at is not None and _record(db, user.id, STAFF_EVENT, str(ev.id)):
-            send_mail(
-                user.email,
-                f"{head}: {what}",
-                staff_event_text(sig, ev, head, result),
-            )
-            sent += 1
-        if _record_push(db, user.id, STAFF_EVENT, str(ev.id)):
-            body = f"по {_dec(ev.price)}" if ev.price is not None else ""
-            if result is not None:
-                body = f"{body}, итог {_fmt_r(result.realized_r)}".lstrip(", ")
-            sent += send_to_user(
-                db,
-                user.id,
-                {
-                    "title": f"{head}: {what}",
-                    "body": body,
-                    "url": f"/signals/{sig.public_id}",
-                    "tag": f"event-{ev.id}",
-                },
-            )
-    db.commit()
-    return sent
+    body = f"по {_dec(ev.price)}" if ev.price is not None else ""
+    if result is not None:
+        body = f"{body}, итог {_fmt_r(result.realized_r)}".lstrip(", ")
+    return _deliver_staff(
+        db,
+        STAFF_EVENT,
+        str(ev.id),
+        f"{head}: {what}",
+        staff_event_text(sig, ev, head, result),
+        {
+            "title": f"{head}: {what}",
+            "body": body,
+            "url": f"/signals/{sig.public_id}",
+            "tag": f"event-{ev.id}",
+        },
+    )
 
 
 def unsubscribe_footer(ns: NotificationSettings) -> str:
