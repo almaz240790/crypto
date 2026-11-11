@@ -430,6 +430,11 @@ test.describe("телефон 390×844, палец", () => {
     }
     const opened = (await card(page).boundingBox())!;
     expect(opened.height).toBeLessThanOrEqual(box.height * 0.45);
+    // шрифт шире (другая система; так было на сервере проверок): «на всех таймфреймах» и список «скопировать на…»
+    // остаются в одной строке — карточка не вырастает на строку и не закрывает половину свечей
+    const wide = await page.addStyleTag({ content: "*{letter-spacing:0.9px !important}" });
+    expect((await card(page).boundingBox())!.height, "карточка при широком шрифте").toBeLessThanOrEqual(box.height * 0.45);
+    await wide.evaluate((el) => (el as HTMLElement).remove());
     expect(opened.width).toBeLessThanOrEqual(390);
     for (const h of await onScreen(page, d0.points)) expect(h.y + 10, "ручка рисунка — над карточкой").toBeLessThanOrEqual(opened.y);
     // страница вбок не едет: строка уровней прокручивается внутри карточки
