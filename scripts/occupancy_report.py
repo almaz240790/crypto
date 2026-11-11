@@ -59,7 +59,7 @@ H4 = SIGNAL_TIMEFRAME.delta
 PNG_COLORS = 48
 """Палитра PNG после сжатия: графики из нескольких цветов темы, 48 хватает без потерь вида."""
 EXIT_CANDLE_SHARE = 4
-"""Из каждых N примеров один — «свеча выхода» (сделка закрылась в той же свече H4), если есть."""
+"""На каждые N примеров один случай «свеча выхода» (сделка закрылась в той же свече H4)."""
 PAD_BEFORE, PAD_AFTER = 24, 12
 """Свечей H4 на графике до сигнала открытой сделки и после подавленного кандидата/выхода."""
 
@@ -290,8 +290,9 @@ def status_at(c: Candidate, b: Candidate, h4: list[Candle], params: StrategyPara
 def pick_examples(
     suppressed: Sequence[Candidate], blockers: dict[tuple[str, str], Candidate], n: int
 ) -> list[Candidate]:
-    """Детерминированная выборка: каждый ``EXIT_CANDLE_SHARE``-й — случай «свеча выхода» (если
-    есть), остальные — равномерно по времени, не больше двух подряд на инструмент."""
+    """Детерминированная выборка: ``n // EXIT_CANDLE_SHARE`` (не меньше одного) случаев «свеча
+    выхода», если они есть, остальные — из прочих подавленных; обе части берутся через равные шаги
+    по списку, отсортированному по времени."""
     ordered = sorted(suppressed, key=lambda c: (c.at, c.symbol))
     exit_cases = [c for c in ordered if _exit_candle(c, _blocker(c, blockers))]
     other = [c for c in ordered if c not in exit_cases]
