@@ -78,7 +78,7 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
   const { sheet, setSheet, closeSheet, ohlcMore, setOhlcMore, bars, setBars, objects, setObjects, panelOverlay, panelTab, setPanelTab, showPanel, objWidth, objResize, toast, say, notifyOnce } = useTerminalUi(wide);
   // вопросы о графике — Premium (админы и владелец — всегда); минутные ТФ закрыты гостю и на Free
   const { askAccess, intradayLocked } = usePlan();
-  const { st, resolved, legacyFound, patch, toggleIndicator, addIndicator, removeInstance, setInstanceParams, toggleInstanceHidden, togglePanel, toggleLayer, selectMarkup, applyTemplate, applyLayout, setPaneLayout, removePane } = useTerminalSettings(authed);
+  const { st, resolved, legacyFound, patch, toggleIndicator, addIndicator, removeInstance, setInstanceParams, toggleInstanceHidden, togglePanel, toggleLayer, selectMarkup, applyTemplate, applyLayout, setPaneLayout, removePane, setFibLevels } = useTerminalSettings(authed);
   // «Разбор» (резерв): вкладка и пункт тулбара — владельцу и админам, если ресурс topdown ответил 200
   const topdown = useTopdown(symbol, tf, user);
   const role = user?.role ?? null;
@@ -114,7 +114,8 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
   );
   // пояснение «нет данных OI» у слоя и пресета — флаг каталога сцены (лист «Найдено» читает каталог сам)
   const liqUnavailable = useChartStore((x) => x.sceneIndex?.liqUnavailable ?? false, store);
-  const dr = useDrawings(symbol, authed);
+  // уровни, выбранные у Фибоначчи (карточка рисунка, отмена и повтор такой правки), — с ними начнётся следующий
+  const dr = useDrawings(symbol, authed, setFibLevels);
   const data = useTerminalData(symbol, tf, user ? getAccessToken() : null);
   const trend = useTrend(data.layers);
   const figures = data.figures?.items ?? NO_FIGURES;
@@ -294,8 +295,9 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
         if (ended) setDrawTool(null);
       },
       profile: riskProfile,
+      fibLevels: st.fibLevels,
     }),
-    [dr.state, dr.tool, dr.magnet, dr.series, dr.draft, dr.actions, dr.setDraft, dr.setStep, setDrawTool, riskProfile],
+    [dr.state, dr.tool, dr.magnet, dr.series, dr.draft, dr.actions, dr.setDraft, dr.setStep, setDrawTool, riskProfile, st.fibLevels],
   );
   const fundingRate = data.derivatives?.funding_current ?? null;
   const fundingNext = data.derivatives?.next_funding_t ?? null;

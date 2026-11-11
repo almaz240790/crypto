@@ -29,6 +29,17 @@ describe("подписи цен", () => {
     expect(formatTicks([7817858292.4])).toEqual(["7.82B"]);
     expect(formatPriceLabel(781_000_000, 1)).toBe("781.00M");
   });
+  it("не число (NaN, ±Infinity) — прочерк, а не исключение и не «InfinityB»", () => {
+    // раньше NaN ронял compact() (TypeError), Infinity давал «InfinityB»
+    for (const v of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      expect(formatPriceLabel(v, 2)).toBe("—");
+      expect(formatPriceShort(v, 2)).toBe("—");
+      expect(formatPriceLabel(v, 0)).toBe("—");
+    }
+    // числа — как раньше
+    expect(formatPriceLabel(0, 2)).toBe("0.00");
+    expect(formatPriceShort(-12345.6, 1)).toBe(`−12${T}346`);
+  });
 });
 
 describe("точность по шагу цены", () => {

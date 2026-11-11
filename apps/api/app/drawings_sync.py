@@ -5,9 +5,40 @@
 
 from __future__ import annotations
 
+import math
+from collections.abc import Sequence
 from typing import Any
 
 DrawingDict = dict[str, Any]
+
+# Уровни Фибоначчи (план 2A.5; ADR-0009, «Рисование», дополнение 2026-11-11). Границы — те же, что
+# у клиента (packages/charts, normalizeFibLevels): клиент всегда присылает уже приведённый набор.
+FIB_LEVELS_MAX = 24
+FIB_LEVEL_LIMIT = 10.0
+FIB_LEVEL_DECIMALS = 3
+
+
+def fib_levels(kind: str, levels: Sequence[float] | None) -> list[float] | None:
+    """Уровни рисунка, как они хранятся: только у Фибоначчи, по возрастанию, без повторов, 3 знака.
+
+    У остальных типов уровней нет — присланные не хранятся (запись — пакетная офлайн-очередь
+    клиента: отказ из-за лишнего поля остановил бы всю очередь). ``None`` и пустой список — «уровни
+    по умолчанию» (клиент рисует свой стандартный набор). Больше ``FIB_LEVELS_MAX`` значений, не
+    число (NaN, бесконечность) или значение вне ±``FIB_LEVEL_LIMIT`` — ``ValueError``: такой набор
+    клиент прислать не может, это ошибка запроса.
+    """
+    if kind != "fib" or levels is None:
+        return None
+    if len(levels) > FIB_LEVELS_MAX:
+        raise ValueError(f"уровней Фибоначчи — не больше {FIB_LEVELS_MAX}")
+    scale = 10**FIB_LEVEL_DECIMALS
+    out: set[float] = set()
+    for v in levels:
+        if not math.isfinite(v) or abs(v) > FIB_LEVEL_LIMIT:
+            raise ValueError("уровень Фибоначчи — число от −10 до 10")
+        # округление как у Math.round клиента (половина — вверх); + 0.0 — «−0.0» хранится нулём
+        out.add(math.floor(v * scale + 0.5) / scale + 0.0)
+    return sorted(out) or None
 
 
 def resolve(server: DrawingDict | None, incoming: DrawingDict) -> DrawingDict:
