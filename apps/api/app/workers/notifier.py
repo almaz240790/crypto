@@ -7,12 +7,19 @@
 2.16): проверяет heartbeat воркеров и свежесть свечей, открывает инциденты и шлёт алерты
 владельцам. Раз в ``RANK_CHECK_EVERY`` секунд (и при старте) — порядок монет по капитализации
 (``app.coin_rank``): с CoinGecko, только если сохранённому в Redis больше суток.
+
+Раз в сутки после ``RECONCILE_HOUR_UTC`` (и при старте, если итога ещё нет) — сверка записанных
+сигналов с офлайн-пересчётом (``app.reconcile``, задача 8 пакета «Сигналы»): в фоне, только на
+чтение. Итог кладётся в Redis ``reconcile:last``; монитор показывает его компонентом «Сверка
+сигналов» и шлёт письмо при расхождении. Сбой сверки тоже записывается итогом — молча она не
+пропадает.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import signal as os_signal
 import time
@@ -29,8 +36,10 @@ from app.coin_rank import refresh_if_due
 from app.config import settings
 from app.db import SessionLocal
 from app.models import Signal, SignalEvent
-from app.monitor import run_monitor
+from app.monitor import RECONCILE_KEY, run_monitor
 from app.notify import notify_event, notify_new_signal, run_digest, run_journal_reports
+from app.reconcile import run_reconcile
+from app.retrack import read_only_connection
 from app.snapshots import recompute
 from app.subscriptions import run_hourly
 
@@ -46,6 +55,10 @@ RANK_CHECK_EVERY = 3600
 # дайджесты и отчёт по журналу — раз в сутки после этого часа UTC (понедельник: + недельные)
 DIGEST_HOUR_UTC = 6
 KEY_DIGEST = "notifier:digest:"
+# сверка сигналов — раз в сутки после этого часа UTC: закрытие 00:00 уже оценено, день записан
+RECONCILE_HOUR_UTC = 1
+# как часто проверять, пора ли (и повторять после сбоя)
+RECONCILE_CHECK_EVERY = 900
 HEARTBEAT_KEY = "notifier:heartbeat"
 KEY_SIGNAL = "notifier:last_signal_id"
 KEY_EVENT = "notifier:last_event_id"
@@ -123,6 +136,57 @@ def ranks_once() -> str:
         r.close()
 
 
+def last_reconcile_at(raw: bytes | str | None) -> datetime | None:
+    """Когда сверка последний раз дошла до конца — из итога в Redis. Сбой за сверку не считается."""
+    if not raw:
+        return None
+    try:
+        state = json.loads(raw)
+        if not isinstance(state, dict) or state.get("failed"):
+            return None
+        return datetime.fromisoformat(str(state["at"])).astimezone(UTC)
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def reconcile_due(now: datetime, last_at: datetime | None) -> bool:
+    """Пора ли сверять: итога нет (первый запуск, сбой) или он за прошлые сутки и час настал."""
+    if last_at is None:
+        return True
+    return now.hour >= RECONCILE_HOUR_UTC and last_at.date() < now.date()
+
+
+def reconcile_once(now: datetime) -> str:
+    """Синхронно: одна сверка, итог — в Redis. Возвращает строку для журнала.
+
+    Соединение с БД — только на чтение. Если сверка упала, в Redis пишется итог-сбой: монитор
+    покажет его, а следующая проверка повторит попытку.
+    """
+    r = redis.from_url(settings.redis_url, socket_timeout=5)
+    try:
+        try:
+            with read_only_connection() as conn:
+                report = run_reconcile(conn, now)
+        except Exception as exc:
+            failed = {"at": now.isoformat(), "failed": f"{type(exc).__name__}: {exc}"[:300]}
+            r.set(RECONCILE_KEY, json.dumps(failed, ensure_ascii=False))
+            raise
+        r.set(RECONCILE_KEY, json.dumps(report.to_json(), ensure_ascii=False))
+        return "; ".join([report.summary(), *report.lines()])
+    finally:
+        r.close()
+
+
+def _reconcile_done(task: asyncio.Task[str]) -> None:
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        log.error("сверка сигналов: ошибка", exc_info=exc)
+    else:
+        log.info("%s", task.result())
+
+
 def monitor_once() -> str:
     """Синхронно: один прогон монитора. Возвращает общий статус."""
     r = redis.from_url(settings.redis_url, socket_timeout=5)
@@ -145,6 +209,8 @@ class Notifier:
         next_stats = 0.0
         next_billing = 0.0
         next_ranks = 0.0
+        next_reconcile = 0.0
+        reconcile_task: asyncio.Task[str] | None = None
         digest_logged = False
         while not self.stop.is_set():
             if time.monotonic() >= next_ranks:
@@ -172,6 +238,17 @@ class Notifier:
                     log.info("дайджесты: %s", await asyncio.to_thread(digests_once, now))
                 except Exception:
                     log.exception("дайджесты: ошибка")
+            if time.monotonic() >= next_reconcile and (
+                reconcile_task is None or reconcile_task.done()
+            ):
+                next_reconcile = time.monotonic() + RECONCILE_CHECK_EVERY
+                try:
+                    if reconcile_due(now, last_reconcile_at(await self.redis.get(RECONCILE_KEY))):
+                        # в фоне: сверка читает много свечей, цикл уведомителя её не ждёт
+                        reconcile_task = asyncio.create_task(asyncio.to_thread(reconcile_once, now))
+                        reconcile_task.add_done_callback(_reconcile_done)
+                except Exception:
+                    log.exception("сверка сигналов: запуск")
             if time.monotonic() >= next_monitor:
                 next_monitor = time.monotonic() + MONITOR_EVERY
                 try:
@@ -201,6 +278,8 @@ class Notifier:
             await self.redis.set(HEARTBEAT_KEY, int(time.time()))
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self.stop.wait(), timeout=POLL)
+        if reconcile_task is not None and not reconcile_task.done():
+            reconcile_task.cancel()
         await self.redis.aclose()
 
 

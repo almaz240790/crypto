@@ -38,6 +38,7 @@ from app.models import (
     SupportTicket,
     User,
 )
+from app.monitor import RECONCILE_KEY
 from app.support import reply_ticket, ticket_dict
 
 router = APIRouter(
@@ -487,6 +488,7 @@ def update_user(
 def system(user: User = Depends(ADMIN), db: Session = Depends(auth.get_db)) -> dict[str, Any]:
     now = int(time.time())
     workers: dict[str, Any] = {}
+    reconcile: Any = None  # итог последней сверки сигналов со списком расхождений (app.reconcile)
     try:
         r = redis_sync.Redis.from_url(settings.redis_url, decode_responses=True)
         try:
@@ -500,6 +502,8 @@ def system(user: User = Depends(ADMIN), db: Session = Depends(auth.get_db)) -> d
                 workers[name] = {"heartbeat_age_sec": (now - int(v)) if v else None}
             st = r.get("market_data:status")
             workers["market_data"]["status"] = json.loads(st) if st else None
+            rec = r.get(RECONCILE_KEY)
+            reconcile = json.loads(rec) if rec else None
         finally:
             r.close()
     except Exception as exc:
@@ -531,6 +535,7 @@ def system(user: User = Depends(ADMIN), db: Session = Depends(auth.get_db)) -> d
         "last_signal_at": last_signal.isoformat() if last_signal else None,
         "last_event_at": last_event.isoformat() if last_event else None,
         "notifications_sent_today": int(sent_today or 0),
+        "reconcile": reconcile,
         "mail": "resend" if settings.resend_api_key else "лог (ключ не задан)",
     }
 
