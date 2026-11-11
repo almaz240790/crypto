@@ -466,7 +466,7 @@ def test_scheduler_and_1m_tracker_never_hold_two_open_signals(
     """Регрессия ревью: кандидат ниже C (или отложенный) на свободном закрытии 08:00 раньше
     записывался с градацией C, 1m-трекер делал его active, а на 12:00 рядом писался сигнал B —
     два открытых сигнала версии по монете. Теперь он не пишется, B на 12:00 — единственный, а
-    кандидат ниже C на 16:00, пока B открыт, тоже не пишется."""
+    пока B открыт, не пишутся ни кандидат ниже C на 16:00, ни публикуемый на 20:00."""
     with make_session() as s:
         ver, inst = _seed(s, code_version)
     untradable = {"publishable": False} if kind == "below_c" else {"deferred": True}
@@ -474,6 +474,7 @@ def test_scheduler_and_1m_tracker_never_hold_two_open_signals(
         T0: _candidate(T0, **untradable),
         T0 + H4: _candidate(T0 + H4),
         T0 + 2 * H4: _candidate(T0 + 2 * H4, **untradable),
+        T0 + 3 * H4: _candidate(T0 + 3 * H4),
     }
     monkeypatch.setattr(scheduler, "SessionLocal", make_session)
     monkeypatch.setattr(scheduler, "load_inputs", lambda *_: None)
@@ -488,6 +489,7 @@ def test_scheduler_and_1m_tracker_never_hold_two_open_signals(
         s.commit()
         assert _open_signals(s, ver.id, inst.id) == [(T0 + H4, "active")]
     assert scheduler.process_symbol(inst.symbol, T0 + 2 * H4)["signals"] == 0
+    assert scheduler.process_symbol(inst.symbol, T0 + 3 * H4)["signals"] == 0
     with make_session() as s:
         assert _signal_times(s, ver.id, inst.id) == [T0 + H4]
         assert _open_signals(s, ver.id, inst.id) == [(T0 + H4, "active")]
