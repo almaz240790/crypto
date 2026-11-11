@@ -18,7 +18,8 @@ stop через 15 минут вместо 60 часов (15 свечей H4). �
      ``fees``;
    - в 1m-свечах пропуск, который мог скрыть касание стопа или цели (``gap_risk``: свеча H4 над
      пропуском доходит до действующего стопа или следующей цели, её нет, или в пропуске срок
-     time stop), свечей нет вовсе или трекер не принимает данные сигнала — результат
+     time stop), свечей нет вовсе или трекер не принимает данные сигнала (в пояснении — простым
+     языком, текст ошибки — в отчёте, ``Plan.detail``) — результат
      недействителен: статус ``voided``, строка ``signal_results`` уходит в архив, в статистику
      сигнал не входит; вид ``void``;
    - пропуск в интервале H4, который ещё не закрыт (или только что закрылся и свеча H4 ещё не
@@ -359,6 +360,9 @@ class Plan:
     why_void: str | None = None
     replay: Replay | None = None
     fees: TrackerResult | None = None
+    detail: str | None = None
+    """Техническая причина (текст исключения) — только в отчёт и журнал; в пояснение на карточке
+    не попадает."""
 
     @property
     def handover(self) -> Gap | None:
@@ -369,6 +373,8 @@ class Plan:
         body = f"было — {self.before.text()}"
         if self.kind == VOID:
             body += f"; стало — недействителен ({self.why_void})"
+            if self.detail:
+                body += f"; причина: {self.detail}"
         elif self.after is not None:
             body += f"; стало — {self.after.text()}"
         safe = [g for g in (self.replay.gaps if self.replay else ()) if not g.risk]
@@ -392,6 +398,7 @@ class Plan:
             "before": self.before.as_json(),
             "after": None if self.after is None else self.after.as_json(),
             "why_void": self.why_void,
+            "detail": self.detail,
             "gaps": [
                 {"from": g.start.isoformat(), "to": g.end.isoformat(), "risk": g.risk} for g in gaps
             ],
@@ -521,8 +528,10 @@ def plan_signal(db: Session, sig: Signal, now: datetime | None = None) -> Plan:
         # чистая функция над данными сигнала: её ошибка повторится при любом запуске
         rp = replay(_setup_from_row(sig), params, close, minutes, h4, data_horizon(now, h4))
     except (ValueError, KeyError, TypeError, ArithmeticError) as exc:
-        why = f"трекер не принимает данные сигнала ({exc})"
-        return Plan(kind=VOID, reason=problem, why_void=why, **base)
+        # пояснение на карточке — простым языком; текст исключения — только в отчёт и журнал
+        why = "данные сигнала не удаётся проверить по свечам"
+        detail = f"{type(exc).__name__}: {exc}"
+        return Plan(kind=VOID, reason=problem, why_void=why, detail=detail, **base)
     if rp.last_candle is None and rp.handover is None:
         why = "после сигнала нет ни одной закрытой 1m-свечи"
         return Plan(kind=VOID, reason=problem, why_void=why, replay=rp, **base)
@@ -568,8 +577,9 @@ def note_text(plan: Plan, now: datetime) -> str:
             f"Стало: {plan.after.text()}. Исход сделки не менялся."
         )
     text = (
-        f"Исход пересчитан {day}: {plan.reason}. Пересчёт по сохранённым 1m-свечам тем же "
-        "трекером: сроки в свечах H4, комиссия и проскальзывание как в бэктесте. "
+        f"Исход пересчитан {day}: {plan.reason}. Пересчёт по сохранённым 1m-свечам — по тем "
+        "же правилам, что у текущих сигналов: сроки в свечах H4, комиссия и проскальзывание как "
+        "в бэктесте. "
         f"Было: {plan.before.text()}. Стало: {plan.after.text()}."
     )
     safe = [g for g in (plan.replay.gaps if plan.replay else ()) if not g.risk]
@@ -581,7 +591,7 @@ def note_text(plan: Plan, now: datetime) -> str:
     if plan.handover is not None:
         text += (
             f" Пересчёт доведён до {_when(plan.handover.start)}: дальше в интервале H4, который "
-            "ещё не закрыт, нет части 1m-свечей; сделку ведёт трекер."
+            "ещё не закрыт, нет части 1m-свечей; дальше сделка ведётся как обычно."
         )
     return text
 

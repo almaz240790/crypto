@@ -1055,7 +1055,11 @@ def test_one_bad_signal_does_not_block_the_others(
         assert sig.status == "closed_time" and res is not None and res.closed_at == DEADLINE
     assert offgrid.status == "voided" and db.get(SignalResult, offgrid.id) is None
     note = str(_events(db, offgrid)[-1][5])
-    assert "трекер не принимает данные сигнала" in note and "не на границе" in note
+    # на карточке — простым языком, без текста ошибки; техническая причина — в отчёте задания
+    assert "данные сигнала не удаётся проверить по свечам" in note
+    assert "не на границе" not in note and "трекер" not in note and "Error" not in note
+    voided = next(r for r in out["report"] if r.get("id") == offgrid.public_id)
+    assert voided["kind"] == "void" and "не на границе" in voided["detail"]
     f = db.get(SignalResult, badstate.id)
     assert badstate.status == "closed_sl" and f is not None
     assert f.cost_r == COST.quantize(q3) and f.realized_r == (D(-1) - COST).quantize(q3)
@@ -1097,7 +1101,8 @@ def test_open_trade_with_a_hole_in_the_unclosed_interval_goes_to_the_tracker(
     tr = db.get(SignalTracking, sig.id)
     assert tr is not None and tr.last_candle_time == T + 539 * M1
     note = str(_events(db, sig)[-1][5])
-    assert "сделку ведёт трекер" in note and "недействител" not in note
+    assert "дальше сделка ведётся как обычно" in note and "недействител" not in note
+    assert "трекер" not in note
 
     # трекер продолжает с минут после пропуска и закрывает сделку в безубытке
     back = Candle(T + 630 * M1, D(101), D("101.2"), D("99.9"), D(100), D(1))
