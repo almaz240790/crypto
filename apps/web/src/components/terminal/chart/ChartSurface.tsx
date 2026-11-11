@@ -1,7 +1,7 @@
 "use client";
 
 import { COMPACT_FORMAT, ChartController, EMPTY_PANE_LAYOUT, FALLBACK_COLOR, INDICATOR_COLOR, INTERACTION, NONE, PERCENT_FORMAT, VIEW, alpha, commitPaneHeights, dragSeparator, instanceColors, instanceTitle, mainMinShareFor, movePaneKey, orderPaneKeys, paneLevels, planMaximized, planPanes, resolvePreset, VALUE_FORMAT, alignToCandles, tickPrecision, tokensFromElement, type AlertLine, type Candle, type ChartHandle, type ChartStore, type ChartType, type CrosshairSnapshot, type Device, type ExternalObject, type IndColor, type IndicatorInstance, type IndicatorValue, type MarkupSettings, type PaneLayout, type PanePlan, type PanelKey, type ScaleMode, type SepLimits, type Terminal, type Timeframe } from "@platform/charts";
-import { DrawingController, DrawingsPrimitive, INDICATORS, defaultParams, indicatorById, visibleOn, type Drawing, type DrawingText, type DrawingType, type DrawingsState, type IndicatorSpec, type Layer, type LayerContext, type Point, type RiskProfile, TF_SECONDS } from "@platform/charts";
+import { DrawingController, DrawingsPrimitive, INDICATORS, clampParams, defaultParams, indicatorById, visibleOn, type Drawing, type DrawingText, type DrawingType, type DrawingsState, type IndicatorSpec, type Layer, type LayerContext, type Point, type RiskProfile, TF_SECONDS } from "@platform/charts";
 import { LineStyle, TrackingModeExitMode, type IPriceLine, type ISeriesApi, type PriceFormat, type UTCTimestamp } from "lightweight-charts";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Derivatives, FigureOnChart, LayersResponse, PatternOnChart } from "@/lib/chart";
@@ -610,7 +610,8 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     term.layers.add(new PrimitiveLayer("drawings", prim));
     const dctrl = new DrawingController(
       el,
-      prim.projector!,
+      // не prim.projector: при смене типа графика серия и проектор пересоздаются, контроллер остаётся
+      prim.live,
       {
         getDrawings: () => {
           const d = drawingsRef.current;
@@ -964,7 +965,14 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
         const collapsed = pane.paneIndex !== null && isCollapsed(ind.uid);
         Object.values(pane.series).forEach((sr) => sr.applyOptions({ visible: !hidden && !collapsed }));
       }
-      const out = spec.compute(all, { ...defaultParams(spec), ...ind.params });
+      // параметры из сохранения могли быть записаны до проверки связей (MACD: быстрая ≥ медленной) — приводим здесь же;
+      // ошибка расчёта одного индикатора оставляет его панель пустой, а не роняет весь график
+      let out: ReturnType<typeof spec.compute> = {};
+      try {
+        out = spec.compute(all, clampParams(spec, { ...defaultParams(spec), ...ind.params }));
+      } catch {
+        out = {};
+      }
       spec.series.forEach((sp, i) => {
         const key = `${ind.uid}.${sp.key}`;
         // скрытый экземпляр: значений нет ни в легенде, ни в карточке перекрестия

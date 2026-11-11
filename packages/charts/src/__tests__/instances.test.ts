@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { canAdd, clampParams, countOf, FALLBACK_COLOR, IND_COLORS, INDICATOR_COLOR, indicatorById, instanceColor, instanceColors, instanceTitle, maxInstances, nextUid, normalizeInstances, paneLevels, shortName, suggestParams, type IndicatorInstance, type IndicatorSpec } from "../indicators";
 
+import { bars } from "./fakes/lwc";
+
 const spec = (id: string): IndicatorSpec => indicatorById(id)!;
 const inst = (uid: string, params: Record<string, number> = {}): IndicatorInstance => ({ uid, id: uid.split("#")[0]!, params });
 
@@ -114,5 +116,22 @@ describe("экземпляры индикаторов (план 2B.9, M19)", () 
     // скрытый экземпляр
     expect(normalizeInstances([{ id: "ema", params: {}, hidden: true }])![0]!.hidden).toBe(true);
     expect(normalizeInstances([{ id: "ema", params: {}, hidden: "yes" }])![0]!.hidden).toBeUndefined();
+  });
+
+  it("MACD: быстрая не короче медленной — медленная подтягивается; ни один набор параметров в пределах min/max не роняет расчёт", () => {
+    const macd = spec("macd");
+    // «Быстрая» = 30 при медленной 26 (пользователь набирает 30/60/9 по одному полю) — раньше страница графика падала
+    expect(clampParams(macd, { fast: 30, slow: 26, signal: 9 })).toEqual({ fast: 30, slow: 31, signal: 9 });
+    expect(clampParams(macd, { fast: 12, slow: 12, signal: 9 })).toEqual({ fast: 12, slow: 13, signal: 9 });
+    expect(clampParams(macd, { fast: 100, slow: 2, signal: 1 })).toEqual({ fast: 100, slow: 101, signal: 1 });
+    // согласованный набор не меняется
+    expect(clampParams(macd, { fast: 12, slow: 26, signal: 9 })).toEqual({ fast: 12, slow: 26, signal: 9 });
+    // сохранение и раскладка с сервера проходят то же приведение
+    expect(normalizeInstances([{ id: "macd", params: { fast: 50, slow: 20 } }])![0]!.params).toMatchObject({ fast: 50, slow: 51 });
+    const candles = bars(60);
+    for (const s of ["ema", "sma", "rsi", "macd", "stoch", "bb", "atr"].map(spec).filter(Boolean)) {
+      const corners = s.params.reduce<Record<string, number>[]>((acc, p) => acc.flatMap((a) => [p.min, p.default, p.max].map((v) => ({ ...a, [p.key]: v }))), [{}]);
+      for (const raw of corners) expect(() => s.compute(candles, clampParams(s, raw)), `${s.id} ${JSON.stringify(raw)}`).not.toThrow();
+    }
   });
 });

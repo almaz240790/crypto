@@ -101,6 +101,43 @@ test("рисование: трендовая линия двумя кликам�
   await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 1");
 });
 
+test("рисование после смены типа графика: Фибоначчи ставится двумя кликами на барах и после возврата к свечам, прежний рисунок выбирается", async ({ page }) => {
+  await mock(page, []);
+  await page.goto("/chart/BTCUSDT/4h");
+  const term = page.getByTestId("terminal");
+  await expect(term.locator("canvas").first()).toBeVisible();
+  const box = (await term.boundingBox())!;
+  const X = (f: number) => box.x + box.width * f;
+  const Y = (f: number) => box.y + box.height * f;
+  const count = page.getByTestId("drawings-count");
+  const tools = page.getByRole("toolbar", { name: "панель рисования" });
+  const setType = async (type: string) => {
+    await page.getByRole("button", { name: "Вид", exact: true }).click();
+    await page.getByRole("dialog", { name: "Вид" }).getByLabel("тип графика").selectOption(type);
+    await page.keyboard.press("Escape");
+  };
+  const fib = async (x1: number, y1: number, x2: number, y2: number) => {
+    await tools.getByRole("button", { name: "Фибоначчи" }).click();
+    await page.mouse.click(X(x1), Y(y1));
+    await page.mouse.move(X((x1 + x2) / 2), Y((y1 + y2) / 2), { steps: 4 });
+    await page.mouse.click(X(x2), Y(y2));
+  };
+  await fib(0.2, 0.3, 0.3, 0.5);
+  await expect(count).toHaveText("рисунков: 1");
+  // смена типа пересоздаёт серию графика: раньше после неё ни один инструмент не ставил точку до перезагрузки
+  await setType("bars");
+  await fib(0.4, 0.3, 0.5, 0.55);
+  await expect(count).toHaveText("рисунков: 2");
+  await setType("candles");
+  await fib(0.55, 0.35, 0.65, 0.6);
+  await expect(count).toHaveText("рисунков: 3");
+  // рисунок, поставленный до смены типа, выбирается нажатием по телу и удаляется клавишей
+  await page.keyboard.press("Escape");
+  await page.mouse.click(X(0.25), Y(0.4));
+  await page.keyboard.press("Delete");
+  await expect(count).toHaveText("рисунков: 2");
+});
+
 test("синхронизация рисунков: запись на сервер, второе устройство видит, конфликт решается по времени", async ({ page, browser }) => {
   const server = { drawings: [] as Record<string, unknown>[], layout: null as Record<string, unknown> | null };
   const calls: string[] = [];

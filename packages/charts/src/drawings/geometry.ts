@@ -218,7 +218,16 @@ function bodyHit(d: Drawing, pts: { x: number | null; y: number | null }[], px: 
       }
       if (d.type === "fib") {
         const top = Math.min(a.y, b.y), bottom = Math.max(a.y, b.y);
-        return px >= Math.min(a.x, b.x) - tol && px <= Math.max(a.x, b.x) + tol && py >= top - tol && py <= bottom + tol;
+        if (!(px >= Math.min(a.x, b.x) - tol && px <= Math.max(a.x, b.x) + tol)) return false;
+        if (py >= top - tol && py <= bottom + tol) return true;
+        // уровни за пределами A–B (1.272, 1.618, отрицательные) нарисованы — значит, выбираются нажатием по линии;
+        // промежуток между ними телом не считается: там сдвиг графика (ADR-0009, «Рисование»)
+        const [p1, p2] = d.points;
+        if (!p1 || !p2) return false;
+        return fibLevels(p1, p2, d.levels).some(({ price }) => {
+          const y = proj.y(price);
+          return y !== null && Math.abs(py - y) <= tol;
+        });
       }
       return false;
     }

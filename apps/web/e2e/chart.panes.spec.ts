@@ -249,6 +249,47 @@ test.describe("десктоп 1440×900", () => {
     await expect.poll(async () => (await heights(page)).slice(1)).toEqual([90]);
   });
 
+  test("MACD: «Быстрая» не короче «Медленной» — график жив, медленная подтянута, перезагрузка открывает график; несогласованное сохранение не роняет страницу", async ({ page }) => {
+    await open(page);
+    const macd = page.getByTestId("pane-macd");
+    await macd.hover();
+    await macd.getByRole("button", { name: "настроить MACD 12 26 9" }).click();
+    const dlg = page.getByRole("dialog", { name: "Параметры MACD 12 26 9" });
+    // пользователь набирает 30/60/9 по одному полю: «Быстрая» = 30 при медленной 26 — раньше «This page couldn’t load»
+    await dlg.getByLabel(/Быстрая/).fill("30");
+    await dlg.getByLabel(/Быстрая/).press("Enter");
+    await expect(page.getByTestId("terminal")).toBeVisible();
+    await expect(page.getByTestId("pane-macd")).toContainText("MACD 30 31 9");
+    await expect.poll(async () => (await page.evaluate(() => JSON.parse(localStorage.getItem("pl-terminal") ?? "{}").indicators as { id: string; params: Record<string, number> }[])).find((i) => i.id === "macd")?.params).toMatchObject({ fast: 30, slow: 31 });
+    await page.reload();
+    await expect(page.getByTestId("terminal").locator("canvas").first()).toBeVisible();
+    await expect(page.getByTestId("pane-macd")).toContainText("MACD 30 31 9");
+    // сохранение, записанное до исправления (быстрая 30, медленная 26): страница открывается, параметры приведены
+    await page.evaluate(() => {
+      const st = JSON.parse(localStorage.getItem("pl-terminal") ?? "{}");
+      st.indicators = st.indicators.map((i: { id: string; params: Record<string, number> }) => (i.id === "macd" ? { ...i, params: { fast: 30, slow: 26, signal: 9 } } : i));
+      localStorage.setItem("pl-terminal", JSON.stringify(st));
+    });
+    await page.reload();
+    await expect(page.getByTestId("terminal").locator("canvas").first()).toBeVisible();
+    await expect(page.getByTestId("pane-macd")).toContainText("MACD 30 31 9");
+  });
+
+  test("логарифмическая и процентная шкала — только у цены: панели индикаторов и данных линейные и после перезагрузки с сохранённой шкалой", async ({ page }) => {
+    type ModeHost = HTMLElement & { __chart: { panes(): { priceScale(id: string): { options(): { mode: number } } }[] } };
+    const modes = () => page.evaluate(() => (document.querySelector("[data-testid=terminal]") as ModeHost).__chart.panes().map((p) => p.priceScale("right").options().mode));
+    for (const [scale, mode] of [["log", 1], ["percent", 2]] as const) {
+      // сохранённая шкала: панели создаются уже после её применения — раньше все четыре получали её режим
+      await page.goto("about:blank");
+      await page.addInitScript((sc) => {
+        const st = JSON.parse(localStorage.getItem("pl-terminal") ?? "null");
+        if (st) localStorage.setItem("pl-terminal", JSON.stringify({ ...st, scale: sc }));
+      }, scale);
+      await open(page, { saved: { ...SAVED, scale } });
+      await expect.poll(modes).toEqual([mode, 0, 0, 0]);
+    }
+  });
+
   test("шкала RSI: курсор ns-resize и подсветка; перетаскивание — «A», клик по «A» — автомасштаб; основная — двойной клик по шкале", async ({ page }) => {
     await open(page);
     const geo = () =>

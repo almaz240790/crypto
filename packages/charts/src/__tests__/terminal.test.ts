@@ -147,8 +147,8 @@ vi.mock("lightweight-charts", () => {
       },
       removeSeries: (s: FakeSeries) => series.splice(series.indexOf(s), 1),
       timeScale: () => ts,
-      scales: [] as { id: string; opts: Record<string, unknown> }[],
-      priceScale: (id = "right") => ({ applyOptions: (o: Record<string, unknown>) => chart.scales.push({ id, opts: o }) }),
+      scales: [] as { id: string; pane: number; opts: Record<string, unknown> }[],
+      priceScale: (id = "right", pane = 0) => ({ applyOptions: (o: Record<string, unknown>) => chart.scales.push({ id, pane, opts: o }) }),
       applyOptions: (o: Record<string, unknown>) => chart.applied.push(o),
       paneList: [] as FakePane[],
       panes: () => chart.paneList,
@@ -192,7 +192,7 @@ type FakeChart = {
   width: number;
   series: FakeSeries[];
   applied: { layout?: { fontSize?: number; background?: unknown }; timeScale?: Record<string, unknown>; rightPriceScale?: { scaleMargins?: { top: number } }; handleScroll?: { vertTouchDrag?: boolean; horzTouchDrag?: boolean } }[];
-  scales: { id: string; opts: { scaleMargins?: { top: number; bottom: number } } }[];
+  scales: { id: string; pane?: number; opts: { scaleMargins?: { top: number; bottom: number }; mode?: number } }[];
   ts: { setCalls: number; applied: Record<string, unknown>[]; getVisibleLogicalRange(): Range | null; setVisibleLogicalRange(r: Range): void };
   timeAt(i: number): number | undefined;
 };
@@ -596,6 +596,27 @@ describe("сброс вида и масштаб у правого края", () 
 });
 
 describe("панели под графиком (ADR-0009, «Управление панелями»)", () => {
+  it("логарифмическая и процентная шкала — только у цены: панели индикаторов остаются линейными, до и после переключения", () => {
+    make();
+    const modeOf = (pane: number) => chart.scales.filter((x) => x.id === "right" && (x.pane ?? 0) === pane && x.opts.mode !== undefined).at(-1)?.opts.mode;
+    term.addPane(); // панель до переключения
+    term.setScaleMode("log");
+    expect(modeOf(0)).toBe(1);
+    expect(modeOf(1)).toBe(0);
+    // LWC запоминает режим правой шкалы как умолчание для новых панелей — новая панель получает линейный явно
+    expect(term.addPane()).toBe(2);
+    expect(modeOf(2)).toBe(0);
+    term.setScaleMode("percent");
+    expect(modeOf(0)).toBe(2);
+    expect([modeOf(1), modeOf(2)]).toEqual([0, 0]);
+    // поле под легенду — тоже только у шкалы цены
+    term.setTopMargin(0.2);
+    const marginOf = (pane: number) => chart.scales.filter((x) => x.id === "right" && (x.pane ?? 0) === pane && x.opts.scaleMargins).at(-1)?.opts.scaleMargins;
+    expect(marginOf(0)!.top).toBe(0.2);
+    expect(marginOf(1)!.top).toBe(0.08);
+    expect(marginOf(2)!.top).toBe(0.08);
+  });
+
   it("addPane возвращает индекс созданной панели и после удаления прежней (раньше — убегающий счётчик)", () => {
     make();
     expect(term.addPane(90)).toBe(1);

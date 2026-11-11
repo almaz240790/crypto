@@ -60,7 +60,7 @@ const projOf = (pxBar: number): DrawProjector => ({
 });
 const CANDLES = bars(100);
 
-function setup(o: { magnet?: boolean; items?: Drawing[]; coarse?: boolean; pxBar?: number; candles?: Candle[]; tick?: number | null; tf?: () => number; stale?: boolean } = {}) {
+function setup(o: { magnet?: boolean; items?: Drawing[]; coarse?: boolean; pxBar?: number; candles?: Candle[]; tick?: number | null; tf?: () => number; stale?: boolean; proj?: DrawProjector } = {}) {
   const doc = new FakeTarget();
   const el = Object.assign(new FakeTarget(), { ownerDocument: doc, getBoundingClientRect: () => ({ left: 0, top: 0 }), setPointerCapture: () => undefined });
   let items: Drawing[] = o.items ?? [];
@@ -70,7 +70,7 @@ function setup(o: { magnet?: boolean; items?: Drawing[]; coarse?: boolean; pxBar
   const log = { created: [] as Drawing[], selected: [] as (string | null)[], drafts: [] as (Drawing | null)[], steps: [] as number[], done: [] as boolean[], moves: [] as { id: string; final: boolean; points: Drawing["points"]; origin?: Drawing["points"] }[] };
   const ctrl = new DrawingController(
     el as unknown as HTMLElement,
-    projOf(o.pxBar ?? PX_BAR),
+    o.proj ?? projOf(o.pxBar ?? PX_BAR),
     { getDrawings: () => items, getCandles: () => o.candles ?? CANDLES, tfSeconds: H, ...(o.tf ? { getTfSeconds: o.tf } : {}), getTick: () => o.tick ?? null, timeframe: null, touch: o.coarse ?? false, magnet: o.magnet ?? false, newId: () => `n${++n}`, getSelectedId: () => selected, now: () => clock.now },
     {
       onCreate: (d) => {
@@ -993,3 +993,43 @@ describe("позиция: ручки и тело", () => {
     expect(s.ctrl.hitAt(300, 300)).toBeNull();
   });
 });
+
+describe("сдвиг рисунка за тело на логарифмической шкале", () => {
+  /** Логарифмическая шкала: 400 px на декаду, 1000 — у верхнего края. */
+  const yLog = (price: number) => (3 - Math.log10(price)) * 400;
+  const LOG: DrawProjector = {
+    timeAt: (x) => T0 + (x / PX_BAR) * H,
+    priceAt: (y) => 10 ** (3 - y / 400),
+    projector: () => ({ x: xOf, y: (p) => (p > 0 ? yLog(p) : null), width: PLOT_W, height: PLOT_H }),
+  };
+  const FIB_LOG: Drawing = { id: "f", type: "fib", points: [{ time: T0 + 20 * H, price: 100 }, { time: T0 + 60 * H, price: 200 }], style: DEFAULT_STYLE, locked: false, timeframe: null, updated_at: 0 };
+
+  it("Фибоначчи едет за указателем как целое: высота в пикселях та же, нижняя точка не уходит в ноль", () => {
+    const t = setup({ items: [FIB_LOG], proj: LOG });
+    const h0 = yLog(100) - yLog(200);
+    // за тело вниз на 200 px (и на 5 свечей вправо)
+    t.mouse.drag(400, 340, 450, 540, 8);
+    const [a, b] = t.items()[0]!.points;
+    // раньше: одна разница цен для обеих точек — A = 3.4, B = 103.4, высота 598 px вместо 120
+    expect(yLog(a!.price) - yLog(100)).toBeCloseTo(200, 6);
+    expect(yLog(b!.price) - yLog(200)).toBeCloseTo(200, 6);
+    expect(yLog(a!.price) - yLog(b!.price)).toBeCloseTo(h0, 6);
+    expect(b!.price / a!.price).toBeCloseTo(2, 9);
+    expect(a!.time).toBe(T0 + 25 * H);
+    expect(b!.time).toBe(T0 + 65 * H);
+    // и дальше вниз, пока указатель на обычной цене: обе цены положительные
+    t.mouse.drag(450, 540, 450, 740, 8);
+    for (const p of t.items()[0]!.points) expect(p.price).toBeGreaterThan(0);
+  });
+
+  it("на линейной шкале сдвиг за тело — прежний: та же разница цен у всех точек", () => {
+    const fib: Drawing = { ...FIB_LOG, points: [{ time: T0 + 20 * H, price: 100 }, { time: T0 + 60 * H, price: 120 }] };
+    const t = setup({ items: [fib] });
+    t.mouse.drag(400, 360, 430, 400, 5);
+    const [a, b] = t.items()[0]!.points;
+    expect(a!.price).toBeCloseTo(90, 9);
+    expect(b!.price).toBeCloseTo(110, 9);
+    expect([a!.time, b!.time]).toEqual([T0 + 23 * H, T0 + 63 * H]);
+  });
+});
+

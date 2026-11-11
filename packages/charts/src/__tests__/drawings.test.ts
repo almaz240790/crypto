@@ -3,6 +3,7 @@ import { channelOffset, distToSegment, extend, fibLevels, hitTest, lineAt, magne
 import { addDrawing, alive, canRedo, canUndo, clearDrawings, commitMove, createState, mergeRemote, redo, removeDrawing, resolve, toggleLock, undo, updateDrawing, visibleOn } from "../drawings/store";
 import { HANDLE_TOUCH_PX, UNDO_STEPS, pointsNeeded, type Drawing } from "../drawings/types";
 import { DrawingsPrimitive, formatDrawingPrice } from "../drawings/primitive";
+import { fibXs } from "../drawings/labels";
 import type { Candle } from "../types";
 import { H, T0, TOKENS, bars, makeEnv } from "./fakes/lwc";
 import { alpha } from "../theme";
@@ -270,3 +271,62 @@ describe("Фибоначчи и цвет рисунков по умолчани�
     expect(render([line]).strokes[0]!.style).toBe(TOKENS.down);
   });
 });
+
+describe("Фибоначчи: уровни за пределами A–B, подписи небольшого рисунка, проекция после смены серии", () => {
+  const proj: Projector = { x: (t) => ((t - T0) / H) * 10, y: (p) => (200 - p) * 4, width: 1000, height: 800 };
+  const fib: Drawing = { id: "F", type: "fib", points: [{ time: T0 + 20 * H, price: 100 }, { time: T0 + 60 * H, price: 120 }], style: { color: "text2", width: 1, dashed: false }, locked: false, timeframe: null, updated_at: 0 };
+
+  it("линии 1.272 и 1.618 выбираются нажатием, промежуток между ними — нет (там сдвиг графика)", () => {
+    const y = (level: number) => proj.y(fibLevels(fib.points[0]!, fib.points[1]!, [level])[0]!.price)!;
+    expect(y(1)).toBe(400);
+    expect(hitTest([fib], 400, proj.y(110)!, proj, 8)).toEqual({ id: "F", part: "body", index: -1 });
+    // раньше — null: линия нарисована и подписана, а нажатие по ней снимало выбор
+    expect(hitTest([fib], 400, y(1.272), proj, 8)).toEqual({ id: "F", part: "body", index: -1 });
+    expect(hitTest([fib], 400, y(1.618), proj, 8)).toEqual({ id: "F", part: "body", index: -1 });
+    expect(hitTest([fib], 400, y(1.618) - 6, proj, 8)).toEqual({ id: "F", part: "body", index: -1 });
+    // между 1.272 и 1.618, дальше допуска от обеих линий, и ниже 1.618 — не рисунок
+    expect(hitTest([fib], 400, (y(1.272) + y(1.618)) / 2, proj, 8)).toBeNull();
+    expect(hitTest([fib], 400, y(1.618) + 20, proj, 8)).toBeNull();
+    // левее и правее рисунка линии уровня нет
+    expect(hitTest([fib], 150, y(1.618), proj, 8)).toBeNull();
+    expect(hitTest([fib], 650, y(1.618), proj, 8)).toBeNull();
+    // свои уровни: отрицательный (цель по тренду выше B) тоже выбирается
+    const custom = { ...fib, levels: [0, 1, -0.618] };
+    expect(hitTest([custom], 400, proj.y(120 + 20 * 0.618)!, proj, 8)).toEqual({ id: "F", part: "body", index: -1 });
+  });
+
+  it("подпись уровня не уезжает к краю панели от небольшого рисунка посреди экрана", () => {
+    // рисунок 150…358 в панели 1146: справа, внутри и слева место есть — у края панели подпись не предлагается
+    expect(fibXs(90, 150, 358, 1146)).toEqual([358, 266, 58]);
+    // рисунок у правого края (справа подпись не помещается) или частично за экраном — запасное место у края остаётся
+    expect(fibXs(90, 900, 1100, 1146)).toContain(1146 - 90);
+    expect(fibXs(90, -50, 200, 1146)).toContain(1146 - 90);
+    // совсем нет места рядом (рисунок уже подписи у левого края панели шириной с подпись) — единственное место у края
+    expect(fibXs(90, 10, 40, 100)).toEqual([10]);
+  });
+
+  it("проекция для контроллера переживает пересоздание серии (смена типа графика)", () => {
+    const candles = bars(50);
+    const a = makeEnv(() => candles, { top: 110, bottom: 90 });
+    const prim = new DrawingsPrimitive(TOKENS);
+    prim.attached({ chart: a.chart, series: a.series, requestUpdate: () => undefined } as never);
+    prim.projector!.setBars(candles.map((c) => c.time), H);
+    const live = prim.live;
+    const t = live.timeAt(100);
+    expect(t).not.toBeNull();
+    expect(live.priceAt(0)).toBe(110);
+    // серию убрали: координат нет, под указателем ничего — но объект проекции тот же
+    prim.detached();
+    expect(live.priceAt(0)).toBeNull();
+    expect(live.timeAt(100)).toBeNull();
+    expect(live.projector().x(candles[0]!.time)).toBeNull();
+    // новая серия (другой тип графика, другой диапазон цен): проекция работает и помнит бары до следующей синхронизации
+    const b = makeEnv(() => candles, { top: 220, bottom: 180 });
+    prim.attached({ chart: b.chart, series: b.series, requestUpdate: () => undefined } as never);
+    expect(prim.live).toBe(live);
+    expect(live.priceAt(0)).toBe(220);
+    expect(live.timeAt(100)).toBe(t);
+    expect(live.projector().y(200)).toBe(prim.projector!.y(200));
+  });
+});
+
