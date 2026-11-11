@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { heikinAshi } from "../heikin";
 import type { Candle } from "../types";
 
 /**
@@ -596,6 +597,24 @@ describe("сброс вида и масштаб у правого края", () 
 });
 
 describe("панели под графиком (ADR-0009, «Управление панелями»)", () => {
+  it("displayedBar: в Heikin Ashi — HA-свеча, как она отдана серии; у остальных типов — свеча буфера (null)", () => {
+    make();
+    const candles = bars(0, 50);
+    term.setCandles(candles);
+    const last = candles[candles.length - 1]!;
+    expect(term.displayedBar(last.time)).toBeNull();
+    term.setType("heikin");
+    const ha = heikinAshi(candles);
+    expect(term.displayedBar(last.time)).toEqual({ open: ha[49]!.open, close: ha[49]!.close });
+    expect(term.displayedBar(candles[10]!.time)).toEqual({ open: ha[10]!.open, close: ha[10]!.close });
+    // закрытие HA-свечи — не закрытие настоящей: поэтому плашка цены и считается от нарисованной
+    expect(ha[49]!.close).not.toBe(last.close);
+    // времени нет в буфере
+    expect(term.displayedBar(last.time + 1)).toBeNull();
+    term.setType("bars");
+    expect(term.displayedBar(last.time)).toBeNull();
+  });
+
   it("процентная шкала: наложенные линии индикаторов LWC не рисует (их рисует примитив по ценам); панели и другие режимы — как раньше", () => {
     make();
     const hidden = { lineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false };

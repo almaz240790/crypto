@@ -68,6 +68,11 @@ export interface OverlayOptions {
   candles: () => readonly Candle[];
   /** Длительность бара, с (экстраполяция времени правее последней свечи). */
   tfSeconds: () => number;
+  /**
+   * Свеча, как её рисует основная серия, если она не та, что в буфере (Heikin Ashi): метка цены LWC стоит на её
+   * закрытии, и плашка с отсчётом считается от неё. null и без функции — свеча буфера.
+   */
+  displayed?: (time: number) => { open: number; close: number } | null;
   /** y последнего значения наложенного инструмента — его метку на шкале не перекрываем. */
   overlayY?: () => number | null;
   /** false — наведение и клик по объектам выключены (инструмент рисования, рисунок под курсором). */
@@ -292,6 +297,7 @@ export class OverlayPrimitive implements ISeriesPrimitive<Time> {
     // метка цены LWC — закрытие последней видимой свечи; живая свеча за краем — отсчёта под ней нет
     const shown = proj.visible[proj.visible.length - 1];
     const bar = shown ?? last;
+    const drawn = bar ? (this.opts.displayed?.(bar.time) ?? bar) : null;
     const profile = this.profileFor(scene, proj.visible, r, last, moving);
     const external = this.external?.(this.measure) ?? [];
     const opts = {
@@ -299,7 +305,7 @@ export class OverlayPrimitive implements ISeriesPrimitive<Time> {
       theme: this.theme,
       measure: this.measure,
       lastPrice: last ? last.close : null,
-      plaque: bar ? { price: bar.close, up: bar.close >= bar.open, live: bar === last } : null,
+      plaque: bar && drawn ? { price: drawn.close, up: drawn.close >= drawn.open, live: bar === last } : null,
       hovered: this.hovered,
       overlayY: this.opts.overlayY?.() ?? null,
       ui: this.ui,

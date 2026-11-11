@@ -111,6 +111,8 @@ export class Terminal {
   );
   private scaleMode: ScaleMode = "linear";
   private overlay: ISeriesApi<"Line"> | null = null;
+  /** HA-свечи, как они отданы основной серии (только тип heikin). */
+  private heikin: readonly Candle[] | null = null;
   /** Свечи наложенного инструмента целиком; на графике — только на времени свечей буфера (см. overlayData). */
   private overlayCandles: readonly Candle[] = [];
   private overlayLast: number | null = null;
@@ -696,8 +698,30 @@ export class Terminal {
     }
   }
 
+  /**
+   * Свеча, как её рисует основная серия, если она отличается от свечи буфера: в Heikin Ashi — HA-свеча. Метка
+   * последней цены LWC стоит на закрытии нарисованной свечи, поэтому отсчёт до закрытия и полоса без делений под
+   * меткой считаются от неё же (раньше — от настоящего закрытия: отсчёт висел в стороне от метки). null — серия
+   * рисует свечи буфера как есть.
+   */
+  displayedBar(time: number): { open: number; close: number } | null {
+    const ha = this.type === "heikin" ? this.heikin : null;
+    if (!ha) return null;
+    let lo = 0, hi = ha.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const c = ha[mid]!;
+      if (c.time === time) return { open: c.open, close: c.close };
+      if (c.time < time) lo = mid + 1;
+      else hi = mid - 1;
+    }
+    return null;
+  }
+
   private seriesData() {
-    const src = this.type === "heikin" ? heikinAshi(this.buffer.candles) : this.buffer.candles;
+    // HA-свечи, отданные серии, — и для displayedBar (пересчитываются при каждой отрисовке и обновлении серии)
+    this.heikin = this.type === "heikin" ? heikinAshi(this.buffer.candles) : null;
+    const src = this.heikin ?? this.buffer.candles;
     if (this.type === "line") return src.map((c) => ({ time: c.time as UTCTimestamp, value: c.close }));
     return src.map((c) => ({ time: c.time as UTCTimestamp, open: c.open, high: c.high, low: c.low, close: c.close }));
   }

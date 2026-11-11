@@ -65,6 +65,11 @@ export interface ChartStatus {
   themeVersion: number;
   /** Растёт при подгрузке истории слева (переходное поле до D: заменяет useState PR A). */
   historyRev: number;
+  /**
+   * Время первой свечи буфера после подгрузки истории слева; null — истории ещё не подгружали (буфер — первая порция)
+   * или сменились инструмент либо таймфрейм. По нему линия сравнения догружает историю второго инструмента.
+   */
+  historyFrom: number | null;
 }
 
 export interface ChartState {
@@ -101,7 +106,7 @@ export const INITIAL_STATE: ChartState = {
   crosshair: null,
   values: NO_VALUES,
   visible: { fromTime: null, toTime: null, atRightEdge: true, bars: 0 },
-  status: { ready: false, device: "desktop", theme: "light", themeVersion: 0, historyRev: 0 },
+  status: { ready: false, device: "desktop", theme: "light", themeVersion: 0, historyRev: 0, historyFrom: null },
 };
 
 export function createChartStore(init?: Partial<ChartState>): ChartStore {
