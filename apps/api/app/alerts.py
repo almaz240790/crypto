@@ -472,7 +472,11 @@ def notify_trigger(
     if user is None or user.deleted_at is not None:
         _set_delivery(trig, status=SUPPRESSED, reason="no_user")
         return 0
-    ns = settings_for(db, user)
+    # настройки — под блокировкой строки: два уведомителя бок о бок (выкладка) не превысят
+    # дневной лимит, увеличивая счётчик писем одновременно
+    ns = db.get(NotificationSettings, user.id, with_for_update=True, populate_existing=True)
+    if ns is None:
+        ns = settings_for(db, user)
     symbol = _symbol(db, alert.instrument_id) if alert.instrument_id else None
     if alert.instrument_id is None and trig.details.get("symbol"):
         symbol = str(trig.details["symbol"])
@@ -728,7 +732,11 @@ def _apply_failure(db: Session, trig: AlertTrigger, exc: Exception, now: datetim
 def _count_sent_mail(db: Session, trig: AlertTrigger, now: datetime) -> None:
     """Письмо по срабатыванию ушло — +1 к дневному счётчику писем пользователя."""
     alert = db.get(Alert, trig.alert_id)
-    ns = db.get(NotificationSettings, alert.user_id) if alert is not None else None
+    ns = (
+        db.get(NotificationSettings, alert.user_id, with_for_update=True, populate_existing=True)
+        if alert is not None
+        else None
+    )
     if ns is None:
         return
     limit_reached(ns, now)  # обнуляет счётчик, если наступил новый день

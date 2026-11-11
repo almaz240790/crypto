@@ -1469,12 +1469,12 @@ def test_worker_message_wakes_notifier_through_redis(monkeypatch: pytest.MonkeyP
     out = Outbox()
     passes: list[int] = []
 
-    def once() -> int:
+    def once() -> alerts_mod.DeliveryPass:
         _as_notifier(monkeypatch)
         with SessionLocal() as s:
-            n = deliver_pending(s, mail=out.mail, push=out.push)
-        passes.append(n)
-        return n
+            res = alerts_mod.deliver_batch(s, mail=out.mail, push=out.push)
+        passes.append(res.decided)
+        return res
 
     def fire() -> None:
         with SessionLocal() as s:
@@ -1523,3 +1523,228 @@ def test_worker_message_wakes_notifier_through_redis(monkeypatch: pytest.MonkeyP
             assert delivery_state(rows[0])["status"] == SENT
     finally:
         _cleanup([user_id], [inst_id])
+
+
+# --- уведомитель: всплеск срабатываний и перезапуск Redis ----------------------------------------
+
+
+def test_alerts_loop_continues_on_full_batch(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Полная выборка, в которой этот экземпляр что-то обработал, — следующий проход сразу (даже
+    если часть строк решить не удалось или их забрал второй уведомитель); полная, но целиком
+    занятая другим экземпляром — короткая пауза; неполная — обычный опрос."""
+    dp = alerts_mod.DeliveryPass
+    passes = iter(
+        [dp(150, 190, True), dp(0, 3, True), dp(0, 0, True), dp(40, 40, False), dp(0, 0, False)]
+    )
+    monkeypatch.setattr(notifier_mod, "alerts_once", lambda: next(passes))
+    waits: list[float] = []
+
+    async def go() -> None:
+        n = notifier_mod.Notifier()
+
+        async def wait(timeout: float) -> None:
+            waits.append(timeout)
+            if len(waits) == 3:
+                n.stop.set()
+
+        n._wait_alerts = wait  # type: ignore[method-assign]
+        try:
+            await n.alerts_loop()
+        finally:
+            await n.redis.aclose()
+
+    asyncio.run(go())
+    assert waits == [notifier_mod.ALERTS_BUSY, notifier_mod.ALERTS_POLL, notifier_mod.ALERTS_POLL]
+
+
+def test_supervised_loop_restarts_after_crash(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Необработанная ошибка цикла не завершает процесс и не останавливает другие циклы."""
+    monkeypatch.setattr(notifier_mod, "RESTART_AFTER", 0.01)
+    runs: list[int] = []
+
+    async def go() -> None:
+        n = notifier_mod.Notifier()
+
+        async def flaky() -> None:
+            runs.append(1)
+            if len(runs) < 3:
+                raise ConnectionError("Connection closed by server")
+            n.stop.set()
+
+        try:
+            await asyncio.wait_for(n._supervised("тест", flaky), 5)
+        finally:
+            await n.redis.aclose()
+
+    asyncio.run(go())
+    assert len(runs) == 3
+
+
+@db_only
+def test_two_notifiers_drain_burst_without_poll_waits(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Всплеск: 60 срабатываний, проход по 10, два уведомителя бок о бок (выкладка). Очередь
+    разбирается без ожидания опроса (он здесь 60 с), каждое срабатывание решено один раз, и
+    дневной лимит писем (20 по умолчанию) соблюдён, хотя счётчик увеличивают оба экземпляра."""
+    _as_alerts_service(monkeypatch)
+    with SessionLocal() as s:
+        user, alert, _ = _alert_setup(s)
+        user_id, inst_id, alert_id = user.id, alert.instrument_id, alert.id
+        now = datetime.now(tz=UTC).replace(second=0, microsecond=0)
+        ids = [_fire_one(s, alert, now - timedelta(minutes=i)).id for i in range(60)]
+        s.commit()
+    assert inst_id is not None
+    _as_notifier(monkeypatch)
+    _only(monkeypatch, {alert_id})
+    out = Outbox(delay=0.005)
+    decided: list[int] = []
+
+    def once() -> alerts_mod.DeliveryPass:
+        with SessionLocal() as s:
+            res = alerts_mod.deliver_batch(s, mail=out.mail, push=out.push, limit=10)
+        decided.append(res.decided)
+        return res
+
+    monkeypatch.setattr(notifier_mod, "alerts_once", once)
+    monkeypatch.setattr(notifier_mod, "ALERTS_POLL", 60)
+
+    async def go() -> float:
+        ns = [notifier_mod.Notifier(), notifier_mod.Notifier()]
+        tasks = [asyncio.create_task(n.alerts_loop()) for n in ns]
+        t0 = time.monotonic()
+        try:
+            while sum(decided) < 60 and time.monotonic() - t0 < 30:
+                await asyncio.sleep(0.05)
+            return time.monotonic() - t0
+        finally:
+            for n in ns:
+                n.stop.set()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            for n in ns:
+                await n.redis.aclose()
+
+    try:
+        elapsed = asyncio.run(go())
+        assert sum(decided) == 60 and elapsed < 20, (decided, elapsed)
+        keys = [m[3] for m in out.mails]
+        assert len(keys) == 20 and len(set(keys)) == 20  # лимит — 20 писем в день
+        with SessionLocal() as s:
+            rows = s.scalars(select(AlertTrigger).where(AlertTrigger.id.in_(ids))).all()
+            sent = {f"alert-trigger-{r.id}" for r in rows if delivery_state(r)["status"] == SENT}
+            limited = [r for r in rows if delivery_state(r).get("reason") == "daily_limit"]
+            assert sent == set(keys) and len(limited) == 40
+            assert sorted(p[1]["tag"] for p in out.pushes) == sorted(
+                f"alert-{r.id}" for r in rows if r.notified
+            )
+            assert s.get(NotificationSettings, user_id).sent_today == 20  # type: ignore[union-attr]
+    finally:
+        _cleanup([user_id], [inst_id])
+
+
+def _free_port() -> int:
+    import socket
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def _start_redis(port: int, workdir: str) -> Any:
+    import subprocess
+
+    proc = subprocess.Popen(
+        [
+            "redis-server",
+            "--port",
+            str(port),
+            "--bind",
+            "127.0.0.1",
+            "--save",
+            "",
+            "--appendonly",
+            "no",
+            "--dir",
+            workdir,
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    import redis as sync_redis
+
+    for _ in range(100):
+        try:
+            if sync_redis.from_url(f"redis://127.0.0.1:{port}/0", socket_timeout=0.5).ping():
+                return proc
+        except Exception:
+            time.sleep(0.05)
+    proc.kill()
+    raise RuntimeError("redis-server не запустился")
+
+
+@pytest.mark.skipif(__import__("shutil").which("redis-server") is None, reason="нет redis-server")
+def test_notifier_survives_redis_restart(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    """Настоящий redis-server перезапускается под работающим уведомителем: процесс не падает,
+    доставка алертов (ей нужен только PostgreSQL) не прерывается, после возврата Redis heartbeat
+    снова пишется."""
+    import redis as sync_redis
+
+    port = _free_port()
+    url = f"redis://127.0.0.1:{port}/0"
+    monkeypatch.setattr(settings, "redis_url", url)
+    for name, value in (("ranks_once", "fresh"), ("billing_once", {}), ("monitor_once", "ok")):
+        monkeypatch.setattr(notifier_mod, name, lambda v=value: v)
+    monkeypatch.setattr(notifier_mod, "stats_once", lambda: 0)
+    monkeypatch.setattr(notifier_mod, "process", lambda a, b: (max(a, 0), max(b, 0), 0, False))
+    monkeypatch.setattr(notifier_mod, "digest_due", lambda now, done: False)
+    monkeypatch.setattr(notifier_mod, "POLL", 0.1)
+    monkeypatch.setattr(notifier_mod, "ALERTS_POLL", 0.1)
+    monkeypatch.setattr(notifier_mod, "RESTART_AFTER", 0.1)
+    passes: list[float] = []
+
+    def once() -> alerts_mod.DeliveryPass:
+        passes.append(time.monotonic())
+        return alerts_mod.DeliveryPass(0, 0, False)
+
+    monkeypatch.setattr(notifier_mod, "alerts_once", once)
+    proc = _start_redis(port, str(tmp_path))
+    client = sync_redis.from_url(url, socket_timeout=1)
+
+    def heartbeat() -> bytes | None:
+        try:
+            v = client.get(notifier_mod.HEARTBEAT_KEY)
+            return v if isinstance(v, bytes) else None
+        except Exception:
+            return None
+
+    async def go() -> None:
+        nonlocal proc
+        n = notifier_mod.Notifier()
+        task = asyncio.create_task(n.run())
+        try:
+            for _ in range(100):
+                if heartbeat():
+                    break
+                await asyncio.sleep(0.05)
+            assert heartbeat(), "heartbeat до перезапуска"
+            proc.terminate()
+            proc.wait(10)
+            down_at = time.monotonic()
+            await asyncio.sleep(1.0)  # Redis лежит: несколько итераций основного цикла
+            assert not task.done(), task
+            assert sum(t > down_at for t in passes) >= 3  # доставка алертов идёт
+            proc = _start_redis(port, str(tmp_path))  # пустой: heartbeat старого нет
+            for _ in range(100):
+                if heartbeat():
+                    break
+                await asyncio.sleep(0.05)
+            assert heartbeat(), "heartbeat после перезапуска Redis"
+            assert not task.done()
+        finally:
+            n.stop.set()
+            await asyncio.wait_for(task, 10)
+
+    try:
+        asyncio.run(go())
+    finally:
+        client.close()
+        proc.terminate()
+        proc.wait(10)

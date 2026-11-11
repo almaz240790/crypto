@@ -9,7 +9,7 @@
 (``app.coin_rank``): с CoinGecko, только если сохранённому в Redis больше суток.
 
 Отдельной задачей (ADR-0004) — доставка срабатываний алертов пользователям
-(``app.alerts.deliver_pending``): очередь — строки ``alert_triggers`` со статусом ``queued``,
+(``app.alerts.deliver_batch``): очередь — строки ``alert_triggers`` со статусом ``queued``,
 проход раз в ``ALERTS_POLL`` секунд и сразу по сообщению воркера алертов в ``alerts.triggered``.
 На Railway ключи почты и Web Push есть у этого процесса, а у воркера алертов — нет.
 
@@ -25,7 +25,7 @@ import contextlib
 import logging
 import signal as os_signal
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -36,7 +36,7 @@ import sentry_sdk
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.alerts import CHANNEL_TRIGGERED, DELIVERY_BATCH, deliver_pending
+from app.alerts import CHANNEL_TRIGGERED, DeliveryPass, deliver_batch
 from app.coin_rank import refresh_if_due
 from app.config import settings
 from app.db import SessionLocal
@@ -52,6 +52,13 @@ log = logging.getLogger("notifier")
 POLL = 30
 ALERTS_POLL = 15
 """Опрос очереди срабатываний алертов (страховка: обычно будит сообщение воркера алертов)."""
+ALERTS_BUSY = 1.0
+"""Выборка очереди полная, но все строки заняты другим экземпляром (выкладка бок о бок): пауза
+до следующего прохода — короткая, очередь не кончилась."""
+RESTART_AFTER = 5.0
+"""Цикл упал с необработанной ошибкой — перезапуск через столько секунд (``_supervised``)."""
+REDIS_RETRY = 5.0
+"""При старте Redis недоступен — повтор чтения курсоров через столько секунд."""
 MONITOR_EVERY = 60
 STATS_EVERY = 600
 BILLING_EVERY = 3600
@@ -167,10 +174,10 @@ def monitor_once() -> str:
         r.close()
 
 
-def alerts_once() -> int:
-    """Синхронно: доставить срабатывания алертов из очереди (``app.alerts.deliver_pending``)."""
+def alerts_once() -> DeliveryPass:
+    """Синхронно: один проход очереди срабатываний алертов (``app.alerts.deliver_batch``)."""
     with SessionLocal() as db:
-        return deliver_pending(db)
+        return deliver_batch(db)
 
 
 class Notifier:
@@ -178,11 +185,12 @@ class Notifier:
         self.redis = aioredis.from_url(settings.redis_url)
         self.stop = asyncio.Event()
         self.alerts_wake = asyncio.Event()
+        self._redis_ok = True
 
     async def run(self) -> None:
         tasks = [
-            asyncio.create_task(self.main_loop()),
-            asyncio.create_task(self.alerts_loop()),
+            asyncio.create_task(self._supervised("уведомителя", self.main_loop)),
+            asyncio.create_task(self._supervised("доставки алертов", self.alerts_loop)),
             asyncio.create_task(self.alerts_listener()),
         ]
         try:
@@ -193,6 +201,64 @@ class Notifier:
                 t.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             await self.redis.aclose()
+
+    async def _supervised(self, name: str, loop: Callable[[], Awaitable[None]]) -> None:
+        """Цикл упал с необработанной ошибкой — в лог и перезапуск через ``RESTART_AFTER``.
+
+        Циклы независимы: доставке алертов нужен только PostgreSQL, и сбой основного цикла
+        (Redis перезапустился, ошибка в рассылке) её не останавливает. Раньше любое исключение
+        основного цикла завершало процесс, а с ним — и очередь алертов."""
+        while not self.stop.is_set():
+            try:
+                await loop()
+            except Exception:
+                log.exception("цикл %s упал — перезапуск через %.0f с", name, RESTART_AFTER)
+                await self._sleep(RESTART_AFTER)
+
+    async def _sleep(self, seconds: float) -> None:
+        """Пауза, которую прерывает остановка."""
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(self.stop.wait(), timeout=seconds)
+
+    def _redis_failed(self, what: str, exc: Exception) -> None:
+        if self._redis_ok:
+            log.warning("Redis недоступен (%s: %s) — продолжаем без него", what, exc)
+            self._redis_ok = False
+
+    def _redis_back(self) -> None:
+        if not self._redis_ok:
+            log.info("Redis снова доступен")
+            self._redis_ok = True
+
+    async def _get(self, key: str) -> tuple[bool, str | None]:
+        """(удалось ли, значение). Недоступность Redis — не ошибка цикла: (False, None)."""
+        try:
+            value = await self.redis.get(key)
+        except Exception as exc:
+            self._redis_failed(f"чтение {key}", exc)
+            return False, None
+        self._redis_back()
+        return True, value.decode() if isinstance(value, bytes) else value
+
+    async def _set(self, key: str, value: str | int, ex: int | None = None) -> bool:
+        """Записать ключ; недоступность Redis — False (в лог один раз за сбой)."""
+        try:
+            await self.redis.set(key, value, ex=ex)
+        except Exception as exc:
+            self._redis_failed(f"запись {key}", exc)
+            return False
+        self._redis_back()
+        return True
+
+    async def _start_id(self, key: str) -> int:
+        """Курсор из Redis при старте; Redis недоступен — ждём его (иначе начали бы с текущего
+        максимума и пропустили письма о сигналах за время простоя)."""
+        while not self.stop.is_set():
+            ok, value = await self._get(key)
+            if ok:
+                return int(value or -1)
+            await self._sleep(REDIS_RETRY)
+        return -1
 
     async def alerts_listener(self) -> None:
         """Сообщение воркера алертов в ``alerts.triggered`` — будит ``alerts_loop`` без ожидания.
@@ -209,17 +275,22 @@ class Notifier:
                 await asyncio.sleep(5)
 
     async def alerts_loop(self) -> None:
+        """Проходы очереди срабатываний. Выборка была полной и этот экземпляр что-то обработал —
+        следующий проход сразу: в очереди есть ещё (всплеск срабатываний), даже если часть
+        строк забрал второй уведомитель или они ждут повтора. Полная, но вся занята другим
+        экземпляром — короткая пауза. Иначе — до сообщения воркера или ``ALERTS_POLL``."""
         while not self.stop.is_set():
             self.alerts_wake.clear()
-            n = 0
+            res = DeliveryPass(0, 0, False)
             try:
-                n = await asyncio.to_thread(alerts_once)
-                if n:
-                    log.info("алерты: доставлено срабатываний %d", n)
+                res = await asyncio.to_thread(alerts_once)
+                if res.decided:
+                    log.info("алерты: доставлено срабатываний %d", res.decided)
             except Exception:
                 log.exception("доставка алертов")
-            if n < DELIVERY_BATCH:  # полный проход — в очереди есть ещё, берём сразу
-                await self._wait_alerts(ALERTS_POLL)
+            if res.full and res.handled:
+                continue
+            await self._wait_alerts(ALERTS_BUSY if res.full else ALERTS_POLL)
 
     async def _wait_alerts(self, timeout: float) -> None:
         """До сообщения воркера алертов, остановки или ``timeout`` секунд."""
@@ -240,20 +311,28 @@ class Notifier:
         прохода (аренда) и на трое суток — только после успешного. Ошибка или процесс убит
         посреди прохода (выкладка, перезапуск) — аренда истекает, и проход повторяет этот или
         новый экземпляр; уже отправленным дубля не будет (``notification_log``). Cron-сервис
-        digest без ключа почты больше не подстраховывает — повторяем сами."""
+        digest без ключа почты больше не подстраховывает — повторяем сами. Redis недоступен —
+        прохода нет (без аренды его мог бы начать и второй экземпляр), он будет в следующей
+        итерации."""
         today = now.strftime("%Y-%m-%d")
-        await self.redis.set(KEY_DIGEST + "date", today, ex=DIGEST_RETRY_AFTER)
+        if not await self._set(KEY_DIGEST + "date", today, ex=DIGEST_RETRY_AFTER):
+            return  # без Redis нет аренды — проход в следующей итерации
         try:
             result = await asyncio.to_thread(digests_once, now)
         except Exception:
             log.exception("дайджесты: ошибка, повтор через %d с", DIGEST_RETRY_AFTER)
             return
-        await self.redis.set(KEY_DIGEST + "date", today, ex=3 * 86400)
+        await self._set(KEY_DIGEST + "date", today, ex=3 * 86400)
         log.info("дайджесты: %s", result)
 
     async def main_loop(self) -> None:
-        last_signal = int(await self.redis.get(KEY_SIGNAL) or -1)
-        last_event = int(await self.redis.get(KEY_EVENT) or -1)
+        """Сигналы и события, дайджесты, монитор, снимки, подписки, порядок монет, heartbeat.
+
+        Redis здесь — курсоры, отметка дайджестов и heartbeat. Его перезапуск или недоступность
+        цикл не роняет: курсоры живут в памяти, дайджесты ждут Redis, heartbeat пишется, когда
+        он вернётся."""
+        last_signal = await self._start_id(KEY_SIGNAL)
+        last_event = await self._start_id(KEY_EVENT)
         next_monitor = 0.0
         next_stats = 0.0
         next_billing = 0.0
@@ -273,13 +352,12 @@ class Notifier:
                 except Exception:
                     log.exception("цикл подписок")
             now = datetime.now(tz=UTC)
-            done = await self.redis.get(KEY_DIGEST + "date")
-            done_date = done.decode() if isinstance(done, bytes) else done
-            if not digest_logged:
+            known, done_date = await self._get(KEY_DIGEST + "date")
+            if known and not digest_logged:
                 # один раз при старте — чтобы по логам было видно, почему дайджесты (не) ушли
                 log.info("дайджесты: отметка в Redis за %s, час UTC %d", done_date, now.hour)
                 digest_logged = True
-            if digest_due(now, done_date):
+            if known and digest_due(now, done_date):
                 await self.digests(now)
             if time.monotonic() >= next_monitor:
                 next_monitor = time.monotonic() + MONITOR_EVERY
@@ -293,8 +371,8 @@ class Notifier:
                 last_signal, last_event, sent, closed = await asyncio.to_thread(
                     process, last_signal, last_event
                 )
-                await self.redis.set(KEY_SIGNAL, last_signal)
-                await self.redis.set(KEY_EVENT, last_event)
+                await self._set(KEY_SIGNAL, last_signal)
+                await self._set(KEY_EVENT, last_event)
                 if sent:
                     log.info("отправлено писем: %d", sent)
                 if closed:
@@ -307,9 +385,8 @@ class Notifier:
                     await asyncio.to_thread(stats_once)
                 except Exception:
                     log.exception("снимки статистики")
-            await self.redis.set(HEARTBEAT_KEY, int(time.time()))
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(self.stop.wait(), timeout=POLL)
+            await self._set(HEARTBEAT_KEY, int(time.time()))
+            await self._sleep(POLL)
 
 
 def main() -> None:
