@@ -551,6 +551,9 @@ def send_test(db: Session, user: User) -> str:
 
 
 def unsubscribe(db: Session, token: str) -> bool:
+    """Отписка по ссылке из письма: выключает все рассылки по email — дайджест, сигналы, события
+    и письма алертов (страница отписки обещает «от всех писем»; ссылка стоит и в письмах алертов).
+    Push и письма входа/восстановления пароля не трогает."""
     ns = db.scalar(
         select(NotificationSettings).where(NotificationSettings.unsubscribe_token == token)
     )
@@ -559,6 +562,7 @@ def unsubscribe(db: Session, token: str) -> bool:
     ns.email_digest = "off"
     ns.email_signals = False
     ns.email_events = False
+    ns.email_alerts = False
     db.commit()
     return True
 

@@ -71,7 +71,7 @@ from app.monitor import (
     owner_recipients,
     send_alerts,
 )
-from app.notify import mail_key, mail_ready, run_digest
+from app.notify import mail_key, mail_ready, run_digest, unsubscribe
 
 ENV_NAMES = ("APP_ENV", "FRONTEND_URL", "API_PUBLIC_URL", "RAILWAY_ENVIRONMENT_NAME")
 VERIFIED = datetime(2026, 1, 1, tzinfo=UTC)
@@ -759,6 +759,30 @@ def test_rejected_address_fails_without_retries(
     assert state["status"] == FAILED and state["attempts"] == 1 and "422" in state["error"]
     assert not trig.notified
     assert deliver_pending(db, now + timedelta(hours=1), mail=out.mail, push=out.push) == 0
+
+
+@db_only
+def test_unsubscribe_link_stops_alert_emails(db: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ссылка «Отписаться от писем» стоит и в письмах алертов, а страница обещает отписку «от всех
+    писем»: после неё письма алертов не уходят (срабатывание из очереди тоже), push остаётся."""
+    _production(monkeypatch)
+    _as_alerts_service(monkeypatch)
+    _, alert, ns = _alert_setup(db)
+    _only(monkeypatch, {alert.id})
+    now = datetime.now(tz=UTC)
+    queued = _fire_one(db, alert, now.replace(second=0, microsecond=0))
+    db.commit()
+    assert unsubscribe(db, ns.unsubscribe_token)
+    db.refresh(ns)
+    assert ns.email_digest == "off" and not ns.email_signals and not ns.email_events
+    assert ns.email_alerts is False and ns.push_alerts is True
+    _as_notifier(monkeypatch)
+    out = Outbox()
+    assert deliver_pending(db, now, mail=out.mail, push=out.push) == 1
+    db.refresh(queued)
+    assert out.mails == [] and len(out.pushes) == 1
+    assert queued.notified and delivery_state(queued)["status"] == SENT
+    assert "mail_done" not in delivery_state(queued)
 
 
 # --- параллельная работа: настоящие транзакции ----------------------------------------------------
