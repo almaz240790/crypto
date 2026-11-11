@@ -443,7 +443,7 @@ def write_candidate(
             f"{at:%Y-%m-%d %H:%M}",
         )
         return False
-    if not cand.publishable:
+    if cand.deferred or not cand.score.publishable:  # как run_backtest: skipped deferred/grade
         log.info(
             NOT_TRADED_LOG,
             inst.symbol,
