@@ -4,6 +4,11 @@
 - Защита от двойного запуска: ключ ``sched:done:{symbol}:{close_time}`` (SET NX, TTL 2 дня).
 - Fallback: раз в 30 с проверяем, что для последнего закрытия H4 (+90 с) по каждому инструменту
   запуск был; если нет — догружаем свечу по REST и запускаем.
+- Перед запуском на закрытии, которое совпадает с закрытием дня (00:00 UTC) или недели, —
+  проверка, что дневная и недельная свечи уже записаны закрытыми (``ensure_context_candles``):
+  market-data пишет закрытые 4h и 1d разными сообщениями, и событие 4h может прийти на секунду
+  раньше строки 1d. Короткое ожидание, затем догрузка по REST; если свечи нет — оценка
+  откладывается до следующей попытки fallback, а не идёт на незакрытой свече.
 - Сам запуск — ``evaluate`` по версиям стратегии в статусе ``forward``/``live`` (как в форварде),
   кандидат пишется в ``signals``; уведомления — отдельный сервис (этап 3). Версии в других
   статусах (новая из кода создаётся в ``backtest``) не оцениваются; об этом одна строка INFO
@@ -31,9 +36,11 @@ from app.config import settings
 from app.db import SessionLocal
 from app.forward import (
     SKIPPED_VERSION_LOG,
+    closed_candle_exists,
     evaluated_versions,
     last_h4_close,
     load_inputs,
+    missing_context_candles,
     skipped_versions,
     sync_strategy_versions,
     upsert_candles,
@@ -51,6 +58,10 @@ DONE_TTL = 2 * 24 * 3600
 FALLBACK_DELAY = timedelta(seconds=90)
 FALLBACK_EVERY = 30
 HEARTBEAT_KEY = "scheduler:heartbeat"
+CONTEXT_GRACE = timedelta(seconds=10)
+"""Сколько после закрытия H4 ждать закрытых свечей D1/W1 от market-data, прежде чем догружать
+их по REST. Срок общий на закрытие, а не на инструмент: очередь инструментов его не умножает."""
+CONTEXT_POLL = 0.5
 
 # версия → статус, о котором уже написали «не оценивается»: process_symbol идёт в потоках
 _reported_skips: dict[str, str] = {}
@@ -97,7 +108,7 @@ def process_symbol(symbol: str, at: datetime) -> dict[str, int]:
         for key, version in versions.items():
             res = evaluate(inputs, at, STRATEGIES[key])
             if isinstance(res, SignalCandidate):
-                if write_candidate(session, version, inst, res):
+                if write_candidate(session, version, inst, res, inputs):
                     stats["signals"] += 1
                     log.info(
                         "%s %s %s: %s %s %d%s",
@@ -123,37 +134,77 @@ def process_symbol(symbol: str, at: datetime) -> dict[str, int]:
     return stats
 
 
-def ensure_h4_candle(symbol: str, close_time: datetime) -> bool:
-    """Есть ли закрытая свеча H4 с этим закрытием в БД; если нет — догрузить по REST."""
-    open_time = close_time - Timeframe.H4.delta
+def ensure_candle(symbol: str, tf: Timeframe, close_time: datetime) -> bool:
+    """Есть ли в БД закрытая свеча ``tf`` с этим закрытием; если нет — догрузить по REST."""
+    open_time = close_time - tf.delta
     with SessionLocal() as session:
-        inst = session.scalar(select(Instrument).where(Instrument.symbol == symbol))
+        inst = session.scalar(
+            select(Instrument).where(
+                Instrument.symbol == symbol, Instrument.market_type == "futures"
+            )
+        )
         if inst is None:
             return False
-        from sqlalchemy import text
-
-        exists = session.execute(
-            text(
-                "select 1 from candles where instrument_id=:i and timeframe='4h' "
-                "and open_time=:t and is_closed"
-            ),
-            {"i": inst.id, "t": open_time},
-        ).first()
-        if exists:
+        if closed_candle_exists(session, inst.id, tf, open_time):
             return True
         try:
             candles = BinanceHistory("futures").fetch_rest(
-                symbol, Timeframe.H4, open_time - Timeframe.H4.delta * 2, close_time
+                symbol, tf, open_time - tf.delta * 2, close_time
             )
         except Exception as exc:
-            log.warning("%s: REST-догрузка свечи не удалась: %s", symbol, exc)
+            log.warning("%s: REST-догрузка свечи %s не удалась: %s", symbol, tf.value, exc)
             return False
-        closed = [c for c in candles if c.close_time(Timeframe.H4) <= close_time]
+        closed = [c for c in candles if c.close_time(tf) <= close_time]
         if not any(c.open_time == open_time for c in closed):
             return False
-        upsert_candles(session, inst.id, Timeframe.H4, closed)
+        upsert_candles(session, inst.id, tf, closed)
         session.commit()
         return True
+
+
+def ensure_h4_candle(symbol: str, close_time: datetime) -> bool:
+    """Есть ли закрытая свеча H4 с этим закрытием в БД; если нет — догрузить по REST."""
+    return ensure_candle(symbol, Timeframe.H4, close_time)
+
+
+def ensure_context_candles(symbol: str, at: datetime, grace: timedelta = CONTEXT_GRACE) -> bool:
+    """Записаны ли закрытыми свечи D1/W1, которые закрываются в ``at`` (``context_candles_due``).
+
+    На обычном закрытии H4 таких свечей нет — сразу ``True``. В 00:00 UTC ждём строку от
+    market-data до ``at + grace``, затем догружаем недостающее по REST. ``False`` — свечи нет и
+    догрузить не удалось: оценивать нельзя, bias посчитался бы без только что закрытого дня
+    (или по незакрытой строке), и сигнал разошёлся бы с бэктестом и со сверкой.
+    """
+    with SessionLocal() as session:
+        inst_id = session.scalar(
+            select(Instrument.id).where(
+                Instrument.symbol == symbol, Instrument.market_type == "futures"
+            )
+        )
+        if inst_id is None:
+            return True  # process_symbol по такому инструменту ничего не делает
+        while True:
+            missing = missing_context_candles(session, inst_id, at)
+            if not missing or datetime.now(tz=UTC) >= at + grace:
+                break
+            session.rollback()  # следующий запрос — в новой транзакции
+            time.sleep(CONTEXT_POLL)
+    for tf, open_time in missing:
+        if not ensure_candle(symbol, tf, open_time + tf.delta):
+            log.warning(
+                "%s %s: свеча %s не закрыта в БД и не догружена — оценка отложена",
+                symbol,
+                at.strftime("%d.%m %H:%M"),
+                tf.value,
+            )
+            return False
+        log.warning(
+            "%s %s: свеча %s догружена по REST (market-data не записал её закрытой вовремя)",
+            symbol,
+            at.strftime("%d.%m %H:%M"),
+            tf.value,
+        )
+    return True
 
 
 class Scheduler:
@@ -165,6 +216,10 @@ class Scheduler:
         if not await self.redis.set(done_key(symbol, close_time), source, nx=True, ex=DONE_TTL):
             return
         try:
+            if not await asyncio.to_thread(ensure_context_candles, symbol, close_time):
+                # не оценено: ключ снимается, fallback повторит попытку через FALLBACK_EVERY
+                await self.redis.delete(done_key(symbol, close_time))
+                return
             stats = await asyncio.to_thread(process_symbol, symbol, close_time)
             log.debug("%s %s (%s): %s", symbol, close_time, source, stats)
         except Exception:

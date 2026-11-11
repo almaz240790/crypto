@@ -21,7 +21,7 @@ from app.coin_rank import current_ranks, rank_of, rank_sort_key
 from app.forward import _candles
 from app.models import Instrument
 from engine.bias import context_at
-from engine.candles import Candle, Timeframe, closed_only
+from engine.candles import Candle, Timeframe
 from engine.filters import _percentile_rank, atr_regime
 from engine.indicators import atr
 from engine.params import StrategyParams
@@ -161,9 +161,9 @@ def build_row(
     now: datetime,
     rank: int | None = None,
 ) -> dict[str, Any]:
-    h4 = closed_only(_candles(session, inst.id, Timeframe.H4, H4_N), Timeframe.H4, now)
-    d1 = closed_only(_candles(session, inst.id, Timeframe.D1, D1_N), Timeframe.D1, now)
-    w1 = closed_only(_candles(session, inst.id, Timeframe.W1, W1_N), Timeframe.W1, now)
+    h4 = _candles(session, inst.id, Timeframe.H4, H4_N, now)
+    d1 = _candles(session, inst.id, Timeframe.D1, D1_N, now)
+    w1 = _candles(session, inst.id, Timeframe.W1, W1_N, now)
     row: dict[str, Any] = {
         "symbol": inst.symbol,
         "instrument_id": inst.id,
@@ -223,9 +223,7 @@ def build_screener(session: Session, now: datetime | None = None) -> list[dict[s
         key=lambda x: rank_sort_key(x[1], x[0].symbol),
     )
     btc = next((i for i in instruments if i.symbol == "BTCUSDT"), None)
-    btc_d1 = (
-        closed_only(_candles(session, btc.id, Timeframe.D1, D1_N), Timeframe.D1, now) if btc else []
-    )
+    btc_d1 = _candles(session, btc.id, Timeframe.D1, D1_N, now) if btc else []
     return [build_row(session, inst, btc_d1, now, rank) for inst, rank in ranked]
 
 
