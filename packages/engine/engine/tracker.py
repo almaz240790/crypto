@@ -31,7 +31,8 @@ from decimal import Decimal
 from enum import StrEnum
 
 from engine.backtest import DEFAULT_EXECUTION, ExecutionParams, execution_cost_r
-from engine.candles import SIGNAL_TIMEFRAME, Candle, Timeframe, interval_start
+from engine.candles import SIGNAL_TIMEFRAME, Candle, Timeframe
+from engine.candles import interval_start as interval_start  # прежний путь импорта (mypy --strict)
 from engine.params import TradeParams
 from engine.structure import Direction
 from engine.trade import TradeSetup
