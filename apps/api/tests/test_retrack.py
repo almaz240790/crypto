@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import secrets
 from collections.abc import Iterator
@@ -692,21 +693,134 @@ def test_planning_alone_writes_nothing(factory: sessionmaker[Session]) -> None:
     assert {n: sig.status for n, sig in w.signals.items()} == statuses
 
 
-@db_only
-def test_tracker_startup_runs_job_once_and_survives_errors(
+def test_retrack_once_reports_whether_the_job_is_done(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    calls: list[int] = []
+    """Ошибка задания не останавливает трекер; ``True`` — только когда задание выполнено."""
+    outcomes: list[Any] = [
+        RuntimeError("БД недоступна"),
+        {"failed": ["7"]},
+        {"failed": []},
+        None,
+    ]
 
-    def boom() -> None:
-        calls.append(1)
-        raise RuntimeError("БД недоступна")
+    def fake_run() -> Any:
+        out = outcomes.pop(0)
+        if isinstance(out, Exception):
+            raise out
+        return out
 
-    monkeypatch.setattr(retrack, "run", boom)
+    monkeypatch.setattr(retrack, "run", fake_run)
     with caplog.at_level(logging.ERROR, logger="tracker"):
-        worker.retrack_once()  # ошибка не останавливает трекер
-    assert calls == [1]
-    assert "повторится при следующем старте" in caplog.records[0].getMessage()
+        assert worker.retrack_once() is False
+    assert "пересчёт форварда не удался" in caplog.records[0].getMessage()
+    assert worker.retrack_once() is False  # не применён сигнал — отметки нет
+    assert worker.retrack_once() is True
+    assert worker.retrack_once() is True  # выполнено раньше
+
+
+class _FakePubSub:
+    async def subscribe(self, *_a: Any) -> None:
+        return None
+
+    async def listen(self) -> Any:
+        await asyncio.Event().wait()
+        yield {}
+
+
+class _FakeRedis:
+    def __init__(self) -> None:
+        self.heartbeats = 0
+
+    def pubsub(self) -> _FakePubSub:
+        return _FakePubSub()
+
+    async def set(self, *_a: Any) -> None:
+        self.heartbeats += 1
+
+    async def aclose(self) -> None:
+        return None
+
+
+def test_tracker_retries_the_job_with_growing_delay(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Пока задание не выполнено, повтор — не раньше срока; интервал удваивается до предела;
+    выполненное задание больше не запускается."""
+    monkeypatch.setattr(worker.aioredis, "from_url", lambda *_a, **_k: _FakeRedis())
+    clock = [1000.0]
+    monkeypatch.setattr(worker.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(worker, "RETRACK_RETRY_FIRST", 60)
+    monkeypatch.setattr(worker, "RETRACK_RETRY_MAX", 200)
+    done = [False] * 4 + [True]
+    calls: list[float] = []
+
+    def once() -> bool:
+        calls.append(clock[0])
+        return done[len(calls) - 1]
+
+    monkeypatch.setattr(worker, "retrack_once", once)
+    t = worker.Tracker()
+
+    async def drive() -> None:
+        for _ in range(1200):  # шаг 1 с — проход трекера раз в «секунду»
+            await t.retrack()
+            clock[0] += 1
+
+    asyncio.run(drive())
+    # 1000, +60, +120, +200 (предел), +200 — выполнено, дальше не запускается
+    assert calls == [1000.0, 1060.0, 1180.0, 1380.0, 1580.0]
+    assert t.retrack_done
+
+
+@db_only
+def test_tracker_started_before_migration_completes_the_job_later(
+    factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Трекер выкладывается одновременно с API, а миграция 0026 применяется на выкладке API: при
+    старте трекера таблиц задания ещё нет. Задание не откладывается до следующего перезапуска —
+    его повторяет периодический проход, и после миграции оно выполняется."""
+    db = factory()
+    w = _build(db)
+    db.execute(text("alter table deploy_jobs rename to deploy_jobs_later"))
+    db.commit()
+    real_run = retrack.run
+    attempts: list[int] = []
+
+    def run_job() -> dict[str, Any] | None:
+        attempts.append(1)
+        if len(attempts) == 2:  # между попытками API применил миграцию
+            with factory() as s:
+                s.execute(text("alter table deploy_jobs_later rename to deploy_jobs"))
+                s.commit()
+        return real_run(factory, now=NOW)
+
+    monkeypatch.setattr(retrack, "run", run_job)
+    monkeypatch.setattr(worker.aioredis, "from_url", lambda *_a, **_k: _FakeRedis())
+    monkeypatch.setattr(worker, "catch_up", lambda *_a: 0)
+    monkeypatch.setattr(worker, "CATCHUP_EVERY", 0)
+    monkeypatch.setattr(worker, "RETRACK_RETRY_FIRST", 0)
+    t = worker.Tracker()
+
+    async def drive() -> None:
+        task = asyncio.create_task(t.run())
+        for _ in range(2000):
+            if t.retrack_done:
+                break
+            await asyncio.sleep(0.01)
+        t.stop.set()
+        await asyncio.wait_for(task, 10)
+
+    with caplog.at_level(logging.WARNING, logger="tracker"):
+        asyncio.run(drive())
+    assert t.retrack_done and len(attempts) == 2
+    assert any("повтор через" in r.getMessage() for r in caplog.records)
+    db.expire_all()
+    assert db.get(DeployJob, RETRACK_JOB) is not None
+    assert w.signals["timestop"].status == "closed_time"
+    res = db.get(SignalResult, w.signals["timestop"].id)
+    assert res is not None and res.closed_at == DEADLINE
+    assert w.signals["riskgap"].status == "voided"
 
 
 def test_fees_without_state_uses_recorded_result() -> None:

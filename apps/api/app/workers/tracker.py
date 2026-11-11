@@ -11,7 +11,10 @@
   в бэктесте (план 2.11); вычтенная величина — в ``signal_results.cost_r``. В состоянии
   ``signal_tracking.state`` результат хранится до вычета.
 - При старте, до догона, — разовый пересчёт форвард-сигналов, записанных с ошибкой учёта
-  (``app.retrack``, задание «сигналы», задачи 7 и 10): выполняется один раз, отметка в БД.
+  (``app.retrack``, задание «сигналы», задачи 7 и 10): выполняется один раз, отметка в БД. Если
+  он не выполнен (миграция 0026 ещё не применена — трекер выкладывается одновременно с API,
+  сбой БД, не применён какой-то сигнал), периодический проход повторяет его с растущим
+  интервалом (``RETRACK_RETRY_FIRST`` … ``RETRACK_RETRY_MAX``), пока задание не завершится.
 - При старте и раз в минуту — догон: для открытых сигналов проигрываются все закрытые 1m-свечи
   после ``last_candle_time`` (или после сигнальной свечи), так что разрыв WebSocket не
   теряет касаний.
@@ -51,6 +54,10 @@ log = logging.getLogger("tracker")
 OPEN = ("pending", "active", "tp1_hit", "tp2_hit")
 CATCHUP_EVERY = 60
 HEARTBEAT_KEY = "tracker:heartbeat"
+RETRACK_RETRY_FIRST = 60
+"""Первый повтор невыполненного пересчёта форварда — через столько секунд; дальше интервал
+удваивается до ``RETRACK_RETRY_MAX``."""
+RETRACK_RETRY_MAX = 3600
 EVENT_TYPE = {
     "activated": "activated",
     "tp1": "tp1",
@@ -327,22 +334,42 @@ def catch_up(tf: Timeframe = Timeframe.M1, instrument_id: int | None = None) -> 
     return total
 
 
-def retrack_once() -> None:
-    """Разовый пересчёт форвард-сигналов, записанных с ошибкой учёта (``app.retrack``), — при
-    старте, до догона. Выполненное задание отмечено в БД и не повторяется. Ошибка трекер не
-    останавливает: отметки нет, задание продолжится при следующем старте."""
+def retrack_once() -> bool:
+    """Разовый пересчёт форвард-сигналов, записанных с ошибкой учёта (``app.retrack``).
+    Выполненное задание отмечено в БД и не повторяется. ``True`` — задание выполнено (сейчас или
+    раньше); ``False`` — нет (ошибка, например таблицы 0026 ещё нет, или не применён какой-то
+    сигнал): отметки нет, ``Tracker`` повторит его позже. Ошибка трекер не останавливает."""
     from app import retrack  # app.retrack сам опирается на функции этого модуля
 
     try:
-        retrack.run()
+        summary = retrack.run()
     except Exception:
-        log.exception("пересчёт форварда не удался — повторится при следующем старте")
+        log.exception("пересчёт форварда не удался")
+        return False
+    return summary is None or not summary["failed"]
 
 
 class Tracker:
     def __init__(self) -> None:
         self.redis = aioredis.from_url(settings.redis_url)
         self.stop = asyncio.Event()
+        self.retrack_done = False
+        self.retrack_due = 0.0
+        """``time.monotonic()``, раньше которого пересчёт форварда не повторяется."""
+        self.retrack_delay = RETRACK_RETRY_FIRST
+
+    async def retrack(self) -> None:
+        """Пересчёт форварда (``retrack_once``): при старте и, пока не выполнен, повторно из
+        периодического прохода — с интервалом от ``RETRACK_RETRY_FIRST`` до ``RETRACK_RETRY_MAX``
+        секунд. Так задание выполнится и тогда, когда трекер стартовал раньше миграции 0026
+        (она применяется на выкладке API) или БД при старте была недоступна."""
+        if self.retrack_done or time.monotonic() < self.retrack_due:
+            return
+        self.retrack_done = await asyncio.to_thread(retrack_once)
+        if not self.retrack_done:
+            log.warning("пересчёт форварда не выполнен — повтор через %d с", self.retrack_delay)
+            self.retrack_due = time.monotonic() + self.retrack_delay
+            self.retrack_delay = min(self.retrack_delay * 2, RETRACK_RETRY_MAX)
 
     async def listener(self) -> None:
         pubsub = self.redis.pubsub()
@@ -371,10 +398,11 @@ class Tracker:
             except Exception:
                 log.exception("догон не удался")
             await self.redis.set(HEARTBEAT_KEY, int(time.time()))
+            await self.retrack()
             await asyncio.sleep(CATCHUP_EVERY)
 
     async def run(self) -> None:
-        await asyncio.to_thread(retrack_once)
+        await self.retrack()
         tasks = [asyncio.create_task(self.listener()), asyncio.create_task(self.periodic())]
         await self.stop.wait()
         for t in tasks:
