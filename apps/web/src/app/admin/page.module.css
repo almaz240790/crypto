@@ -66,3 +66,22 @@
   display: grid;
   gap: 10px;
 }
+
+/* «Сигналы на сайте» (ADR-0013): ссылки в строку с переносом; на сенсорном экране — цель не меньше 44 px */
+.sitePages {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+}
+
+.sitePages a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+}
+
+@media (pointer: coarse) {
+  .sitePages a {
+    min-height: 44px;
+  }
+}

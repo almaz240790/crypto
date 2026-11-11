@@ -220,6 +220,18 @@ test("admin: только сеанс админки — ссылки «Сигн�
   await expect(page.getByText("только admin и owner (SIGNALS_PUBLIC выключен)")).toBeVisible();
 });
 
+test("admin: на телефоне (touch) ссылки «Сигналы на сайте» — цель не меньше 44 px", async ({ browser }) => {
+  const ctx = await browser.newContext({ baseURL: BASE, viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, locale: "ru-RU" });
+  const page = await ctx.newPage();
+  await blockBinance(ctx);
+  await adminStub(page);
+  await page.goto("/admin?tab=signals");
+  const links = page.getByRole("navigation", { name: "страницы сигналов на сайте" }).getByRole("link");
+  await expect(links).toHaveCount(5);
+  for (const box of await links.evaluateAll((els) => els.map((e) => e.getBoundingClientRect().height))) expect(box).toBeGreaterThanOrEqual(44);
+  await ctx.close();
+});
+
 test("admin: вход на сайт есть (owner) — ссылки «Сигналы на сайте» прямые", async ({ page }) => {
   await as(page, "admin");
   await adminStub(page);

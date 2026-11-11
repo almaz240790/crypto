@@ -70,7 +70,7 @@ function SignalPages() {
   const other = !loading && user !== null && !canSeeSignals(user);
   return (
     <Panel title="Сигналы на сайте" footer="Пока продажи не открыты, эти страницы видят только admin и owner — после входа на сайт под этим же аккаунтом (вход в админку на сайт не переносится). Открыть всем — переменная SIGNALS_PUBLIC, см. ADR-0013.">
-      <nav aria-label="страницы сигналов на сайте" style={{ display: "flex", flexWrap: "wrap", gap: "8px 16px" }}>
+      <nav aria-label="страницы сигналов на сайте" className={s.sitePages}>
         {SIGNAL_PAGES.map(([path, label]) => (
           <Link key={path} href={siteSignalsHref(path, user)}>
             {label}
