@@ -104,10 +104,11 @@ class PushSender(Protocol):
 
 
 class DeliveryIncompleteError(Exception):
-    """Канал доставки не сработал (``cause``); ``done`` — каналы, ушедшие в этой попытке
-    (``push_done`` / ``mail_done``): повтор их не повторяет."""
+    """Канал доставки не сработал (``cause``); ``done`` — что решено в этой попытке: ушедшие
+    каналы (``push_done`` / ``mail_done``) и письмо, которое слать не надо (``mail_skipped`` —
+    лимит, ``mail_refused`` — адрес отклонён): повтор их не повторяет."""
 
-    def __init__(self, cause: Exception, done: dict[str, bool]) -> None:
+    def __init__(self, cause: Exception, done: dict[str, Any]) -> None:
         super().__init__(str(cause))
         self.cause = cause
         self.done = done
@@ -459,6 +460,11 @@ def notify_trigger(
     этот процесс сейчас доставить не может (``ready``: в production нет ключей), ждёт —
     ``waiting`` и ``retry_at`` через ``hold``, попытка не засчитывается.
 
+    Постоянный отказ почты (неверный адрес получателя) решает только судьбу письма
+    (``mail_refused``, повтор его не шлёт), а не всего срабатывания: push, упавший в той же попытке
+    или ждущий ключей, уходит на повторе. Push дошёл — срабатывание доставлено (``sent``,
+    ``notified``); push не нужен — ``failed``.
+
     Тихие часы и лимит решают один раз — пока ни один канал не ушёл. Срабатывание, по которому
     что-то уже доставлено, повтор не подавляет (иначе push, не ушедший из-за сбоя, пропал бы
     из-за лимита, который исчерпало его же письмо); только письмо на повторе снова сверяется с
@@ -502,6 +508,7 @@ def notify_trigger(
         and user.email_verified_at is not None
         and not state.get("mail_done")
         and not state.get("mail_skipped")
+        and not state.get("mail_refused")
     )
     if want_mail and admitted and limit_reached(ns, now):
         want_mail = False
@@ -542,13 +549,24 @@ def notify_trigger(
             done["mail_done"] = True
             ns.sent_today += 1
             sent += 1
+        except MailError as exc:
+            if not exc.permanent:
+                failure = exc  # ошибка письма важнее: по ней видно, отказ ли это провайдера
+            else:
+                # неверный адрес: повтор письма не поможет, но push это не отменяет
+                done["mail_refused"] = str(exc)[:200]
+                log.error("срабатывание %s: письмо отклонено (%s), не повторяем", trig.id, exc)
         except Exception as exc:
-            failure = exc  # ошибка письма важнее: по ней видно, постоянный ли отказ
+            failure = exc
     if failure is not None:
         raise DeliveryIncompleteError(failure, done)
     if waiting:
         _warn_waiting(waiting)
         _set_delivery(trig, **done, waiting=waiting, retry_at=(now + hold).isoformat())
+        return sent
+    if "mail_refused" in done and not (state.get("push_done") or done.get("push_done")):
+        # письмо отклонено, а push не нужен (или выключен): доставить нечем
+        _set_delivery(trig, status=FAILED, waiting=[], error=done["mail_refused"], **done)
         return sent
     trig.notified = True
     _set_delivery(trig, status=SENT, waiting=[], **done)
@@ -704,12 +722,14 @@ def _apply_failure(db: Session, trig: AlertTrigger, exc: Exception, now: datetim
     """Попытка не удалась: повтор через паузу ``DELIVERY_RETRY_AFTER`` × 2ⁿ (не больше
     × 2^``DELIVERY_BACKOFF_MAX``) или ``failed``.
 
-    - Постоянный отказ почты (неверный адрес получателя) — ``failed`` сразу.
     - Отказ почты не из-за письма (``provider_wide``: ключ, MAIL_FROM, лимит, сбой провайдера,
       сеть) — повтор, пока срабатывание не устарело (``DELIVERY_MAX_AGE``): после исправления
       настроек письмо уйдёт, а не пропадёт.
     - Остальное (сбой push, ошибка в данных) — не больше ``DELIVERY_MAX_ATTEMPTS`` попыток:
       «ядовитое» срабатывание не держит очередь.
+
+    Постоянный отказ почты (неверный адрес получателя) сюда не доходит: ``notify_trigger``
+    отмечает его у письма (``mail_refused``) и решает судьбу срабатывания по push.
 
     Ушедшие в этой попытке каналы (``DeliveryIncompleteError.done``) отмечаются, а ушедшее письмо
     засчитывается в дневной лимит здесь же: увеличение счётчика в ``notify_trigger`` пропало при
@@ -723,10 +743,7 @@ def _apply_failure(db: Session, trig: AlertTrigger, exc: Exception, now: datetim
         fields.update(exc.done)  # ушедшие каналы повтор не шлёт
         if exc.done.get("mail_done") and not state.get("mail_done"):
             _count_sent_mail(db, trig, now)
-    if isinstance(cause, MailError) and cause.permanent:
-        fields["status"] = FAILED
-        log.error("срабатывание %s: письмо отклонено (%s), не повторяем", trig.id, cause)
-    elif attempts >= DELIVERY_MAX_ATTEMPTS and not provider_wide(cause):
+    if attempts >= DELIVERY_MAX_ATTEMPTS and not provider_wide(cause):
         fields["status"] = FAILED
         log.error("срабатывание %s: %d ошибок доставки, больше не пытаемся", trig.id, attempts)
     else:

@@ -1028,22 +1028,126 @@ def test_expected_refusals_are_logged_without_traceback(
 def test_rejected_address_fails_without_retries(
     db: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Постоянный отказ (422 по полю ``to`` — неверный адрес): повтор не поможет, сразу
-    ``failed``."""
+    """Постоянный отказ (422 по полю ``to`` — неверный адрес), а push пользователь не выбрал:
+    доставить нечем, повтор не поможет — сразу ``failed``, письмо больше не пробуем."""
+    _as_alerts_service(monkeypatch)
+    _, alert, _ = _alert_setup(db, push_alerts=False)
+    _only(monkeypatch, {alert.id})
+    now = datetime.now(tz=UTC)
+    trig = _fire_one(db, alert, now.replace(second=0, microsecond=0))
+    db.commit()
+    _as_notifier(monkeypatch)
+    tries: list[str | None] = []
+
+    def refused(to: str, subject: str, text: str, idempotency_key: str | None = None) -> None:
+        tries.append(idempotency_key)
+        raise MailError(422, "validation_error", BAD_TO)
+
+    assert deliver_pending(db, now, mail=refused) == 1
+    db.refresh(trig)
+    state = delivery_state(trig)
+    assert state["status"] == FAILED and "422" in state["error"] and "422" in state["mail_refused"]
+    assert not trig.notified
+    assert deliver_pending(db, now + timedelta(hours=1), mail=refused) == 0
+    assert len(tries) == 1
+
+
+@db_only
+def test_rejected_address_does_not_drop_push(db: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Регрессия: постоянный отказ почты делал ``failed`` всё срабатывание, и push, ещё не
+    дошедший до пользователя, пропадал навсегда. Теперь отказ решает только судьбу письма.
+
+    - push упал в той же попытке (сеть) — уходит на повторе, письмо не повторяется;
+    - push ушёл, письмо отклонено — срабатывание доставлено (``sent``, ``notified``).
+    """
+    _as_alerts_service(monkeypatch)
+    _, flaky, _ = _alert_setup(db)
+    _, ok, _ = _alert_setup(db)
+    _only(monkeypatch, {flaky.id, ok.id})
+    now = datetime.now(tz=UTC)
+    at = now.replace(second=0, microsecond=0)
+    t_flaky, t_ok = _fire_one(db, flaky, at), _fire_one(db, ok, at)
+    db.commit()
+    _as_notifier(monkeypatch)
+    out = Outbox()
+    refused = Outbox(fail_mail=422, fail_message=BAD_TO)
+    down = {flaky.user_id}
+
+    def push(s: Session, user_id: int, payload: dict[str, Any]) -> int:
+        if user_id in down:
+            raise ConnectionError("push-сервис недоступен")
+        return out.push(s, user_id, payload)
+
+    assert deliver_pending(db, now, mail=refused.mail, push=push) == 1  # t_ok решено
+    for r in (t_flaky, t_ok):
+        db.refresh(r)
+    st_ok = delivery_state(t_ok)
+    assert t_ok.notified and st_ok["status"] == SENT and st_ok["push_done"] is True
+    assert "422" in st_ok["mail_refused"]
+    st = delivery_state(t_flaky)
+    assert st["status"] == QUEUED and st["attempts"] == 1 and "422" in st["mail_refused"]
+    assert "push_done" not in st and not t_flaky.notified
+    down.clear()  # push-сервис ожил
+    later = datetime.fromisoformat(st["retry_at"]) + timedelta(seconds=1)
+    assert deliver_pending(db, later, mail=out.mail, push=push) == 1
+    db.refresh(t_flaky)
+    assert t_flaky.notified and delivery_state(t_flaky)["status"] == SENT
+    assert sorted(p[1]["tag"] for p in out.pushes) == sorted(
+        f"alert-{r.id}" for r in (t_flaky, t_ok)
+    )
+    assert out.mails == []  # отклонённое письмо не повторялось
+    assert deliver_pending(db, later + timedelta(hours=1), mail=out.mail, push=push) == 0
+
+
+@db_only
+def test_rejected_address_while_push_waits_for_vapid(
+    db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Регрессия: у уведомителя в production нет VAPID, push ждёт ключей, а письмо отклонено по
+    адресу. Раньше срабатывание становилось ``failed``, и push не уходил и после возврата ключей.
+    Теперь оно ждёт push: ключи вернулись — push уходит, письмо не повторяется."""
+    _production(monkeypatch)
     _as_alerts_service(monkeypatch)
     _, alert, _ = _alert_setup(db)
     _only(monkeypatch, {alert.id})
     now = datetime.now(tz=UTC)
     trig = _fire_one(db, alert, now.replace(second=0, microsecond=0))
     db.commit()
-    _as_notifier(monkeypatch)
-    out = Outbox(fail_mail=422, fail_message=BAD_TO)
-    assert deliver_pending(db, now, mail=out.mail, push=out.push) == 0
+    _keys(monkeypatch, mail=True, push=False)  # уведомитель без VAPID
+    out = Outbox()
+    refused = Outbox(fail_mail=422, fail_message=BAD_TO)
+    assert deliver_pending(db, now, mail=refused.mail, push=out.push) == 0
     db.refresh(trig)
     state = delivery_state(trig)
-    assert state["status"] == FAILED and state["attempts"] == 1 and "422" in state["error"]
-    assert not trig.notified
-    assert deliver_pending(db, now + timedelta(hours=1), mail=out.mail, push=out.push) == 0
+    assert state["status"] == QUEUED and state["waiting"] == ["push"]
+    assert "422" in state["mail_refused"] and "attempts" not in state
+    _keys(monkeypatch, mail=True, push=True)
+    later = now + timedelta(minutes=20)
+    assert deliver_pending(db, later, mail=out.mail, push=out.push) == 1
+    db.refresh(trig)
+    assert trig.notified and delivery_state(trig)["status"] == SENT
+    assert [p[1]["tag"] for p in out.pushes] == [f"alert-{trig.id}"] and out.mails == []
+
+
+@db_only
+def test_inline_rejected_address_still_pushes(db: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Воркер с полным набором ключей доставляет сам: отказ по адресу не мешает push, срабатывание
+    доставлено, уведомитель его больше не трогает."""
+    _as_notifier(monkeypatch)
+    _, alert, _ = _alert_setup(db)
+    _only(monkeypatch, {alert.id})
+    out = Outbox()
+    refused = Outbox(fail_mail=422, fail_message=BAD_TO)
+    monkeypatch.setattr(alerts_mod, "_alert_mail", refused.mail)
+    monkeypatch.setattr(alerts_mod, "send_to_user", out.push)
+    now = datetime.now(tz=UTC)
+    trig = _fire_one(db, alert, now.replace(second=0, microsecond=0))
+    db.commit()
+    db.refresh(trig)
+    state = delivery_state(trig)
+    assert trig.notified and state["status"] == SENT and "422" in state["mail_refused"]
+    assert len(out.pushes) == 1
+    assert deliver_pending(db, now + timedelta(minutes=5), mail=out.mail, push=out.push) == 0
 
 
 @db_only
