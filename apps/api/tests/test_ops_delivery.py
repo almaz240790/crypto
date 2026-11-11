@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import logging
 import secrets
@@ -1329,7 +1330,9 @@ def test_incident_mail_goes_to_db_owner_without_owner_emails(
     db.add(inc)
     db.flush()
     sent: list[tuple[str, str, str]] = []
-    monkeypatch.setattr(monitor_mod, "send_mail", lambda to, s, b: sent.append((to, s, b)))
+    monkeypatch.setattr(
+        monitor_mod, "send_mail", lambda to, s, b, *a, **kw: sent.append((to, s, b))
+    )
     comps = [Component("ops_test", "Тестовый компонент", "down", "нет свечей")]
     assert send_alerts(db, comps, now) >= 1
     mine = [m for m in sent if m[0] == owner.email and "Тестовый компонент" in m[1]]
@@ -1338,6 +1341,89 @@ def test_incident_mail_goes_to_db_owner_without_owner_emails(
     sent.clear()
     send_alerts(db, comps, now + timedelta(minutes=5))  # раньше 6 часов — не повторяется
     assert not [m for m in sent if "Тестовый компонент" in m[1]]
+
+
+@db_only
+def test_incident_mail_network_error_does_not_resend_sent_ones(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Таймаут сети на втором письме прогона: прогон не падает, открытые инциденты и отметка
+    первого письма зафиксированы; следующий прогон шлёт только неотправленные — недошедшее с тем
+    же ключом идемпотентности (если Resend его всё-таки принял, второго письма не будет)."""
+    monkeypatch.setattr(settings, "resend_api_key", "re_test")
+    monkeypatch.setattr(settings, "owner_emails", "")  # как у уведомителя на Railway
+    tag = secrets.token_hex(3)
+    comps = [Component(f"ops_{tag}_{i}", f"Тест {tag} {i}", "down", "нет данных") for i in range(4)]
+    keys = [c.key for c in comps]
+    with SessionLocal() as s:
+        owner = _user(s, role="owner")
+        s.commit()
+        owner_id, owner_email = owner.id, owner.email
+    calls: list[tuple[str, str]] = []
+    fail_on = [2]  # номер нашего письма, на котором сеть «падает» (только в первом прогоне)
+
+    def post(url: str, **kw: Any) -> _Resp:
+        subject = kw["json"]["subject"]
+        if tag not in subject or kw["json"]["to"] != [owner_email]:
+            return _Resp(200)  # инциденты и владельцы общей БД — не наши
+        calls.append((subject, kw["headers"]["Idempotency-Key"]))
+        if fail_on and len(calls) == fail_on[0]:
+            fail_on.clear()
+            raise httpx.ReadTimeout("read timed out")
+        return _Resp(200)
+
+    monkeypatch.setattr(mail_mod.httpx, "post", post)
+    now = datetime(2031, 3, 7, 12, 0, tzinfo=UTC)
+    clock = [now]
+    snap = monitor_mod.Snapshot(
+        now=now,
+        heartbeats={},
+        m1_age_sec=None,
+        h4_stale=0,
+        h4_total=0,
+        engine_last_h4=None,
+        api_db_ok=True,
+        redis_ok=False,
+    )
+    monkeypatch.setattr(
+        monitor_mod, "collect", lambda db, r: dataclasses.replace(snap, now=clock[0])
+    )
+    monkeypatch.setattr(monitor_mod, "evaluate", lambda sn: comps)
+
+    def rows() -> list[Incident]:
+        with SessionLocal() as s:
+            return list(
+                s.scalars(
+                    select(Incident).where(Incident.component.in_(keys)).order_by(Incident.id)
+                ).all()
+            )
+
+    try:
+        with SessionLocal() as s:
+            monitor_mod.run_monitor(s, None)  # не падает
+        first = rows()
+        assert len(first) == 4  # инциденты открыты и зафиксированы, несмотря на сбой письма
+        assert [r.alerted_at is not None for r in first] == [True, False, False, False]
+        assert len(calls) == 2
+        clock[0] = now + timedelta(minutes=1)
+        with SessionLocal() as s:
+            monitor_mod.run_monitor(s, None)
+        assert all(r.alerted_at is not None for r in rows())
+        clock[0] = now + timedelta(minutes=2)
+        with SessionLocal() as s:
+            monitor_mod.run_monitor(s, None)
+        per_subject: dict[str, list[str]] = {}
+        for subject, key in calls:
+            per_subject.setdefault(subject, []).append(key)
+        assert len(per_subject) == 4 and len(calls) == 5
+        retried = [k for k in per_subject.values() if len(k) > 1]
+        assert len(retried) == 1 and retried[0][0] == retried[0][1]  # тот же ключ
+        assert len({k for k, *_ in per_subject.values()}) == 4
+    finally:
+        with SessionLocal() as s:
+            s.execute(delete(Incident).where(Incident.component.in_(keys)))
+            s.commit()
+        _cleanup([owner_id], [])
 
 
 @db_only
