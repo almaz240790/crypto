@@ -207,29 +207,35 @@ def _tp1_then_calm(minutes: int, hole: tuple[int, int] | None = None) -> list[Ca
     return path
 
 
-def test_data_horizon_waits_for_the_just_closed_h4_bar() -> None:
-    now = T + 10 * H4 + 30 * M1  # интервал T + 10 H4 ещё не закрыт
+def test_data_horizon_waits_for_the_just_closed_h4_bar_only_briefly() -> None:
+    soon = T + 10 * H4 + 10 * M1  # интервал T + 10 H4 не закрыт, T + 9 H4 закрылся 10 мин назад
     written = {T + 9 * H4: _h4(T + 9 * H4, D(99), D(101))}
-    assert retrack.data_horizon(now, written) == T + 10 * H4
-    assert retrack.data_horizon(now, {}) == T + 9 * H4  # только что закрытая ещё не записана
+    assert retrack.data_horizon(soon, written) == T + 10 * H4
+    assert retrack.data_horizon(soon, {}) == T + 9 * H4  # только что закрытая ещё не записана
+    # закрылась дольше H4_WRITE_GRACE назад, а её нет — данных нет, горизонт её не ждёт
+    late = T + 10 * H4 + retrack.H4_WRITE_GRACE
+    assert retrack.data_horizon(late, {}) == T + 10 * H4
+    assert retrack.data_horizon(late - M1, {}) == T + 9 * H4
 
 
-def test_gap_in_the_unclosed_h4_interval_hands_the_trade_over() -> None:
+def test_gap_in_the_unclosed_h4_interval_waits() -> None:
     """Сделка после TP1 ещё открыта; в интервале H4, который ещё не закрыт, нет минуты. Свечи
     H4 над ним нет, потому что интервал не закончился, а не потому, что данных нет: пересчёт
-    останавливается перед пропуском, сделку дальше ведёт трекер."""
+    останавливается перед пропуском, решение откладывается (``Replay.wait``) — ни void, ни
+    передачи трекеру (он шагнул бы через пропуск)."""
     now = T + 2 * H4 + 150 * M1  # 18:30, интервал 16:00 не закрыт
     h4 = {T: _h4(T, D("99.5"), D("103.5")), T + H4: _h4(T + H4, D("100.5"), D("101.5"), D(101))}
     path = _tp1_then_calm(630, hole=(540, 541))  # пропуск 17:00–17:01
     horizon = retrack.data_horizon(now, h4)
     rp = retrack.replay(LONG, P, T, path, h4, horizon)
     assert rp.risky == () and rp.gaps == ()
-    assert rp.handover is not None and rp.handover.start == T + 540 * M1
+    assert rp.wait is not None and rp.wait.start == T + 540 * M1
+    assert rp.wait.end == T + 541 * M1
     assert rp.tracker.state.status is SignalStatus.TP1_HIT
     assert rp.last_candle == T + 539 * M1
     # без горизонта тот же пропуск выглядел бы постоянной дырой — «нет свечи H4»
     blind = retrack.replay(LONG, P, T, path, h4)
-    assert blind.handover is None and "нет свечи H4" in str(blind.risky[0].risk)
+    assert blind.wait is None and "нет свечи H4" in str(blind.risky[0].risk)
 
 
 def test_permanent_gaps_before_the_horizon_still_void() -> None:
@@ -238,17 +244,26 @@ def test_permanent_gaps_before_the_horizon_still_void() -> None:
     h4 = {T + H4: _h4(T + H4, D("100.5"), D("101.5"), D(101))}
     hole = (60, 61)  # 09:00
     rp = retrack.replay(LONG, P, T, _tp1_then_calm(630, hole), h4, retrack.data_horizon(now, h4))
-    assert rp.handover is None and "нет свечи H4" in str(rp.risky[0].risk)
+    assert rp.wait is None and "нет свечи H4" in str(rp.risky[0].risk)
     # пропуск через горизонт: часть до горизонта проверяется — свеча H4 доходит до стопа
     h4 = {T: _h4(T, D("99.5"), D("103.5")), T + H4: _h4(T + H4, D("99.9"), D("101.5"), D(101))}
     across = (470, 490)  # 15:50–16:10, горизонт 16:00
     rp = retrack.replay(LONG, P, T, _tp1_then_calm(630, across), h4, retrack.data_horizon(now, h4))
-    assert rp.handover is None and "до стопа" in str(rp.risky[0].risk)
-    # та же свеча далеко от стопа — пересчёт передаётся трекеру с начала пропуска
+    assert rp.wait is None and "до стопа" in str(rp.risky[0].risk)
+    # та же свеча далеко от стопа — решение откладывается с начала пропуска
     h4[T + H4] = _h4(T + H4, D("100.5"), D("101.5"), D(101))
     rp = retrack.replay(LONG, P, T, _tp1_then_calm(630, across), h4, retrack.data_horizon(now, h4))
-    assert rp.risky == () and rp.handover is not None
-    assert rp.handover.start == T + 470 * M1
+    assert rp.risky == () and rp.wait is not None
+    assert rp.wait.start == T + 470 * M1
+    # свеча H4 12:00 закрылась 2,5 ч назад, и её нет: пропуск 13:00 её не ждёт — недействителен
+    h4 = {T: _h4(T, D("99.5"), D("103.5"))}
+    holed = _tp1_then_calm(630, (300, 303))
+    rp = retrack.replay(LONG, P, T, holed, h4, retrack.data_horizon(now, h4))
+    assert rp.wait is None and "нет свечи H4 27.10.2026 12:00 UTC" in str(rp.risky[0].risk)
+    # те же данные в 16:10 — свеча 12:00 могла ещё не записаться: решение откладывается
+    early = T + 2 * H4 + 10 * M1
+    rp = retrack.replay(LONG, P, T, holed[:487], h4, retrack.data_horizon(early, h4))
+    assert rp.risky == () and rp.wait is not None and rp.wait.start == T + 300 * M1
 
 
 def test_stored_values_round_half_away_from_zero_like_postgres() -> None:
@@ -532,7 +547,7 @@ def test_retrack_job_end_to_end(
 
     with caplog.at_level(logging.INFO, logger="retrack"):
         summary = retrack.run(factory, now=NOW)
-    assert summary is not None and summary["failed"] == []
+    assert summary is not None and summary["failed"] == [] and summary["deferred"] == []
     db.expire_all()
 
     # отчёт до применения: строка по каждому кандидату, раньше первой строки «применено»
@@ -771,8 +786,9 @@ def test_retrack_once_reports_whether_the_job_is_done(
     """Ошибка задания не останавливает трекер; ``True`` — только когда задание выполнено."""
     outcomes: list[Any] = [
         RuntimeError("БД недоступна"),
-        {"failed": ["7"]},
-        {"failed": []},
+        {"failed": ["7"], "deferred": []},
+        {"failed": [], "deferred": ["8"]},
+        {"failed": [], "deferred": []},
         None,
     ]
 
@@ -787,6 +803,7 @@ def test_retrack_once_reports_whether_the_job_is_done(
         assert worker.retrack_once() is False
     assert "пересчёт форварда не удался" in caplog.records[0].getMessage()
     assert worker.retrack_once() is False  # не применён сигнал — отметки нет
+    assert worker.retrack_once() is False  # решение отложено до записи свечи H4 — отметки нет
     assert worker.retrack_once() is True
     assert worker.retrack_once() is True  # выполнено раньше
 
@@ -1076,46 +1093,96 @@ def test_one_bad_signal_does_not_block_the_others(
 
 
 @db_only
-def test_open_trade_with_a_hole_in_the_unclosed_interval_goes_to_the_tracker(
+def test_hole_in_the_unclosed_interval_waits_for_the_minutes_or_the_h4_bar(
     factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Пересчитанная сделка ещё открыта (после TP1), а в интервале H4, который ещё не закрыт,
-    нет минуты (рестарт market-data на той же выкладке). Результат не становится
-    недействительным: пересчёт доходит до пропуска, дальше сделку ведёт трекер."""
+    """Пересчитанная сделка ещё открыта (после TP1), а в интервале H4, который ещё не закрыт, нет
+    трёх минут (рестарт market-data на той же выкладке), и в них — касание безубытка. Ни void, ни
+    передачи трекеру: трекер шагнул бы через пропуск к записанным минутам после него, и
+    дописанные потом минуты не учлись бы никогда. Решение откладывается: сигнал не меняется,
+    отметки задания нет, трекер его не ведёт. Следующий запуск решает по данным: минуты
+    дописались — пересчёт по ним (безубыток, как по полным данным); записалась свеча H4 над
+    пропуском и далеко от уровней — пересчёт через безопасный пропуск, сделку дальше ведёт трекер;
+    свеча доходит до стопа — недействителен."""
     db = factory()
     w = World(db)
-    sig = w.signal("handover", events=BUG_EVENTS, result=BUG_R, state=_bug_state(D("0.1") / 3))
-    w.minutes("handover", _tp1_then_calm(630, hole=(540, 543)))  # 17:00–17:03
-    w.h4("handover", [_h4(T, D("99.5"), D("103.5")), _h4(T + H4, D("100.5"), D("101.5"), D(101))])
-    db.commit()
-    job_at = T + 2 * H4 + 150 * M1  # 18:30
-    out = retrack.run(factory, now=job_at)
-    assert out is not None and out["applied"] == {"retrack": 1}
-    report = out["report"][0]
-    assert report["handover"] == {
-        "from": (T + 540 * M1).isoformat(),
-        "to": (T + 543 * M1).isoformat(),
-    }
-    db.expire_all()
-    assert sig.status == "tp1_hit" and db.get(SignalResult, sig.id) is None
-    tr = db.get(SignalTracking, sig.id)
-    assert tr is not None and tr.last_candle_time == T + 539 * M1
-    note = str(_events(db, sig)[-1][5])
-    assert "дальше сделка ведётся как обычно" in note and "недействител" not in note
-    assert "трекер" not in note
+    real_run = retrack.run
 
-    # трекер продолжает с минут после пропуска и закрывает сделку в безубытке
-    back = Candle(T + 630 * M1, D(101), D("101.2"), D("99.9"), D(100), D(1))
-    w.minutes("handover", [back])
+    def tracker_sees_done(summary: dict[str, Any]) -> bool:
+        """Так итог задания читает трекер (``retrack_once``)."""
+        monkeypatch.setattr(retrack, "run", lambda: summary)
+        try:
+            return worker.retrack_once()
+        finally:
+            monkeypatch.setattr(retrack, "run", real_run)
+
+    hole = (540, 543)  # 17:00–17:03, интервал 16:00
+    full = _tp1_then_calm(630)
+    full[541] = Candle(T + 541 * M1, D(101), D("101.2"), D("99.9"), D("100.5"), D(1))
+    holed = [c for c in full if not hole[0] <= (c.open_time - T) // M1 < hole[1]]
+    names = ("backfill", "barsafe", "barrisk")
+    for name in names:
+        w.signal(name, events=BUG_EVENTS, result=BUG_R, state=_bug_state(D("0.1") / 3))
+        w.minutes(name, holed)
+        w.h4(name, [_h4(T, D("99.5"), D("103.5")), _h4(T + H4, D("100.5"), D("101.5"), D(101))])
     db.commit()
+    s = w.signals
+    original = {n: _events(db, s[n]) for n in names}
+    truth = retrack.replay(LONG, P, T, full, {})  # по полным минутам — безубыток в 17:01
+    assert truth.tracker.state.status is SignalStatus.CLOSED_BE
+
+    out = retrack.run(factory, now=T + 2 * H4 + 150 * M1)  # 18:30
+    assert out is not None and out["failed"] == [] and out["applied"] == {}
+    assert sorted(out["deferred"]) == sorted(str(s[n].id) for n in names)
+    wait = {"from": (T + 540 * M1).isoformat(), "to": (T + 543 * M1).isoformat()}
+    assert [(r["kind"], r["wait"]) for r in out["report"]] == [("wait", wait)] * 3
+    assert not tracker_sees_done(out)  # задание не выполнено — трекер повторит его
+    db.expire_all()
+    assert db.get(DeployJob, RETRACK_JOB) is None
+    for n in names:
+        assert s[n].status == "closed_time" and _events(db, s[n]) == original[n]
+        assert db.get(SignalResult, s[n].id) is not None
+        assert (
+            db.scalar(select(SignalCorrection).where(SignalCorrection.signal_id == s[n].id)) is None
+        )
+    # трекер отложенный сигнал не ведёт: он по-прежнему закрыт, через пропуск никто не шагает
     monkeypatch.setattr(worker, "SessionLocal", factory)
     monkeypatch.setattr(worker, "_publish_status", lambda _c: None)
-    worker.catch_up(Timeframe.M1, sig.instrument_id)
+    worker.catch_up(Timeframe.M1, s["backfill"].instrument_id)
     db.expire_all()
-    res = db.get(SignalResult, sig.id)
-    assert sig.status == "closed_be" and res is not None and res.closed_at == T + 631 * M1
-    last = _events(db, sig)[-1]
-    assert (last[1], last[4]) == ("be", "tracker")
+    assert (
+        s["backfill"].status == "closed_time" and _events(db, s["backfill"]) == original["backfill"]
+    )
+
+    # минуты пропуска дописались у первого; у двух других записалась свеча H4 16:00
+    w.minutes("backfill", full[hole[0] : hole[1]])
+    w.h4("barsafe", [_h4(T + 2 * H4, D("100.5"), D("101.5"), D(101))])
+    w.h4("barrisk", [_h4(T + 2 * H4, D("99.9"), D("101.5"), D(101))])
+    db.commit()
+    out = retrack.run(factory, now=T + 3 * H4 + 5 * M1)  # 20:05
+    assert out is not None and out["failed"] == [] and out["deferred"] == []
+    assert out["applied"] == {"retrack": 2, "void": 1} and tracker_sees_done(out)
+    db.expire_all()
+    assert db.get(DeployJob, RETRACK_JOB) is not None
+    # минуты дописались: безубыток в бывшем пропуске учтён — как по полным данным
+    res = db.get(SignalResult, s["backfill"].id)
+    assert s["backfill"].status == "closed_be" and res is not None
+    assert res.closed_at == T + 542 * M1
+    assert res.realized_r == retrack.as_stored(
+        "realized_r", truth.tracker.result(DEFAULT_EXECUTION).realized_r
+    )
+    new = [(r[1], r[3]) for r in _events(db, s["backfill"])[len(original["backfill"]) :]]
+    assert new[:3] == [("activated", T + M1), ("tp1", T + 121 * M1), ("be", T + 542 * M1)]
+    # свеча H4 над пропуском далеко от уровней: пропуск безопасен, сделка открыта, и трекер
+    # ведёт её с последней записанной минуты
+    tr = db.get(SignalTracking, s["barsafe"].id)
+    assert s["barsafe"].status == "tp1_hit" and db.get(SignalResult, s["barsafe"].id) is None
+    assert tr is not None and tr.last_candle_time == T + 629 * M1
+    note = str(_events(db, s["barsafe"])[-1][5])
+    assert "пропуски (3 мин)" in note and "трекер" not in note
+    # свеча H4 доходит до безубытка: пропуск мог скрыть касание — недействителен
+    assert s["barrisk"].status == "voided"
+    assert "доходит до стопа" in str(_events(db, s["barrisk"])[-1][5])
 
 
 @db_only
@@ -1205,6 +1272,10 @@ def test_overlaps_flag_signals_opened_while_previous_trade_runs() -> None:
     other = [plan("x", T + H4, None)]
     other[0] = retrack.Plan(**{**vars_plan(other[0]), "symbol": "FILUSDT"})
     assert retrack.overlaps([plans[0], *other]) == {}
+    # отложенный (решение ждёт свечу H4) считается открытым, а не закрытым по старой записи
+    before = retrack.Outcome("closed_time", closed_at=T + 15 * M1)
+    wait = retrack.Plan(**{**vars_plan(plans[0]), "kind": "wait", "after": None, "before": before})
+    assert retrack.overlaps([wait, plan("f", T + 2 * H4, T + 3 * H4)]) == {"f": "a"}
 
 
 def vars_plan(p: retrack.Plan) -> dict[str, Any]:

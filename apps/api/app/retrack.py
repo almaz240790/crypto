@@ -22,9 +22,12 @@ stop через 15 минут вместо 60 часов (15 свечей H4). �
      языком, текст ошибки — в отчёте, ``Plan.detail``) — результат
      недействителен: статус ``voided``, строка ``signal_results`` уходит в архив, в статистику
      сигнал не входит; вид ``void``;
-   - пропуск в интервале H4, который ещё не закрыт (или только что закрылся и свеча H4 ещё не
-     записана, ``data_horizon``), — не повод для ``void``: пересчёт останавливается перед ним, и
-     сделку дальше ведёт трекер, как любую открытую (``Replay.handover``).
+   - пропуск, над которым свечи H4 ещё нет, потому что её интервал не закрыт или только что
+     закрылся (``data_horizon``), — ни ``void``, ни передача трекеру: трекер шагнул бы через
+     пропуск к уже записанным минутам после него, и дописанные потом минуты не учлись бы никогда.
+     Решение по сигналу откладывается (вид ``wait``, ``Replay.wait``): сигнал не меняется, задание
+     повторяется, пока минуты не допишутся или свеча H4 над пропуском не запишется; тогда пропуск
+     оценивается, как любой другой.
 3. **Отчёт и применение** (``run``): сначала в журнал — полный отчёт «было / стало» по каждому
    сигналу (dry-run, ничего не пишет; ошибка по одному сигналу не останавливает отчёт), затем
    применение, по одному сигналу в транзакции (строка
@@ -98,6 +101,13 @@ GAPS_IN_NOTE = 3
 
 RETRACK, FEES, VOID, OK, DONE = "retrack", "fees", "void", "ok", "done"
 """Виды решения: пересчёт по 1m; только комиссии; недействителен; без изменений; уже исправлен."""
+WAIT = "wait"
+"""Решение отложено: в 1m-свечах пропуск, свечи H4 над которым ещё нет (``Replay.wait``). Сигнал
+не меняется, задание завершится при следующих запусках."""
+H4_WRITE_GRACE = timedelta(minutes=30)
+"""Сколько после закрытия свеча H4 может ещё не быть в БД (``data_horizon``): market-data пишет
+закрытие сразу, а закрывшуюся без соединения или без сервиса — догрузкой по REST после старта
+(у market-data ``LATE_CLOSE_MAX`` — те же 30 минут). Позже свечи нет — данных нет."""
 ERROR = "error"
 """В отчёте: решение по сигналу не принято из-за ошибки (сигнал не применяется, задание
 продолжится при следующем запуске)."""
@@ -203,10 +213,11 @@ class Replay:
     events: tuple[tuple[TrackerEvent, str | None], ...]
     last_candle: datetime | None
     gaps: tuple[Gap, ...]
-    handover: Gap | None = None
-    """Пропуск в интервале H4, который ещё не закрыт (``data_horizon``): пересчёт остановлен
-    перед ним, сделка открыта, дальше её ведёт трекер. ``None`` — пересчёт прошёл до закрытия
-    сделки или до последней сохранённой минуты."""
+    wait: Gap | None = None
+    """Пропуск, который заходит за горизонт данных (``data_horizon``): до горизонта касания быть
+    не могло, а свечи H4 над остальной частью ещё нет. Пересчёт остановлен перед пропуском,
+    решение по сигналу откладывается (``WAIT``). ``None`` — пересчёт прошёл до закрытия сделки или
+    до последней сохранённой минуты."""
 
     @property
     def risky(self) -> tuple[Gap, ...]:
@@ -259,12 +270,14 @@ def gap_risk(
 
 def data_horizon(now: datetime, h4: Mapping[datetime, Candle]) -> datetime:
     """С какого момента свечи H4 может ещё не быть: интервал H4, в котором ``now``, не закрыт, а
-    только что закрытый мог ещё не попасть в БД. Пропуск 1m-свечей отсюда — не постоянная дыра в
-    данных: минуты могут дописаться, а сделку дальше ведёт трекер, как любую открытую. Свечи
-    H4 раньше горизонта должны быть: их нет — данных нет."""
+    закрытый не дольше ``H4_WRITE_GRACE`` назад мог ещё не попасть в БД. Пропуск 1m-свечей отсюда
+    — ещё не дыра в данных: минуты могут дописаться, свеча H4 — записаться. Свечи H4 раньше
+    горизонта должны быть: их нет — данных нет."""
     current = interval_start(now, SIGNAL_TIMEFRAME)
     previous = current - SIGNAL_TIMEFRAME.delta
-    return current if previous in h4 else previous
+    if previous in h4 or now >= current + H4_WRITE_GRACE:
+        return current
+    return previous
 
 
 def replay(
@@ -281,8 +294,8 @@ def replay(
     минутой оцениваются ``gap_risk`` по состоянию сделки перед пропуском.
 
     Пропуск, который заходит за ``horizon`` (``data_horizon``), оценивается только до горизонта;
-    если там касания быть не могло, пересчёт останавливается перед пропуском
-    (``Replay.handover``): сделка открыта, дальше её ведёт трекер."""
+    если там касания быть не могло, пересчёт останавливается перед пропуском (``Replay.wait``):
+    что было в пропуске, станет известно, когда допишутся минуты или запишется свеча H4."""
     tracker = SignalTracker(
         setup, params, "market", None, signal_close=signal_close, timeframe=STREAM
     )
@@ -290,7 +303,7 @@ def replay(
     events: list[tuple[TrackerEvent, str | None]] = []
     gaps: list[Gap] = []
     last: datetime | None = None
-    handover: Gap | None = None
+    wait: Gap | None = None
     for c in minutes:
         if c.open_time < signal_close:
             continue
@@ -303,7 +316,7 @@ def replay(
                 else None
             )
             if known < c.open_time and risk is None:
-                handover = Gap(expected, c.open_time, None)
+                wait = Gap(expected, c.open_time, None)
                 break
             gaps.append(Gap(expected, c.open_time, risk))
         events.extend((e, event_note(e, tracker)) for e in tracker.step(c))
@@ -311,7 +324,7 @@ def replay(
         expected = c.open_time + STREAM.delta
         if not tracker.state.status.is_open:
             break
-    return Replay(tracker, tuple(events), last, tuple(gaps), handover)
+    return Replay(tracker, tuple(events), last, tuple(gaps), wait)
 
 
 # --- решение по сигналу ------------------------------------------------------------------------
@@ -365,8 +378,8 @@ class Plan:
     не попадает."""
 
     @property
-    def handover(self) -> Gap | None:
-        return self.replay.handover if self.replay else None
+    def wait(self) -> Gap | None:
+        return self.replay.wait if self.replay else None
 
     def line(self) -> str:
         head = f"{self.public_id} {self.symbol} {self.version}: {self.kind}"
@@ -375,20 +388,21 @@ class Plan:
             body += f"; стало — недействителен ({self.why_void})"
             if self.detail:
                 body += f"; причина: {self.detail}"
+        elif self.kind == WAIT and self.wait is not None:
+            body += (
+                f"; решение отложено — пропуск 1m-свечей {self.wait.text()}, свечи H4 над ним ещё "
+                "нет; задание повторится"
+            )
         elif self.after is not None:
             body += f"; стало — {self.after.text()}"
         safe = [g for g in (self.replay.gaps if self.replay else ()) if not g.risk]
         if safe and self.kind == RETRACK:
             body += f"; пропуски без влияния: {sum(g.minutes for g in safe)} мин"
-        if self.handover is not None and self.kind == RETRACK:
-            body += (
-                f"; дальше ведёт трекер — пропуск в незакрытом интервале H4 {self.handover.text()}"
-            )
         return f"{head} | {self.reason} | {body}"
 
     def as_json(self) -> dict[str, Any]:
         gaps = self.replay.gaps if self.replay else ()
-        hand = self.handover
+        wait = self.wait
         return {
             "id": self.public_id,
             "symbol": self.symbol,
@@ -402,9 +416,9 @@ class Plan:
             "gaps": [
                 {"from": g.start.isoformat(), "to": g.end.isoformat(), "risk": g.risk} for g in gaps
             ],
-            "handover": None
-            if hand is None
-            else {"from": hand.start.isoformat(), "to": hand.end.isoformat()},
+            "wait": None
+            if wait is None
+            else {"from": wait.start.isoformat(), "to": wait.end.isoformat()},
         }
 
 
@@ -532,7 +546,7 @@ def plan_signal(db: Session, sig: Signal, now: datetime | None = None) -> Plan:
         why = "данные сигнала не удаётся проверить по свечам"
         detail = f"{type(exc).__name__}: {exc}"
         return Plan(kind=VOID, reason=problem, why_void=why, detail=detail, **base)
-    if rp.last_candle is None and rp.handover is None:
+    if rp.last_candle is None and rp.wait is None:
         why = "после сигнала нет ни одной закрытой 1m-свечи"
         return Plan(kind=VOID, reason=problem, why_void=why, replay=rp, **base)
     if rp.risky:
@@ -540,6 +554,9 @@ def plan_signal(db: Session, sig: Signal, now: datetime | None = None) -> Plan:
         more = len(rp.risky) - GAPS_IN_NOTE
         why = f"пропуски 1m-свечей: {shown}" + (f"; и ещё {more}" if more > 0 else "")
         return Plan(kind=VOID, reason=problem, why_void=why, replay=rp, **base)
+    if rp.wait is not None:
+        # свечи H4 над пропуском ещё нет: исход за ним неизвестен — ни пересчёта, ни void
+        return Plan(kind=WAIT, reason=problem, replay=rp, **base)
     return Plan(kind=RETRACK, reason=problem, after=_replay_outcome(sig, rp), replay=rp, **base)
 
 
@@ -588,17 +605,13 @@ def note_text(plan: Plan, now: datetime) -> str:
             f" В 1m-свечах пропуски ({sum(g.minutes for g in safe)} мин), исход они не меняют: "
             "свечи H4 над ними не доходят до стопа и цели."
         )
-    if plan.handover is not None:
-        text += (
-            f" Пересчёт доведён до {_when(plan.handover.start)}: дальше в интервале H4, который "
-            "ещё не закрыт, нет части 1m-свечей; дальше сделка ведётся как обычно."
-        )
     return text
 
 
 def apply_plan(db: Session, sig: Signal, plan: Plan, now: datetime) -> SignalCorrection | None:
-    """Применяет решение к сигналу в текущей транзакции. ``None`` — менять нечего."""
-    if plan.kind in (OK, DONE):
+    """Применяет решение к сигналу в текущей транзакции. ``None`` — менять нечего (или решение
+    отложено, ``WAIT``)."""
+    if plan.kind in (OK, DONE, WAIT):
         return None
     events = db.scalars(
         select(SignalEvent).where(SignalEvent.signal_id == sig.id).order_by(SignalEvent.id)
@@ -616,7 +629,7 @@ def apply_plan(db: Session, sig: Signal, plan: Plan, now: datetime) -> SignalCor
     superseded: list[int] = []
     if plan.kind == RETRACK:
         rp = plan.replay
-        assert rp is not None and (rp.last_candle is not None or rp.handover is not None)
+        assert rp is not None and rp.last_candle is not None
         superseded = [e.id for e in events if e.type != "created"]
         for e, why in rp.events:
             db.add(
@@ -635,10 +648,9 @@ def apply_plan(db: Session, sig: Signal, plan: Plan, now: datetime) -> SignalCor
             db.add(tracking)
         tracking.state = state_to_json(st)
         tracking.timeframe = STREAM.value
-        tracking.last_candle_time = rp.last_candle  # None — трекер начнёт со свечи сигнала
+        tracking.last_candle_time = rp.last_candle
         tracking.updated_at = now
         if st.status.is_closed:
-            assert rp.last_candle is not None
             values = result_values(sig, rp.tracker, rp.last_candle + STREAM.delta)
             if res is None:
                 db.add(SignalResult(signal_id=sig.id, **values))
@@ -702,8 +714,8 @@ def overlaps(plans: Sequence[Plan]) -> dict[str, str]:
     """Справочно, для отчёта: сигналы, открытые, пока по тому же инструменту и версии шла
     предыдущая сделка (с учётом пересчёта). В бэктесте их не было бы — инструмент занят до
     закрытия сделки и ещё на свечу H4 выхода (правило одной сделки, задача 6); такой сигнал и
-    сам инструмент не занимает. Данные это не меняет. ``public_id`` → ``public_id`` сделки,
-    при которой сигнал открыт."""
+    сам инструмент не занимает. Отложенный (``WAIT``) считается открытым. Данные это не меняет.
+    ``public_id`` → ``public_id`` сделки, при которой сигнал открыт."""
     out: dict[str, str] = {}
     last: dict[tuple[str, str], tuple[str, datetime | None]] = {}
     for p in sorted(plans, key=lambda x: (x.opened, x.signal_id)):
@@ -714,12 +726,13 @@ def overlaps(plans: Sequence[Plan]) -> dict[str, str]:
         if prev is not None and (prev[1] is None or p.opened < prev[1] + SIGNAL_TIMEFRAME.delta):
             out[p.public_id] = prev[0]
             continue
-        last[key] = (p.public_id, (p.after or p.before).closed_at)
+        last[key] = (p.public_id, None if p.kind == WAIT else (p.after or p.before).closed_at)
     return out
 
 
 def _totals(plans: Sequence[Plan]) -> list[str]:
-    """Итоги по версиям: закрытые сделки и сумма R до и после (недействительные не входят)."""
+    """Итоги по версиям: закрытые сделки и сумма R до и после (недействительные и отложенные не
+    входят)."""
     out = []
     for ver in sorted({p.version for p in plans}):
         mine = [p for p in plans if p.version == ver]
@@ -727,7 +740,7 @@ def _totals(plans: Sequence[Plan]) -> list[str]:
         after = [
             r
             for p in mine
-            if p.kind != VOID and (r := (p.after or p.before).realized_r) is not None
+            if p.kind not in (VOID, WAIT) and (r := (p.after or p.before).realized_r) is not None
         ]
         kinds = ", ".join(f"{k} {n}" for k, n in sorted(Counter(p.kind for p in mine).items()))
         out.append(
@@ -747,7 +760,9 @@ def run(
     статистики, отметка ``deploy_jobs``. ``None`` — задание уже выполнено. Ошибка по одному
     сигналу — и в отчёте, и при применении — не останавливает остальные: такой сигнал не
     применяется, отметки нет, и при следующем запуске задание продолжится (применённые сигналы
-    не повторяются). Потеря соединения с БД прерывает задание целиком."""
+    не повторяются). Так же — с отложенным решением (``WAIT``, в итоге ``deferred``): сигнал не
+    меняется, пока свеча H4 над пропуском не запишется. Потеря соединения с БД прерывает задание
+    целиком."""
     now = now or datetime.now(tz=UTC)
     with session_factory() as db:
         if job_done(db, RETRACK_JOB):
@@ -790,6 +805,7 @@ def run(
 
         applied: Counter[str] = Counter()
         failed: list[str] = []
+        deferred: list[str] = []
         after: list[Plan] = []
         for sid in ids:
             try:
@@ -804,6 +820,10 @@ def run(
                 log.exception("пересчёт форварда: сигнал id %s не применён", sid)
                 failed.append(str(sid))
                 continue
+            if plan.kind == WAIT:
+                deferred.append(str(sid))
+                log.info("отложено: %s", plan.line())
+                continue
             applied[plan.kind] += 1
             after.append(plan)
             if corr is not None:
@@ -813,6 +833,7 @@ def run(
             "signals": len(ids),
             "applied": dict(sorted(applied.items())),
             "failed": failed,
+            "deferred": deferred,
             "totals": _totals(after),
             "report": [p.as_json() | {"overlaps": busy.get(p.public_id)} for p in plans]
             + [{"signal_id": sid, "kind": ERROR, "error": err} for sid, err in errors.items()],
@@ -820,10 +841,18 @@ def run(
         if failed:
             log.error(
                 "пересчёт форварда: не применены %d сигналов (%s) — задание продолжится при "
-                "следующем старте трекера",
+                "следующем запуске",
                 len(failed),
                 ", ".join(failed),
             )
+        if deferred:
+            log.warning(
+                "пересчёт форварда: решение отложено по %d сигналам (%s) — пропуск 1m-свечей, "
+                "свечи H4 над которым ещё нет; задание продолжится при следующем запуске",
+                len(deferred),
+                ", ".join(deferred),
+            )
+        if failed or deferred:
             return summary
         recompute(db, now)
         db.execute(
