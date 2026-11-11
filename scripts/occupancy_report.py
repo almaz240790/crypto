@@ -6,7 +6,8 @@
 
 Движок оценивается на каждом закрытии H4 — так forward писал кандидатов до правила. Каждый
 публикуемый кандидат (градация A–C, не отложен) исполняется ``simulate_trade`` по H4 с
-комиссиями, как в бэктесте. Затем на поток кандидатов накладывается общее правило
+комиссиями, как в бэктесте; кандидаты ниже C и отложенные только считаются — бэктест их не
+торгует, forward и live их не пишут. Затем на поток кандидатов накладывается общее правило
 ``engine.occupancy`` (то же, что в ``run_backtest``, scheduler и forward): кандидат подавляется,
 если на его закрытии инструмент занят принятой раньше сделкой. ``--check-backtest`` сверяет
 принятые сделки со сделками ``run_backtest`` на тех же данных (движок считается второй раз).
@@ -108,9 +109,7 @@ class SymbolResult:
     evaluated: int = 0
     candidates: list[Candidate] = field(default_factory=list)
     not_publishable: int = 0
-    """Кандидаты ниже градации C и отложенные: бэктест их не торгует (forward пишет их как C)."""
-    not_publishable_free: int = 0
-    """Из них — на закрытиях, где инструмент свободен по правилу."""
+    """Кандидаты ниже градации C и отложенные: бэктест их не торгует, forward и live не пишут."""
     backtest_match: bool | None = None
     backtest_trades: int = 0
 
@@ -164,11 +163,10 @@ def analyse(symbol: str) -> SymbolResult:
         res = evaluate(sliced, at, params)
         if not isinstance(res, SignalCandidate):
             continue
-        busy = occupying(last, at)
         if res.deferred or not res.score.publishable:
             out.not_publishable += 1
-            out.not_publishable_free += busy is None
             continue
+        busy = occupying(last, at)
         result = simulate_trade(res.trade, h4[i + 1 :], params.trade, DEFAULT_EXECUTION)
         exit_time = (
             h4[i + 1 + result.exit_index].close_time(SIGNAL_TIMEFRAME)
@@ -237,7 +235,7 @@ def _metrics_rows(without: Metrics, with_rule: Metrics) -> list[str]:
         return f"| {name} | {a} | {b} |"
 
     return [
-        "| | Без правила (forward до задачи 6) | С правилом (бэктест, forward, live) |",
+        "| | Без правила (все кандидаты A–C) | С правилом (бэктест, forward, live) |",
         "|---|---|---|",
         row("Сигналов", str(without.signals), str(with_rule.signals)),
         row("Закрыто", str(without.closed), str(with_rule.closed)),
@@ -425,10 +423,10 @@ def write_report(
         f"Подавленные кандидаты, если бы их взяли: закрыто {supp_metrics.closed}, доля прибыльных "
         f"{_pct(supp_metrics.winrate)}, средний R {_fmt_r(supp_metrics.avg_r)}, сумма R "
         f"{_fmt_r(supp_metrics.sum_r)}.",
-        f"Непубликуемые кандидаты (ниже C) и отложенные: {sum(r.not_publishable for r in results)}"
-        f", из них на свободных закрытиях {sum(r.not_publishable_free for r in results)}. "
-        "Бэктест их не торгует; forward хранит их для анализа (план 2.7) с градацией C, "
-        "инструмент они не занимают.",
+        f"Кандидаты ниже C и отложенные: {sum(r.not_publishable for r in results)}. Бэктест их не "
+        "торгует, forward и live их не записывают. До правила forward записывал их с градацией C, "
+        "и трекеры вели их как сделки, поэтому пересечений в forward было больше, чем в столбце "
+        "«Без правила».",
         "",
         "## По инструментам (больше всего подавленных)",
         "",
