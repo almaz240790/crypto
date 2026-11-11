@@ -198,6 +198,7 @@ export class ChartController {
       candles: () => this.terminal.candles,
       tfSeconds: () => TF_SECONDS[this.inputs.tf],
       overlayY: () => this.terminal.overlayLastCoordinate(),
+      displayed: (time) => this.terminal.displayedBar(time),
       hitGate: (x, y) => this.hitGate?.(x, y) ?? true,
       coarse: this.coarse,
     });
@@ -271,6 +272,9 @@ export class ChartController {
       this.hoverNext = null;
       this.overlay.setHovered(null);
       if (this.store.getState().selection !== null || this.store.getState().hover !== null) this.store.patch({ selection: null, hover: null });
+      // история прежнего инструмента или таймфрейма к новому буферу не относится
+      const status = this.store.getState().status;
+      if (status.historyFrom !== null) this.store.patch({ status: { ...status, historyFrom: null } });
       if (this.terminal.candles.length > 0) {
         this.reset();
         this.resetAgain = true;
@@ -538,7 +542,7 @@ export class ChartController {
         if (!r) return this.terminal.olderFailed();
         this.terminal.addOlder(r.candles, r.hasOlder);
         const st = this.store.getState().status;
-        this.store.patch({ status: { ...st, historyRev: st.historyRev + 1 } });
+        this.store.patch({ status: { ...st, historyRev: st.historyRev + 1, historyFrom: this.terminal.candles[0]?.time ?? null } });
       })
       .catch(() => this.terminal.olderFailed());
   }

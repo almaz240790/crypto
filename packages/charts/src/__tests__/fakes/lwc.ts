@@ -175,6 +175,11 @@ export class FakeTerminal {
   overlayLastCoordinate(): number | null {
     return null;
   }
+  /** Нарисованная свеча, если она не та, что в буфере (Heikin Ashi): тест подставляет свою. */
+  displayed: ((time: number) => { open: number; close: number } | null) | null = null;
+  displayedBar(time: number): { open: number; close: number } | null {
+    return this.displayed?.(time) ?? null;
+  }
   destroy(): void {
     this.calls.push("destroy");
   }
