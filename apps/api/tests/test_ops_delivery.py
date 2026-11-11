@@ -37,6 +37,7 @@ import app.alerts as alerts_mod
 import app.mail as mail_mod
 import app.monitor as monitor_mod
 import app.notify as notify_mod
+import app.push as push_mod
 import app.workers.notifier as notifier_mod
 from app.alerts import (
     CHANNEL_TRIGGERED,
@@ -65,6 +66,7 @@ from app.models import (
     Instrument,
     NotificationLog,
     NotificationSettings,
+    PushSubscription,
     User,
 )
 from app.monitor import (
@@ -1182,6 +1184,7 @@ def _cleanup(user_ids: list[int], inst_ids: list[int], log_ref: str | None = Non
         if log_ref is not None:
             s.execute(delete(NotificationLog).where(NotificationLog.ref == log_ref))
         s.execute(delete(NotificationLog).where(NotificationLog.user_id.in_(user_ids)))
+        s.execute(delete(PushSubscription).where(PushSubscription.user_id.in_(user_ids)))
         s.execute(delete(Alert).where(Alert.user_id.in_(user_ids)))
         s.execute(delete(NotificationSettings).where(NotificationSettings.user_id.in_(user_ids)))
         s.execute(delete(User).where(User.id.in_(user_ids)))
@@ -1613,7 +1616,7 @@ def test_worker_message_wakes_notifier_through_redis(monkeypatch: pytest.MonkeyP
     out = Outbox()
     passes: list[int] = []
 
-    def once() -> alerts_mod.DeliveryPass:
+    def once(progress: Callable[[], None] | None = None) -> alerts_mod.DeliveryPass:
         _as_notifier(monkeypatch)
         with SessionLocal() as s:
             res = alerts_mod.deliver_batch(s, mail=out.mail, push=out.push)
@@ -1680,7 +1683,7 @@ def test_alerts_loop_continues_on_full_batch(monkeypatch: pytest.MonkeyPatch) ->
     passes = iter(
         [dp(150, 190, True), dp(0, 3, True), dp(0, 0, True), dp(40, 40, False), dp(0, 0, False)]
     )
-    monkeypatch.setattr(notifier_mod, "alerts_once", lambda: next(passes))
+    monkeypatch.setattr(notifier_mod, "alerts_once", lambda progress=None: next(passes))
     waits: list[float] = []
 
     async def go() -> None:
@@ -1742,7 +1745,7 @@ def test_two_notifiers_drain_burst_without_poll_waits(monkeypatch: pytest.Monkey
     out = Outbox(delay=0.005)
     decided: list[int] = []
 
-    def once() -> alerts_mod.DeliveryPass:
+    def once(progress: Callable[[], None] | None = None) -> alerts_mod.DeliveryPass:
         with SessionLocal() as s:
             res = alerts_mod.deliver_batch(s, mail=out.mail, push=out.push, limit=10)
         decided.append(res.decided)
@@ -1844,7 +1847,7 @@ def test_notifier_survives_redis_restart(monkeypatch: pytest.MonkeyPatch, tmp_pa
     monkeypatch.setattr(notifier_mod, "RESTART_AFTER", 0.1)
     passes: list[float] = []
 
-    def once() -> alerts_mod.DeliveryPass:
+    def once(progress: Callable[[], None] | None = None) -> alerts_mod.DeliveryPass:
         passes.append(time.monotonic())
         return alerts_mod.DeliveryPass(0, 0, False)
 
@@ -1978,3 +1981,430 @@ def test_alerts_worker_resubscribes_after_redis_restart(
         client.close()
         proc.terminate()
         proc.wait(10)
+
+
+# --- push: адрес подписки, таймаут, heartbeat доставки -------------------------------------------
+
+
+def test_push_endpoint_only_on_browser_push_services() -> None:
+    """Адрес подписки — https на push-сервисе браузера; свои серверы, IP-адреса, localhost,
+    нестандартный порт, логин в адресе и похожие домены не проходят."""
+    for ok in (
+        "https://fcm.googleapis.com/fcm/send/abc:APA91b",
+        "https://fcm.googleapis.com/wp/abc",
+        "https://android.googleapis.com/gcm/send/abc",
+        "https://updates.push.services.mozilla.com/wpush/v2/gAAAA",
+        "https://wns2-par02p.notify.windows.com/w/?token=BQYAAA",
+        "https://web.push.apple.com/QGuQyavXutnMH",
+        "https://FCM.googleapis.com:443/fcm/send/abc",
+    ):
+        assert push_mod.endpoint_allowed(ok), ok
+    for bad in (
+        "http://fcm.googleapis.com/fcm/send/abc",
+        "https://127.0.0.1/push/abc",
+        "http://127.0.0.1:8080/push/abc",
+        "https://localhost/push",
+        "https://redis.railway.internal/push",
+        "https://fcm.googleapis.com:8443/fcm/send/abc",
+        "https://user:pass@fcm.googleapis.com/fcm/send/abc",
+        "https://fcm.googleapis.com.evil.example/fcm/send/abc",
+        "https://evilfcm.googleapis.com.example/x",
+        "https://notapple-push.apple.com.example/x",
+        "https://[::1]/push",
+        "https://fcm.googleapis.com:99999/x",
+        "ftp://fcm.googleapis.com/x",
+        "fcm.googleapis.com/fcm/send/abc",
+    ):
+        assert not push_mod.endpoint_allowed(bad), bad
+
+
+def test_push_request_has_timeout_and_skips_foreign_endpoints(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Запрос к push-сервису — с таймаутом (у pywebpush по умолчанию его нет: молчащий адрес
+    держал бы уведомитель вечно). На адрес не на push-сервисе (подписка записана до проверки)
+    запрос не идёт вовсе; предупреждение — один раз на хост."""
+    import pywebpush
+
+    calls: list[dict[str, Any]] = []
+
+    class Resp:
+        status_code = 201
+
+    def fake_webpush(**kw: Any) -> Resp:
+        calls.append(kw)
+        return Resp()
+
+    monkeypatch.setattr(pywebpush, "webpush", fake_webpush)
+    monkeypatch.setattr(settings, "vapid_private_key", "priv")
+    monkeypatch.setattr(settings, "vapid_public_key", "pub")
+    monkeypatch.setattr(push_mod, "_skipped_hosts", set())
+    good = PushSubscription(
+        endpoint="https://fcm.googleapis.com/fcm/send/abc", p256dh="k", auth_key="a"
+    )
+    assert push_mod._send(good, {"title": "t"}) == 201
+    assert calls[-1]["timeout"] == push_mod.PUSH_TIMEOUT and 0 < push_mod.PUSH_TIMEOUT <= 15
+    with caplog.at_level(logging.WARNING, logger="push"):
+        for n in range(3):
+            foreign = PushSubscription(
+                endpoint=f"http://127.0.0.1:9/push/{n}", p256dh="k", auth_key="a"
+            )
+            assert push_mod._send(foreign, {"title": "t"}) == 0
+    assert len(calls) == 1
+    assert [r.getMessage() for r in caplog.records].count(
+        "push: адрес подписки не на push-сервисе (127.0.0.1) — пропуск"
+    ) == 1
+
+
+@db_only
+def test_push_subscribe_rejects_foreign_endpoint(db: Session) -> None:
+    """POST /v1/me/push: адрес не на push-сервисе браузера — 400 с понятным текстом, подписка не
+    записывается; адрес FCM — 201."""
+    from fastapi.testclient import TestClient
+
+    from app import auth
+    from app.main import app
+
+    user = _user(db)
+    app.dependency_overrides[auth.get_db] = lambda: db
+    app.dependency_overrides[auth.current_user] = lambda: user
+    keys = {"p256dh": "BPk", "auth": "auth-secret"}
+    try:
+        c = TestClient(app)
+        for bad in (
+            "http://127.0.0.1:9/push/attacker-endpoint",
+            "https://redis.railway.internal:6379/push/x",
+            "https://attacker.example/push/blackhole",
+        ):
+            r = c.post("/v1/me/push", json={"endpoint": bad, "keys": keys})
+            assert r.status_code == 400, (bad, r.text)
+            assert r.json()["detail"] == "push в этом браузере не поддерживается"
+        good = f"https://fcm.googleapis.com/fcm/send/{secrets.token_hex(8)}"
+        r = c.post("/v1/me/push", json={"endpoint": good, "keys": keys})
+        assert r.status_code == 201 and r.json() == {"subscriptions": 1}
+    finally:
+        app.dependency_overrides.clear()
+    subs = db.scalars(select(PushSubscription).where(PushSubscription.user_id == user.id)).all()
+    assert [sub.endpoint for sub in subs] == [good]
+
+
+def _vapid_keypair() -> tuple[str, str]:
+    import base64
+
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    def b64u(b: bytes) -> str:
+        return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    priv = key.private_numbers().private_value.to_bytes(32, "big")
+    pub = key.public_key().public_bytes(
+        serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint
+    )
+    return b64u(priv), b64u(pub)
+
+
+class _PushServers:
+    """Два локальных «push-сервиса»: молчащий (принимает соединение и не отвечает) и
+    нормальный (отвечает 201)."""
+
+    def __init__(self) -> None:
+        import socket
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        self.held: list[socket.socket] = []
+        self.hits: list[str] = []
+        self.blackhole = socket.socket()
+        self.blackhole.bind(("127.0.0.1", 0))
+        self.blackhole.listen(8)
+        threading.Thread(target=self._accept, daemon=True).start()
+        hits = self.hits
+
+        class Ok(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                self.rfile.read(int(self.headers.get("content-length") or 0))
+                hits.append(self.path)
+                self.send_response(201)
+                self.send_header("content-length", "0")
+                self.end_headers()
+
+            def log_message(self, *a: Any) -> None:
+                pass
+
+        self.good = ThreadingHTTPServer(("127.0.0.1", 0), Ok)
+        threading.Thread(target=self.good.serve_forever, daemon=True).start()
+
+    def _accept(self) -> None:
+        while True:
+            try:
+                conn, _ = self.blackhole.accept()
+            except OSError:
+                return
+            self.held.append(conn)
+
+    @property
+    def silent_url(self) -> str:
+        return f"http://127.0.0.1:{self.blackhole.getsockname()[1]}/push/attacker"
+
+    @property
+    def good_url(self) -> str:
+        return f"http://127.0.0.1:{self.good.server_address[1]}/push/victim"
+
+    def close(self) -> None:
+        for conn in self.held:
+            conn.close()
+        self.blackhole.close()
+        self.good.shutdown()
+
+
+@db_only
+def test_stalled_push_endpoint_does_not_hold_other_users(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Регрессия: подписка одного пользователя на адресе, который принимает соединение и молчит,
+    останавливала доставку алертов всем — запрос к push-сервису шёл без таймаута, а очередь
+    разбирается по порядку. Настоящие pywebpush и ``send_to_user``, production с VAPID.
+
+    1. Адрес молчащего сервера в обход проверки адреса (как подписка, записанная до неё): запрос
+       обрывается по ``PUSH_TIMEOUT``, push следующего пользователя уходит в том же проходе,
+       срабатывание с молчащим адресом ждёт повтора (сбой сети — предупреждение без трассировки).
+    2. С настоящей проверкой адреса на молчащий сервер запрос не идёт вовсе.
+    """
+    _production(monkeypatch)
+    _as_alerts_service(monkeypatch)  # срабатывания пишет воркер без VAPID — в очередь
+    monkeypatch.setattr(alerts_mod, "send_to_user", push_mod.send_to_user)  # настоящий push
+    monkeypatch.setattr(push_mod, "PUSH_TIMEOUT", 1.0)
+    real_allowed = push_mod.endpoint_allowed
+    monkeypatch.setattr(push_mod, "endpoint_allowed", lambda e: e.startswith("http://127.0.0.1:"))
+    servers = _PushServers()
+    user_ids: list[int] = []
+    inst_ids: list[int] = []
+    with SessionLocal() as s:
+        trig_ids = []
+        for url in (servers.silent_url, servers.good_url):  # молчащий — первым в очереди
+            user, alert, _ = _alert_setup(s, email_alerts=False)
+            user_ids.append(user.id)
+            assert alert.instrument_id is not None
+            inst_ids.append(alert.instrument_id)
+            _, client_pub = _vapid_keypair()
+            s.add(
+                PushSubscription(
+                    user_id=user.id,
+                    endpoint=url,
+                    p256dh=client_pub,
+                    auth_key=secrets.token_urlsafe(16),
+                )
+            )
+            at = datetime.now(tz=UTC).replace(second=0, microsecond=0)
+            trig_ids.append(_fire_one(s, alert, at).id)
+        s.commit()
+    bad, victim = trig_ids
+    assert bad < victim
+    priv, pub = _vapid_keypair()  # доставляет уведомитель: ключ почты и VAPID
+    monkeypatch.setattr(settings, "vapid_private_key", priv)
+    monkeypatch.setattr(settings, "vapid_public_key", pub)
+    original = alerts_mod.pending_ids
+    monkeypatch.setattr(
+        alerts_mod,
+        "pending_ids",
+        lambda db, now, limit=alerts_mod.DELIVERY_BATCH: [
+            i for i in original(db, now, 10_000) if i in trig_ids
+        ][:limit],
+    )
+
+    def state(tid: int) -> tuple[dict[str, Any], bool]:
+        with SessionLocal() as s:
+            t = s.get(AlertTrigger, tid)
+            assert t is not None
+            return delivery_state(t), t.notified
+
+    try:
+        t0 = time.monotonic()
+        with caplog.at_level(logging.WARNING, logger="alerts"), SessionLocal() as s:
+            res = alerts_mod.deliver_batch(s)
+        elapsed = time.monotonic() - t0
+        assert elapsed < 10, elapsed
+        assert res.decided == 1 and res.handled == 2
+        st_victim, notified = state(victim)
+        assert st_victim["status"] == SENT and notified and servers.hits == ["/push/victim"]
+        st_bad, notified_bad = state(bad)
+        assert st_bad["status"] == QUEUED and st_bad["attempts"] == 1 and not notified_bad
+        assert "timed out" in st_bad["error"].lower()
+        assert len(servers.held) == 1
+        logs = [r for r in caplog.records if r.name == "alerts" and "срабатывание" in r.msg]
+        assert logs and all(r.levelno == logging.WARNING and r.exc_info is None for r in logs)
+        # с настоящей проверкой адреса молчащий сервер больше не получает запросов
+        monkeypatch.setattr(push_mod, "endpoint_allowed", real_allowed)
+        later = datetime.fromisoformat(st_bad["retry_at"]) + timedelta(seconds=1)
+        t0 = time.monotonic()
+        with SessionLocal() as s:
+            alerts_mod.deliver_batch(s, later)
+        assert time.monotonic() - t0 < 2 and len(servers.held) == 1
+    finally:
+        servers.close()
+        _cleanup(user_ids, inst_ids)
+
+
+def test_alert_delivery_heartbeat_follows_queue_progress(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Регрессия: доставка алертов могла стоять, а «Уведомления» на мониторе оставались в норме —
+    heartbeat писал только основной цикл. Теперь у доставки свой heartbeat: пока проход стоит на
+    одном срабатывании, он не обновляется (пишется время последнего движения очереди), в логе —
+    предупреждение; проход закончился — heartbeat снова текущий."""
+    clock = [1_000_000.0]
+    monkeypatch.setattr(
+        notifier_mod,
+        "time",
+        type("Clock", (), {"time": lambda: clock[0], "monotonic": time.monotonic}),
+    )
+    monkeypatch.setattr(notifier_mod, "ALERTS_BEAT", 0.02)
+    release = threading.Event()
+    entered = threading.Event()
+
+    def stuck_pass(progress: Callable[[], None] | None = None) -> alerts_mod.DeliveryPass:
+        assert progress is not None
+        progress()  # первое срабатывание взято …
+        entered.set()
+        release.wait(10)  # … и отправка по нему висит
+        return alerts_mod.DeliveryPass(1, 1, False)
+
+    monkeypatch.setattr(notifier_mod, "alerts_once", stuck_pass)
+    beats: list[int] = []
+    stalled: list[int] = []
+
+    async def go() -> None:
+        n = notifier_mod.Notifier()
+
+        async def fake_set(key: str, value: str | int, ex: int | None = None) -> bool:
+            if key == notifier_mod.ALERTS_HEARTBEAT_KEY:
+                beats.append(int(value))
+            return True
+
+        n._set = fake_set  # type: ignore[method-assign]
+
+        async def stop_after_first(timeout: float) -> None:
+            n.stop.set()
+
+        n._wait_alerts = stop_after_first  # type: ignore[method-assign]
+        task = asyncio.create_task(n.alerts_loop())
+        try:
+            while not entered.is_set():
+                await asyncio.sleep(0.01)
+            clock[0] += 300  # прошло 5 минут, проход всё стоит
+            await asyncio.sleep(0.2)
+            stalled.extend(beats)
+            assert stalled and set(stalled) == {1_000_000}, stalled
+            release.set()
+            await asyncio.wait_for(task, 5)
+        finally:
+            release.set()
+            await n.redis.aclose()
+
+    with caplog.at_level(logging.WARNING, logger="notifier"):
+        asyncio.run(go())
+    assert beats[-1] == 1_000_300
+    assert any("проход стоит" in r.getMessage() for r in caplog.records)
+    # что увидит монитор: heartbeat основного цикла свежий, доставки — 5 минут назад
+    snap = monitor_mod.Snapshot(
+        now=datetime(2026, 10, 25, 16, 5, tzinfo=UTC),
+        heartbeats={
+            "market_data": 1,
+            "scheduler": 30,
+            "tracker": 30,
+            "notifier": 10,
+            "alert_delivery": 1_000_300 - stalled[-1],
+            "pattern_detector": 20,
+            "alerts": 15,
+        },
+        m1_age_sec=30,
+        h4_stale=0,
+        h4_total=59,
+        engine_last_h4=monitor_mod.last_h4_close(datetime(2026, 10, 25, 16, 5, tzinfo=UTC)),
+        api_db_ok=True,
+        redis_ok=True,
+    )
+    notifier = {c.key: c for c in monitor_mod.evaluate(snap)}["notifier"]
+    assert notifier.status == "degraded" and notifier.detail == "heartbeat 300 с назад"
+
+
+@pytest.mark.skipif(__import__("shutil").which("redis-server") is None, reason="нет redis-server")
+def test_stalled_alert_delivery_is_visible_to_monitor(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """Настоящие redis-server и ``Notifier.run``: проход доставки алертов завис, основной цикл
+    работает. Heartbeat основного цикла обновляется, а heartbeat доставки — нет, и ``collect``
+    монитора видит его возраст; проход закончился — heartbeat доставки снова свежий."""
+    import redis as sync_redis
+
+    port = _free_port()
+    url = f"redis://127.0.0.1:{port}/0"
+    monkeypatch.setattr(settings, "redis_url", url)
+    for name, value in (("ranks_once", "fresh"), ("billing_once", {}), ("monitor_once", "ok")):
+        monkeypatch.setattr(notifier_mod, name, lambda v=value: v)
+    monkeypatch.setattr(notifier_mod, "stats_once", lambda: 0)
+    monkeypatch.setattr(notifier_mod, "process", lambda a, b: (max(a, 0), max(b, 0), 0, False))
+    monkeypatch.setattr(notifier_mod, "digest_due", lambda now, done: False)
+    monkeypatch.setattr(notifier_mod, "POLL", 0.1)
+    monkeypatch.setattr(notifier_mod, "ALERTS_POLL", 0.1)
+    monkeypatch.setattr(notifier_mod, "ALERTS_BEAT", 0.1)
+    release = threading.Event()
+    entered = threading.Event()
+    passes: list[int] = []
+
+    def once(progress: Callable[[], None] | None = None) -> alerts_mod.DeliveryPass:
+        passes.append(1)
+        if len(passes) == 2:  # второй проход виснет на отправке
+            if progress is not None:
+                progress()
+            entered.set()
+            release.wait(30)
+        return alerts_mod.DeliveryPass(0, 0, False)
+
+    monkeypatch.setattr(notifier_mod, "alerts_once", once)
+    proc = _start_redis(port, str(tmp_path))
+    client = sync_redis.from_url(url, socket_timeout=1)
+
+    def ages() -> dict[str, int | None]:
+        with SessionLocal() as db:
+            beats = monitor_mod.collect(db, client).heartbeats
+        return {k: beats[k] for k in ("notifier", "alert_delivery")}
+
+    async def go() -> dict[str, Any]:
+        n = notifier_mod.Notifier()
+        task = asyncio.create_task(n.run())
+        try:
+            for _ in range(200):
+                if entered.is_set() and client.get(notifier_mod.HEARTBEAT_KEY):
+                    break
+                await asyncio.sleep(0.05)
+            assert entered.is_set()
+            stuck_at = int(client.get(notifier_mod.ALERTS_HEARTBEAT_KEY) or 0)
+            await asyncio.sleep(2.6)
+            during = await asyncio.to_thread(ages)
+            same = int(client.get(notifier_mod.ALERTS_HEARTBEAT_KEY) or 0) == stuck_at
+            release.set()
+            for _ in range(100):
+                after = await asyncio.to_thread(ages)
+                if after["alert_delivery"] is not None and after["alert_delivery"] <= 1:
+                    break
+                await asyncio.sleep(0.05)
+            assert not task.done()
+            return {"during": during, "same": same, "after": after}
+        finally:
+            release.set()
+            n.stop.set()
+            await asyncio.wait_for(task, 10)
+
+    try:
+        out = asyncio.run(go())
+    finally:
+        client.close()
+        proc.terminate()
+        proc.wait(10)
+    during, after = out["during"], out["after"]
+    assert out["same"], out
+    assert during["notifier"] is not None and during["notifier"] <= 1, out
+    assert during["alert_delivery"] is not None and during["alert_delivery"] >= 2, out
+    assert after["alert_delivery"] is not None and after["alert_delivery"] <= 1, out

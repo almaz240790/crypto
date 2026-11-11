@@ -82,3 +82,21 @@ def test_parse_done_key_is_utc_aware() -> None:
     assert d == datetime(2026, 10, 25, 8, tzinfo=UTC)
     assert d.tzinfo is not None
     assert parse_done_key("sched:done:BTCUSDT:bad") is None
+
+
+def test_notifier_component_counts_alert_delivery_heartbeat() -> None:
+    """«Уведомления» — по худшему из heartbeat основного цикла уведомителя и доставки алертов:
+    застрявшая доставка не прячется за свежим основным циклом. Ключа доставки нет (уведомитель
+    прежней версии, Redis только что поднялся пустым) — судим по основному."""
+    base = _snap().heartbeats
+
+    def notifier(**beats: int | None) -> Component:
+        return _by(evaluate(_snap(heartbeats={**base, **beats})))["notifier"]
+
+    assert notifier(alert_delivery=5).status == "ok"
+    assert notifier(alert_delivery=None).status == "ok"
+    stalled = notifier(alert_delivery=300)
+    assert stalled.status == "degraded" and stalled.detail == "heartbeat 300 с назад"
+    dead = notifier(alert_delivery=900)
+    assert dead.status == "down" and dead.detail == "heartbeat 15 мин назад"
+    assert notifier(notifier=700, alert_delivery=300).status == "down"  # хуже — основной

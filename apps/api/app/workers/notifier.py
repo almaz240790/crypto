@@ -11,7 +11,9 @@
 Отдельной задачей (ADR-0004) — доставка срабатываний алертов пользователям
 (``app.alerts.deliver_batch``): очередь — строки ``alert_triggers`` со статусом ``queued``,
 проход раз в ``ALERTS_POLL`` секунд и сразу по сообщению воркера алертов в ``alerts.triggered``.
-На Railway ключи почты и Web Push есть у этого процесса, а у воркера алертов — нет.
+На Railway ключи почты и Web Push есть у этого процесса, а у воркера алертов — нет. У доставки
+свой heartbeat (``ALERTS_HEARTBEAT_KEY``): время, когда очередь последний раз двигалась; монитор
+показывает «Уведомления» по худшему из двух heartbeat, так что застрявший проход виден.
 
 Дайджесты (ADR-0002) шлёт этот процесс: у cron-сервиса ``digest`` на Railway нет ключа почты, и
 в production без ключа он ничего не отмечает (``app.notify.mail_ready``). Ошибка прохода —
@@ -71,6 +73,14 @@ DIGEST_RETRY_AFTER = 900
 """Аренда отметки дайджестов: пока идёт проход и после его ошибки отметка за день живёт
 столько секунд, затем — повтор (``Notifier.digests``)."""
 HEARTBEAT_KEY = "notifier:heartbeat"
+ALERTS_HEARTBEAT_KEY = "alert_delivery:heartbeat"
+"""Heartbeat доставки алертов: unix-время, когда очередь последний раз двигалась (начало
+прохода, очередное срабатывание, конец прохода). Пока проход идёт, пишется раз в ``ALERTS_BEAT``
+секунд — с временем последнего движения, а не текущим: застрявший проход его не обновляет."""
+ALERTS_BEAT = 10.0
+"""Как часто во время прохода очереди писать heartbeat доставки, с."""
+ALERTS_STALL = 60.0
+"""Проход стоит на одном срабатывании дольше — предупреждение в лог (один раз за проход)."""
 KEY_SIGNAL = "notifier:last_signal_id"
 KEY_EVENT = "notifier:last_event_id"
 
@@ -174,10 +184,11 @@ def monitor_once() -> str:
         r.close()
 
 
-def alerts_once() -> DeliveryPass:
-    """Синхронно: один проход очереди срабатываний алертов (``app.alerts.deliver_batch``)."""
+def alerts_once(progress: Callable[[], None] | None = None) -> DeliveryPass:
+    """Синхронно: один проход очереди срабатываний алертов (``app.alerts.deliver_batch``);
+    ``progress`` — перед каждым срабатыванием (heartbeat доставки)."""
     with SessionLocal() as db:
-        return deliver_batch(db)
+        return deliver_batch(db, progress=progress)
 
 
 class Notifier:
@@ -186,6 +197,8 @@ class Notifier:
         self.stop = asyncio.Event()
         self.alerts_wake = asyncio.Event()
         self._redis_ok = True
+        # когда очередь алертов последний раз двигалась (unix-время; пишет и поток прохода)
+        self._alerts_moved = time.time()
 
     async def run(self) -> None:
         tasks = [
@@ -283,14 +296,39 @@ class Notifier:
             self.alerts_wake.clear()
             res = DeliveryPass(0, 0, False)
             try:
-                res = await asyncio.to_thread(alerts_once)
+                res = await self._alerts_pass()
                 if res.decided:
                     log.info("алерты: доставлено срабатываний %d", res.decided)
             except Exception:
                 log.exception("доставка алертов")
+            self._alerts_touch()
+            await self._set(ALERTS_HEARTBEAT_KEY, int(self._alerts_moved))
             if res.full and res.handled:
                 continue
             await self._wait_alerts(ALERTS_BUSY if res.full else ALERTS_POLL)
+
+    def _alerts_touch(self) -> None:
+        """Очередь сдвинулась (вызывается и из потока прохода)."""
+        self._alerts_moved = time.time()
+
+    async def _alerts_pass(self) -> DeliveryPass:
+        """Один проход очереди в отдельном потоке. Пока он идёт, раз в ``ALERTS_BEAT`` секунд
+        пишется heartbeat доставки — время последнего движения очереди: если отправка по одному
+        срабатыванию зависла, heartbeat стареет и монитор это покажет. Сам проход не
+        прерывается: каждое срабатывание — в своей транзакции, а запросы к почте и push-сервису
+        ограничены таймаутами (``app.mail``, ``app.push.PUSH_TIMEOUT``)."""
+        self._alerts_touch()
+        job = asyncio.ensure_future(asyncio.to_thread(alerts_once, self._alerts_touch))
+        stall_warned = False
+        while True:
+            await self._set(ALERTS_HEARTBEAT_KEY, int(self._alerts_moved))
+            done, _ = await asyncio.wait({job}, timeout=ALERTS_BEAT)
+            if done:
+                return job.result()
+            idle = time.time() - self._alerts_moved
+            if idle >= ALERTS_STALL and not stall_warned:
+                log.warning("доставка алертов: проход стоит на одном срабатывании %.0f с", idle)
+                stall_warned = True
 
     async def _wait_alerts(self, timeout: float) -> None:
         """До сообщения воркера алертов, остановки или ``timeout`` секунд."""

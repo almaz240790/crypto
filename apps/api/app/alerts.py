@@ -17,7 +17,7 @@ zone (цена вошла в активную зону), structure (BOS/CHoCH), 
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -620,6 +620,7 @@ def deliver_batch(
     mail: MailSender | None = None,
     push: PushSender | None = None,
     limit: int = DELIVERY_BATCH,
+    progress: Callable[[], None] | None = None,
 ) -> DeliveryPass:
     """Уведомитель: один проход очереди (``alert_triggers`` со статусом ``queued``).
 
@@ -634,6 +635,10 @@ def deliver_batch(
     провайдера, сеть) — до конца прохода письма не отправляются, а ждут ``DELIVERY_RETRY_AFTER``:
     при таймаутах сети проход не растягивается на 15 с × размер очереди, а push по остальным
     срабатываниям уходит сразу. В production без ключей обоих каналов ничего не делает.
+
+    ``progress`` вызывается перед каждым срабатыванием: по нему уведомитель видит, что очередь
+    движется, и пишет heartbeat доставки (``Notifier.alerts_loop``); застрявший проход монитор
+    покажет, а не спрячет за свежим heartbeat основного цикла.
     """
     global _not_ready_warned
     if not delivery_ready():
@@ -649,6 +654,8 @@ def deliver_batch(
     decided = handled = 0
     ids = pending_ids(db, now, limit)
     for tid in ids:
+        if progress is not None:
+            progress()
         try:
             trig = db.get(AlertTrigger, tid, with_for_update={"skip_locked": True})
             if trig is None or trig.notified or delivery_state(trig).get("status") != QUEUED:
@@ -667,9 +674,9 @@ def deliver_batch(
             handled += 1
         except Exception as exc:
             cause = exc.cause if isinstance(exc, DeliveryIncompleteError) else exc
-            if isinstance(cause, MailError) or provider_wide(cause):
-                # отказ провайдера или сеть: причина видна по сообщению, трассировка на каждую
-                # попытку только забивает лог
+            if isinstance(cause, MailError | OSError) or provider_wide(cause):
+                # отказ провайдера или сеть (у push-сервиса ошибки сети и таймаут — OSError):
+                # причина видна по сообщению, трассировка на каждую попытку только забивает лог
                 log.warning("срабатывание %s: не доставлено (%s), повтор позже", tid, cause)
             else:
                 log.exception("срабатывание %s: ошибка доставки", tid)

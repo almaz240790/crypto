@@ -31,6 +31,7 @@ from app.models import Incident, Instrument, Signal, User
 log = logging.getLogger("monitor")
 
 OK, DEGRADED, DOWN = "ok", "degraded", "down"
+_SEVERITY = {OK: 0, DEGRADED: 1, DOWN: 2}
 REALERT_AFTER = timedelta(hours=6)
 INCIDENTS_LOCK = 0x706C_6D6E  # ключ advisory-блокировки инцидентов («plmn»), см. incidents_lock
 _no_owners_warned = False
@@ -126,6 +127,13 @@ def evaluate(s: Snapshot) -> list[Component]:
     st, d = hb("tracker", 180, 900)
     out.append(Component("tracker", "Трекер сделок", st, d))
     st, d = hb("notifier", 120, 600)
+    # доставка алертов — отдельный цикл уведомителя со своим heartbeat (время последнего движения
+    # очереди): застрявшая отправка не видна по heartbeat основного цикла. Ключа нет (уведомитель
+    # прежней версии при выкладке, Redis только что поднялся пустым) — судим по основному.
+    if s.heartbeats.get("alert_delivery") is not None:
+        st2, d2 = hb("alert_delivery", 120, 600)
+        if _SEVERITY[st2] > _SEVERITY[st]:
+            st, d = st2, d2
     out.append(Component("notifier", "Уведомления", st, d))
     st, d = hb("pattern_detector", 180, 900)
     out.append(Component("patterns", "Паттерны на графике", st, d))
@@ -158,7 +166,15 @@ def collect(db: Session, r: Any | None) -> Snapshot:
     ts = int(now.timestamp())
     heartbeats: dict[str, int | None] = {}
     redis_ok = r is not None
-    for name in ("market_data", "scheduler", "tracker", "notifier", "pattern_detector", "alerts"):
+    for name in (
+        "market_data",
+        "scheduler",
+        "tracker",
+        "notifier",
+        "alert_delivery",
+        "pattern_detector",
+        "alerts",
+    ):
         try:
             v = r.get(f"{name}:heartbeat") if r is not None else None
             heartbeats[name] = (ts - int(v)) if v else None
