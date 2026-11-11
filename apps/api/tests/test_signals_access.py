@@ -750,7 +750,7 @@ def test_signal_mail_and_digest_only_for_staff(
     db: Session, world: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     sent: list[str] = []
-    monkeypatch.setattr("app.notify.send_mail", lambda to, subject, body: sent.append(to))
+    monkeypatch.setattr("app.notify.send_mail", lambda to, subject, body, *a, **k: sent.append(to))
     for u in world.users.values():
         ns = db.get(NotificationSettings, u.id)
         assert ns is not None
@@ -780,7 +780,9 @@ def test_test_email_shows_signal_digest_only_to_staff(
     """«Отправить тестовое письмо»: образец дайджеста сигналов — только admin и owner;
     обычному пользователю — письмо без сигналов, их статистики и ссылок на них."""
     sent: list[tuple[str, str, str]] = []
-    monkeypatch.setattr("app.notify.send_mail", lambda to, s, body: sent.append((to, s, body)))
+    monkeypatch.setattr(
+        "app.notify.send_mail", lambda to, s, body, *a, **k: sent.append((to, s, body))
+    )
     client = _client(db)
     r = client.post("/v1/me/notifications/test", headers=_headers(world, role))
     assert r.status_code == 200
@@ -799,7 +801,7 @@ def test_test_email_for_user_is_journal_report_when_trades(
     db: Session, world: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     sent: list[str] = []
-    monkeypatch.setattr("app.notify.send_mail", lambda to, s, body: sent.append(body))
+    monkeypatch.setattr("app.notify.send_mail", lambda to, s, body, *a, **k: sent.append(body))
     u = world.users["user"]
     now = datetime.now(tz=UTC)
     db.add(
