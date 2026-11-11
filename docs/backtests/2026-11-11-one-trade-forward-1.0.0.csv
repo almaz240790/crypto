@@ -1,0 +1,8 @@
+symbol,candidate_time,direction,grade,blocked_by_signal,blocker_exit,blocker_status,candidate_status,candidate_realized_r
+XRPUSDT,2026-10-26T16:00:00+00:00,down,B,2026-10-26T08:00:00+00:00,2026-10-27T16:00:00+00:00,closed_sl,closed_sl,-1.0897
+FILUSDT,2026-10-29T12:00:00+00:00,down,C,2026-10-29T08:00:00+00:00,2026-10-29T16:00:00+00:00,closed_sl,closed_sl,-1.0945
+ICPUSDT,2026-10-29T12:00:00+00:00,down,C,2026-10-29T08:00:00+00:00,2026-10-29T16:00:00+00:00,closed_sl,closed_sl,-1.0726
+ATOMUSDT,2026-11-03T16:00:00+00:00,down,C,2026-11-03T12:00:00+00:00,2026-11-03T16:00:00+00:00,closed_sl,closed_be,0.3434
+XLMUSDT,2026-11-04T08:00:00+00:00,down,B,2026-11-03T16:00:00+00:00,2026-11-04T12:00:00+00:00,closed_be,closed_sl,-1.0444
+1000FLOKIUSDT,2026-11-09T16:00:00+00:00,down,B,2026-11-09T04:00:00+00:00,,open,closed_tp3,1.4095
+AXSUSDT,2026-11-09T16:00:00+00:00,down,C,2026-11-09T04:00:00+00:00,2026-11-09T16:00:00+00:00,closed_sl,closed_tp3,1.4963
