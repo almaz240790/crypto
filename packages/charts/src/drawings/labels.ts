@@ -136,15 +136,17 @@ export function positionLabelTexts(p: PositionParts, precision: number | null, p
 
 /**
  * Где начать подпись уровня Фибоначчи (x под label): справа от рисунка; не помещается до края панели — внутри рисунка
- * у правого края; рисунок уже подписи — слева от него; в крайнем случае — у края панели. Возвращает все подходящие
- * места по порядку (раскладка берёт первое свободное).
+ * у правого края; рисунок уже подписи — слева от него. Место у края панели — только когда рисунок сам доходит до края
+ * или частично за экраном (либо другого места нет вовсе): у небольшого Фибоначчи посреди экрана подпись, которой не
+ * хватило места рядом, не уезжает к шкале цены за сотни пикселей от своей линии, а не показывается (второстепенный
+ * уровень) или остаётся у рисунка. Возвращает все подходящие места по порядку (раскладка берёт первое свободное).
  */
-function fibXs(span: number, left: number, right: number, width: number): number[] {
+export function fibXs(span: number, left: number, right: number, width: number): number[] {
   const out: number[] = [];
   if (right + span <= width) out.push(right);
   if (right - left >= span + 2 * TEXT_DX) out.push(right - span - TEXT_DX);
   if (left - span - TEXT_DX >= 0) out.push(left - span - TEXT_DX);
-  out.push(Math.max(0, width - span));
+  if (out.length === 0 || left < 0 || right + span > width) out.push(Math.max(0, width - span));
   return [...new Set(out)];
 }
 

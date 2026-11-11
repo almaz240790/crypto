@@ -195,6 +195,21 @@ export class Terminal {
   private applyMargins(): void {
     this.chart.priceScale("right").applyOptions({ scaleMargins: this.margins() });
     if (this.overlay) this.chart.priceScale(OVERLAY_SCALE).applyOptions({ scaleMargins: this.margins() });
+    this.resetPaneScales();
+  }
+
+  /**
+   * Правые шкалы панелей индикаторов — всегда линейные и с полями по умолчанию. LWC запоминает параметры, применённые
+   * к правой шкале основной панели (режим, поля под легенду), как параметры по умолчанию для новых панелей: без этого
+   * RSI и MACD, добавленные после включения логарифмической или процентной шкалы, рисовались бы в ней же.
+   */
+  private resetPaneScale(index: number): void {
+    this.chart.priceScale("right", index).applyOptions({ mode: PriceScaleMode.Normal, scaleMargins: { ...PRICE_MARGINS } });
+  }
+
+  private resetPaneScales(): void {
+    const n = this.chart.panes().length;
+    for (let i = 1; i < n; i++) this.resetPaneScale(i);
   }
 
   setTheme(tokens: ThemeTokens): void {
@@ -328,6 +343,7 @@ export class Terminal {
   addPane(height = 100): number {
     const pane = this.chart.addPane();
     pane.setHeight(height);
+    this.resetPaneScale(pane.paneIndex());
     return pane.paneIndex();
   }
 
@@ -437,6 +453,8 @@ export class Terminal {
   setScaleMode(mode: ScaleMode): void {
     this.scaleMode = mode;
     this.chart.priceScale("right").applyOptions({ mode: SCALE_MODES[mode] });
+    // режим — только у шкалы цены: панели индикаторов остаются линейными
+    this.resetPaneScales();
     this.overlay?.applyOptions({ priceScaleId: mode === "percent" ? "right" : OVERLAY_SCALE });
   }
 

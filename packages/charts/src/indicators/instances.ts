@@ -68,7 +68,10 @@ export function canAdd(list: readonly IndicatorInstance[], id: string): boolean 
   return countOf(list, id) < max;
 }
 
-/** Параметры в пределах ParamSpec: min/max, шаг; период и прочие целые параметры — целые. */
+/**
+ * Параметры в пределах ParamSpec: min/max, шаг; период и прочие целые параметры — целые. Затем связь между
+ * параметрами (spec.constrain): несогласованный набор не должен дойти до расчёта ни из окна параметров, ни из сохранения.
+ */
 export function clampParams(spec: IndicatorSpec, params: Readonly<Record<string, number>>): Record<string, number> {
   const out: Record<string, number> = {};
   for (const p of spec.params) {
@@ -81,7 +84,7 @@ export function clampParams(spec: IndicatorSpec, params: Readonly<Record<string,
     v = Number(v.toFixed(digits));
     out[p.key] = Math.min(p.max, Math.max(p.min, v));
   }
-  return out;
+  return spec.constrain ? spec.constrain(out) : out;
 }
 
 /** Параметры нового экземпляра: у скользящих средних — первый не занятый период из 20, 50, 200, 100…; иначе по умолчанию. */

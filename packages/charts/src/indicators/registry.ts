@@ -12,6 +12,11 @@ export type IndicatorSpec = {
   series: SeriesSpec[];
   /** Уровни на отдельной панели (RSI 30/70 и т. п.). */
   levels?: number[];
+  /**
+   * Связь между параметрами, которую min/max каждого параметра не выражает (у MACD быстрая короче медленной).
+   * Получает параметры уже в своих пределах и возвращает согласованные; применяется в clampParams.
+   */
+  constrain?(params: Record<string, number>): Record<string, number>;
   compute(candles: readonly Candle[], params: Record<string, number>): Record<string, Value[]>;
 };
 
@@ -61,6 +66,8 @@ export const INDICATORS: IndicatorSpec[] = [
     id: "macd", title: "MACD", pane: "separate", levels: [0],
     params: [{ key: "fast", label: "Быстрая", default: 12, min: 1, max: 100 }, { key: "slow", label: "Медленная", default: 26, min: 2, max: 200 }, { key: "signal", label: "Сигнальная", default: 9, min: 1, max: 100 }],
     series: [{ key: "hist", label: "Гистограмма", kind: "histogram", color: "text3" }, { key: "line", label: "MACD", kind: "line", color: "accent" }, { key: "signal", label: "Сигнальная", kind: "line", color: "warn" }],
+    // быстрая ≥ медленной — не MACD (MacdCalc бросает): медленная подтягивается на шаг выше быстрой (max медленной 200 > max быстрой 100)
+    constrain: (p) => ((p.fast ?? 12) < (p.slow ?? 26) ? p : { ...p, slow: (p.fast ?? 12) + 1 }),
     compute: (c, p) => {
       const v = macd(c, p.fast ?? 12, p.slow ?? 26, p.signal ?? 9);
       return { line: v.map((x) => x.line), signal: v.map((x) => x.signal), hist: v.map((x) => x.hist) };

@@ -6,6 +6,7 @@ import { alpha } from "../theme";
 import type { ThemeTokens } from "../types";
 import { channelOffset, extend, fibLevels, lineAt, positionKnobs, positionScreen, type Projector } from "./geometry";
 import { DRAWING_TEXT, drawingColor, drawingLabels, formatDrawingPrice, handleCandidate, handleRects, toCandidate, type DrawingLabel, type DrawingText, type MeasureText, type RiskProfile } from "./labels";
+import type { DrawProjector } from "./controller";
 import { FIB_KEY_LEVELS, FIB_MINOR_ALPHA, HANDLE_PX, POSITION_FILL_ALPHA, POSITION_KNOB_R, POSITION_KNOB_TOUCH_R, isPosition, type Drawing, type Point } from "./types";
 
 /**
@@ -21,6 +22,11 @@ export class TimeProjector {
   setBars(times: number[], step: number): void {
     this.times = times;
     this.step = step;
+  }
+
+  /** Бары, по которым идёт проекция: новый проектор (серию пересоздали) продолжает с тех же. */
+  bars(): { times: number[]; step: number } {
+    return { times: this.times, step: this.step };
   }
 
   timeToLogical(time: number): number {
@@ -71,6 +77,9 @@ export class TimeProjector {
     return { x: (t) => this.x(t), y: (p) => this.y(p), width: this.chart.timeScale().width(), height: this.chart.paneSize(0).height };
   }
 }
+
+/** Проекция отсоединённого примитива: координат нет, под указателем ничего. */
+const DETACHED: Projector = { x: () => null, y: () => null, width: 0, height: 0 };
 
 type Ctx = CanvasRenderingContext2D;
 
@@ -354,6 +363,17 @@ export class DrawingsPrimitive implements ISeriesPrimitive<Time> {
    * среди подписей рисунков (график без разметки, тесты).
    */
   linked: (() => readonly PlacedLabel[] | null) | null = null;
+  /**
+   * Проекция для контроллера рисования. Смена типа графика пересоздаёт основную серию: примитив отсоединяется и
+   * присоединяется к новой, проектор — новый. Контроллер живёт дольше, поэтому получает не сам проектор, а этот
+   * объект: он каждый раз обращается к текущему. Между отсоединением и присоединением — «нет координат».
+   */
+  readonly live: DrawProjector = {
+    timeAt: (x) => this.projector?.timeAt(x) ?? null,
+    priceAt: (y) => this.projector?.priceAt(y) ?? null,
+    projector: () => this.projector?.projector() ?? DETACHED,
+  };
+  private lastBars: { times: number[]; step: number } | null = null;
   private requestUpdate: (() => void) | null = null;
   private readonly views = [new View(this)];
   /** Растёт при каждом update(): подписи раскладки разметки — того же состояния, что и кадр. */
@@ -364,10 +384,12 @@ export class DrawingsPrimitive implements ISeriesPrimitive<Time> {
 
   attached(p: SeriesAttachedParameter<Time>): void {
     this.projector = new TimeProjector(p.chart, p.series);
+    if (this.lastBars) this.projector.setBars(this.lastBars.times, this.lastBars.step);
     this.requestUpdate = p.requestUpdate;
   }
 
   detached(): void {
+    this.lastBars = this.projector?.bars() ?? this.lastBars;
     this.projector = null;
     this.requestUpdate = null;
   }

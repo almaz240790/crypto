@@ -432,10 +432,32 @@ export class DrawingController {
         const dt = this.snapTime(t1) - this.snapTime(t0);
         // позиция — по шагу цены (сдвиг кратен шагу: риск и R:R те же, в журнал и калькулятор — цены без хвостов)
         const tick = isPosition(type) ? (this.opts.getTick?.() ?? null) : undefined;
-        const dp = tick !== undefined ? roundToTick(p1 - p0, tick) : p1 - p0;
-        for (const p of pts) {
-          p.time += dt;
-          p.price = tick !== undefined ? roundToTick(p.price + dp, tick) : p.price + dp;
+        if (tick !== undefined) {
+          const dp = roundToTick(p1 - p0, tick);
+          for (const p of pts) {
+            p.time += dt;
+            p.price = roundToTick(p.price + dp, tick);
+          }
+        } else {
+          // остальные рисунки едут за указателем по экрану: каждая точка — на то же число пикселей. На линейной и
+          // процентной шкале это тот же сдвиг цены, что и раньше; на логарифмической одна разница цен для всех точек
+          // растягивала рисунок и уводила нижнюю точку в ноль и ниже. Точка ушла за шкалу — сдвиг не применяется.
+          const pr = this.proj.projector();
+          const moved: number[] = [];
+          for (const p of pts) {
+            const y0 = pr.y(p.price);
+            const price = y0 === null ? null : this.proj.priceAt(y0 + y - start.y);
+            if (price === null || !Number.isFinite(price)) break;
+            moved.push(price);
+          }
+          if (moved.length === pts.length) {
+            pts.forEach((p, i) => {
+              p.time += dt;
+              p.price = moved[i]!;
+            });
+          } else {
+            pts = this.drag!.last ?? pts;
+          }
         }
       }
     }
