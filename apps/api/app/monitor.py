@@ -13,6 +13,7 @@ Redis и БД, открывает/закрывает инциденты и шл�
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import logging
 import time
@@ -24,13 +25,16 @@ from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.mail import send_mail
-from app.models import Incident, Instrument, Signal
+from app.mail import MailError, send_mail
+from app.models import Incident, Instrument, Signal, User
 
 log = logging.getLogger("monitor")
 
 OK, DEGRADED, DOWN = "ok", "degraded", "down"
+_SEVERITY = {OK: 0, DEGRADED: 1, DOWN: 2}
 REALERT_AFTER = timedelta(hours=6)
+INCIDENTS_LOCK = 0x706C_6D6E  # ключ advisory-блокировки инцидентов («plmn»), см. incidents_lock
+_no_owners_warned = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,6 +127,13 @@ def evaluate(s: Snapshot) -> list[Component]:
     st, d = hb("tracker", 180, 900)
     out.append(Component("tracker", "Трекер сделок", st, d))
     st, d = hb("notifier", 120, 600)
+    # доставка алертов — отдельный цикл уведомителя со своим heartbeat (время последнего движения
+    # очереди): застрявшая отправка не видна по heartbeat основного цикла. Ключа нет (уведомитель
+    # прежней версии при выкладке, Redis только что поднялся пустым) — судим по основному.
+    if s.heartbeats.get("alert_delivery") is not None:
+        st2, d2 = hb("alert_delivery", 120, 600)
+        if _SEVERITY[st2] > _SEVERITY[st]:
+            st, d = st2, d2
     out.append(Component("notifier", "Уведомления", st, d))
     st, d = hb("pattern_detector", 180, 900)
     out.append(Component("patterns", "Паттерны на графике", st, d))
@@ -155,7 +166,15 @@ def collect(db: Session, r: Any | None) -> Snapshot:
     ts = int(now.timestamp())
     heartbeats: dict[str, int | None] = {}
     redis_ok = r is not None
-    for name in ("market_data", "scheduler", "tracker", "notifier", "pattern_detector", "alerts"):
+    for name in (
+        "market_data",
+        "scheduler",
+        "tracker",
+        "notifier",
+        "alert_delivery",
+        "pattern_detector",
+        "alerts",
+    ):
         try:
             v = r.get(f"{name}:heartbeat") if r is not None else None
             heartbeats[name] = (ts - int(v)) if v else None
@@ -235,16 +254,73 @@ def sync_incidents(db: Session, components: list[Component], now: datetime) -> l
     return opened
 
 
+def merge_owner_emails(configured: set[str], from_db: list[str]) -> list[str]:
+    """OWNER_EMAILS ∪ адреса владельцев из БД: без дублей, регистр и пробелы не различаются."""
+    out = {e.strip().lower() for e in configured if e and e.strip()}
+    out.update(e.strip().lower() for e in from_db if e and e.strip())
+    return sorted(out)
+
+
+def owner_recipients(db: Session) -> list[str]:
+    """Кому слать письма владельцам: OWNER_EMAILS этого процесса плюс активные (не удалённые,
+    не заблокированные) пользователи с ролью owner и подтверждённым адресом из БД.
+
+    У уведомителя на Railway переменной OWNER_EMAILS нет, а владелец в БД есть — без этого
+    письма об инцидентах не уходили никому.
+    """
+    rows = db.scalars(
+        select(User.email).where(
+            User.role == "owner",
+            User.deleted_at.is_(None),
+            User.blocked_at.is_(None),
+            User.email_verified_at.is_not(None),
+        )
+    ).all()
+    return merge_owner_emails(settings.owner_email_set, list(rows))
+
+
+def incident_mail_key(inc: Incident, to: str) -> str:
+    """Ключ идемпотентности письма об инциденте: инцидент, очередное оповещение (по прежнему
+    ``alerted_at``) и адресат. Повтор того же оповещения после сбоя (таймаут, процесс убит до
+    фиксации) Resend второй раз не отправит; новое оповещение через ``REALERT_AFTER`` — с новым
+    ключом. Адрес — хешем: ключ не длиннее 256 символов и без адреса в открытом виде."""
+    round_ = int(inc.alerted_at.timestamp()) if inc.alerted_at is not None else 0
+    who = hashlib.sha256(to.encode()).hexdigest()[:16]
+    return f"incident-{inc.id}-{round_}-{who}"
+
+
 def send_alerts(db: Session, components: list[Component], now: datetime) -> int:
-    """Письмо владельцам по каждому открытому инциденту: при открытии и затем раз в 6 часов."""
-    owners = sorted(settings.owner_email_set)
+    """Письмо владельцам по каждому открытому инциденту: при открытии и затем раз в 6 часов.
+
+    Письмо — в строгом режиме и с ключом идемпотентности (``incident_mail_key``). Инцидент
+    отмечается оповещённым (``alerted_at``), только когда письмо принято для всех адресатов;
+    отказ по адресу получателя повтором не лечится — адрес пропускается. Любой другой сбой
+    (сеть, отказ провайдера) не роняет прогон: уже отправленные отмечаются, остальные инциденты
+    ждут следующего прогона (через минуту), а повтор того же письма Resend не задвоит.
+    Возвращает число оповещённых инцидентов.
+    """
+    global _no_owners_warned
+    due = [
+        inc
+        for inc in db.scalars(
+            select(Incident)
+            .where(Incident.closed_at.is_(None))
+            .order_by(Incident.id)
+            .execution_options(populate_existing=True)  # alerted_at мог записать другой экземпляр
+        ).all()
+        if inc.alerted_at is None or now - inc.alerted_at >= REALERT_AFTER
+    ]
+    if not due:
+        return 0
+    owners = owner_recipients(db)
     if not owners:
+        if not _no_owners_warned:
+            log.warning("инциденты открыты, а слать некому: нет OWNER_EMAILS и владельцев в БД")
+            _no_owners_warned = True
         return 0
     sent = 0
     titles = {c.key: c.title for c in components}
-    for inc in db.scalars(select(Incident).where(Incident.closed_at.is_(None))).all():
-        if inc.alerted_at is not None and now - inc.alerted_at < REALERT_AFTER:
-            continue
+    for inc in due:
         subject = f"[Platform] {inc.severity.upper()}: {titles.get(inc.component, inc.component)}"
         body = (
             f"{titles.get(inc.component, inc.component)}: {inc.message}\n"
@@ -252,18 +328,56 @@ def send_alerts(db: Session, components: list[Component], now: datetime) -> int:
             f"Статус: {settings.frontend_url}/status\n"
             f"Админка: {settings.frontend_url}/admin?tab=system"
         )
+        failure: Exception | None = None
         for to in owners:
-            send_mail(to, subject, body)
+            try:
+                send_mail(to, subject, body, incident_mail_key(inc, to), strict=True)
+            except MailError as exc:
+                if not exc.permanent:
+                    failure = exc
+                    break
+                log.error("инцидент %s: адрес владельца отклонён провайдером (%s)", inc.id, exc)
+            except Exception as exc:
+                failure = exc
+                break
+        if failure is not None:
+            log.warning(
+                "инцидент %s: письмо не отправлено (%s) — повтор в следующий прогон",
+                inc.id,
+                failure,
+            )
+            break
         inc.alerted_at = now
         sent += 1
     return sent
 
 
+def incidents_lock(db: Session) -> bool:
+    """Взять блокировку инцидентов на эту транзакцию (``pg_try_advisory_xact_lock``).
+
+    Два уведомителя бок о бок (выкладка без простоя) иначе оба открыли бы инцидент по одному
+    компоненту и оба отправили бы письмо. Не взяли — этот прогон инциденты не трогает: их ведёт
+    другой экземпляр, следующий прогон через минуту. Снимается при commit/rollback.
+    """
+    return bool(db.scalar(select(func.pg_try_advisory_xact_lock(INCIDENTS_LOCK))))
+
+
 def run_monitor(db: Session, r: Any | None) -> dict[str, Any]:
+    """Прогон монитора. Инциденты открываются и закрываются в одной транзакции и фиксируются до
+    писем: сбой отправки их не откатывает (иначе следующий прогон открыл бы их заново и
+    отправил письма, которые уже ушли). Письма — во второй транзакции под той же блокировкой."""
     snap = collect(db, r)
     comps = evaluate(snap)
-    opened = sync_incidents(db, comps, snap.now)
-    send_alerts(db, comps, snap.now)
+    opened: list[Incident] = []
+    if incidents_lock(db):
+        opened = sync_incidents(db, comps, snap.now)
+        db.commit()
+        if incidents_lock(db):
+            send_alerts(db, comps, snap.now)
+        else:
+            log.info("письма об инцидентах шлёт другой экземпляр монитора — пропуск")
+    else:
+        log.info("инциденты ведёт другой экземпляр монитора — пропуск")
     db.commit()
     if opened:
         log.warning("инциденты: %s", ", ".join(f"{i.component}={i.severity}" for i in opened))

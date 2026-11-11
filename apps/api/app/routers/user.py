@@ -1035,9 +1035,14 @@ def push_subscribe(
     user: User = Depends(auth.current_user),
     db: Session = Depends(auth.get_db),
 ) -> dict[str, Any]:
+    from app.push import endpoint_allowed
+
     p256dh, auth_key = body.keys.get("p256dh"), body.keys.get("auth")
     if not p256dh or not auth_key:
         raise HTTPException(400, "в подписке нет ключей")
+    if not endpoint_allowed(body.endpoint):
+        # адрес не на push-сервисе браузера: на него push не шлём (app.push, PUSH_HOSTS)
+        raise HTTPException(400, "push в этом браузере не поддерживается")
     sub = db.scalar(select(PushSubscription).where(PushSubscription.endpoint == body.endpoint))
     if sub is None:
         sub = PushSubscription(
