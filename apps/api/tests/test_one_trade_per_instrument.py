@@ -36,10 +36,12 @@ from sqlalchemy.orm import Session
 import app.forward as forward
 import app.workers.scheduler as scheduler
 import engine.backtest as bt
+from app.corrections import CORRECTION_SOURCE, RETRACK_JOB
 from app.db import engine
 from app.models import (
     Instrument,
     Signal,
+    SignalCorrection,
     SignalEvent,
     SignalResult,
     Strategy,
@@ -325,6 +327,89 @@ def test_expired_and_cancelled_signals_block_their_end_candle(
         assert not forward.write_candidate(s, ver, inst, _candidate(T0 + 10 * H4))
         _publish(s, ver, inst, T0 + 11 * H4)
         assert _signal_times(s, ver.id, inst.id) == [T0, T0 + 7 * H4, T0 + 11 * H4]
+
+
+def _correct(
+    s: Session,
+    sig: Signal,
+    kind: str,
+    status: str,
+    superseded: list[int],
+    at: datetime,
+    events: tuple[tuple[str, datetime], ...] = (),
+) -> None:
+    """Исправление исхода, как его записывает пересчёт форварда (``app.retrack``, миграция 0026):
+    новые события и событие-пояснение — ``source = 'retrack'``, заменённые перечислены в
+    ``signal_corrections``, исходные строки не меняются."""
+    for type_, when in events:
+        s.add(SignalEvent(signal_id=sig.id, type=type_, occurred_at=when, source=CORRECTION_SOURCE))
+    note = SignalEvent(
+        signal_id=sig.id,
+        type="voided" if kind == "void" else "corrected",
+        occurred_at=at,
+        source=CORRECTION_SOURCE,
+        note="тест",
+    )
+    s.add(note)
+    s.flush()
+    s.add(
+        SignalCorrection(
+            signal_id=sig.id,
+            job=RETRACK_JOB,
+            kind=kind,
+            status_before=sig.status,
+            status_after=status,
+            superseded_event_ids=superseded,
+            note_event_id=note.id,
+            note="тест",
+        )
+    )
+    sig.status = status
+    s.commit()
+
+
+def _event_id(s: Session, sig: Signal, type_: str) -> int:
+    return s.scalars(
+        select(SignalEvent.id).where(SignalEvent.signal_id == sig.id, SignalEvent.type == type_)
+    ).one()
+
+
+def test_corrected_and_voided_signals_occupy_by_the_current_record(
+    make_session: Callable[[], Session], code_version: str
+) -> None:
+    """Пересчёт форварда (задачи 7 и 10, миграция 0026): конец сделки берётся из действующей
+    записи — события, заменённые исправлением, не в счёт; сигнал с недействительным результатом
+    (``voided``) инструмент не занимает."""
+    with make_session() as s:
+        ver, inst = _seed(s, code_version)
+        # записано «истёк» в 12:30 (занимало бы закрытие 16:00); пересчёт: истёк в 09:10
+        first = _publish(s, ver, inst, T0)
+        _end(s, first, "expired", "expired", T0 + H4 + timedelta(minutes=30))
+        assert [x.ref for x in forward.trade_spans(s, ver.id, inst.id, T0 + 2 * H4)] == [
+            first.public_id
+        ]
+        new_end = T0 + timedelta(hours=1, minutes=10)
+        old = [_event_id(s, first, "expired")]
+        _correct(s, first, "retrack", "expired", old, T0 + 3 * H4, (("expired", new_end),))
+        spans = forward.trade_spans(s, ver.id, inst.id, T0 + H4)
+        assert [(x.ref, x.ended_at) for x in spans] == [(first.public_id, new_end)]
+        assert forward.trade_spans(s, ver.id, inst.id, T0 + 2 * H4) == []
+
+        # «истёк» в 20:30 признан недействительным (событие заменено) — закрытие 00:00 свободно
+        second = _publish(s, ver, inst, T0 + 2 * H4)
+        assert not forward.write_candidate(s, ver, inst, _candidate(T0 + 3 * H4))
+        _end(s, second, "expired", "expired", T0 + 3 * H4 + timedelta(minutes=30))
+        old = [_event_id(s, second, "expired")]
+        _correct(s, second, "void", "voided", old, T0 + 4 * H4)
+        assert forward.trade_spans(s, ver.id, inst.id, T0 + 4 * H4) == []
+
+        # недействительный результат не занимает, даже если событие конца не заменено
+        third = _publish(s, ver, inst, T0 + 4 * H4)
+        _end(s, third, "cancelled", "cancelled", T0 + 5 * H4 + timedelta(minutes=30))
+        _correct(s, third, "void", "voided", [], T0 + 6 * H4)
+        assert forward.trade_spans(s, ver.id, inst.id, T0 + 6 * H4) == []
+        _publish(s, ver, inst, T0 + 6 * H4)
+        assert _signal_times(s, ver.id, inst.id) == [T0, T0 + 2 * H4, T0 + 4 * H4, T0 + 6 * H4]
 
 
 def test_rule_is_per_instrument_and_version_not_per_scope(

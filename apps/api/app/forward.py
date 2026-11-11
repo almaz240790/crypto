@@ -33,6 +33,7 @@ from sqlalchemy import func, or_, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
+from app.corrections import VOIDED, current_event
 from app.db import SessionLocal
 from app.models import Candle as CandleRow
 from app.models import (
@@ -378,10 +379,20 @@ def trade_spans(
     Занимает каждый сигнал версии: ``write_candidate`` пишет только то, что торгует бэктест.
     Строки ниже C, записанные до этого правила с градацией C, трекеры ведут как сделки, а
     статистика считает, поэтому и они занимают инструмент, пока открыты: иначе у версии по
-    монете были бы открыты два сигнала сразу."""
+    монете были бы открыты два сигнала сразу.
+
+    Исправления исхода (пересчёт форварда, ``app.retrack``, миграция 0026) учитываются: конец
+    берётся из действующей записи — ``signal_results`` пересчёт переписывает, а события, которые
+    он заменил, не в счёт (``current_event``). Сигнал с результатом, признанным недействительным
+    (``voided``), инструмент не занимает: сделки с известным концом у него нет, трекеры его больше
+    не ведут, и в статистику он не входит."""
     ended_event = (
         select(func.max(SignalEvent.occurred_at))
-        .where(SignalEvent.signal_id == Signal.id, SignalEvent.type.in_(ENDING_EVENTS))
+        .where(
+            SignalEvent.signal_id == Signal.id,
+            SignalEvent.type.in_(ENDING_EVENTS),
+            current_event(),
+        )
         .correlate(Signal)
         .scalar_subquery()
     )
@@ -393,6 +404,7 @@ def trade_spans(
             Signal.strategy_version_id == version_id,
             Signal.instrument_id == instrument_id,
             Signal.candle_close_time < at,
+            Signal.status != VOIDED,
             or_(Signal.status.in_(OPEN_STATUSES), ended > at - SIGNAL_TIMEFRAME.delta),
         )
         .order_by(Signal.candle_close_time)
