@@ -15,6 +15,7 @@ import asyncio
 import importlib.util
 import logging
 import secrets
+from collections import Counter
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -93,8 +94,9 @@ def _calm(start: datetime, n: int, level: Decimal = ENTRY, first: int = 0) -> li
     ]
 
 
-def _h4(t: datetime, low: Decimal, high: Decimal) -> Candle:
-    return Candle(t, D(100), high, low, D(100), D(1))
+def _h4(t: datetime, low: Decimal, high: Decimal, mid: Decimal = ENTRY) -> Candle:
+    """Свеча H4 с open = close = ``mid``."""
+    return Candle(t, mid, high, low, mid, D(1))
 
 
 # --- без БД: проверка исхода по срокам ---------------------------------------------------------
@@ -195,6 +197,69 @@ def test_replay_with_safe_gap_gives_same_outcome_and_risky_gap_is_reported() -> 
     assert late_start.risky and "до стопа" in str(late_start.risky[0].risk)
 
 
+def _tp1_then_calm(minutes: int, hole: tuple[int, int] | None = None) -> list[Candle]:
+    """Лонг от T: TP1 на 120-й минуте, дальше цена у 101 (стоп в безубытке 100 не задет);
+    ``hole`` — вырезанные минуты [от, до)."""
+    tp1 = [Candle(T + 120 * M1, D(101), D("103.5"), D("100.5"), D(103), D(1))]
+    path = [*_calm(T, 120), *tp1, *_calm(T + 121 * M1, minutes - 121, D(101))]
+    if hole:
+        path = [c for c in path if not (hole[0] <= (c.open_time - T) // M1 < hole[1])]
+    return path
+
+
+def test_data_horizon_waits_for_the_just_closed_h4_bar() -> None:
+    now = T + 10 * H4 + 30 * M1  # интервал T + 10 H4 ещё не закрыт
+    written = {T + 9 * H4: _h4(T + 9 * H4, D(99), D(101))}
+    assert retrack.data_horizon(now, written) == T + 10 * H4
+    assert retrack.data_horizon(now, {}) == T + 9 * H4  # только что закрытая ещё не записана
+
+
+def test_gap_in_the_unclosed_h4_interval_hands_the_trade_over() -> None:
+    """Сделка после TP1 ещё открыта; в интервале H4, который ещё не закрыт, нет минуты. Свечи
+    H4 над ним нет, потому что интервал не закончился, а не потому, что данных нет: пересчёт
+    останавливается перед пропуском, сделку дальше ведёт трекер."""
+    now = T + 2 * H4 + 150 * M1  # 18:30, интервал 16:00 не закрыт
+    h4 = {T: _h4(T, D("99.5"), D("103.5")), T + H4: _h4(T + H4, D("100.5"), D("101.5"), D(101))}
+    path = _tp1_then_calm(630, hole=(540, 541))  # пропуск 17:00–17:01
+    horizon = retrack.data_horizon(now, h4)
+    rp = retrack.replay(LONG, P, T, path, h4, horizon)
+    assert rp.risky == () and rp.gaps == ()
+    assert rp.handover is not None and rp.handover.start == T + 540 * M1
+    assert rp.tracker.state.status is SignalStatus.TP1_HIT
+    assert rp.last_candle == T + 539 * M1
+    # без горизонта тот же пропуск выглядел бы постоянной дырой — «нет свечи H4»
+    blind = retrack.replay(LONG, P, T, path, h4)
+    assert blind.handover is None and "нет свечи H4" in str(blind.risky[0].risk)
+
+
+def test_permanent_gaps_before_the_horizon_still_void() -> None:
+    now = T + 2 * H4 + 150 * M1
+    # свечи H4 08:00 нет, а 12:00 есть — данных за 08:00–12:00 нет навсегда
+    h4 = {T + H4: _h4(T + H4, D("100.5"), D("101.5"), D(101))}
+    hole = (60, 61)  # 09:00
+    rp = retrack.replay(LONG, P, T, _tp1_then_calm(630, hole), h4, retrack.data_horizon(now, h4))
+    assert rp.handover is None and "нет свечи H4" in str(rp.risky[0].risk)
+    # пропуск через горизонт: часть до горизонта проверяется — свеча H4 доходит до стопа
+    h4 = {T: _h4(T, D("99.5"), D("103.5")), T + H4: _h4(T + H4, D("99.9"), D("101.5"), D(101))}
+    across = (470, 490)  # 15:50–16:10, горизонт 16:00
+    rp = retrack.replay(LONG, P, T, _tp1_then_calm(630, across), h4, retrack.data_horizon(now, h4))
+    assert rp.handover is None and "до стопа" in str(rp.risky[0].risk)
+    # та же свеча далеко от стопа — пересчёт передаётся трекеру с начала пропуска
+    h4[T + H4] = _h4(T + H4, D("100.5"), D("101.5"), D(101))
+    rp = retrack.replay(LONG, P, T, _tp1_then_calm(630, across), h4, retrack.data_horizon(now, h4))
+    assert rp.risky == () and rp.handover is not None
+    assert rp.handover.start == T + 470 * M1
+
+
+def test_stored_values_round_half_away_from_zero_like_postgres() -> None:
+    assert retrack.as_stored("cost_r", D("0.1625")) == D("0.163")
+    assert retrack.as_stored("realized_r", D("-0.1625")) == D("-0.163")
+    assert retrack.as_stored("duration_hours", D("60.005")) == D("60.01")
+    assert retrack.as_stored("cost_r", None) is None
+    out = retrack.Outcome("closed_time", D("-0.163"), D("0.163"))
+    assert out.text() == "по времени, -0.163 R (комиссия 0.163 R)"
+
+
 # --- на БД -------------------------------------------------------------------------------------
 
 
@@ -252,8 +317,13 @@ class World:
         cost: Decimal | None = None,
         closed_at: datetime | None = None,
         state: dict[str, Any] | None = None,
+        short: tuple[Decimal, Decimal, Decimal, Decimal] | None = None,
     ) -> Signal:
+        """``short`` — шорт от входа 100: стоп и три цели (иначе лонг 100 / 97 / 103, 107, 112)."""
         db = self.db
+        direction, (stop, tp1, tp2, tp3) = (
+            ("short", short) if short else ("long", (D(97), D(103), D(107), D(112)))
+        )
         inst = Instrument(
             exchange="binance",
             symbol=f"{name}{self.tag}".upper()[:20],
@@ -269,13 +339,13 @@ class World:
             public_id=f"{name[:6]}{self.tag}",
             strategy_version_id=self.ver.id,
             instrument_id=inst.id,
-            direction="long",
+            direction=direction,
             candle_close_time=close,
             entry_market=D(100),
-            stop_loss=D(97),
-            tp1=D(103),
-            tp2=D(107),
-            tp3=D(112),
+            stop_loss=stop,
+            tp1=tp1,
+            tp2=tp2,
+            tp3=tp3,
             rr_tp2=D("2.333"),
             score=70,
             grade="B",
@@ -925,6 +995,152 @@ def test_downgrade_restores_signals_without_result_or_tracking_rows(
     assert db.scalar(text("select to_regclass('signal_corrections')")) is None
     _migrate(db, "upgrade")
     assert db.scalar(text("select count(*) from deploy_jobs")) == 0
+
+
+@db_only
+def test_one_bad_signal_does_not_block_the_others(
+    factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ошибка по одному сигналу не останавливает ни отчёт, ни применение остальных. Данные,
+    которые трекер не примет (свеча сигнала не на границе H4), — результат недействителен;
+    нечитаемое состояние трекера у верного исхода — комиссия из записанного результата; сбой
+    при решении — сигнал не применён, отметки нет, следующий запуск его дописывает."""
+    db = factory()
+    w = World(db)
+    bug: dict[str, Any] = {"events": BUG_EVENTS, "result": BUG_R, "state": _bug_state(D("0.1") / 3)}
+    good = w.signal("good", **bug)
+    w.minutes("good", _calm(T, 61 * 60))
+    off = T + H4 / 4  # 09:00 — не граница H4
+    offgrid = w.signal(
+        "offgrid",
+        close=off,
+        events=(("activated", off + M1, D(100)), ("time_stop", off + 15 * M1, D("100.1"))),
+        result=BUG_R,
+        closed_at=off + 15 * M1,
+    )
+    w.minutes("offgrid", _calm(off, 61 * 60))
+    unreadable = _bug_state(D(-1), "closed_sl") | {"status": "closed_stop"}
+    badstate = w.signal(
+        "badstate",
+        status="closed_sl",
+        events=(("activated", T + M1, D(100)), ("sl", T + 11 * M1, D(97))),
+        result=D(-1),
+        closed_at=T + 11 * M1,
+        state=unreadable,
+    )
+    flaky = w.signal("flaky", **bug)  # сбой только при отчёте
+    w.minutes("flaky", _calm(T, 61 * 60))
+    stuck = w.signal("stuck", **bug)  # сбой при каждом решении в этом запуске
+    w.minutes("stuck", _calm(T, 61 * 60))
+    db.commit()
+    real = retrack.plan_signal
+    seen: Counter[int] = Counter()
+
+    def plan(db_: Session, sig: Signal, now: datetime | None = None) -> retrack.Plan:
+        seen[sig.id] += 1
+        if sig.id == stuck.id or (sig.id == flaky.id and seen[sig.id] == 1):
+            raise RuntimeError("сбой чтения")
+        return real(db_, sig, now)
+
+    monkeypatch.setattr(retrack, "plan_signal", plan)
+    out = retrack.run(factory, now=NOW)
+    assert out is not None and out["failed"] == [str(stuck.id)]
+    assert out["applied"] == {"fees": 1, "retrack": 2, "void": 1}
+    errors = {r["signal_id"]: r["error"] for r in out["report"] if r["kind"] == "error"}
+    assert set(errors) == {flaky.id, stuck.id} and "сбой чтения" in errors[stuck.id]
+    db.expire_all()
+    q3 = D("0.001")
+    for sig in (good, flaky):
+        res = db.get(SignalResult, sig.id)
+        assert sig.status == "closed_time" and res is not None and res.closed_at == DEADLINE
+    assert offgrid.status == "voided" and db.get(SignalResult, offgrid.id) is None
+    note = str(_events(db, offgrid)[-1][5])
+    assert "трекер не принимает данные сигнала" in note and "не на границе" in note
+    f = db.get(SignalResult, badstate.id)
+    assert badstate.status == "closed_sl" and f is not None
+    assert f.cost_r == COST.quantize(q3) and f.realized_r == (D(-1) - COST).quantize(q3)
+    assert stuck.status == "closed_time" and db.get(DeployJob, RETRACK_JOB) is None
+
+    monkeypatch.setattr(retrack, "plan_signal", real)
+    second = retrack.run(factory, now=NOW + timedelta(minutes=5))
+    assert second is not None and second["failed"] == []
+    assert second["applied"] == {"done": 3, "retrack": 1}  # недействительный уже не кандидат
+    db.expire_all()
+    res = db.get(SignalResult, stuck.id)
+    assert res is not None and res.closed_at == DEADLINE
+    assert db.get(DeployJob, RETRACK_JOB) is not None
+
+
+@db_only
+def test_open_trade_with_a_hole_in_the_unclosed_interval_goes_to_the_tracker(
+    factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Пересчитанная сделка ещё открыта (после TP1), а в интервале H4, который ещё не закрыт,
+    нет минуты (рестарт market-data на той же выкладке). Результат не становится
+    недействительным: пересчёт доходит до пропуска, дальше сделку ведёт трекер."""
+    db = factory()
+    w = World(db)
+    sig = w.signal("handover", events=BUG_EVENTS, result=BUG_R, state=_bug_state(D("0.1") / 3))
+    w.minutes("handover", _tp1_then_calm(630, hole=(540, 543)))  # 17:00–17:03
+    w.h4("handover", [_h4(T, D("99.5"), D("103.5")), _h4(T + H4, D("100.5"), D("101.5"), D(101))])
+    db.commit()
+    job_at = T + 2 * H4 + 150 * M1  # 18:30
+    out = retrack.run(factory, now=job_at)
+    assert out is not None and out["applied"] == {"retrack": 1}
+    report = out["report"][0]
+    assert report["handover"] == {
+        "from": (T + 540 * M1).isoformat(),
+        "to": (T + 543 * M1).isoformat(),
+    }
+    db.expire_all()
+    assert sig.status == "tp1_hit" and db.get(SignalResult, sig.id) is None
+    tr = db.get(SignalTracking, sig.id)
+    assert tr is not None and tr.last_candle_time == T + 539 * M1
+    note = str(_events(db, sig)[-1][5])
+    assert "сделку ведёт трекер" in note and "недействител" not in note
+
+    # трекер продолжает с минут после пропуска и закрывает сделку в безубытке
+    back = Candle(T + 630 * M1, D(101), D("101.2"), D("99.9"), D(100), D(1))
+    w.minutes("handover", [back])
+    db.commit()
+    monkeypatch.setattr(worker, "SessionLocal", factory)
+    monkeypatch.setattr(worker, "_publish_status", lambda _c: None)
+    worker.catch_up(Timeframe.M1, sig.instrument_id)
+    db.expire_all()
+    res = db.get(SignalResult, sig.id)
+    assert sig.status == "closed_be" and res is not None and res.closed_at == T + 631 * M1
+    last = _events(db, sig)[-1]
+    assert (last[1], last[4]) == ("be", "tracker")
+
+
+@db_only
+def test_archive_and_note_show_the_stored_numbers(factory: sessionmaker[Session]) -> None:
+    """Комиссия ровно 0.1625 R и результат −0.1625 R: в ``signal_results`` Numeric(8, 3)
+    округляет половину от нуля. Архив ``result_after`` и пояснение на карточке показывают те же
+    −0.163 и 0.163, что записаны."""
+    db = factory()
+    w = World(db)
+    cost = execution_cost_r(D(100), D("0.8"), DEFAULT_EXECUTION)
+    assert cost == D("0.1625")
+    flat = [Candle(T + M1 * i, D(100), D("100.05"), D("99.95"), D(100), D(1)) for i in range(3660)]
+    sig = w.signal(
+        "rounding",
+        short=(D("100.8"), D("99.2"), D("98.4"), D("97.6")),
+        events=(("activated", T + M1, D(100)), ("time_stop", T + 15 * M1, D(100))),
+        result=D(0),
+    )
+    w.minutes("rounding", flat)
+    db.commit()
+    out = retrack.run(factory, now=NOW)
+    assert out is not None and out["applied"] == {"retrack": 1}
+    db.expire_all()
+    stored = _row(db, "signal_results", sig.id)
+    assert (D(str(stored["realized_r"])), D(str(stored["cost_r"]))) == (D("-0.163"), D("0.163"))
+    corr = db.scalar(select(SignalCorrection).where(SignalCorrection.signal_id == sig.id))
+    assert corr is not None and corr.result_after is not None
+    assert (corr.result_after["realized_r"], corr.result_after["cost_r"]) == ("-0.163", "0.163")
+    assert corr.result_after["duration_hours"] == "60.00"
+    assert "Стало: по времени, -0.163 R (комиссия 0.163 R)" in corr.note
 
 
 def test_fees_without_state_uses_recorded_result() -> None:

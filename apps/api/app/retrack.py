@@ -18,10 +18,15 @@ stop через 15 минут вместо 60 часов (15 свечей H4). �
      ``fees``;
    - в 1m-свечах пропуск, который мог скрыть касание стопа или цели (``gap_risk``: свеча H4 над
      пропуском доходит до действующего стопа или следующей цели, её нет, или в пропуске срок
-     time stop), или свечей нет вовсе — результат недействителен: статус ``voided``, строка
-     ``signal_results`` уходит в архив, в статистику сигнал не входит; вид ``void``.
+     time stop), свечей нет вовсе или трекер не принимает данные сигнала — результат
+     недействителен: статус ``voided``, строка ``signal_results`` уходит в архив, в статистику
+     сигнал не входит; вид ``void``;
+   - пропуск в интервале H4, который ещё не закрыт (или только что закрылся и свеча H4 ещё не
+     записана, ``data_horizon``), — не повод для ``void``: пересчёт останавливается перед ним, и
+     сделку дальше ведёт трекер, как любую открытую (``Replay.handover``).
 3. **Отчёт и применение** (``run``): сначала в журнал — полный отчёт «было / стало» по каждому
-   сигналу (dry-run, ничего не пишет), затем применение, по одному сигналу в транзакции (строка
+   сигналу (dry-run, ничего не пишет; ошибка по одному сигналу не останавливает отчёт), затем
+   применение, по одному сигналу в транзакции (строка
    сигнала под ``FOR UPDATE``). Исходные строки ``signal_events`` не меняются: новые события
    пишутся с ``source = 'retrack'``, событие ``corrected`` / ``voided`` объясняет исправление,
    заменённые события, прежние ``signal_results`` и ``signal_tracking`` — в
@@ -40,11 +45,12 @@ from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
-from typing import Any
+from decimal import ROUND_HALF_UP, Decimal
+from typing import Any, cast
 
-from sqlalchemy import select
+from sqlalchemy import Numeric, select
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from app.corrections import CORRECTION_SOURCE, RETRACK_JOB, VOIDED, current_event, job_done
@@ -91,6 +97,9 @@ GAPS_IN_NOTE = 3
 
 RETRACK, FEES, VOID, OK, DONE = "retrack", "fees", "void", "ok", "done"
 """Виды решения: пересчёт по 1m; только комиссии; недействителен; без изменений; уже исправлен."""
+ERROR = "error"
+"""В отчёте: решение по сигналу не принято из-за ошибки (сигнал не применяется, задание
+продолжится при следующем запуске)."""
 
 STATUS_RU = {
     "pending": "ожидает входа",
@@ -118,6 +127,16 @@ def _span(d: timedelta) -> str:
 
 def _r(x: Decimal) -> str:
     return f"{x:+.3f} R"
+
+
+def as_stored(column: str, x: Decimal | None) -> Decimal | None:
+    """Значение так, как его хранит столбец ``signal_results``: Numeric со своей точностью,
+    половина округляется от нуля, как в PostgreSQL. Отчёт, пояснение и архив показывают ровно
+    записанное число."""
+    if x is None:
+        return None
+    scale = cast(Numeric[Decimal], SignalResult.__table__.c[column].type).scale or 0
+    return x.quantize(Decimal(1).scaleb(-scale), ROUND_HALF_UP)
 
 
 # --- проверка записанного исхода ---------------------------------------------------------------
@@ -183,6 +202,10 @@ class Replay:
     events: tuple[tuple[TrackerEvent, str | None], ...]
     last_candle: datetime | None
     gaps: tuple[Gap, ...]
+    handover: Gap | None = None
+    """Пропуск в интервале H4, который ещё не закрыт (``data_horizon``): пересчёт остановлен
+    перед ним, сделка открыта, дальше её ведёт трекер. ``None`` — пересчёт прошёл до закрытия
+    сделки или до последней сохранённой минуты."""
 
     @property
     def risky(self) -> tuple[Gap, ...]:
@@ -233,17 +256,32 @@ def gap_risk(
     return None
 
 
+def data_horizon(now: datetime, h4: Mapping[datetime, Candle]) -> datetime:
+    """С какого момента свечи H4 может ещё не быть: интервал H4, в котором ``now``, не закрыт, а
+    только что закрытый мог ещё не попасть в БД. Пропуск 1m-свечей отсюда — не постоянная дыра в
+    данных: минуты могут дописаться, а сделку дальше ведёт трекер, как любую открытую. Свечи
+    H4 раньше горизонта должны быть: их нет — данных нет."""
+    current = interval_start(now, SIGNAL_TIMEFRAME)
+    previous = current - SIGNAL_TIMEFRAME.delta
+    return current if previous in h4 else previous
+
+
 def replay(
     setup: TradeSetup,
     params: TradeParams,
     signal_close: datetime,
     minutes: Sequence[Candle],
     h4: Mapping[datetime, Candle],
+    horizon: datetime | None = None,
 ) -> Replay:
     """Ведёт сигнал заново по закрытым 1m-свечам после сигнальной — тем же ``SignalTracker`` и с
     теми же параметрами, что трекер-воркер (вход по рынку, сроки по времени H4). Останавливается
     на закрытии сделки. Пропуски минут между закрытием сигнальной свечи и последней поданной
-    минутой оцениваются ``gap_risk`` по состоянию сделки перед пропуском."""
+    минутой оцениваются ``gap_risk`` по состоянию сделки перед пропуском.
+
+    Пропуск, который заходит за ``horizon`` (``data_horizon``), оценивается только до горизонта;
+    если там касания быть не могло, пересчёт останавливается перед пропуском
+    (``Replay.handover``): сделка открыта, дальше её ведёт трекер."""
     tracker = SignalTracker(
         setup, params, "market", None, signal_close=signal_close, timeframe=STREAM
     )
@@ -251,19 +289,28 @@ def replay(
     events: list[tuple[TrackerEvent, str | None]] = []
     gaps: list[Gap] = []
     last: datetime | None = None
+    handover: Gap | None = None
     for c in minutes:
         if c.open_time < signal_close:
             continue
         if c.open_time > expected:
             stop, next_tp, deadline = _levels(tracker)
-            risk = gap_risk(setup, stop, next_tp, deadline, expected, c.open_time, h4)
+            known = c.open_time if horizon is None else min(c.open_time, horizon)
+            risk = (
+                gap_risk(setup, stop, next_tp, deadline, expected, known, h4)
+                if expected < known
+                else None
+            )
+            if known < c.open_time and risk is None:
+                handover = Gap(expected, c.open_time, None)
+                break
             gaps.append(Gap(expected, c.open_time, risk))
         events.extend((e, event_note(e, tracker)) for e in tracker.step(c))
         last = c.open_time
         expected = c.open_time + STREAM.delta
         if not tracker.state.status.is_open:
             break
-    return Replay(tracker, tuple(events), last, tuple(gaps))
+    return Replay(tracker, tuple(events), last, tuple(gaps), handover)
 
 
 # --- решение по сигналу ------------------------------------------------------------------------
@@ -313,6 +360,10 @@ class Plan:
     replay: Replay | None = None
     fees: TrackerResult | None = None
 
+    @property
+    def handover(self) -> Gap | None:
+        return self.replay.handover if self.replay else None
+
     def line(self) -> str:
         head = f"{self.public_id} {self.symbol} {self.version}: {self.kind}"
         body = f"было — {self.before.text()}"
@@ -323,10 +374,15 @@ class Plan:
         safe = [g for g in (self.replay.gaps if self.replay else ()) if not g.risk]
         if safe and self.kind == RETRACK:
             body += f"; пропуски без влияния: {sum(g.minutes for g in safe)} мин"
+        if self.handover is not None and self.kind == RETRACK:
+            body += (
+                f"; дальше ведёт трекер — пропуск в незакрытом интервале H4 {self.handover.text()}"
+            )
         return f"{head} | {self.reason} | {body}"
 
     def as_json(self) -> dict[str, Any]:
         gaps = self.replay.gaps if self.replay else ()
+        hand = self.handover
         return {
             "id": self.public_id,
             "symbol": self.symbol,
@@ -339,6 +395,9 @@ class Plan:
             "gaps": [
                 {"from": g.start.isoformat(), "to": g.end.isoformat(), "risk": g.risk} for g in gaps
             ],
+            "handover": None
+            if hand is None
+            else {"from": hand.start.isoformat(), "to": hand.end.isoformat()},
         }
 
 
@@ -348,23 +407,49 @@ def _outcome(status: str, res: SignalResult | None) -> Outcome:
     return Outcome(status, res.realized_r, res.cost_r, res.closed_at, res.duration_hours)
 
 
+def _stored_outcome(
+    status: str,
+    realized_r: Decimal,
+    cost_r: Decimal | None,
+    closed_at: datetime | None,
+    duration_hours: Decimal | None,
+) -> Outcome:
+    """Исход с числами так, как их запишет ``signal_results`` (``as_stored``)."""
+    return Outcome(
+        status,
+        as_stored("realized_r", realized_r),
+        as_stored("cost_r", cost_r),
+        closed_at,
+        as_stored("duration_hours", duration_hours),
+    )
+
+
 def _fees(db: Session, sig: Signal, params: TradeParams, res: SignalResult) -> TrackerResult:
     """Результат верного исхода за вычетом комиссии — из сохранённого состояния трекера (результат
-    в нём до вычета, без округления), как при закрытии. Без состояния — из записанного
-    результата и ``execution_cost_r`` от входа по рынку."""
+    в нём до вычета, без округления), как при закрытии. Без состояния или если его не прочитать
+    (повреждено, записано другим кодом) — из записанного результата и ``execution_cost_r`` от
+    входа по рынку."""
     row = db.get(SignalTracking, sig.id)
     if row is not None:
-        state = state_from_json(row.state)
-        if state.status.value == sig.status:
-            tracker = SignalTracker(
-                _setup_from_row(sig),
-                params,
-                "market",
-                state,
-                signal_close=sig.candle_close_time.astimezone(UTC),
-                timeframe=Timeframe(row.timeframe),
+        try:
+            state = state_from_json(row.state)
+            if state.status.value == sig.status:
+                tracker = SignalTracker(
+                    _setup_from_row(sig),
+                    params,
+                    "market",
+                    state,
+                    signal_close=sig.candle_close_time.astimezone(UTC),
+                    timeframe=Timeframe(row.timeframe),
+                )
+                return tracker.result(DEFAULT_EXECUTION)
+        except (ValueError, KeyError, TypeError, ArithmeticError) as exc:
+            log.warning(
+                "сигнал %s: состояние трекера не прочитать (%s) — комиссия из записанного "
+                "результата",
+                sig.public_id,
+                exc,
             )
-            return tracker.result(DEFAULT_EXECUTION)
     setup = _setup_from_row(sig)
     cost = execution_cost_r(setup.entry_market, setup.risk, DEFAULT_EXECUTION)
     return TrackerResult(
@@ -380,13 +465,15 @@ def _replay_outcome(sig: Signal, rp: Replay) -> Outcome:
     if not st.status.is_closed or rp.last_candle is None:
         return Outcome(st.status.value)
     v = result_values(sig, rp.tracker, rp.last_candle + STREAM.delta)
-    return Outcome(
+    return _stored_outcome(
         st.status.value, v["realized_r"], v["cost_r"], v["closed_at"], v["duration_hours"]
     )
 
 
-def plan_signal(db: Session, sig: Signal) -> Plan:
-    """Решение по одному сигналу (только чтение)."""
+def plan_signal(db: Session, sig: Signal, now: datetime | None = None) -> Plan:
+    """Решение по одному сигналу (только чтение). ``now`` — время задания: по нему видно, какой
+    интервал H4 ещё не закрыт (``data_horizon``)."""
+    now = now or datetime.now(tz=UTC)
     symbol = db.scalar(select(Instrument.symbol).where(Instrument.id == sig.instrument_id))
     version = db.scalar(
         select(StrategyVersion.version).where(StrategyVersion.id == sig.strategy_version_id)
@@ -423,13 +510,20 @@ def plan_signal(db: Session, sig: Signal) -> Plan:
         if res is None or res.cost_r is not None:
             return Plan(kind=OK, reason="исход согласован со сроками, комиссия учтена", **base)
         fees = _fees(db, sig, params, res)
-        after = Outcome(sig.status, fees.realized_r, fees.cost_r, res.closed_at, res.duration_hours)
+        after = _stored_outcome(
+            sig.status, fees.realized_r, fees.cost_r, res.closed_at, res.duration_hours
+        )
         reason = "исход верный, результат записан без комиссии и проскальзывания"
         return Plan(kind=FEES, reason=reason, after=after, fees=fees, **base)
     minutes = _candles_after(db, sig.instrument_id, close, STREAM)
     h4 = {c.open_time: c for c in _candles_after(db, sig.instrument_id, close, SIGNAL_TIMEFRAME)}
-    rp = replay(_setup_from_row(sig), params, close, minutes, h4)
-    if rp.last_candle is None:
+    try:
+        # чистая функция над данными сигнала: её ошибка повторится при любом запуске
+        rp = replay(_setup_from_row(sig), params, close, minutes, h4, data_horizon(now, h4))
+    except (ValueError, KeyError, TypeError, ArithmeticError) as exc:
+        why = f"трекер не принимает данные сигнала ({exc})"
+        return Plan(kind=VOID, reason=problem, why_void=why, **base)
+    if rp.last_candle is None and rp.handover is None:
         why = "после сигнала нет ни одной закрытой 1m-свечи"
         return Plan(kind=VOID, reason=problem, why_void=why, replay=rp, **base)
     if rp.risky:
@@ -484,6 +578,11 @@ def note_text(plan: Plan, now: datetime) -> str:
             f" В 1m-свечах пропуски ({sum(g.minutes for g in safe)} мин), исход они не меняют: "
             "свечи H4 над ними не доходят до стопа и цели."
         )
+    if plan.handover is not None:
+        text += (
+            f" Пересчёт доведён до {_when(plan.handover.start)}: дальше в интервале H4, который "
+            "ещё не закрыт, нет части 1m-свечей; сделку ведёт трекер."
+        )
     return text
 
 
@@ -507,7 +606,7 @@ def apply_plan(db: Session, sig: Signal, plan: Plan, now: datetime) -> SignalCor
     superseded: list[int] = []
     if plan.kind == RETRACK:
         rp = plan.replay
-        assert rp is not None and rp.last_candle is not None
+        assert rp is not None and (rp.last_candle is not None or rp.handover is not None)
         superseded = [e.id for e in events if e.type != "created"]
         for e, why in rp.events:
             db.add(
@@ -526,9 +625,10 @@ def apply_plan(db: Session, sig: Signal, plan: Plan, now: datetime) -> SignalCor
             db.add(tracking)
         tracking.state = state_to_json(st)
         tracking.timeframe = STREAM.value
-        tracking.last_candle_time = rp.last_candle
+        tracking.last_candle_time = rp.last_candle  # None — трекер начнёт со свечи сигнала
         tracking.updated_at = now
         if st.status.is_closed:
+            assert rp.last_candle is not None
             values = result_values(sig, rp.tracker, rp.last_candle + STREAM.delta)
             if res is None:
                 db.add(SignalResult(signal_id=sig.id, **values))
@@ -562,7 +662,10 @@ def apply_plan(db: Session, sig: Signal, plan: Plan, now: datetime) -> SignalCor
     corr.note = explain.note or ""
     corr.superseded_event_ids = superseded
     corr.status_after = sig.status
-    corr.result_after = _image(db.get(SignalResult, sig.id))
+    stored = db.get(SignalResult, sig.id)
+    if stored is not None:
+        db.refresh(stored)  # архив — как записано (Numeric округляет), а не числа из сессии
+    corr.result_after = _image(stored)
     db.add(corr)
     db.flush()
     return corr
@@ -631,30 +734,41 @@ def run(
     since: datetime = SINCE,
 ) -> dict[str, Any] | None:
     """Задание целиком: отчёт (dry-run) в журнал, применение по сигналу в транзакции, снимки
-    статистики, отметка ``deploy_jobs``. ``None`` — задание уже выполнено. Если какой-то сигнал
-    не применился, отметки нет: при следующем старте задание продолжится (применённые сигналы
-    не повторяются)."""
+    статистики, отметка ``deploy_jobs``. ``None`` — задание уже выполнено. Ошибка по одному
+    сигналу — и в отчёте, и при применении — не останавливает остальные: такой сигнал не
+    применяется, отметки нет, и при следующем запуске задание продолжится (применённые сигналы
+    не повторяются). Потеря соединения с БД прерывает задание целиком."""
     now = now or datetime.now(tz=UTC)
     with session_factory() as db:
         if job_done(db, RETRACK_JOB):
             log.info("пересчёт форварда (%s) уже выполнен", RETRACK_JOB)
             return None
         ids = _candidate_ids(db, since)
-        plans = []
+        plans: list[Plan] = []
+        errors: dict[int, str] = {}
         for sid in ids:
-            sig = db.get(Signal, sid)
-            assert sig is not None
-            plans.append(plan_signal(db, sig))
+            try:
+                sig = db.get(Signal, sid)
+                assert sig is not None
+                plans.append(plan_signal(db, sig, now))
+            except Exception as exc:
+                if isinstance(exc, DBAPIError) and exc.connection_invalidated:
+                    raise
+                db.rollback()
+                log.exception("пересчёт форварда: решение по сигналу id %s не принято", sid)
+                errors[sid] = f"{type(exc).__name__}: {exc}"
         db.rollback()  # отчёт только читает
         log.info(
             "пересчёт форварда с %s: отчёт до применения (dry-run), сигналов %d",
             since.date().isoformat(),
-            len(plans),
+            len(ids),
         )
         busy = overlaps(plans)
         for p in plans:
             extra = f" | открыт при сделке {busy[p.public_id]}" if p.public_id in busy else ""
             log.info("  %s%s", p.line(), extra)
+        for sid, err in errors.items():
+            log.info("  id %s: %s — ошибка, сигнал не применяется: %s", sid, ERROR, err)
         for line in _totals(plans):
             log.info("  итог %s", line)
         if busy:
@@ -670,10 +784,12 @@ def run(
         for sid in ids:
             try:
                 sig = db.scalars(select(Signal).where(Signal.id == sid).with_for_update()).one()
-                plan = plan_signal(db, sig)
+                plan = plan_signal(db, sig, now)
                 corr = apply_plan(db, sig, plan, now)
                 db.commit()
-            except Exception:
+            except Exception as exc:
+                if isinstance(exc, DBAPIError) and exc.connection_invalidated:
+                    raise
                 db.rollback()
                 log.exception("пересчёт форварда: сигнал id %s не применён", sid)
                 failed.append(str(sid))
@@ -688,7 +804,8 @@ def run(
             "applied": dict(sorted(applied.items())),
             "failed": failed,
             "totals": _totals(after),
-            "report": [p.as_json() | {"overlaps": busy.get(p.public_id)} for p in plans],
+            "report": [p.as_json() | {"overlaps": busy.get(p.public_id)} for p in plans]
+            + [{"signal_id": sid, "kind": ERROR, "error": err} for sid, err in errors.items()],
         }
         if failed:
             log.error(
