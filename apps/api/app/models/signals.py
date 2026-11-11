@@ -156,7 +156,7 @@ class SignalCorrection(Base):
     ``app.corrections.current_event``), новые события пишутся с ``source = 'retrack'``, событие
     ``note_event_id`` (``corrected`` / ``voided``) объясняет исправление. Прежние строки
     ``signal_results`` и ``signal_tracking`` — в ``result_before`` и ``tracking_before`` (все
-    столбцы строки; ``None`` — строки не было). Одно исправление на сигнал и задание.
+    столбцы строки; SQL NULL — строки не было). Одно исправление на сигнал и задание.
 
     ``kind``: ``retrack`` — исход пересчитан по 1m-свечам; ``fees`` — исход верный, из результата
     вычтены комиссия и проскальзывание; ``void`` — пересчитать нельзя, результат недействителен.
@@ -173,9 +173,11 @@ class SignalCorrection(Base):
     kind: Mapped[str] = mapped_column(String(8))
     status_before: Mapped[str] = mapped_column(String(16))
     status_after: Mapped[str] = mapped_column(String(16))
-    result_before: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
-    result_after: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
-    tracking_before: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    # «строки не было» — SQL NULL, а не JSON null: по нему откат миграции 0026 решает, что
+    # восстанавливать (CHECK в БД: NULL или JSON-объект)
+    result_before: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
+    result_after: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
+    tracking_before: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
     superseded_event_ids: Mapped[list[int]] = mapped_column(ARRAY(Integer), default=list)
     note_event_id: Mapped[int | None] = mapped_column(ForeignKey("signal_events.id"))
     note: Mapped[str] = mapped_column(Text)

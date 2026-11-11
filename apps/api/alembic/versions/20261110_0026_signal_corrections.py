@@ -10,7 +10,9 @@
   событий ``corrected`` и ``voided`` (пояснение исправления).
 
 Откат возвращает сигналам прежний статус, строки ``signal_results`` и ``signal_tracking`` из
-архива, удаляет события исправления (``source = 'retrack'``) и обе таблицы.
+архива (SQL NULL в архиве — строки не было), удаляет события исправления (``source = 'retrack'``)
+и события, записанные трекером после исправления (сделка, снова открытая пересчётом, велась
+дальше), и обе таблицы.
 
 Revision ID: 0026
 Revises: 0025
@@ -65,6 +67,15 @@ def upgrade() -> None:
         sa.Column("created_at", TS, nullable=False, server_default=sa.func.now()),
         sa.UniqueConstraint("signal_id", "job", name="uq_signal_corrections_signal_job"),
         sa.CheckConstraint("kind in ('retrack','fees','void')", name="ck_signal_corrections_kind"),
+        # архив строки — JSON-объект; «строки не было» — SQL NULL (не JSON null): по нему откат
+        # решает, что восстанавливать
+        *(
+            sa.CheckConstraint(
+                f"{col} IS NULL OR jsonb_typeof({col}) = 'object'",
+                name=f"ck_signal_corrections_{col}",
+            )
+            for col in ("result_before", "result_after", "tracking_before")
+        ),
     )
     op.create_index("ix_signal_corrections_signal_id", "signal_corrections", ["signal_id"])
     op.create_table(
@@ -84,16 +95,23 @@ def downgrade() -> None:
     op.execute(
         "DELETE FROM signal_results r USING signal_corrections c WHERE r.signal_id = c.signal_id"
     )
+    # строки не было — в архиве SQL NULL; jsonb_typeof защищает и от JSON null
     op.execute(
         "INSERT INTO signal_results SELECT (jsonb_populate_record(NULL::signal_results, "
-        f"c.result_before)).* FROM ({first}) c WHERE c.result_before IS NOT NULL"
+        f"c.result_before)).* FROM ({first}) c WHERE jsonb_typeof(c.result_before) = 'object'"
     )
     op.execute(
         "DELETE FROM signal_tracking t USING signal_corrections c WHERE t.signal_id = c.signal_id"
     )
     op.execute(
         "INSERT INTO signal_tracking SELECT (jsonb_populate_record(NULL::signal_tracking, "
-        f"c.tracking_before)).* FROM ({first}) c WHERE c.tracking_before IS NOT NULL"
+        f"c.tracking_before)).* FROM ({first}) c WHERE jsonb_typeof(c.tracking_before) = 'object'"
+    )
+    # события после пояснения исправления: трекер вёл дальше сделку, снова открытую пересчётом;
+    # статус, результат и состояние уже возвращены к записанным до задания
+    op.execute(
+        f"DELETE FROM signal_events e USING ({first}) c "
+        "WHERE e.signal_id = c.signal_id AND e.id > c.note_event_id AND e.source <> 'retrack'"
     )
     op.drop_table("deploy_jobs")
     op.drop_index("ix_signal_corrections_signal_id", table_name="signal_corrections")

@@ -12,11 +12,13 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import logging
 import secrets
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -821,6 +823,108 @@ def test_tracker_started_before_migration_completes_the_job_later(
     res = db.get(SignalResult, w.signals["timestop"].id)
     assert res is not None and res.closed_at == DEADLINE
     assert w.signals["riskgap"].status == "voided"
+
+
+MIGRATION_0026 = (
+    Path(__file__).resolve().parents[1]
+    / "alembic"
+    / "versions"
+    / "20261110_0026_signal_corrections.py"
+)
+
+
+def _migrate(db: Session, step: str) -> None:
+    """Шаг миграции 0026 в транзакции теста (DDL в PostgreSQL откатывается вместе с ней)."""
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+
+    spec = importlib.util.spec_from_file_location("migration_0026", MIGRATION_0026)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    with Operations.context(MigrationContext.configure(db.connection())):
+        getattr(mod, step)()
+
+
+def _row(db: Session, table: str, sid: int) -> Any:
+    return db.execute(
+        text(f"select to_jsonb(r) from {table} r where signal_id = :i"), {"i": sid}
+    ).scalar()
+
+
+@db_only
+def test_downgrade_restores_signals_without_result_or_tracking_rows(
+    factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Откат 0026 после задания. «Истёк» при входе по рынку (состояние есть, результата нет —
+    трекер не пишет результат истечения), закрытый по ошибке без состояния трекера и сделка,
+    снова открытая пересчётом и закрытая потом трекером: всё возвращается к записанному до
+    задания, события трекера после исправления удаляются. «Строки не было» — SQL NULL, JSON null
+    в архив не записать."""
+    db = factory()
+    w = World(db)
+    expired = w.signal(
+        "expired",
+        status="expired",
+        events=(("expired", T + 6 * M1, D(100)),),
+        state=state_to_json(TrackerState(status=SignalStatus.EXPIRED, candles_seen=6)),
+    )
+    w.minutes("expired", _calm(T, 61 * 60))
+    notrack = w.signal("notrack", events=BUG_EVENTS, result=BUG_R)
+    w.minutes("notrack", _calm(T, 61 * 60))
+    reopened = w.signal("reopen", events=BUG_EVENTS, result=BUG_R, state=_bug_state(D("0.1") / 3))
+    tp1 = [Candle(T + 120 * M1, D(101), D("103.5"), D("100.5"), D(103), D(1))]
+    w.minutes("reopen", [*_calm(T, 120), *tp1, *_calm(T + 121 * M1, 70 * 60, D(101))])
+    db.commit()
+    sigs = (expired, notrack, reopened)
+    before = {s.id: (s.status, _events(db, s), _row(db, "signal_results", s.id)) for s in sigs} | {
+        -s.id: _row(db, "signal_tracking", s.id) for s in sigs
+    }
+    assert before[expired.id][2] is None and before[-notrack.id] is None
+
+    summary = retrack.run(factory, now=NOW)
+    assert summary is not None and summary["applied"] == {"retrack": 3}
+    db.expire_all()
+    archived = db.execute(
+        text(
+            "select signal_id, result_before is null, tracking_before is null "
+            "from signal_corrections where signal_id = any(:i) order by signal_id"
+        ),
+        {"i": [s.id for s in sigs]},
+    ).all()
+    assert archived == [
+        (expired.id, True, False),
+        (notrack.id, False, True),
+        (reopened.id, False, False),
+    ]
+    json_null = "update signal_corrections set result_before = 'null'::jsonb where signal_id = :i"
+    with (
+        pytest.raises(DBAPIError, match="ck_signal_corrections_result_before"),
+        db.begin_nested(),
+    ):
+        db.execute(text(json_null), {"i": expired.id})
+    # трекер довёл снова открытую сделку до безубытка
+    assert reopened.status == "tp1_hit"
+    more = _calm(T + (121 + 70 * 60) * M1, 30, D(101))
+    more[10] = Candle(more[10].open_time, D(101), D("101.2"), D("99.9"), D(100), D(1))
+    w.minutes("reopen", more)
+    db.commit()
+    monkeypatch.setattr(worker, "SessionLocal", factory)
+    monkeypatch.setattr(worker, "_publish_status", lambda _c: None)
+    worker.catch_up(Timeframe.M1, reopened.instrument_id)
+    db.expire_all()
+    assert reopened.status == "closed_be" and _events(db, reopened)[-1][4] == "tracker"
+
+    _migrate(db, "downgrade")
+    db.expire_all()
+    for s in sigs:
+        assert (s.status, _events(db, s), _row(db, "signal_results", s.id)) == before[s.id], (
+            s.public_id
+        )
+        assert _row(db, "signal_tracking", s.id) == before[-s.id], s.public_id
+    assert db.scalar(text("select to_regclass('signal_corrections')")) is None
+    _migrate(db, "upgrade")
+    assert db.scalar(text("select count(*) from deploy_jobs")) == 0
 
 
 def test_fees_without_state_uses_recorded_result() -> None:
