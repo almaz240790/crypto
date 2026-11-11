@@ -596,6 +596,34 @@ describe("сброс вида и масштаб у правого края", () 
 });
 
 describe("панели под графиком (ADR-0009, «Управление панелями»)", () => {
+  it("процентная шкала: наложенные линии индикаторов LWC не рисует (их рисует примитив по ценам); панели и другие режимы — как раньше", () => {
+    make();
+    const hidden = { lineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false };
+    const shown = { lineVisible: true, lastValueVisible: true, crosshairMarkerVisible: true };
+    const ema = term.addLine(0, "#111") as unknown as FakeSeries;
+    const pane = term.addPane();
+    const rsi = term.addLine(pane, "#222") as unknown as FakeSeries;
+    expect(ema.opts.lineVisible).toBeUndefined();
+    term.setScaleMode("percent");
+    expect(ema.opts).toMatchObject(hidden);
+    // серия на своей панели — не на шкале цены: её рисует LWC в любом режиме
+    expect(rsi.opts.lineVisible).toBeUndefined();
+    // добавлена уже в процентной шкале — сразу скрыта от LWC; видимость экземпляра (visible) терминал не трогает
+    const bb = term.addLine(0, "#333", 2) as unknown as FakeSeries;
+    expect(bb.opts).toMatchObject(hidden);
+    expect(bb.opts.visible).toBeUndefined();
+    term.setScaleMode("log");
+    expect(ema.opts).toMatchObject(shown);
+    expect(bb.opts).toMatchObject(shown);
+    // убранная серия при следующей смене режима не трогается
+    term.removeSeries(bb as never);
+    term.setScaleMode("percent");
+    expect(bb.opts).toMatchObject(shown);
+    expect(ema.opts).toMatchObject(hidden);
+    term.setScaleMode("linear");
+    expect(ema.opts).toMatchObject(shown);
+  });
+
   it("логарифмическая и процентная шкала — только у цены: панели индикаторов остаются линейными, до и после переключения", () => {
     make();
     const modeOf = (pane: number) => chart.scales.filter((x) => x.id === "right" && (x.pane ?? 0) === pane && x.opts.mode !== undefined).at(-1)?.opts.mode;
