@@ -66,7 +66,7 @@ test("Popover: фокус внутрь, Esc закрывает и возвращ
   expect(d!.y).toBeGreaterThanOrEqual(b!.y + b!.height);
   expect(d!.x + d!.width).toBeLessThanOrEqual(page.viewportSize()!.width);
   await dialog.getByLabel("тип графика").selectOption("heikin");
-  await expect(dialog.getByText("Паттерны и сигналы считаются по обычным свечам")).toBeVisible();
+  await expect(dialog.getByText("Паттерны считаются по обычным свечам")).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
   await expect(view).toBeFocused();
