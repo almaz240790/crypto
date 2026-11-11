@@ -1,8 +1,8 @@
 "use client";
 
-import { NOTE_MAX, TOOL_TITLES, flipPosition, isPosition, positionParts, positionRiskText, roundToTick, tickPrecision, type Drawing, type Point, type PositionStats } from "@platform/charts";
+import { FIB_LEVELS, FIB_LEVEL_GROUPS, FIB_PRESET_LEVELS, NOTE_MAX, TOOL_TITLES, fibLevelGroup, fibLevelText, flipPosition, isPosition, normalizeFibLevels, positionParts, positionRiskText, roundToTick, tickPrecision, toggleFibLevel, type Drawing, type FibLevelGroup, type Point, type PositionStats } from "@platform/charts";
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { Button, IconButton, Input, Select } from "@/components/ui";
 import { IconClose } from "@/components/ui/icons";
 import { useT } from "@/i18n/client";
@@ -27,7 +27,8 @@ type Props = {
   tick?: string | null;
   /**
    * Телефон: карточка позиции — одна строка (название, «перевернуть», «параметры», закрыть), пока её не раскрыли:
-   * раскрытая закрывала половину свечей, а с ней ручку и плашку цели у Short (ADR-0009, «Рисование»).
+   * раскрытая закрывала половину свечей, а с ней ручку и плашку цели у Short (ADR-0009, «Рисование»). Карточка
+   * Фибоначчи — так же: название, «уровни», закрыть; раскрытая — уровни одной прокручиваемой строкой и остальное.
    */
   compact?: boolean;
   onPatch: (id: string, patch: Partial<Drawing>) => void;
@@ -46,43 +47,52 @@ type Props = {
 
 /**
  * Карточка выбранного рисунка (план 2A.5, 2B.9 §3.7): регион «выбранный рисунок» из компонентов ui — Button,
- * Input, Select, IconButton. На десктопе — слева снизу над шкалой времени, не шире 720 px; на телефоне — во всю
- * ширину колонки графика (до C2). Имена полей и кнопок — прежние (контракт e2e).
+ * Input, Select, IconButton. На десктопе — слева снизу над шкалой времени, не шире 720 px (у Фибоначчи — 800: с
+ * кнопкой «уровни» свёрнутая карточка остаётся одной строкой); на телефоне — во всю ширину колонки графика (до C2).
+ * Имена полей и кнопок — прежние (контракт e2e).
  */
 export function SelectedDrawingCard({ drawing: d, symbol, tf, instruments, pos, tick = null, compact = false, onPatch, onEdit, onLock, onRemove, onDeselect, onAlert, onCopy }: Props) {
   const t = useT();
-  /** Раскрытая на телефоне карточка позиции (по рисунку: другой выбранный — снова одной строкой). */
+  /**
+   * Раскрытая карточка (по рисунку: другой выбранный — снова свёрнута): у позиции на телефоне — поля и остальное, у
+   * Фибоначчи — уровни (на телефоне — и остальное).
+   */
   const [openId, setOpenId] = useState<string | null>(null);
+  const levelsId = useId();
   const targets = instruments.filter((i) => i.symbol !== symbol);
   const tickN = tick !== null && Number(tick) > 0 ? Number(tick) : null;
   // цены — по шагу инструмента: в журнал и калькулятор без хвостов float (сохранённые раньше позиции)
   const q = (v: number) => roundToTick(v, tickN);
   const posQuery = pos ? `symbol=${symbol}&direction=${pos.direction}&entry=${q(pos.entry)}&stop=${q(pos.stop)}&tp=${q(pos.target)}` : "";
-  const fold = compact && isPosition(d.type);
-  const collapsed = fold && openId !== d.id;
+  const fib = d.type === "fib";
+  const open = openId === d.id;
+  const fold = compact && (isPosition(d.type) || fib);
+  const collapsed = fold && !open;
   const close = (
     <IconButton label={t("снять выделение")} onClick={onDeselect} className={s.cardClose}>
       <IconClose />
     </IconButton>
   );
-  const toggle = fold && (
-    <Button size="sm" aria-expanded={!collapsed} onClick={() => setOpenId(collapsed ? d.id : null)}>
-      {t("параметры")} {collapsed ? "▾" : "▴"}
+  // «уровни» у Фибоначчи — и на десктопе (уровни раскрываются под названием), «параметры» у позиции — на телефоне
+  const toggle = (fib || fold) && (
+    <Button size="sm" aria-expanded={open} aria-controls={fib && open ? levelsId : undefined} onClick={() => setOpenId(open ? null : d.id)}>
+      {fib ? t("уровни") : t("параметры")} {open ? "▴" : "▾"}
     </Button>
   );
   if (collapsed)
     return (
       <div className={`${s.card} ${s.cardBar}`} role="region" aria-label={t("выбранный рисунок")}>
         <strong className={s.cardTitle}>{t(TOOL_TITLES[d.type])}</strong>
-        <FlipButton d={d} tick={tickN} onPatch={onPatch} />
+        {isPosition(d.type) && <FlipButton d={d} tick={tickN} onPatch={onPatch} />}
         {toggle}
         {close}
       </div>
     );
   return (
-    <div className={s.card} role="region" aria-label={t("выбранный рисунок")}>
+    <div className={fib ? `${s.card} ${s.cardFib}` : s.card} role="region" aria-label={t("выбранный рисунок")}>
       <strong className={s.cardTitle}>{t(TOOL_TITLES[d.type])}</strong>
       {toggle}
+      {fib && open && <FibLevels id={levelsId} levels={d.levels} locked={d.locked} onChange={(levels) => onPatch(d.id, { levels })} />}
       {WITH_TEXT.has(d.type) && (
         <span className={s.cardText}>
           <Input aria-label={t("текст рисунка")} placeholder={t("подпись (до 140 символов)")} maxLength={NOTE_MAX} value={d.text ?? ""} onChange={(e) => onPatch(d.id, { text: e.target.value })} />
@@ -149,6 +159,49 @@ function FlipButton({ d, tick, onPatch, className }: { d: Drawing; tick: number 
     >
       ⇅ {dir}
     </Button>
+  );
+}
+
+const FIB_GROUP_LABEL: Readonly<Record<FibLevelGroup, string>> = { targets: "цели по движению", retracement: "коррекция", beyond: "за началом" };
+
+/**
+ * Уровни Фибоначчи (ADR-0009, «Рисование», дополнение 2026-11-11): переключатель на каждый уровень, нажатый —
+ * показан. Группы по месту уровня: «цели по движению» — за второй точкой (отрицательные: −0.618 — 61.8 % хода дальше
+ * конца), «коррекция» — между точками (0…1), «за началом» — за первой точкой (больше 1). Уровень, которого нет среди
+ * предложенных (рисунок с другого клиента), показан в своей группе и выключается так же. Последний включённый уровень
+ * не выключается; «стандартные» — набор по умолчанию. Каждое нажатие — одна правка рисунка (шаг отмены): onChange
+ * получает новый приведённый набор. У заблокированного рисунка переключатели недоступны.
+ */
+export function FibLevels({ id, levels, locked, onChange }: { id?: string; levels: readonly number[] | undefined; locked: boolean; onChange: (levels: number[]) => void }) {
+  const t = useT();
+  const shown = normalizeFibLevels(levels);
+  const all = [...new Set([...FIB_PRESET_LEVELS, ...shown])].sort((a, b) => a - b);
+  return (
+    <div id={id} className={s.fibLevels} role="group" aria-label={t("уровни Фибоначчи")}>
+      {FIB_LEVEL_GROUPS.map((g) => (
+        <div key={g} className={s.fibGroup} role="group" aria-label={t(FIB_GROUP_LABEL[g])}>
+          <span className={s.fibCaption} aria-hidden="true">
+            {t(FIB_GROUP_LABEL[g])}
+          </span>
+          <div className={s.fibRow}>
+            {all
+              .filter((l) => fibLevelGroup(l) === g)
+              .map((l) => {
+                const on = shown.includes(l);
+                const last = on && shown.length === 1;
+                return (
+                  <Button key={l} size="sm" className={s.fibToggle} aria-pressed={on} disabled={locked || last} title={last ? t("последний уровень не выключается") : undefined} onClick={() => onChange(toggleFibLevel(shown, l))}>
+                    {fibLevelText(l)}
+                  </Button>
+                );
+              })}
+          </div>
+        </div>
+      ))}
+      <Button size="sm" className={s.fibReset} disabled={locked} title={t("вернуть уровни по умолчанию — у этого рисунка и у новых")} onClick={() => onChange([...FIB_LEVELS])}>
+        {t("стандартные")}
+      </Button>
+    </div>
   );
 }
 

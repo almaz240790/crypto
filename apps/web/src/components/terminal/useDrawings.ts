@@ -5,12 +5,16 @@ import {
   alive,
   canRedo,
   canUndo,
+  changedFibLevels,
+  cleanDrawingLevels,
   clearDrawings,
   commitMove,
   createState,
   mergeRemote,
+  normalizeFibLevels,
   redo,
   removeDrawing,
+  sameFibLevels,
   select,
   setHidden,
   toggleLock,
@@ -31,10 +35,12 @@ const SYNC_AT = (symbol: string) => `pl-drawings-sync:${symbol}`;
 /** Лимит без входа (Free); с входом сервер отдаёт лимит тарифа. */
 export const DRAWINGS_LIMIT = 10;
 
+/** Рисунки из localStorage; уровни Фибоначчи приводятся (пустой список и мусор — уровни по умолчанию). */
 function load(symbol: string): Drawing[] {
   try {
     const raw = localStorage.getItem(KEY(symbol));
-    return raw ? (JSON.parse(raw) as Drawing[]) : [];
+    const list: unknown = raw ? JSON.parse(raw) : [];
+    return Array.isArray(list) ? (list as Drawing[]).map(cleanDrawingLevels) : [];
   } catch {
     return [];
   }
@@ -44,8 +50,12 @@ function load(symbol: string): Drawing[] {
  * Рисунки инструмента: состояние с undo/redo, инструмент, магнит, «серия», localStorage; с входом —
  * синхронизация с сервером (оптимистичная запись, офлайн-очередь, последняя запись побеждает).
  * Инструмент — на один рисунок (ADR-0009, «Рисование»): после рисунка контроллер снимает его, если «серия» выключена.
+ *
+ * onFibLevels — пользователь изменил уровни Фибоначчи: правкой в карточке (в том числе «стандартные»), отменой или
+ * повтором такой правки. Хозяин запоминает набор для новых рисунков (настройки терминала); слияние с сервером и копия
+ * на другой инструмент его не вызывают.
  */
-export function useDrawings(symbol: string, authed: boolean) {
+export function useDrawings(symbol: string, authed: boolean, onFibLevels?: (levels: number[]) => void) {
   const [state, setState] = useState<DrawingsState>(() => createState());
   const [tool, setTool] = useState<DrawingType | null>(null);
   const [magnet, setMagnet] = useState(true);
@@ -62,6 +72,10 @@ export function useDrawings(symbol: string, authed: boolean) {
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
+  const onFibLevelsRef = useRef(onFibLevels);
+  useEffect(() => {
+    onFibLevelsRef.current = onFibLevels;
+  }, [onFibLevels]);
 
   // «серия» — из памяти устройства после монтирования (на сервере её нет: без расхождения при гидратации)
   useEffect(() => {
@@ -182,10 +196,26 @@ export function useDrawings(symbol: string, authed: boolean) {
       remove: (id: string) => setState((s) => removeDrawing(s, id)),
       clear: () => setState((s) => clearDrawings(s)),
       lock: (id: string) => setState((s) => toggleLock(s, id)),
-      patch: (id: string, p: Partial<Drawing>) => setState((s) => updateDrawing(s, id, p)),
+      patch: (id: string, p: Partial<Drawing>) => {
+        // уровни Фибоначчи хранятся приведёнными; выбранный набор — он же у следующего рисунка
+        const levels = p.levels ? normalizeFibLevels(p.levels) : null;
+        // тот же набор («стандартные» у рисунка со стандартными уровнями) — без пустого шага отмены и синхронизации
+        const cur = levels && Object.keys(p).length === 1 ? stateRef.current.items.find((d) => d.id === id) : undefined;
+        if (!cur || !sameFibLevels(cur.levels, levels)) setState((s) => updateDrawing(s, id, levels ? { ...p, levels } : p));
+        if (levels) onFibLevelsRef.current?.(levels);
+      },
       hide: (v: boolean) => setState((s) => setHidden(s, v)),
-      undo: () => setState((s) => undo(s)),
-      redo: () => setState((s) => redo(s)),
+      // отмена и повтор правки уровней возвращают и набор для новых Фибоначчи: он — то, что пользователь видит у рисунка
+      undo: () => {
+        const levels = changedFibLevels(stateRef.current.items, undo(stateRef.current).items);
+        setState((s) => undo(s));
+        if (levels) onFibLevelsRef.current?.(levels);
+      },
+      redo: () => {
+        const levels = changedFibLevels(stateRef.current.items, redo(stateRef.current).items);
+        setState((s) => redo(s));
+        if (levels) onFibLevelsRef.current?.(levels);
+      },
       /** Копия на другой инструмент (план 2A.5): время как есть, цены умножаются на ratio. */
       copyTo: (id: string, target: string, ratio: number): Drawing | null => {
         const src = stateRef.current.items.find((d) => d.id === id && !d.deleted_at);

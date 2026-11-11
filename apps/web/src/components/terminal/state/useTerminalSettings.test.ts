@@ -131,3 +131,44 @@ describe("раскладка панелей (ADR-0009, «Управление п
     expect(migrateLayout({ ...cur, paneLayout: { order: [], heights: { "macd#1": 70 } } }, cur).paneLayout).toEqual({ order: [], heights: { "macd#1": 70 } });
   });
 });
+
+describe("уровни нового Фибоначчи (ADR-0009, «Рисование», дополнение 2026-11-11)", () => {
+  it("сохранённый набор приводится: числа, 3 знака, по возрастанию, без повторов; идемпотентно", () => {
+    const s = migrateSaved({ ...DEFAULT_SAVED, fibLevels: [1, 0.5, -0.618, 0.5, 0.30000000000000004, Number.NaN, "x", 0] });
+    expect(s.fibLevels).toEqual([-0.618, 0, 0.3, 0.5, 1]);
+    expect(migrateSaved(s)).toEqual(s);
+    // через JSON, как из localStorage и с сервера
+    expect(migrateSaved(JSON.parse(JSON.stringify(s))).fibLevels).toEqual([-0.618, 0, 0.3, 0.5, 1]);
+  });
+
+  it("поля нет или не список — без поля (уровни по умолчанию); пустой список и мусор — набор по умолчанию", () => {
+    expect("fibLevels" in migrateSaved(DEFAULT_SAVED)).toBe(false);
+    expect("fibLevels" in migrateSaved({ ...DEFAULT_SAVED, fibLevels: "0.5" })).toBe(false);
+    expect("fibLevels" in migrateSaved({ ...DEFAULT_SAVED, fibLevels: null })).toBe(false);
+    const DEFAULT = [0, 0.236, 0.382, 0.5, 0.618, 0.705, 0.786, 1, 1.272, 1.618];
+    expect(migrateSaved({ ...DEFAULT_SAVED, fibLevels: [] }).fibLevels).toEqual(DEFAULT);
+    expect(migrateSaved({ ...DEFAULT_SAVED, fibLevels: [null, "a"] }).fibLevels).toEqual(DEFAULT);
+    // сохранение v4: разметка сбрасывается, набор уровней — нет
+    expect(migrateSaved({ ...V4, fibLevels: [0, 1] }).fibLevels).toEqual([0, 1]);
+  });
+
+  it("раскладка панелей и набор уровней друг другу не мешают", () => {
+    const withPanes = { ...DEFAULT_SAVED, indicators: [{ uid: "rsi#1", id: "rsi", params: { period: 14 } }], paneLayout: { order: ["rsi#1"], heights: { "rsi#1": 120 } }, fibLevels: [0, 1, 2.618] };
+    const s = migrateSaved(withPanes);
+    expect(s.paneLayout).toEqual({ order: ["rsi#1"], heights: { "rsi#1": 120 } });
+    expect(s.fibLevels).toEqual([0, 1, 2.618]);
+    expect(withPaneLayout(s, undefined).fibLevels).toEqual([0, 1, 2.618]);
+  });
+
+  it("именованная раскладка набор не хранит и не меняет; раскладка с сервера — приносит свой", () => {
+    const cur: SavedV5 = { ...DEFAULT_SAVED, fibLevels: [-0.618, 0, 1] };
+    const named = layoutData(cur, "BTCUSDT", "4h");
+    expect("fibLevels" in named).toBe(false);
+    expect(migrateLayout(named, cur).fibLevels).toEqual([-0.618, 0, 1]);
+    expect(migrateLayout({ type: "bars", indicators: [], panels: [] }, cur).fibLevels).toEqual([-0.618, 0, 1]);
+    // с сервера — всё сохранение: набор другого устройства (в том числе сброшенный на стандартный)
+    const DEFAULT = [0, 0.236, 0.382, 0.5, 0.618, 0.705, 0.786, 1, 1.272, 1.618];
+    expect(migrateLayout({ ...DEFAULT_SAVED, fibLevels: DEFAULT }, cur).fibLevels).toEqual(DEFAULT);
+    expect(migrateLayout({ ...DEFAULT_SAVED, fibLevels: [0, 0.5, 1] }, cur).fibLevels).toEqual([0, 0.5, 1]);
+  });
+});
