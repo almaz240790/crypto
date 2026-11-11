@@ -8,6 +8,8 @@
    (статус pending, событие created), повторный запуск ничего не дублирует (уникальный индекс).
    Пока у версии по инструменту есть открытая сделка, новый кандидат не пишется — правило
    ``engine.occupancy``, то же, что в бэктесте (одна сделка на инструмент и версию).
+   Кандидаты, которые бэктест не торгует (ниже C и отложенные), тоже не пишутся (план 2.7:
+   «не публикуются»), только строка INFO: в ``signals`` попадают одни сделки.
    Версия, которой ещё нет в БД, создаётся в статусе ``backtest`` и не оценивается, пока её
    не переведут в forward заявкой в админке;
 3. ведёт открытые форвард-сигналы по свечам H4 тем же кодом, что бэктест (``simulate_trade``):
@@ -27,7 +29,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import Boolean, false, func, or_, select, text, true
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -361,6 +363,9 @@ BUSY_LOG = (
     "%s %s: инструмент занят сигналом %s (%s, опубликован %s UTC) — кандидат %s UTC не записан "
     "(одна сделка на инструмент и версию)"
 )
+NOT_TRADED_LOG = (
+    "%s %s: кандидат %s UTC (%s, score %s, %s) не записан — бэктест такие не торгует; input_hash %s"
+)
 
 
 def trade_spans(
@@ -370,14 +375,10 @@ def trade_spans(
     на ``at`` (``engine.occupancy``): открытые и закончившиеся позже ``at − H4``. Конец сделки —
     ``signal_results.closed_at``, для истёкшего лимита и отмены — время этого события.
 
-    Сделка — то, что торгует бэктест: публикуемый (градация не ниже C) и не отложенный сигнал.
-    Кандидаты ниже C forward хранит для анализа (план 2.7), отложенные бэктест пропускает —
-    инструмент они не занимают, иначе форвард разошёлся бы с бэктестом. Строки без этих пометок
-    в ``rationale_facts`` считаются сделками."""
-    facts = Signal.rationale_facts
-    tradable = func.coalesce(facts["publishable"].astext.cast(Boolean), true()) & ~func.coalesce(
-        facts["deferred"].astext.cast(Boolean), false()
-    )
+    Занимает каждый сигнал версии: ``write_candidate`` пишет только то, что торгует бэктест.
+    Строки ниже C, записанные до этого правила с градацией C, трекеры ведут как сделки, а
+    статистика считает, поэтому и они занимают инструмент, пока открыты: иначе у версии по
+    монете были бы открыты два сигнала сразу."""
     ended_event = (
         select(func.max(SignalEvent.occurred_at))
         .where(SignalEvent.signal_id == Signal.id, SignalEvent.type.in_(ENDING_EVENTS))
@@ -392,7 +393,6 @@ def trade_spans(
             Signal.strategy_version_id == version_id,
             Signal.instrument_id == instrument_id,
             Signal.candle_close_time < at,
-            tradable,
             or_(Signal.status.in_(OPEN_STATUSES), ended > at - SIGNAL_TIMEFRAME.delta),
         )
         .order_by(Signal.candle_close_time)
@@ -413,7 +413,14 @@ def write_candidate(
     Одна сделка на инструмент и версию (``engine.occupancy``, как в бэктесте): пока прежний
     сигнал версии по инструменту открыт или закрылся внутри свечи H4, которая закончилась в
     ``candle_close_time`` кандидата, кандидат не пишется; об этом строка INFO. Область сигнала
-    здесь не важна: открытый форвард-сигнал версии, ставшей live, тоже занимает инструмент."""
+    здесь не важна: открытый форвард-сигнал версии, ставшей live, тоже занимает инструмент.
+
+    Кандидат, которого бэктест не торгует, — ниже градации C или отложенный (новости), — не
+    пишется вовсе (план 2.7: «не публикуются»; ``run_backtest`` считает их в ``skipped``): иначе
+    трекеры вели бы его как сделку, лента и статистика показывали бы его как C, а правило одной
+    сделки либо пропускало бы рядом второй сигнал, либо расходилось бы с бэктестом. Вместо записи —
+    строка INFO с временем, направлением, score и ``input_hash``; сам кандидат воспроизводится
+    ``replay()`` по свечам."""
     exists = session.scalar(
         select(Signal.id).where(
             Signal.strategy_version_id == version.id,
@@ -434,6 +441,18 @@ def write_candidate(
             busy.status,
             f"{busy.opened_at:%Y-%m-%d %H:%M}",
             f"{at:%Y-%m-%d %H:%M}",
+        )
+        return False
+    if not cand.publishable:
+        log.info(
+            NOT_TRADED_LOG,
+            inst.symbol,
+            version.version,
+            f"{at:%Y-%m-%d %H:%M}",
+            "long" if cand.direction is Direction.UP else "short",
+            cand.score.total,
+            "отложен" if cand.deferred else "ниже C",
+            cand.input_hash,
         )
         return False
     status = session.scalar(select(StrategyVersion.status).where(StrategyVersion.id == version.id))
@@ -458,7 +477,7 @@ def write_candidate(
         tp3=t.tp3,
         rr_tp2=t.rr_tp2,
         score=cand.score.total,
-        grade=cand.score.grade.value if cand.score.publishable else "C",
+        grade=cand.score.grade.value,
         score_breakdown=dict(cand.score.components),
         rationale_facts={
             "facts": list(cand.facts),

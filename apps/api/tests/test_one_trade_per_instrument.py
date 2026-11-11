@@ -9,8 +9,11 @@
 - forward (``run_forward``) идёт через ту же запись кандидата;
 - граничные случаи записи: истёкший лимит, отмена, другая версия и другой инструмент, форвард-
   сигнал версии, ставшей live;
+- кандидаты, которых бэктест не торгует (ниже C, отложенные), не пишутся вовсе, а старые строки
+  ниже C, записанные с градацией C, занимают инструмент, пока открыты: двух открытых сигналов
+  версии по монете не бывает;
 - сквозной прогон: scheduler + трекер по H4 на случайном ряду дают те же сигналы, статусы и
-  моменты выхода, что ``run_backtest`` на тех же свечах.
+  моменты выхода, что ``run_backtest`` на тех же свечах, и ни одной лишней строки.
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ import secrets
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from itertools import pairwise
 from types import SimpleNamespace
 from typing import Any
 
@@ -147,7 +151,8 @@ def _setup(close: Decimal, up: bool = True) -> TradeSetup:
 def _candidate(
     at: datetime, setup: TradeSetup | None = None, publishable: bool = True, deferred: bool = False
 ) -> SignalCandidate:
-    """Настоящий ``SignalCandidate`` с полями, которые читают scheduler, forward и бэктест."""
+    """Настоящий ``SignalCandidate`` с полями, которые читают scheduler, forward и бэктест.
+    ``publishable=False`` — кандидат ниже C (score 30, градация «-», как ``Grade.NONE``)."""
     trade = setup or _setup(D(100))
     return SignalCandidate(
         symbol="X",
@@ -158,8 +163,8 @@ def _candidate(
         zone_kinds=frozenset(),
         trade=trade,
         score=SimpleNamespace(  # type: ignore[arg-type]
-            total=75,
-            grade=SimpleNamespace(value="B"),
+            total=75 if publishable else 30,
+            grade=SimpleNamespace(value="B" if publishable else "-"),
             publishable=publishable,
             components={"trend": 30},
         ),
@@ -178,6 +183,19 @@ def _signal_times(s: Session, version_id: int, instrument_id: int) -> list[datet
         .order_by(Signal.candle_close_time)
     ).all()
     return [r.astimezone(UTC) for r in rows]
+
+
+def _open_signals(s: Session, version_id: int, instrument_id: int) -> list[tuple[datetime, str]]:
+    rows = s.execute(
+        select(Signal.candle_close_time, Signal.status)
+        .where(
+            Signal.strategy_version_id == version_id,
+            Signal.instrument_id == instrument_id,
+            Signal.status.in_(("pending", "active", "tp1_hit", "tp2_hit")),
+        )
+        .order_by(Signal.candle_close_time)
+    ).all()
+    return [(t.astimezone(UTC), st) for t, st in rows]
 
 
 def _minutes(start: datetime, n: int, low_at: int | None = None) -> list[Candle]:
@@ -348,49 +366,131 @@ def test_rule_is_per_instrument_and_version_not_per_scope(
         assert live.scope == "live"
 
 
-def test_signals_the_backtest_does_not_trade_do_not_occupy(
-    make_session: Callable[[], Session], code_version: str
+@pytest.mark.parametrize("kind", ["below_c", "deferred"])
+def test_candidates_the_backtest_does_not_trade_are_not_written(
+    make_session: Callable[[], Session],
+    code_version: str,
+    caplog: pytest.LogCaptureFixture,
+    kind: str,
 ) -> None:
-    """Кандидат ниже C (хранится для анализа, план 2.7) и отложенный — не сделки бэктеста:
-    записываются на свободном закрытии, но инструмент не занимают. Сделка занимает — и тогда
-    не пишется даже кандидат ниже C (бэктест такие закрытия не оценивает вовсе)."""
+    """Кандидат ниже C и отложенный бэктест не торгует (``skipped``): forward и live их не пишут
+    (план 2.7: «не публикуются»), только строка INFO. Инструмент остаётся свободным, и следующий
+    публикуемый кандидат пишется; на занятом закрытии такой кандидат тоже не пишется."""
+    caplog.set_level(logging.INFO, logger="forward")
+    untradable = {"publishable": False} if kind == "below_c" else {"deferred": True}
     with make_session() as s:
         ver, inst = _seed(s, code_version)
-        assert forward.write_candidate(s, ver, inst, _candidate(T0, publishable=False))
-        assert forward.write_candidate(s, ver, inst, _candidate(T0 + H4, deferred=True))
+        assert not forward.write_candidate(s, ver, inst, _candidate(T0, **untradable))
         s.commit()
-        assert forward.trade_spans(s, ver.id, inst.id, T0 + 2 * H4) == []
-        trade = _publish(s, ver, inst, T0 + 2 * H4)
-        assert not forward.write_candidate(s, ver, inst, _candidate(T0 + 3 * H4, publishable=False))
-        spans = forward.trade_spans(s, ver.id, inst.id, T0 + 3 * H4)
-        assert [x.ref for x in spans] == [trade.public_id]
-        # строка без пометок publishable/deferred (старый формат) считается сделкой
-        other = _instrument(s)
-        old = Signal(
-            public_id=secrets.token_hex(5),
-            strategy_version_id=ver.id,
-            instrument_id=other.id,
-            direction="short",
-            candle_close_time=T0,
-            entry_market=D(100),
-            stop_loss=D(103),
-            tp1=D(97),
-            tp2=D(93),
-            tp3=D(88),
-            rr_tp2=D(2),
-            score=60,
-            grade="B",
-            score_breakdown={},
-            rationale_facts={},
-            status="active",
-            scope="forward",
-            input_hash="o" * 64,
-        )
+        assert _signal_times(s, ver.id, inst.id) == []
+        notes = [r for r in caplog.records if "бэктест такие не торгует" in r.getMessage()]
+        assert len(notes) == 1 and notes[0].levelno == logging.INFO
+        msg = notes[0].getMessage()
+        reason = "ниже C" if kind == "below_c" else "отложен"
+        assert inst.symbol in msg and ver.version in msg and reason in msg and "h" * 64 in msg
+        trade = _publish(s, ver, inst, T0 + H4)
+        assert not forward.write_candidate(s, ver, inst, _candidate(T0 + 2 * H4, **untradable))
+        assert _signal_times(s, ver.id, inst.id) == [T0 + H4]
+        assert _open_signals(s, ver.id, inst.id) == [(T0 + H4, "pending")]
+        assert trade.grade == "B" and trade.rationale_facts["publishable"] is True
+
+
+def _legacy_row(
+    ver: StrategyVersion, inst: Instrument, at: datetime, facts: dict[str, Any]
+) -> Signal:
+    """Строка в формате до правила: кандидат ниже C записан с градацией C и пометкой."""
+    return Signal(
+        public_id=secrets.token_hex(5),
+        strategy_version_id=ver.id,
+        instrument_id=inst.id,
+        direction="short",
+        candle_close_time=at,
+        entry_market=D(100),
+        stop_loss=D(103),
+        tp1=D(97),
+        tp2=D(93),
+        tp3=D(88),
+        rr_tp2=D(2),
+        score=38,
+        grade="C",
+        score_breakdown={},
+        rationale_facts=facts,
+        status="active",
+        scope="forward",
+        input_hash="o" * 64,
+    )
+
+
+@pytest.mark.parametrize(
+    "facts",
+    [{"publishable": False, "deferred": False}, {"publishable": True, "deferred": True}, {}],
+    ids=["below_c", "deferred", "no_marks"],
+)
+def test_legacy_rows_occupy_while_open(
+    make_session: Callable[[], Session], code_version: str, facts: dict[str, Any]
+) -> None:
+    """Строки, записанные до правила (ниже C с градацией C, отложенные, без пометок), трекеры
+    ведут как сделки, а статистика считает: пока такая строка открыта, второй сигнал версии по
+    монете не пишется."""
+    with make_session() as s:
+        ver, inst = _seed(s, code_version)
+        old = _legacy_row(ver, inst, T0, facts)
         s.add(old)
-        s.flush()
-        assert [x.ref for x in forward.trade_spans(s, ver.id, other.id, T0 + 3 * H4)] == [
-            old.public_id
-        ]
+        s.commit()
+        assert [x.ref for x in forward.trade_spans(s, ver.id, inst.id, T0 + H4)] == [old.public_id]
+        assert not forward.write_candidate(s, ver, inst, _candidate(T0 + H4))
+        _end(s, old, "closed_time", "time_stop", T0 + 2 * H4)
+        s.add(
+            SignalResult(
+                signal_id=old.id,
+                realized_r=D(0),
+                duration_hours=D(8),
+                max_favorable_r=D(0),
+                max_adverse_r=D(0),
+                closed_at=T0 + 2 * H4,
+            )
+        )
+        s.commit()
+        assert not forward.write_candidate(s, ver, inst, _candidate(T0 + 2 * H4))  # свеча выхода
+        _publish(s, ver, inst, T0 + 3 * H4)
+        assert _open_signals(s, ver.id, inst.id) == [(T0 + 3 * H4, "pending")]
+
+
+@pytest.mark.parametrize("kind", ["below_c", "deferred"])
+def test_scheduler_and_1m_tracker_never_hold_two_open_signals(
+    monkeypatch: pytest.MonkeyPatch,
+    make_session: Callable[[], Session],
+    code_version: str,
+    kind: str,
+) -> None:
+    """Регрессия ревью: кандидат ниже C (или отложенный) на свободном закрытии 08:00 раньше
+    записывался с градацией C, 1m-трекер делал его active, а на 12:00 рядом писался сигнал B —
+    два открытых сигнала версии по монете. Теперь он не пишется, B на 12:00 — единственный, а
+    кандидат ниже C на 16:00, пока B открыт, тоже не пишется."""
+    with make_session() as s:
+        ver, inst = _seed(s, code_version)
+    untradable = {"publishable": False} if kind == "below_c" else {"deferred": True}
+    plan = {
+        T0: _candidate(T0, **untradable),
+        T0 + H4: _candidate(T0 + H4),
+        T0 + 2 * H4: _candidate(T0 + 2 * H4, **untradable),
+    }
+    monkeypatch.setattr(scheduler, "SessionLocal", make_session)
+    monkeypatch.setattr(scheduler, "load_inputs", lambda *_: None)
+    monkeypatch.setattr(scheduler, "evaluate", lambda _inp, at, _p: plan[at])
+
+    assert scheduler.process_symbol(inst.symbol, T0)["signals"] == 0
+    assert scheduler.process_symbol(inst.symbol, T0 + H4)["signals"] == 1
+    with make_session() as s:
+        sig = s.scalars(select(Signal).where(Signal.instrument_id == inst.id)).one()
+        assert sig.grade == "B"
+        apply_candles(s, sig, _minutes(T0 + H4, 4 * 60), Timeframe.M1)  # 1m-трекер: вход
+        s.commit()
+        assert _open_signals(s, ver.id, inst.id) == [(T0 + H4, "active")]
+    assert scheduler.process_symbol(inst.symbol, T0 + 2 * H4)["signals"] == 0
+    with make_session() as s:
+        assert _signal_times(s, ver.id, inst.id) == [T0 + H4]
+        assert _open_signals(s, ver.id, inst.id) == [(T0 + H4, "active")]
 
 
 # --- сквозной прогон: scheduler + трекер H4 против run_backtest -----------------------------------
@@ -418,19 +518,23 @@ def test_scheduler_with_tracker_reproduces_backtest_signals(
     code_version: str,
     seed: int,
 ) -> None:
-    """Одна и та же «стратегия» (кандидат на ~40 % закрытий H4) на одном ряду: бэктест и связка
-    scheduler + трекер дают одинаковые сигналы, статусы и моменты выхода."""
+    """Одна и та же «стратегия» (кандидат на ~40 % закрытий H4, часть — ниже C или отложены) на
+    одном ряду: бэктест и связка scheduler + трекер дают одинаковые сигналы, статусы и моменты
+    выхода. Кандидатов, которых бэктест не торгует, в ``signals`` нет, и в любой момент открыт
+    не больше чем один сигнал."""
     rng = random.Random(seed)
     h4 = _random_h4(rng, 140)
     closes = {c.close_time(Timeframe.H4): c.close for c in h4}
     picks = {at: rng.random() < 0.4 for at in closes}
     sides = {at: rng.random() < 0.5 for at in closes}
     below_c = {at: rng.random() < 0.3 for at in closes}
+    deferred = {at: rng.random() < 0.1 for at in closes}
 
     def fake_evaluate(_inp: Any, at: datetime, _params: Any) -> SignalCandidate | NoSignal:
         if not picks[at]:
             return NoSignal("trigger", "нет слома")
-        return _candidate(at, _setup(closes[at], up=sides[at]), publishable=not below_c[at])
+        setup = _setup(closes[at], up=sides[at])
+        return _candidate(at, setup, publishable=not below_c[at], deferred=deferred[at])
 
     start, end = h4[0].close_time(Timeframe.H4), h4[-1].close_time(Timeframe.H4)
     monkeypatch.setattr(bt, "evaluate", fake_evaluate)
@@ -442,6 +546,8 @@ def test_scheduler_with_tracker_reproduces_backtest_signals(
         for t in run.trades
     ]
     assert run.skipped["busy"] > 0 and len(expected) >= 5
+    # бэктест встречал и непубликуемых кандидатов на свободных закрытиях — их и проверяем ниже
+    assert run.skipped["grade_none"] > 0 and run.skipped["deferred"] > 0
 
     with make_session() as s:
         ver, inst = _seed(s, code_version)
@@ -449,6 +555,7 @@ def test_scheduler_with_tracker_reproduces_backtest_signals(
     monkeypatch.setattr(scheduler, "SessionLocal", make_session)
     monkeypatch.setattr(scheduler, "load_inputs", lambda *_: None)
     monkeypatch.setattr(scheduler, "evaluate", fake_evaluate)
+    most_open = 0
     for c in h4:
         at = c.close_time(Timeframe.H4)
         with make_session() as s:
@@ -456,6 +563,8 @@ def test_scheduler_with_tracker_reproduces_backtest_signals(
             s.commit()
             forward.track_open_signals(s, versions)  # трекер видит свечу, закрывшуюся в at
         scheduler.process_symbol(inst.symbol, at)
+        with make_session() as s:
+            most_open = max(most_open, len(_open_signals(s, ver.id, inst.id)))
 
     with make_session() as s:
         rows = s.execute(
@@ -463,21 +572,25 @@ def test_scheduler_with_tracker_reproduces_backtest_signals(
                 Signal.candle_close_time,
                 Signal.status,
                 SignalResult.closed_at,
-                Signal.rationale_facts["publishable"].as_boolean(),
+                Signal.grade,
+                Signal.rationale_facts,
             )
             .outerjoin(SignalResult, SignalResult.signal_id == Signal.id)
             .where(Signal.instrument_id == inst.id)
             .order_by(Signal.candle_close_time)
         ).all()
+    # все строки, без фильтра: кандидаты ниже C и отложенные не записаны вовсе
     got = [
         (
             t.astimezone(UTC),
             st if st.startswith("closed") or st == "expired" else "open",
             None if closed is None else closed.astimezone(UTC),
         )
-        for t, st, closed, publishable in rows
-        if publishable
+        for t, st, closed, _grade, _facts in rows
     ]
     assert got == expected
-    # кандидаты ниже C записаны для анализа (план 2.7), но сделками не стали и никого не заняли
-    assert any(not publishable for *_, publishable in rows)
+    assert all(g == "B" and f["publishable"] and not f["deferred"] for *_, g, f in rows)
+    assert most_open == 1
+    # сделки не пересекаются: следующий сигнал — после свечи, в которой закрылась прежняя
+    for (_, _, prev_closed), (nxt, _, _) in pairwise(got):
+        assert prev_closed is not None and nxt >= prev_closed + H4

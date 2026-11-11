@@ -6,7 +6,8 @@
   запуск был; если нет — догружаем свечу по REST и запускаем.
 - Сам запуск — ``evaluate`` по версиям стратегии в статусе ``forward``/``live`` (как в форварде),
   кандидат пишется в ``signals``, если у версии по инструменту нет открытой сделки (правило
-  ``engine.occupancy``, как в бэктесте; пропуск — строка INFO от ``forward``); уведомления —
+  ``engine.occupancy``, как в бэктесте; пропуск — строка INFO от ``forward``) и бэктест такого
+  кандидата торгует (не ниже C, не отложен; иначе тоже строка INFO); уведомления —
   отдельный сервис (этап 3). Версии в других статусах (новая из кода создаётся в ``backtest``)
   не оцениваются; об этом одна строка INFO на версию и статус за запуск процесса.
 """
@@ -97,14 +98,13 @@ def process_symbol(symbol: str, at: datetime) -> dict[str, int]:
                 if write_candidate(session, version, inst, res):
                     stats["signals"] += 1
                     log.info(
-                        "%s %s %s: %s %s %d%s",
+                        "%s %s %s: %s %s %d",
                         at.strftime("%d.%m %H:%M"),
                         symbol,
                         key,
                         res.direction,
                         res.score.grade,
                         res.score.total,
-                        " (отложен)" if res.deferred else "",
                     )
             elif isinstance(res, NoSignal) and res.stage not in ("bias", "trigger"):
                 stats["no_signal"] += 1
