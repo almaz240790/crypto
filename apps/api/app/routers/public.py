@@ -172,8 +172,9 @@ def _dec(x: Decimal | None) -> str | None:
 
 @router.get("/features")
 def features(user: User | None = Depends(optional_user)) -> dict[str, bool]:
-    """Что открыто этому посетителю (без входа — всем). ``signals`` — сигналы, их статистика и
-    версии стратегии (ADR-0013): сайт по этому флагу показывает или прячет ссылки и разделы."""
+    """Какие разделы сайта открыты этому посетителю (без входа — всем)."""
+    # ``signals`` — сигналы, их статистика и версии стратегии (ADR-0013): сайт по этому флагу
+    # показывает или прячет ссылки и разделы; в схеме /docs не расписан нарочно
     return {"signals": signals_open(user)}
 
 
@@ -901,7 +902,7 @@ def screener(
     symbols: str | None = Query(None, description="через запятую — только эти инструменты"),
     db: Session = Depends(auth.get_db),
 ) -> dict[str, Any]:
-    """Скринер (план 3.6): что близко к сетапу до появления сигнала. Кэш 2 минуты."""
+    """Скринер (план 3.6): что близко к сетапу. Кэш 2 минуты."""
     rows, when = screener_cached(db)
     if symbols:
         wanted = {s.strip().upper() for s in symbols.split(",") if s.strip()}

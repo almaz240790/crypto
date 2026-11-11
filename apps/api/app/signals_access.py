@@ -21,7 +21,11 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Protocol
+
+from starlette.responses import JSONResponse
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.config import settings
 
@@ -32,6 +36,29 @@ SIGNAL_COMPONENTS = frozenset({"engine", "tracker"})
 """Компоненты монитора (``app.monitor``), которые есть только у сигналов."""
 
 _RANK = {"ok": 0, "degraded": 1, "down": 2}
+
+SIGNAL_PATHS = frozenset(
+    {
+        "/v1/signals",
+        "/v1/signals/summary",
+        "/v1/stats",
+        "/v1/stats/trades",
+        "/v1/stats/export.csv",
+        "/v1/stats/runs",
+        "/v1/strategies",
+    }
+)
+"""Закрытые адреса API (``app.routers.public``); карточка сигнала — :data:`_SIGNAL_CARD`."""
+
+_SIGNAL_CARD = re.compile(r"^/v1/signals/[^/]+(?:/analysis|/candles)?$")
+
+SCHEMA_SIGNAL_FIELDS: dict[str, tuple[str, ...]] = {
+    "JournalIn": ("signal_id",),
+    "NotificationsIn": ("email_signals", "push_signals"),
+    "UserOut": ("signals",),
+}
+"""Поля публичных моделей, которые есть только у сигналов: из схемы ``/docs`` их убирает
+:func:`scrub_signal_fields`, сами поля API принимает и отдаёт как раньше."""
 
 
 class _HasRole(Protocol):
@@ -45,6 +72,46 @@ def is_staff(user: _HasRole | None) -> bool:
 def signals_open(user: _HasRole | None) -> bool:
     """Видит ли пользователь (``None`` — без входа) сигналы, их статистику и версии стратегии."""
     return settings.signals_public or is_staff(user)
+
+
+def is_signal_path(path: str) -> bool:
+    """Адрес закрытого раздела сигналов (со слэшем в конце или без)."""
+    bare = path.rstrip("/")
+    return bare in SIGNAL_PATHS or _SIGNAL_CARD.match(bare) is not None
+
+
+class HideClosedSignalRoutes:
+    """Пока сигналы закрыты, их адреса неотличимы от несуществующих: на любой метод, кроме GET,
+    и на адрес со слэшем в конце — 404 (без 405 «метод не разрешён» и 307 «без слэша»). GET без
+    слэша решают сами эндпоинты: гостю и пользователю 404, admin и owner — данные. Предзапросы
+    CORS (OPTIONS) отвечает ``CORSMiddleware`` снаружи, одинаково для всех адресов."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http" and not settings.signals_public:
+            path, method = scope["path"], scope["method"]
+            if is_signal_path(path) and (method != "GET" or path.endswith("/")):
+                await JSONResponse({"detail": "Not Found"}, status_code=404)(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
+
+def scrub_signal_fields(schema: dict[str, Any]) -> dict[str, Any]:
+    """Схема OpenAPI без полей сигналов (:data:`SCHEMA_SIGNAL_FIELDS`), пока они закрыты.
+    Меняет словарь на месте и возвращает его."""
+    models = schema.get("components", {}).get("schemas", {})
+    for name, fields in SCHEMA_SIGNAL_FIELDS.items():
+        model = models.get(name)
+        if model is None:
+            continue
+        props = model.get("properties", {})
+        for f in fields:
+            props.pop(f, None)
+        if "required" in model:
+            model["required"] = [r for r in model["required"] if r not in fields]
+    return schema
 
 
 def hide_signal_components(payload: dict[str, Any]) -> dict[str, Any]:

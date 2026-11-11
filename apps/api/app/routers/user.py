@@ -158,7 +158,7 @@ def export_data(
         "exported_at": datetime.now(tz=UTC).isoformat(),
         "profile": _user_out(user, risk).model_dump(),
         "watchlist": list(symbols),
-        "journal": [_journal_dict(e, sym) for e, sym in journal],
+        "journal": [_journal_dict(e, sym, signals_open(user)) for e, sym in journal],
     }
 
 
@@ -297,7 +297,10 @@ def _realized_r(e: JournalEntry) -> Decimal | None:
     return (e.exit_price - e.entry_price) * sign / risk
 
 
-def _journal_dict(e: JournalEntry, symbol: str) -> dict[str, Any]:
+def _journal_dict(e: JournalEntry, symbol: str, signals: bool = True) -> dict[str, Any]:
+    """Запись журнала для ответа. ``signals=False`` — сигналы закрыты этому пользователю
+    (ADR-0013): запись, связанная с сигналом раньше, выглядит ручной и без номера сигнала."""
+
     def dec(x: Decimal | None) -> str | None:
         return None if x is None else format(x.normalize(), "f")
 
@@ -317,8 +320,8 @@ def _journal_dict(e: JournalEntry, symbol: str) -> dict[str, Any]:
         "fees": dec(e.fees),
         "tags": e.tags,
         "note": e.note,
-        "source": e.source,
-        "signal_id": e.signal_id,
+        "source": e.source if signals or e.source != "signal" else "manual",
+        "signal_id": e.signal_id if signals else None,
         "created_at": e.created_at.isoformat() if e.created_at else None,
     }
 
@@ -611,7 +614,7 @@ def journal_list(
         .limit(limit)
         .offset(offset)
     ).all()
-    items = [_journal_dict(e, sym) for e, sym in rows]
+    items = [_journal_dict(e, sym, signals_open(user)) for e, sym in rows]
     closed = [e for e, _ in rows if e.realized_r is not None]
     rs = [e.realized_r for e in closed if e.realized_r is not None]
     summary: dict[str, Any] = {
@@ -833,13 +836,15 @@ def journal_export(
         "tags",
         "note",
         "source",
-        "signal_id",
     ]
+    open_ = signals_open(user)
+    if open_:  # пока сигналы закрыты (ADR-0013) — без столбца сигнала
+        cols.append("signal_id")
 
     def gen() -> Iterator[str]:
         yield ",".join(cols) + "\n"
         for e, sym in rows:
-            d = _journal_dict(e, sym)
+            d = _journal_dict(e, sym, open_)
             vals = []
             for c in cols:
                 v = d[c]
@@ -901,11 +906,12 @@ def journal_create(
         if count >= ent.journal_limit:
             raise HTTPException(403, f"на тарифе {ent.plan} журнал до {ent.journal_limit} записей")
     e = JournalEntry(user_id=user.id)
-    _apply_journal(e, body, db, signals_open(user))
+    open_ = signals_open(user)
+    _apply_journal(e, body, db, open_)
     db.add(e)
     db.commit()
     inst = db.get(Instrument, e.instrument_id)
-    return _journal_dict(e, inst.symbol if inst else body.symbol.upper())
+    return _journal_dict(e, inst.symbol if inst else body.symbol.upper(), open_)
 
 
 @router.put("/journal/{entry_id}")
@@ -918,10 +924,11 @@ def journal_update(
     e = db.get(JournalEntry, entry_id)
     if e is None or e.user_id != user.id:
         raise HTTPException(404)
-    _apply_journal(e, body, db, signals_open(user))
+    open_ = signals_open(user)
+    _apply_journal(e, body, db, open_)
     db.commit()
     inst = db.get(Instrument, e.instrument_id)
-    return _journal_dict(e, inst.symbol if inst else body.symbol.upper())
+    return _journal_dict(e, inst.symbol if inst else body.symbol.upper(), open_)
 
 
 @router.delete("/journal/{entry_id}", status_code=204)

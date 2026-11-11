@@ -117,9 +117,10 @@ def layers(
     user: User | None = Depends(optional_user),
     db: Session = Depends(auth.get_db),
 ) -> dict[str, Any]:
-    """Слои: структура (swing, BOS/CHoCH), зоны, уровни, равные уровни, снятия, bias — по tf ≥ 1h;
-    сигналы инструмента (live; forward — по правам; пока сигналы закрыты — только admin и owner,
-    ADR-0013). Кэш 60 с."""
+    """Слои: структура (swing, BOS/CHoCH), зоны, уровни, равные уровни, снятия, bias — по tf ≥ 1h.
+    Кэш 60 с."""
+    # + сигналы инструмента (live; forward — по правам). Пока сигналы закрыты (ADR-0013), слой
+    # сигналов и версия стратегии в структуре — только у admin и owner; в /docs не расписаны
     timeframe = _tf(tf)
     inst = _instrument(db, symbol)
     now = datetime.now(tz=UTC)
@@ -133,8 +134,10 @@ def layers(
     scopes = ["live"]
     if user is not None and (user.role in ("admin", "owner") or ent.forward_scope):
         scopes.append("forward")
-    # пока сигналы закрыты (ADR-0013) — слой сигналов только у admin и owner
+    # пока сигналы закрыты (ADR-0013) — слой сигналов и версия стратегии только у admin и owner
     signals = signal_layer(db, inst, scopes) if user is not None and signals_open(user) else []
+    if structure is not None and not signals_open(user):
+        structure = {k: v for k, v in structure.items() if k != "strategy_version"}
     return {
         "symbol": inst.symbol,
         "tf": timeframe.value,

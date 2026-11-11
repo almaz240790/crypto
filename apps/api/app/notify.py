@@ -490,10 +490,17 @@ def run_journal_reports(db: Session, now: datetime | None = None) -> int:
 
 
 def send_test(db: Session, user: User) -> str:
-    """Тестовое письмо себе (приёмка 2.13: «тестовая доставка»)."""
+    """Тестовое письмо себе (приёмка 2.13: «тестовая доставка»): образец того, что придёт по
+    подписке. Дайджест — о сигналах, пока они закрыты (ADR-0013), его образец получают только
+    admin и owner; остальным — отчёт по журналу (если есть сделки) или короткий текст."""
     ns = settings_for(db, user)
     now = datetime.now(tz=UTC)
-    text = digest_text(db, user, "weekly", now) or "Тестовое письмо Platform: доставка работает."
+    sample = (
+        digest_text(db, user, "weekly", now)
+        if signals_open(user)
+        else journal_report_text(db, user, now)
+    )
+    text = sample or "Тестовое письмо Platform: доставка работает."
     send_mail(user.email, "Platform: тестовое письмо", text + unsubscribe_footer(ns))
     db.add(NotificationLog(user_id=user.id, channel="email", kind="test", ref=now.isoformat()))
     db.commit()

@@ -33,6 +33,7 @@ from app.db import engine
 from app.forward import write_candidate
 from app.live import Client, Hub
 from app.models import (
+    Candle,
     Instrument,
     JournalEntry,
     NotificationLog,
@@ -48,7 +49,14 @@ from app.notify import journal_report_lines, notify_new_signal, run_digest
 from app.routers import admin, chart, public
 from app.routers import auth as auth_router
 from app.routers import user as user_router
-from app.signals_access import hide_signal_components, is_staff, signals_open
+from app.signals_access import (
+    SCHEMA_SIGNAL_FIELDS,
+    hide_signal_components,
+    is_signal_path,
+    is_staff,
+    scrub_signal_fields,
+    signals_open,
+)
 from engine.structure import Direction
 
 ROLES = ("guest", "user", "admin", "owner")
@@ -170,6 +178,96 @@ def test_openapi_hides_signal_routes_while_closed() -> None:
     assert not {p for p in paths if p.startswith(("/v1/signals", "/v1/strategies"))}
     assert not {"/v1/stats", "/v1/stats/trades", "/v1/stats/export.csv", "/v1/stats/runs"} & paths
     assert {"/v1/stats/patterns", "/v1/stats/figures", "/v1/features"} <= paths
+
+
+def test_openapi_is_silent_about_signals_while_closed() -> None:
+    """Публичная схема /docs ничем не выдаёт сигналы: ни описания публичных адресов, ни поля
+    моделей, ни служебные адреса админки и отладки (там лента, стратегии, бэктесты)."""
+    if public.SIGNALS_IN_SCHEMA:
+        pytest.skip("SIGNALS_PUBLIC включён в окружении тестов")
+    from app.main import app
+
+    app.openapi_schema = None  # схема строится заново, как при запуске
+    schema = app.openapi()
+    assert not [p for p in schema["paths"] if p.startswith(("/v1/admin", "/debug"))]
+    raw = json.dumps(schema, ensure_ascii=False).lower()
+    for word in ("сигнал", "signal", "стратег", "strateg", "бэктест", "форвард", "adr-0013"):
+        assert word not in raw, word
+    # сама схема — та же, что раньше, кроме выброшенного: публичные адреса на месте
+    assert {"/status", "/v1/chart/layers", "/v1/features", "/v1/journal"} <= set(schema["paths"])
+
+
+def test_scrub_signal_fields_drops_properties_and_required() -> None:
+    schema: dict[str, Any] = {
+        "components": {
+            "schemas": {
+                "UserOut": {
+                    "properties": {"email": {}, "signals": {}},
+                    "required": ["email", "signals"],
+                },
+                "NotificationsIn": {"properties": {"email_signals": {}, "grades": {}}},
+                "Other": {"properties": {"signals": {}}},
+            }
+        }
+    }
+    out = scrub_signal_fields(schema)
+    models = out["components"]["schemas"]
+    assert models["UserOut"] == {"properties": {"email": {}}, "required": ["email"]}
+    assert models["NotificationsIn"]["properties"] == {"grades": {}}
+    assert models["Other"]["properties"] == {"signals": {}}  # чужие модели не трогаем
+    assert "JournalIn" in SCHEMA_SIGNAL_FIELDS
+    assert scrub_signal_fields({}) == {}
+
+
+@pytest.mark.parametrize(
+    ("path", "gated"),
+    [
+        ("/v1/signals", True),
+        ("/v1/signals/", True),
+        ("/v1/signals/summary", True),
+        ("/v1/signals/abc123", True),
+        ("/v1/signals/abc123/analysis", True),
+        ("/v1/signals/abc123/candles/", True),
+        ("/v1/stats", True),
+        ("/v1/stats/trades", True),
+        ("/v1/stats/export.csv", True),
+        ("/v1/stats/runs/", True),
+        ("/v1/strategies", True),
+        ("/v1/stats/patterns", False),
+        ("/v1/stats/figures", False),
+        ("/v1/signals/abc/other", False),
+        ("/v1/admin/signals", False),
+        ("/v1/features", False),
+    ],
+)
+def test_is_signal_path(path: str, gated: bool) -> None:
+    assert is_signal_path(path) is gated
+
+
+def test_closed_signal_routes_look_absent_for_any_method_and_slash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Пока сигналы закрыты, адрес сигналов не отличить от несуществующего: POST, HEAD и
+    адрес со слэшем — 404, как у выдуманного адреса, а не 405 и не 307 (без БД)."""
+    from app.main import app
+
+    client = TestClient(app)
+    for method in ("POST", "HEAD", "PUT", "DELETE"):
+        for path in ("/v1/signals", "/v1/stats", "/v1/strategies", "/v1/stats/export.csv"):
+            r = client.request(method, path, follow_redirects=False)
+            assert r.status_code == 404, (method, path, r.status_code)
+        assert client.request(method, "/v1/nonexistent").status_code == 404
+    for path in ("/v1/signals/", "/v1/stats/", "/v1/strategies/", "/v1/stats/runs/"):
+        r = client.get(path, follow_redirects=False)
+        assert (r.status_code, r.text) == (404, '{"detail":"Not Found"}'), path
+    assert client.get("/v1/nonexistent/", follow_redirects=False).status_code == 404
+    # открытые адреса ведут себя как раньше: 405 на чужой метод, 307 на слэш
+    assert client.post("/v1/stats/patterns").status_code == 405
+    assert client.get("/v1/stats/patterns/", follow_redirects=False).status_code == 307
+    # выключатель включён — прежние ответы фреймворка
+    _open(monkeypatch)
+    assert client.post("/v1/signals").status_code == 405
+    assert client.get("/v1/signals/", follow_redirects=False).status_code == 307
 
 
 # --- статус-страница ------------------------------------------------------------------------
@@ -515,6 +613,54 @@ def test_chart_signal_layer_only_for_staff(role: str, db: Session, world: Simple
         assert ids == set()
 
 
+def _candles(db: Session, inst: Instrument, n: int = 120) -> None:
+    """Закрытые свечи H4, чтобы у графика была структура (как в бою)."""
+    start = datetime.now(tz=UTC).replace(minute=0, second=0, microsecond=0)
+    start = start - timedelta(hours=start.hour % 4) - n * H4
+    for i in range(n):
+        o = Decimal(100) + Decimal((i * 7) % 11) - 5
+        db.add(
+            Candle(
+                instrument_id=inst.id,
+                timeframe="4h",
+                open_time=start + i * H4,
+                open=o,
+                high=o + 3,
+                low=o - 3,
+                close=o + Decimal((i % 3) - 1),
+                volume=Decimal(10),
+                quote_volume=Decimal(1000),
+                trades=5,
+                is_closed=True,
+            )
+        )
+    db.commit()
+
+
+@db_only
+@pytest.mark.parametrize("role", ROLES)
+def test_chart_structure_hides_strategy_version_from_non_staff(
+    role: str, db: Session, world: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(chart, "redis", SimpleNamespace(from_url=_no_redis))
+    _candles(db, world.inst)
+    client = _client(db)
+    url = f"/v1/chart/layers?symbol={world.inst.symbol}&tf=4h"
+    st = client.get(url, headers=_headers(world, role)).json()["structure"]
+    assert st is not None and st["swings"] is not None  # структура графика открыта всем
+    if role in ("admin", "owner"):
+        assert st["strategy_version"] == world.live_v.version
+    else:
+        assert "strategy_version" not in st
+    _open(monkeypatch)
+    st = client.get(url, headers=_headers(world, role)).json()["structure"]
+    assert st["strategy_version"] == world.live_v.version
+
+
+def _no_redis(*_: Any, **__: Any) -> Any:
+    raise OSError("без Redis в тесте")
+
+
 @db_only
 def test_switch_on_restores_previous_behaviour(
     db: Session, world: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
@@ -624,3 +770,92 @@ def test_signal_mail_and_digest_only_for_staff(
     assert kinds("admin") == kinds("owner") == {"signal", "digest"}
     assert world.users["user"].email not in sent
     assert world.users["owner"].email in sent
+
+
+@db_only
+@pytest.mark.parametrize("role", ["user", "admin", "owner"])
+def test_test_email_shows_signal_digest_only_to_staff(
+    role: str, db: Session, world: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """«Отправить тестовое письмо»: образец дайджеста сигналов — только admin и owner;
+    обычному пользователю — письмо без сигналов, их статистики и ссылок на них."""
+    sent: list[tuple[str, str, str]] = []
+    monkeypatch.setattr("app.notify.send_mail", lambda to, s, body: sent.append((to, s, body)))
+    client = _client(db)
+    r = client.post("/v1/me/notifications/test", headers=_headers(world, role))
+    assert r.status_code == 200
+    [(to, _, body)] = sent
+    assert to == world.users[role].email
+    tells = (world.inst.symbol, "/signals", "/stats", "винрейт", "дайджест", "сигнал")
+    if role == "user":
+        assert not [t for t in tells if t in body.lower() or t in body], body
+        assert "доставка работает" in body
+    else:
+        assert all(t in body for t in tells[:5]), body
+
+
+@db_only
+def test_test_email_for_user_is_journal_report_when_trades(
+    db: Session, world: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sent: list[str] = []
+    monkeypatch.setattr("app.notify.send_mail", lambda to, s, body: sent.append(body))
+    u = world.users["user"]
+    now = datetime.now(tz=UTC)
+    db.add(
+        JournalEntry(
+            user_id=u.id,
+            instrument_id=world.inst.id,
+            signal_id=world.live.id,  # связана с сигналом до ADR-0013
+            direction="long",
+            entry_price=Decimal(100),
+            entry_at=now - timedelta(days=1),
+            stop_loss=Decimal(95),
+            exit_price=Decimal(105),
+            exit_at=now - timedelta(hours=2),
+            realized_r=Decimal(1),
+            source="signal",
+        )
+    )
+    db.commit()
+    assert _client(db).post("/v1/me/notifications/test", headers=_headers(world, "user")).is_success
+    [body] = sent
+    assert "отчёт по журналу" in body
+    assert "сигнал" not in body.lower() and "/signals" not in body and "/stats" not in body
+
+
+@db_only
+@pytest.mark.parametrize("role", ["user", "admin"])
+def test_journal_list_and_exports_hide_legacy_signal_links(
+    role: str, db: Session, world: SimpleNamespace
+) -> None:
+    """Запись, связанная с сигналом до ADR-0013: обычному пользователю она ручная и без номера
+    сигнала — в списке, в CSV (там нет и столбца signal_id) и в выгрузке данных."""
+    u = world.users[role]
+    db.add(
+        JournalEntry(
+            user_id=u.id,
+            instrument_id=world.inst.id,
+            signal_id=world.live.id,
+            direction="long",
+            entry_price=Decimal(100),
+            entry_at=datetime.now(tz=UTC) - timedelta(days=1),
+            stop_loss=Decimal(95),
+            take_profits=[],
+            size=Decimal(1),
+            source="signal",
+        )
+    )
+    db.commit()
+    client = _client(db)
+    h = _headers(world, role)
+    staff = role == "admin"
+    [item] = client.get("/v1/journal", headers=h).json()["items"]
+    [exported] = client.get("/v1/me/export.json", headers=h).json()["journal"]
+    header, row = client.get("/v1/journal/export.csv", headers=h).text.splitlines()
+    for d in (item, exported):
+        assert (d["source"], d["signal_id"]) == (
+            ("signal", world.live.id) if staff else ("manual", None)
+        )
+    assert header.endswith(",source,signal_id" if staff else ",note,source")
+    assert row.endswith(f",signal,{world.live.id}" if staff else ",manual")
