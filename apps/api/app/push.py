@@ -89,13 +89,29 @@ def _send(sub: PushSubscription, payload: dict[str, Any]) -> int:
         return int(code) if code else 500
 
 
-def send_to_user(db: Session, user_id: int, payload: dict[str, Any]) -> int:
-    """Отправить всем подпискам пользователя; вернуть число успешных."""
+def send_to_user(
+    db: Session, user_id: int, payload: dict[str, Any], *, strict: bool = False
+) -> int:
+    """Отправить всем подпискам пользователя; вернуть число успешных.
+
+    Push-сервис не ответил по одной подписке (сеть, таймаут) — она пропускается с предупреждением,
+    остальные подписки (и, в рассылке сигнала, остальные получатели) это не задерживает. В счёт
+    ошибок подряд это не идёт: недоступность сети — не признак мёртвой подписки.
+
+    ``strict`` (доставка алертов): ни одна подписка не приняла push, а хотя бы одна не ответила —
+    поднять эту ошибку, чтобы push повторили позже.
+    """
     subs = db.scalars(select(PushSubscription).where(PushSubscription.user_id == user_id)).all()
     ok = 0
+    unreachable: OSError | None = None
     now = datetime.now(tz=UTC)
     for sub in subs:
-        code = _send(sub, payload)
+        try:
+            code = _send(sub, payload)
+        except OSError as exc:  # у requests ошибки сети и таймаут — подклассы OSError
+            log.warning("push %s: push-сервис не ответил (%s)", sub.id, exc)
+            unreachable = unreachable or exc
+            continue
         if code == 0:
             continue
         if 200 <= code < 300:
@@ -109,4 +125,6 @@ def send_to_user(db: Session, user_id: int, payload: dict[str, Any]) -> int:
             if sub.failures >= MAX_FAILURES:
                 db.delete(sub)
             log.warning("push %s: код %s (ошибок подряд %d)", sub.id, code, sub.failures)
+    if strict and unreachable is not None and not ok:
+        raise unreachable
     return ok

@@ -82,6 +82,8 @@ ENV_NAMES = ("APP_ENV", "FRONTEND_URL", "API_PUBLIC_URL", "RAILWAY_ENVIRONMENT_N
 VERIFIED = datetime(2026, 1, 1, tzinfo=UTC)
 REAL_ALERT_MAIL = alerts_mod._alert_mail
 """Настоящее письмо алерта (через ``send_mail``); фикстура ``outbox`` его подменяет."""
+REAL_ALERT_PUSH = alerts_mod._alert_push
+"""Настоящий push алерта (``send_to_user`` в строгом режиме); фикстура ``outbox`` его подменяет."""
 
 
 class Outbox:
@@ -124,7 +126,7 @@ def outbox(monkeypatch: pytest.MonkeyPatch) -> Outbox:
     box = Outbox()
     monkeypatch.setattr(mail_mod.httpx, "post", no_network)
     monkeypatch.setattr(alerts_mod, "_alert_mail", box.mail)
-    monkeypatch.setattr(alerts_mod, "send_to_user", box.push)
+    monkeypatch.setattr(alerts_mod, "_alert_push", box.push)
     return box
 
 
@@ -575,7 +577,7 @@ def test_inline_delivery_with_all_keys_is_unchanged(
     _keys(monkeypatch, mail=True, push=True)  # локально с полным .env
     out = Outbox()
     monkeypatch.setattr(alerts_mod, "_alert_mail", out.mail)
-    monkeypatch.setattr(alerts_mod, "send_to_user", out.push)
+    monkeypatch.setattr(alerts_mod, "_alert_push", out.push)
     _, alert, _ = _alert_setup(db)
     _only(monkeypatch, {alert.id})
     trig = _fire_one(db, alert, datetime.now(tz=UTC).replace(second=0, microsecond=0))
@@ -594,7 +596,7 @@ def test_inline_failure_stays_queued_for_notifier(
     _keys(monkeypatch, mail=True, push=True)
     broken = Outbox(fail_mail=503)
     monkeypatch.setattr(alerts_mod, "_alert_mail", broken.mail)
-    monkeypatch.setattr(alerts_mod, "send_to_user", broken.push)
+    monkeypatch.setattr(alerts_mod, "_alert_push", broken.push)
     _, alert, _ = _alert_setup(db)
     _only(monkeypatch, {alert.id})
     trig = _fire_one(db, alert, datetime.now(tz=UTC).replace(second=0, microsecond=0))
@@ -1141,7 +1143,7 @@ def test_inline_rejected_address_still_pushes(db: Session, monkeypatch: pytest.M
     out = Outbox()
     refused = Outbox(fail_mail=422, fail_message=BAD_TO)
     monkeypatch.setattr(alerts_mod, "_alert_mail", refused.mail)
-    monkeypatch.setattr(alerts_mod, "send_to_user", out.push)
+    monkeypatch.setattr(alerts_mod, "_alert_push", out.push)
     now = datetime.now(tz=UTC)
     trig = _fire_one(db, alert, now.replace(second=0, microsecond=0))
     db.commit()
@@ -2057,6 +2059,50 @@ def test_push_request_has_timeout_and_skips_foreign_endpoints(
 
 
 @db_only
+def test_unreachable_subscription_does_not_block_others(
+    db: Session, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Push-сервис не ответил по одной подписке (таймаут) — остальные подписки пользователя push
+    получают, а в рассылке сигнала (без строгого режима) ошибка не прерывает рассылку остальным
+    получателям. В счёт ошибок подряд недоступность не идёт. Строгий режим (доставка алертов):
+    не дошло ни до одной подписки — ошибка, и push повторят."""
+    user = _user(db)
+    for name in ("dead", "alive"):
+        db.add(
+            PushSubscription(
+                user_id=user.id,
+                endpoint=f"https://fcm.googleapis.com/fcm/send/{name}-{secrets.token_hex(4)}",
+                p256dh="k",
+                auth_key="a",
+            )
+        )
+    db.flush()
+    sent: list[str] = []
+
+    def fake_send(sub: PushSubscription, payload: dict[str, Any]) -> int:
+        if "/dead-" in sub.endpoint:
+            raise TimeoutError("Read timed out. (read timeout=10.0)")
+        sent.append(sub.endpoint)
+        return 201
+
+    monkeypatch.setattr(push_mod, "_send", fake_send)
+    with caplog.at_level(logging.WARNING, logger="push"):
+        assert push_mod.send_to_user(db, user.id, {"title": "t"}) == 1
+        assert push_mod.send_to_user(db, user.id, {"title": "t"}, strict=True) == 1
+    assert len(sent) == 2 and all("/alive-" in e for e in sent)
+    assert any("push-сервис не ответил" in r.getMessage() for r in caplog.records)
+    subs = db.scalars(select(PushSubscription).where(PushSubscription.user_id == user.id)).all()
+    assert len(subs) == 2 and all(sub.failures == 0 for sub in subs)
+    for sub in subs:  # остались только недоступные
+        if "/alive-" in sub.endpoint:
+            db.delete(sub)
+    db.flush()
+    assert push_mod.send_to_user(db, user.id, {"title": "t"}) == 0
+    with pytest.raises(TimeoutError):
+        push_mod.send_to_user(db, user.id, {"title": "t"}, strict=True)
+
+
+@db_only
 def test_push_subscribe_rejects_foreign_endpoint(db: Session) -> None:
     """POST /v1/me/push: адрес не на push-сервисе браузера — 400 с понятным текстом, подписка не
     записывается; адрес FCM — 201."""
@@ -2173,7 +2219,7 @@ def test_stalled_push_endpoint_does_not_hold_other_users(
     """
     _production(monkeypatch)
     _as_alerts_service(monkeypatch)  # срабатывания пишет воркер без VAPID — в очередь
-    monkeypatch.setattr(alerts_mod, "send_to_user", push_mod.send_to_user)  # настоящий push
+    monkeypatch.setattr(alerts_mod, "_alert_push", REAL_ALERT_PUSH)  # настоящий push
     monkeypatch.setattr(push_mod, "PUSH_TIMEOUT", 1.0)
     real_allowed = push_mod.endpoint_allowed
     monkeypatch.setattr(push_mod, "endpoint_allowed", lambda e: e.startswith("http://127.0.0.1:"))

@@ -437,6 +437,12 @@ def _alert_mail(to: str, subject: str, text: str, idempotency_key: str | None = 
     send_mail(to, subject, text, idempotency_key=idempotency_key, strict=True)
 
 
+def _alert_push(db: Session, user_id: int, payload: dict[str, Any]) -> int:
+    """Push алерта: ни одна подписка не приняла его, а push-сервис не ответил — исключение, и push
+    повторится (``send_to_user`` в строгом режиме)."""
+    return send_to_user(db, user_id, payload, strict=True)
+
+
 def notify_trigger(
     db: Session,
     alert: Alert,
@@ -472,7 +478,7 @@ def notify_trigger(
     ``mail`` / ``push`` — отправители (по умолчанию Resend и Web Push; в тестах — подмены).
     """
     mail = mail or _alert_mail
-    push = push or send_to_user
+    push = push or _alert_push
     ready = ready if ready is not None else channels_ready()
     now = now or datetime.now(tz=UTC)
     user = db.get(User, alert.user_id)
