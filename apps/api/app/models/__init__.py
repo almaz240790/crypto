@@ -11,6 +11,7 @@ from app.models.derivatives import (
     OpenInterestRow,
 )
 from app.models.figures import FigureEvent, FigureOutcomeRow, FigureRow, FigureStatsSnapshot
+from app.models.jobs import DeployJob
 from app.models.llm import LlmRequest
 from app.models.market import Candle, Instrument
 from app.models.ml import MlLabel
@@ -21,7 +22,14 @@ from app.models.patterns import (
     PatternRulesVersion,
     PatternStatsSnapshot,
 )
-from app.models.signals import Signal, SignalEvent, SignalResult, Strategy, StrategyVersion
+from app.models.signals import (
+    Signal,
+    SignalCorrection,
+    SignalEvent,
+    SignalResult,
+    Strategy,
+    StrategyVersion,
+)
 from app.models.stats import StatsSnapshot
 from app.models.support import SupportTicket
 from app.models.tracking import SignalTracking
@@ -56,6 +64,7 @@ __all__ = [
     "BalanceEntry",
     "Candle",
     "ChartLayout",
+    "DeployJob",
     "Drawing",
     "EmailToken",
     "FigureEvent",
@@ -85,6 +94,7 @@ __all__ = [
     "RiskProfile",
     "SavedScreen",
     "Signal",
+    "SignalCorrection",
     "SignalEvent",
     "SignalResult",
     "SignalTracking",

@@ -27,6 +27,7 @@ from app import auth
 from app.analysis import analyze_signal
 from app.coin_rank import current_ranks, rank_of, rank_sort_key
 from app.config import settings
+from app.corrections import current_event, forward_notice_shown
 from app.entitlements import (
     Entitlements,
     allowed_instrument_ids,
@@ -437,17 +438,20 @@ def signal_detail(
     out["facts"] = (s.rationale_facts or {}).get("facts", [])
     out["zone"] = (s.rationale_facts or {}).get("zone")
     out["score_breakdown"] = s.score_breakdown
+    # события, заменённые исправлением исхода (пересчёт форварда), не показываются; пояснение
+    # исправления — в ``note`` события corrected / voided
     out["events"] = [
         {
             "type": e.type,
             "price": _dec(e.price),
             "at": e.occurred_at.isoformat(),
             "source": e.source,
+            "note": e.note,
         }
         for e in db.scalars(
             select(SignalEvent)
-            .where(SignalEvent.signal_id == s.id)
-            .order_by(SignalEvent.occurred_at)
+            .where(SignalEvent.signal_id == s.id, current_event())
+            .order_by(SignalEvent.occurred_at, SignalEvent.id)
         ).all()
     ]
     return out
@@ -644,7 +648,8 @@ def _version_ref(db: Session, sv: StrategyVersion | None) -> dict[str, Any] | No
 def _forward_meta(db: Session, sv: StrategyVersion | None, closed: int) -> dict[str, Any]:
     """Что сопровождает форвард-статистику: какая версия посчитана, какие версии можно выбрать
     (``versions``: в форварде сейчас и ушедшие из него с записанной форвард-историей), плашка о
-    недействительных результатах (настройки ``FORWARD_NOTICE``, ``FORWARD_NOTICE_UNTIL``) и
+    недействительных результатах (настройки ``FORWARD_NOTICE``, ``FORWARD_NOTICE_UNTIL``; после
+    пересчёта форварда снимается сама — ``app.corrections.forward_notice_shown``) и
     пометка «мало данных» при числе закрытых сделок меньше ``LOW_N`` (план 2A.10.4). Числа не
     скрываются."""
     until = settings.forward_notice_until
@@ -653,7 +658,7 @@ def _forward_meta(db: Session, sv: StrategyVersion | None, closed: int) -> dict[
         "versions": forward_versions(db),
         "notice": (
             {"invalid_until": until.isoformat() if until else None}
-            if settings.forward_notice
+            if forward_notice_shown(db)
             else None
         ),
         "low_n_threshold": LOW_N,

@@ -3,6 +3,12 @@
 - ``notify_new_signal`` / ``notify_event`` — мгновенные письма по live-сигналам с учётом настроек:
   градации, инструменты (все / вотчлист), тихие часы (UTC), суточный лимит; каждая отправка
   записывается в ``notification_log`` (повтор невозможен).
+- ``notify_staff_signal`` / ``notify_staff_event`` — письма и push владельцам и администраторам о
+  новых сигналах форварда и смене их статуса (вход, TP1–TP3, стоп, выход по времени); форвард
+  видят только они, обычные пользователи этих уведомлений не получают; исправления исхода
+  (пересчёт форварда) не рассылаются. Каждая отправка (адресат × канал) — отдельно: сбой одной
+  не мешает остальным, неудавшиеся не отмечаются и повторяются уведомителем
+  (``StaffDeliveryError``).
 - ``run_digest`` — ежедневный/еженедельный дайджест: закрытые сигналы за период, активные,
   метрики за 30 дней, ссылка отписки.
 
@@ -16,8 +22,10 @@ from __future__ import annotations
 
 import logging
 import secrets
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from functools import partial
 from typing import Any
 
 from sqlalchemy import or_, select
@@ -25,6 +33,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.corrections import CORRECTION_SOURCE
 from app.journal_analytics import TradeRow, analytics, without_signal
 from app.mail import MailError, send_mail
 from app.mail import configured as mail_configured
@@ -37,6 +46,7 @@ from app.models import (
     Signal,
     SignalEvent,
     SignalResult,
+    StrategyVersion,
     User,
     Watchlist,
     WatchlistItem,
@@ -62,6 +72,8 @@ EVENT_TEXT = {
     "time_stop": "закрыт по времени",
     "expired": "вход не исполнен, сигнал истёк",
 }
+CLOSING_EVENTS = ("tp3", "be", "sl", "time_stop", "expired")
+"""События закрытия сделки: в уведомлении о них — итог в R."""
 
 
 def mail_ready() -> bool:
@@ -321,6 +333,211 @@ def notify_event(db: Session, ev: SignalEvent, now: datetime | None = None) -> i
         )
     db.commit()
     return sent
+
+
+# --- форвард: владельцу и администраторам ------------------------------------------------------
+
+STAFF_ROLES = ("owner", "admin")
+"""Кто получает письма и push о сигналах форварда: форвард видят только они (план 2.11)."""
+STAFF_SIGNAL, STAFF_EVENT = "fwd_signal", "fwd_event"
+"""``notification_log.kind`` уведомлений о форварде: повтор по тому же сигналу или событию
+невозможен (уникальность пользователь + канал + вид + ссылка)."""
+DIRECTION = {"long": "LONG", "short": "SHORT"}
+
+
+def _staff(db: Session) -> list[User]:
+    """Владельцы и администраторы: не удалены и не заблокированы."""
+    return list(
+        db.scalars(
+            select(User)
+            .where(
+                User.role.in_(STAFF_ROLES),
+                User.deleted_at.is_(None),
+                User.blocked_at.is_(None),
+            )
+            .order_by(User.id)
+        ).all()
+    )
+
+
+def _forward_signal(sig: Signal) -> bool:
+    """Уведомления владельцу и администраторам — по форвард-сигналам (``signals.scope``, область
+    на момент публикации). Live-сигналы идут обычным путём, по настройкам пользователей."""
+    return sig.scope == "forward"
+
+
+def _signal_head(db: Session, sig: Signal) -> tuple[str, str]:
+    symbol = db.scalar(select(Instrument.symbol).where(Instrument.id == sig.instrument_id)) or "?"
+    return symbol, f"{symbol} {DIRECTION.get(sig.direction, sig.direction.upper())}"
+
+
+def _levels_line(sig: Signal) -> str:
+    return (
+        f"вход {_dec(sig.entry_limit or sig.entry_market)}, стоп {_dec(sig.stop_loss)}, "
+        f"TP1 / TP2 / TP3 {_dec(sig.tp1)} / {_dec(sig.tp2)} / {_dec(sig.tp3)}"
+    )
+
+
+def staff_signal_text(sig: Signal, symbol: str, version: str) -> str:
+    """Письмо о новом сигнале форварда: инструмент, направление, уровни, градация, ссылка."""
+    rows = [
+        ("инструмент", symbol),
+        ("направление", DIRECTION.get(sig.direction, sig.direction.upper())),
+        ("градация", f"{sig.grade} ({sig.score})"),
+        ("вход", _dec(sig.entry_limit or sig.entry_market)),
+        ("стоп", _dec(sig.stop_loss)),
+        ("TP1 / TP2 / TP3", f"{_dec(sig.tp1)} / {_dec(sig.tp2)} / {_dec(sig.tp3)}"),
+        ("R:R до TP2", _dec(sig.rr_tp2)),
+        ("версия стратегии", version),
+        ("свеча", sig.candle_close_time.astimezone(UTC).strftime("%d.%m %H:%M UTC")),
+    ]
+    w = max(len(k) for k, _ in rows)
+    table = "\n".join(f"{k.ljust(w)}  {v}" for k, v in rows)
+    return (
+        f"Новый сигнал форварда: {symbol}\n\n{table}\n\n"
+        f"Карточка: {settings.frontend_url}/signals/{sig.public_id}\n\n"
+        "Сигналы форварда видят только владелец и администраторы."
+    )
+
+
+def staff_event_text(sig: Signal, ev: SignalEvent, head: str, result: SignalResult | None) -> str:
+    """Письмо о смене статуса сигнала форварда: что произошло, по какой цене, когда, результат."""
+    price = f" по {_dec(ev.price)}" if ev.price is not None else ""
+    lines = [
+        f"{head} · {sig.grade}: {EVENT_TEXT[ev.type]}{price}.",
+        f"Время: {ev.occurred_at.astimezone(UTC).strftime('%d.%m %H:%M UTC')}",
+    ]
+    if result is not None:
+        lines.append(f"Результат: {_fmt_r(result.realized_r)} с учётом комиссии и проскальзывания.")
+    lines += [
+        f"Уровни: {_levels_line(sig)}.",
+        f"Карточка: {settings.frontend_url}/signals/{sig.public_id}",
+    ]
+    return "\n".join(lines)
+
+
+class StaffDeliveryError(RuntimeError):
+    """Часть отправок владельцу и администраторам не удалась (сеть, сбой почты или push).
+    Остальные адресаты и каналы уведомление получили, их отметки в ``notification_log``
+    зафиксированы; неудавшиеся не отмечены — повтор того же вызова отправит только их
+    (уведомитель повторяет, ``app.workers.notifier.StaffRetry``)."""
+
+    def __init__(self, what: str, sent: int, failed: list[str]) -> None:
+        super().__init__(f"{what}: не отправлено — {', '.join(failed)}")
+        self.sent = sent
+        self.failed = failed
+
+
+def _staff_send(
+    db: Session, user_id: int, channel: str, kind: str, ref: str, send: Callable[[], int]
+) -> int | None:
+    """Одна отправка сотруднику по одному каналу. Отметка в ``notification_log`` пишется в точке
+    сохранения до отправки и фиксируется сразу после неё. Уже отмечено (отправлено раньше) — 0,
+    без отправки. Ошибка отправки откатывает только эту отметку и пишется в лог — ``None``:
+    не отправлено и не отмечено, остальные отправки не затронуты."""
+    savepoint = db.begin_nested()
+    db.add(NotificationLog(user_id=user_id, channel=channel, kind=kind, ref=ref))
+    try:
+        db.flush()
+    except IntegrityError:
+        savepoint.rollback()
+        return 0
+    try:
+        n = send()
+    except Exception:
+        savepoint.rollback()
+        log.exception("%s %s → пользователь %s (%s): не отправлено", kind, ref, user_id, channel)
+        return None
+    savepoint.commit()
+    db.commit()
+    return n
+
+
+def _mail_one(to: str, subject: str, text: str) -> int:
+    send_mail(to, subject, text)
+    return 1
+
+
+def _deliver_staff(
+    db: Session, kind: str, ref: str, subject: str, text: str, push: dict[str, str]
+) -> int:
+    """Письмо (с подтверждённым адресом) и push каждому владельцу и администратору — каждая
+    отправка отдельно (``_staff_send``). Возвращает число отправок; если какие-то не удались, —
+    ``StaffDeliveryError`` после попытки всем."""
+    sent = 0
+    failed: list[str] = []
+    for user in _staff(db):
+        uid = user.id
+        sends: list[tuple[str, Callable[[], int]]] = []
+        if user.email_verified_at is not None:
+            sends.append(("email", partial(_mail_one, user.email, subject, text)))
+        sends.append(("push", partial(send_to_user, db, uid, push)))
+        for channel, send in sends:
+            n = _staff_send(db, uid, channel, kind, ref, send)
+            if n is None:
+                failed.append(f"{channel} пользователю {uid}")
+            else:
+                sent += n
+    db.commit()
+    if failed:
+        raise StaffDeliveryError(f"{kind} {ref}", sent, failed)
+    return sent
+
+
+def notify_staff_signal(db: Session, sig: Signal) -> int:
+    """Письмо и push о новом сигнале форварда — владельцам и администраторам (обычные
+    пользователи форвард не получают). Возвращает число отправок; часть не ушла —
+    ``StaffDeliveryError`` (ушедшие отмечены, повтор отправит остальные)."""
+    if not _forward_signal(sig):
+        return 0
+    symbol, head = _signal_head(db, sig)
+    version = db.scalar(
+        select(StrategyVersion.version).where(StrategyVersion.id == sig.strategy_version_id)
+    )
+    title = f"Новый сигнал: {head} · {sig.grade}"
+    return _deliver_staff(
+        db,
+        STAFF_SIGNAL,
+        sig.public_id,
+        title,
+        staff_signal_text(sig, symbol, version or "?"),
+        {
+            "title": title,
+            "body": _levels_line(sig),
+            "url": f"/signals/{sig.public_id}",
+            "tag": f"signal-{sig.public_id}",
+        },
+    )
+
+
+def notify_staff_event(db: Session, ev: SignalEvent) -> int:
+    """Письмо и push о смене статуса сигнала форварда (вход, TP1–TP3, безубыток, стоп, выход по
+    времени, истечение) — владельцам и администраторам. Исправления исхода (``source =
+    'retrack'``) не рассылаются. Часть отправок не ушла — ``StaffDeliveryError``."""
+    if ev.type not in EVENT_TEXT or ev.source == CORRECTION_SOURCE:
+        return 0
+    sig = db.get(Signal, ev.signal_id)
+    if sig is None or not _forward_signal(sig):
+        return 0
+    _, head = _signal_head(db, sig)
+    what = EVENT_TEXT[ev.type].split(" — ")[0]
+    result = db.get(SignalResult, sig.id) if ev.type in CLOSING_EVENTS else None
+    body = f"по {_dec(ev.price)}" if ev.price is not None else ""
+    if result is not None:
+        body = f"{body}, итог {_fmt_r(result.realized_r)}".lstrip(", ")
+    return _deliver_staff(
+        db,
+        STAFF_EVENT,
+        str(ev.id),
+        f"{head}: {what}",
+        staff_event_text(sig, ev, head, result),
+        {
+            "title": f"{head}: {what}",
+            "body": body,
+            "url": f"/signals/{sig.public_id}",
+            "tag": f"event-{ev.id}",
+        },
+    )
 
 
 def unsubscribe_footer(ns: NotificationSettings) -> str:

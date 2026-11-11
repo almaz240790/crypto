@@ -58,3 +58,10 @@ def test_cost_r_revision_follows_admin_login() -> None:
     """Задача 3: ``signal_results.cost_r`` писалась на базе 0021 как 0023; при сведении с архивом
     версии 1.0.0 (0023) и входом в админку (0024) стала ревизией 0025 после 0024."""
     assert _revisions()["0025"] == "0024"
+
+
+def test_signal_corrections_revision_follows_cost_r() -> None:
+    """Задачи 7 и 10: исправления исходов форварда (``signal_corrections``, ``deploy_jobs``) —
+    ревизия 0026 после 0025. Если параллельная ветка займёт 0026 раньше, ревизию переименовать
+    при сведении (0027 после 0026)."""
+    assert _revisions()["0026"] == "0025"

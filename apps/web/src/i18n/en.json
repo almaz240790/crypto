@@ -1544,5 +1544,8 @@
   "Heikin Ashi: паттерны считаются по обычным свечам": "Heikin Ashi: patterns are computed on regular candles",
   "Паттерны считаются по обычным свечам": "Patterns are computed on regular candles",
   "Страница не найдена": "Page not found",
-  "Такой страницы нет. Проверьте адрес или начните с графика.": "This page does not exist. Check the address or start with the chart."
+  "Такой страницы нет. Проверьте адрес или начните с графика.": "This page does not exist. Check the address or start with the chart.",
+  "результат пересчитан": "result recalculated",
+  "результат недействителен": "result void",
+  "недействителен": "void"
 }
