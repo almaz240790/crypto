@@ -1,6 +1,17 @@
 // Заглушка API для e2e серверных страниц (лендинг, /stats): Next рендерит их на сервере,
 // и перехват запросов в браузере до них не дотягивается. Запускается Playwright-ом на :8099.
+//
+// Сигналы (ADR-0013): по умолчанию заглушка — API с открытыми сигналами (SIGNALS_PUBLIC=true), как было до
+// решения, — на этом проверяются прежние спеки. MOCK_SIGNALS=closed — API с закрытыми сигналами, как в бою
+// сейчас (отдельный экземпляр на своём порту MOCK_PORT, проект signals-closed): лента, статистика сигналов и
+// версии стратегии отвечают 404 всем, кроме admin и owner; их заглушка узнаёт по токену «staff» — его выдаёт
+// перехват /v1/auth/refresh в signals.closed.spec; /status — без движка сигналов и трекера.
 import http from "node:http";
+
+const PORT = Number(process.env.MOCK_PORT ?? 8099);
+const CLOSED = process.env.MOCK_SIGNALS === "closed";
+const STAFF = "Bearer staff";
+const SIGNAL_COMPONENTS = new Set(["engine", "tracker"]);
 
 const m = (closed, wr, sum, open = 0, expired = 0) => ({
   signals: closed + open + expired, closed, expired, open, winrate: wr, avg_r: closed ? sum / closed : null, profit_factor: 1.5,
@@ -63,6 +74,29 @@ function forwardStats(u) {
     without_costs: (cur && FORWARD_WITHOUT_COSTS[cur.version]) ?? 0,
   }];
 }
+/** Закрыт ли путь сигналов (ADR-0013): как signals_viewer / signals_member в API. */
+const signalPath = (p) => p.startsWith("/v1/signals") || p === "/v1/strategies" || (p.startsWith("/v1/stats") && !p.startsWith("/v1/stats/patterns") && !p.startsWith("/v1/stats/figures"));
+const PATTERN = (type, title, n, rate) => ({ type, title, horizon: 5, n, low_n: n < 30, success_rate: n < 30 ? null : rate, ci_low: n < 30 ? null : "0.45", ci_high: n < 30 ? null : "0.60", avg_move_atr: "1.2", avg_adverse_atr: "0.8", period_start: "2022-01-01", period_end: "2026-10-01" });
+const STATUS = {
+  status: "degraded",
+  generated_at: "2026-10-25T10:01:00+00:00",
+  components: [
+    { key: "data", title: "Данные с биржи", status: "ok", detail: "heartbeat 12 с назад, 1m-свеча 40 с назад", uptime_7d: 100 },
+    { key: "candles", title: "Свечи H4", status: "degraded", detail: "нет закрытия по 1 из 20 инструментов", uptime_7d: 100 },
+    { key: "engine", title: "Движок сигналов", status: "ok", detail: "прогон по H4 08:00", uptime_7d: 99.8 },
+    { key: "tracker", title: "Трекер сигналов", status: "ok", detail: "heartbeat 5 с назад", uptime_7d: 100 },
+    { key: "notifier", title: "Уведомления", status: "ok", detail: "heartbeat 20 с назад", uptime_7d: 100 },
+    { key: "api", title: "API и база", status: "ok", detail: "БД и Redis отвечают", uptime_7d: 100 },
+  ],
+  incidents: [
+    { component: "candles", severity: "degraded", message: "нет закрытия по 1 из 20 инструментов", opened_at: "2026-10-25T09:58:00+00:00", closed_at: null },
+    { component: "engine", severity: "down", message: "движок не отработал по 20 из 20 инструментов", opened_at: "2026-10-23T04:02:00+00:00", closed_at: "2026-10-23T04:31:00+00:00" },
+  ],
+};
+// как hide_signal_components в API: без движка и трекера и их инцидентов
+const PUBLIC_STATUS = CLOSED
+  ? { ...STATUS, components: STATUS.components.filter((c) => !SIGNAL_COMPONENTS.has(c.key)), incidents: STATUS.incidents.filter((i) => !SIGNAL_COMPONENTS.has(i.component)) }
+  : STATUS;
 const trade = (i) => ({ id: `s${i}`, symbol: i % 2 ? "BTCUSDT" : "ETHUSDT", direction: i % 3 ? "long" : "short", signal_time: new Date(Date.UTC(2026, 8, 1 + (i % 28), 8)).toISOString(), grade: "AB"[i % 2], score: 60 + i, entry: "100", stop: "98", rr_tp2: "2.5", entry_type: "market", status: i % 4 ? "closed_tp3" : "closed_sl", tp_hits: i % 4 ? 3 : 0, realized_r: i % 4 ? 2.9 : -1, mfe_r: 3, mae_r: 0.2, exit_time: null });
 
 http
@@ -73,6 +107,15 @@ http
       res.end(JSON.stringify(body));
     };
     const p = u.pathname;
+    const staff = req.headers.authorization === STAFF;
+    if (p === "/v1/features") return J(200, { signals: !CLOSED || staff });
+    if (CLOSED && !staff && signalPath(p)) return J(404, { detail: "Not Found" });
+    if (p === "/v1/stats/patterns")
+      return J(200, {
+        scope: u.searchParams.get("scope") ?? "backfill", tf: u.searchParams.get("tf") ?? "4h", horizon: 5, with_context: null, note: "", computed_at: "2026-10-25T08:00:00+00:00",
+        items: [PATTERN("engulfing", "Бычье поглощение / Медвежье поглощение", 412, "0.5340"), PATTERN("hammer", "Молот", 233, "0.5107"), PATTERN("doji", "Доджи", 12, null)],
+      });
+    if (p === "/v1/stats/figures") return J(200, { scope: "backfill", tf: u.searchParams.get("tf") ?? "4h", horizon: 20, items: [], note: "", computed_at: null });
     if (p === "/health") return J(200, { status: "ok", db: "ok", schema: "0005", candles: "123456", env: "test" });
     if (p === "/v1/stats") {
       const scope = u.searchParams.get("scope") ?? "live";
@@ -93,24 +136,8 @@ http
     if (p === "/v1/stats/runs") return J(200, [{ id: 3, strategy_version: "1.1.0", period: ["2022-01-01", "2026-10-01"], instruments: 20, entry_type: "market", closed: 40, note: "walk-forward", created_at: null }]);
     if (p === "/v1/strategies") return J(200, VERSIONS);
     if (p === "/v1/signals") return J(200, { items: [], sparklines: {}, prices: {}, total: 0, scope: "live", limit: 50, offset: 0 });
-    if (p === "/status")
-      return J(200, {
-        status: "degraded",
-        generated_at: "2026-10-25T10:01:00+00:00",
-        components: [
-          { key: "data", title: "Данные с биржи", status: "ok", detail: "heartbeat 12 с назад, 1m-свеча 40 с назад", uptime_7d: 100 },
-          { key: "candles", title: "Свечи H4", status: "degraded", detail: "нет закрытия по 1 из 20 инструментов", uptime_7d: 100 },
-          { key: "engine", title: "Движок сигналов", status: "ok", detail: "прогон по H4 08:00", uptime_7d: 99.8 },
-          { key: "tracker", title: "Трекер сигналов", status: "ok", detail: "heartbeat 5 с назад", uptime_7d: 100 },
-          { key: "notifier", title: "Уведомления", status: "ok", detail: "heartbeat 20 с назад", uptime_7d: 100 },
-          { key: "api", title: "API и база", status: "ok", detail: "БД и Redis отвечают", uptime_7d: 100 },
-        ],
-        incidents: [
-          { component: "candles", severity: "degraded", message: "нет закрытия по 1 из 20 инструментов", opened_at: "2026-10-25T09:58:00+00:00", closed_at: null },
-          { component: "engine", severity: "down", message: "движок не отработал по 20 из 20 инструментов", opened_at: "2026-10-23T04:02:00+00:00", closed_at: "2026-10-23T04:31:00+00:00" },
-        ],
-      });
+    if (p === "/status") return J(200, PUBLIC_STATUS);
     if (p === "/v1/instruments") return J(200, [{ id: 1, symbol: "BTCUSDT", tick_size: "0.1" }]);
     J(404, { detail: "нет заглушки" });
   })
-  .listen(8099);
+  .listen(PORT);
