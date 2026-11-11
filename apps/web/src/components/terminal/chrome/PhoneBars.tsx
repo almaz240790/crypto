@@ -4,6 +4,7 @@ import { CHART_TYPES, countdownSeconds, formatCountdown, type ChartType, type Sc
 import Link from "next/link";
 import { useEffect, useState, type ReactNode } from "react";
 import { useT } from "@/i18n/client";
+import { useSignalsAccess } from "@/components/auth/signalsAccess";
 import { formatPct, formatPrice } from "@/lib/format";
 import { INTRADAY, TF_LABEL, TIMEFRAMES } from "@/lib/timeframes";
 import type { Instrument } from "@/lib/user";
@@ -88,6 +89,7 @@ export function PhoneTop(p: TopProps) {
 /** Строка состояния телефона: свой таймер 1 с (отсчёт до закрытия и до фандинга), терминал не перерисовывается. */
 export function PhoneStrip(p: HeaderFacts & { tf: Timeframe }) {
   const t = useT();
+  const { open: signals } = useSignalsAccess();
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
   useEffect(() => {
     const id = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 1000);
@@ -114,7 +116,7 @@ export function PhoneStrip(p: HeaderFacts & { tf: Timeframe }) {
       <span className={`caption ${s.live}`} data-on={p.online || undefined} data-source={p.online ? p.source : undefined} title={liveTitle(t, p.online, p.source)}>
         {p.online ? t("онлайн") : t("без связи")}
       </span>
-      {p.heikin && <span className="caption">{t("Heikin Ashi: паттерны и сигналы считаются по обычным свечам")}</span>}
+      {p.heikin && <span className="caption">{signals ? t("Heikin Ashi: паттерны и сигналы считаются по обычным свечам") : t("Heikin Ashi: паттерны считаются по обычным свечам")}</span>}
     </div>
   );
 }

@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState, type FormEvent } from "react";
 import { AppShell } from "@/components/app/AppShell";
 import { useAuth } from "@/components/auth/AuthProvider";
+import { useSignalsAccess } from "@/components/auth/signalsAccess";
 import s from "@/components/tools/tools.module.css";
 import { NotificationsPanel } from "@/components/settings/Notifications";
 import { applyTheme } from "@/components/ui/ThemeToggle";
@@ -66,6 +67,7 @@ const API_BASE = typeof window === "undefined" ? "" : window.location.origin;
 /** API-ключи для чтения (план 3.10, Premium): список, создание с показом один раз, отзыв. */
 function ApiKeysPanel({ note }: { note: (text: string, kind?: "ok" | "error") => void }) {
   const t = useT();
+  const { open: signals } = useSignalsAccess();
   const [keys, setKeys] = useState<ApiKeyRow[] | null>(null);
   const [limit, setLimit] = useState(5);
   const [denied, setDenied] = useState<string | null>(null);
@@ -103,7 +105,7 @@ function ApiKeysPanel({ note }: { note: (text: string, kind?: "ok" | "error") =>
     await load();
   }
   return (
-    <Panel title={t("API-ключи для чтения (Premium)")} footer={<>{t("Ключ передаётся в заголовке X-API-Key и даёт только чтение (GET) тех же эндпоинтов /v1: сигналы, статистика, графики. Лимит 600 запросов в минуту на ключ. Ключ показывается один раз.")}{" "}<Link href="/api-docs">{t("Документация API")}</Link>.</>}>
+    <Panel title={t("API-ключи для чтения (Premium)")} footer={<>{signals ? t("Ключ передаётся в заголовке X-API-Key и даёт только чтение (GET) тех же эндпоинтов /v1: сигналы, статистика, графики. Лимит 600 запросов в минуту на ключ. Ключ показывается один раз.") : t("Ключ передаётся в заголовке X-API-Key и даёт только чтение (GET) тех же эндпоинтов /v1: графики, скринер, отработка паттернов. Лимит 600 запросов в минуту на ключ. Ключ показывается один раз.")}{" "}<Link href="/api-docs">{t("Документация API")}</Link>.</>}>
       <div className={s.form} data-testid="api-keys">
         {denied ? (
           <span className="text-2">{denied}</span>
@@ -126,7 +128,7 @@ function ApiKeysPanel({ note }: { note: (text: string, kind?: "ok" | "error") =>
               <div role="region" aria-label={t("новый ключ")}>
                 <p style={{ margin: "0 0 6px" }}>{t("Новый ключ (больше не покажется):")}</p>
                 <code style={{ display: "block", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>{fresh}</code>
-                <p className="caption" style={{ margin: "6px 0 0" }}>{t("Пример:")}{" "}<code>{`curl -H "X-API-Key: ${fresh.slice(0, 10)}…" ${API_BASE}/v1/signals?tab=all`}</code>
+                <p className="caption" style={{ margin: "6px 0 0" }}>{t("Пример:")}{" "}<code>{`curl -H "X-API-Key: ${fresh.slice(0, 10)}…" ${API_BASE}${signals ? "/v1/signals?tab=all" : "/v1/chart/candles?symbol=BTCUSDT&tf=4h"}`}</code>
                 </p>
               </div>
             )}
@@ -249,6 +251,7 @@ export default function SettingsPage() {
   const t = useT();
   const router = useRouter();
   const { user, reload, logout } = useAuth();
+  const { open: signals } = useSignalsAccess();
   const [msg, setMsg] = useState<{ text: string; kind: "ok" | "error" } | null>(null);
   const [identities, setIdentities] = useState<{ provider: string; label: string }[]>([]);
   const [profile, setProfile] = useState<Record<string, string> | null>(null);
@@ -371,7 +374,7 @@ export default function SettingsPage() {
               </div>
             </form>
           </Panel>
-          <Panel title={t("Риск-профиль")} footer={t("Используется калькулятором и карточкой сигнала. Депозит хранится только если вы его указали.")}>
+          <Panel title={t("Риск-профиль")} footer={signals ? t("Используется калькулятором и карточкой сигнала. Депозит хранится только если вы его указали.") : t("Используется калькулятором. Депозит хранится только если вы его указали.")}>
             <form className={s.form} onSubmit={saveRisk}>
               <div className={s.row}>
                 <Input label={t("Депозит, USDT")} mono inputMode="decimal" value={r("deposit") === "null" ? "" : r("deposit")} onChange={(e) => setRisk((x) => ({ ...(x ?? {}), deposit: e.target.value }))} placeholder="—" />

@@ -5,11 +5,12 @@ ADR-0010) обрабатывается сразу, в самом слушате�
 ``{"t":"ticks","at","p":{…}}`` для клиента, попросившего ``batch``) и формирующаяся минута
 ``{"t":"forming","s","tf":"1m","c"}`` подписчикам символа — не чаще раза в секунду на символ и
 клиента. ``candles.closed`` (только 1m) → ``price`` и ``candle``; ``signals.status`` → ``signal``
-залогиненным — через ограниченную очередь отдельной задачей: чтение БД и ошибки там не задерживают
-и не обрывают тики. Каждому клиенту пишет только его задача отправки, с таймаутом: медленный клиент
-не держит остальных и отключается. При (пере)подписке слушатель читает последние цены из ключа
-``prices:last`` — после перезапуска API и обрыва Redis цены сразу верные. Клиент не ходит на биржу
-напрямую. Без Redis (тесты, локально) слушатель спит и повторяет попытку.
+залогиненным (пока сигналы закрыты, ADR-0013, — только admin и owner) — через ограниченную
+очередь отдельной задачей: чтение БД и ошибки там не задерживают и не обрывают тики. Каждому
+клиенту пишет только его задача отправки, с таймаутом: медленный клиент не держит остальных и
+отключается. При (пере)подписке слушатель читает последние цены из ключа ``prices:last`` — после
+перезапуска API и обрыва Redis цены сразу верные. Клиент не ходит на биржу напрямую. Без Redis
+(тесты, локально) слушатель спит и повторяет попытку.
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ from sqlalchemy import text
 from app import auth
 from app.config import settings
 from app.db import SessionLocal
+from app.signals_access import STAFF_ROLES
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -74,9 +76,12 @@ def _age(at: object) -> float | None:
 
 
 class Client:
-    def __init__(self, ws: WebSocket, user_id: int | None) -> None:
+    def __init__(self, ws: WebSocket, user_id: int | None, staff: bool = False) -> None:
         self.ws = ws
         self.user_id = user_id
+        # admin или owner (роль из подписанного токена при подключении): пока сигналы закрыты
+        # (ADR-0013), события сигналов получают только они
+        self.staff = staff
         self.symbols: set[str] = set()
         self.batch = False  # тики одной пачкой раз в секунду ({"t":"ticks"}), не по символу
         self.forming = True  # формирующиеся минуты нужны (графику; ленте — нет)
@@ -415,7 +420,7 @@ class Hub:
             # форвард построчно не публикуется (план 2.11): клиентам — только события live.
             # Событие без области (трекер до миграции 0022) — не live: live-сигналов тогда не было.
             if data.get("scope") == "live":
-                self.broadcast({"t": "signal", **data}, authed_only=True)
+                self.broadcast({"t": "signal", **data}, authed_only=True, signals=True)
             return
         symbol = str(data["symbol"])
         candle = data.get("candle") if isinstance(data.get("candle"), dict) else None
@@ -439,14 +444,22 @@ class Hub:
         return any(symbol in c.symbols for c in self.clients)
 
     def broadcast(
-        self, payload: dict[str, Any], symbol: str | None = None, authed_only: bool = False
+        self,
+        payload: dict[str, Any],
+        symbol: str | None = None,
+        authed_only: bool = False,
+        signals: bool = False,
     ) -> None:
-        """В очередь отправки подходящих клиентов — без ожидания сокетов."""
+        """В очередь отправки подходящих клиентов — без ожидания сокетов. ``signals`` — событие
+        сигнала: пока сигналы закрыты (ADR-0013), только клиентам admin и owner."""
         text_ = json.dumps(payload)
+        closed = signals and not settings.signals_public
         for c in list(self.clients):
             if symbol is not None and symbol not in c.symbols:
                 continue
             if authed_only and c.user_id is None:
+                continue
+            if closed and not c.staff:
                 continue
             c.push(text_)
 
@@ -501,14 +514,17 @@ async def ws_endpoint(ws: WebSocket) -> None:
     цена раз в секунду), forming (формирующаяся минута), signal. Незнакомые типы старые клиенты
     пропускают."""
     user_id: int | None = None
+    staff = False
     token = ws.query_params.get("token")
     if token:
         try:
-            user_id = int(auth.decode_access_token(token)["sub"])
+            claims = auth.decode_access_token(token)
+            user_id = int(claims["sub"])
+            staff = claims.get("role") in STAFF_ROLES
         except Exception:
-            user_id = None
+            user_id, staff = None, False
     await ws.accept()
-    client = Client(ws, user_id)
+    client = Client(ws, user_id, staff)
     hub.clients.add(client)
     await hub.start()
     sender = asyncio.create_task(client.pump(hub))

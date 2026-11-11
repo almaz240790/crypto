@@ -6,6 +6,7 @@ import { memo, useMemo, useState } from "react";
 import { Button, Popover, usePopover } from "@/components/ui";
 import { IconChevronDown } from "@/components/ui/icons";
 import { useT } from "@/i18n/client";
+import { useSignalsAccess } from "@/components/auth/signalsAccess";
 import { formatPct, formatPrice } from "@/lib/format";
 import { TF_LABEL } from "@/lib/timeframes";
 import type { Instrument } from "@/lib/user";
@@ -102,6 +103,7 @@ function useTickDirection(price: number | null): "up" | "down" | undefined {
 /** «Сводка»: все факты шапки, в том числе спрятанные по ширине, и отсчёт до закрытия свечи. */
 function Summary(p: Omit<HeaderFacts, "prices" | "fallback" | "prevClose"> & { tf: Timeframe; price: number | null; change: number | null }) {
   const t = useT();
+  const { open: signals } = useSignalsAccess();
   const tfLabel = t(TF_LABEL[p.tf]);
   return (
     <dl className={c.summary}>
@@ -141,7 +143,7 @@ function Summary(p: Omit<HeaderFacts, "prices" | "fallback" | "prevClose"> & { t
       )}
       <dt>{t("Связь")}</dt>
       <dd title={liveTitle(t, p.online, p.source)}>{p.online ? t("онлайн") : t("без связи")}</dd>
-      {p.heikin && <p className={c.summaryNote}>{t("Heikin Ashi: паттерны и сигналы считаются по обычным свечам")}</p>}
+      {p.heikin && <p className={c.summaryNote}>{signals ? t("Heikin Ashi: паттерны и сигналы считаются по обычным свечам") : t("Heikin Ashi: паттерны считаются по обычным свечам")}</p>}
     </dl>
   );
 }
@@ -154,6 +156,7 @@ function Summary(p: Omit<HeaderFacts, "prices" | "fallback" | "prevClose"> & { t
  */
 export const TerminalHeader = memo(function TerminalHeader(p: Props) {
   const t = useT();
+  const { open: signals } = useSignalsAccess();
   const path = usePathname();
   const summary = usePopover();
   const { price, change } = useLivePrice(p.prices, p.fallback, p.prevClose);
@@ -201,7 +204,7 @@ export const TerminalHeader = memo(function TerminalHeader(p: Props) {
           </span>
         )}
         {p.heikin && (
-          <span className={c.chip} title={t("Паттерны и сигналы считаются по обычным свечам")} {...overflowItem("heikin", fit)}>
+          <span className={c.chip} title={signals ? t("Паттерны и сигналы считаются по обычным свечам") : t("Паттерны считаются по обычным свечам")} {...overflowItem("heikin", fit)}>
             Heikin Ashi
           </span>
         )}

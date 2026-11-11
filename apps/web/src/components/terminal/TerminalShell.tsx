@@ -22,6 +22,7 @@ import { OhlcLegend } from "./chart/OhlcLegend";
 import { MarkupPicker } from "./MarkupPicker";
 import { SidePanel } from "./panels/SidePanel";
 import { LAYER_LABEL, layerKeysFor } from "./panels/LayersTab";
+import { canSeeSignals } from "@/lib/signalsAccess";
 import { AskBox } from "./panels/found/AskBox";
 import { FoundTab, type FoundData } from "./panels/found/FoundTab";
 import { useTerminalSettings } from "./state/useTerminalSettings";
@@ -70,6 +71,8 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
   const router = useRouter();
   const { user } = useAuth();
   const authed = !!user;
+  // слой сигналов — вошедшему, которому сигналы видны (пока они закрыты — admin и owner, ADR-0013)
+  const signalsLayer = authed && canSeeSignals(user);
   const desktop = useMediaQuery(MQ.desktop, true);
   const wide = useMediaQuery(MQ.wide, true);
   /** Состояние графика (сцена, выбор, видимая часть) — для листовых компонентов и «Найдено». */
@@ -322,7 +325,7 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [dr.items, dr.state.selectedId, syncText, dr.actions],
   );
-  const panelLayers = useMemo(() => ({ markup: st.markup, custom: resolved.custom, onMarkup: selectMarkup, layers: resolved.layers, onLayer: toggleLayer, authed, liqUnavailable }), [st.markup, resolved, selectMarkup, toggleLayer, authed, liqUnavailable]);
+  const panelLayers = useMemo(() => ({ markup: st.markup, custom: resolved.custom, onMarkup: selectMarkup, layers: resolved.layers, onLayer: toggleLayer, signals: signalsLayer, liqUnavailable }), [st.markup, resolved, selectMarkup, toggleLayer, signalsLayer, liqUnavailable]);
   const panelLayouts = useMemo(() => ({ layouts, onTemplate: applyTemplate, onSave: saveLayout, onLoad: loadLayout, onDelete: removeLayout, authed, limit: user ? null : 0 }), [layouts, applyTemplate, saveLayout, loadLayout, removeLayout, authed, user]);
   const closePanel = useCallback(() => setObjects("hidden"), [setObjects]);
   // обработчики тулбара (memo): стабильны между тиками цены
@@ -555,7 +558,7 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
                     : sheet === "layers"
                       ? [
                           <MarkupPicker key="markup" markup={st.markup} custom={resolved.custom} onSelect={selectMarkup} liqUnavailable={liqUnavailable} />,
-                          ...layerKeysFor(authed).map((k) => (
+                          ...layerKeysFor(signalsLayer).map((k) => (
                             <label key={k}>
                               <input type="checkbox" checked={resolved.layers[k]} onChange={() => toggleLayer(k)} /> {t(LAYER_LABEL[k])}
                               {k === "liq_map" && liqUnavailable && <span className="caption">{t("нет данных открытого интереса на этом таймфрейме")}</span>}

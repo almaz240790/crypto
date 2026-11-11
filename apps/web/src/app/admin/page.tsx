@@ -1,14 +1,17 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useState } from "react";
 import { AdminSecurity } from "@/components/admin/AdminSecurity";
+import { useAuth } from "@/components/auth/AuthProvider";
 import { AdminShell, useAdminMe } from "@/components/admin/AdminShell";
 import t from "@/components/tools/tools.module.css";
 import { Badge, Button, EmptyState, Input, Panel, Select, StatusBadge, Table, Td, Th } from "@/components/ui";
 import * as A from "@/lib/admin";
 import { getAdminTickets, replyTicket, setTicketStatus, type Ticket } from "@/lib/support";
 import { formatTimeUTC } from "@/lib/format";
+import { canSeeSignals, siteSignalsHref } from "@/lib/signalsAccess";
 import s from "./page.module.css";
 
 const TABS = [
@@ -47,6 +50,44 @@ function useToast() {
   return { msg, run };
 }
 
+/** Страницы сигналов на сайте: лента и вкладки статистики сигналов; паттерны открыты всем. */
+const SIGNAL_PAGES: [string, string][] = [
+  ["/signals", "Лента сигналов"],
+  ["/stats?scope=live", "Статистика: Live"],
+  ["/stats?scope=forward", "Статистика: форвард"],
+  ["/stats?scope=backtest", "Статистика: бэктест"],
+];
+
+/**
+ * Страницы сигналов на сайте (ADR-0013). Пока сигналы закрыты (SIGNALS_PUBLIC выключен), лента, карточки и
+ * статистика сигналов открываются только admin и owner — при входе на сайт под этим аккаунтом; остальным
+ * они отвечают «страница не найдена», ссылок на них на сайте нет. Сеанс админки на сайт не переносится
+ * (ADR-0011): без входа на сайт ссылки ведут на вход сайта с возвратом на нужную страницу, а не на 404.
+ */
+function SignalPages() {
+  const { user, loading } = useAuth();
+  // вошли на сайт под аккаунтом без доступа к сигналам — вход сайта сразу уведёт на график, надо сменить аккаунт
+  const other = !loading && user !== null && !canSeeSignals(user);
+  return (
+    <Panel title="Сигналы на сайте" footer="Пока продажи не открыты, эти страницы видят только admin и owner — после входа на сайт под этим же аккаунтом (вход в админку на сайт не переносится). Открыть всем — переменная SIGNALS_PUBLIC, см. ADR-0013.">
+      <nav aria-label="страницы сигналов на сайте" className={s.sitePages}>
+        {SIGNAL_PAGES.map(([path, label]) => (
+          <Link key={path} href={siteSignalsHref(path, user)}>
+            {label}
+          </Link>
+        ))}
+        <Link href="/stats/patterns">Отработка паттернов</Link>
+      </nav>
+      {!loading && user === null && <p className="caption" style={{ margin: "8px 0 0" }}>На сайте вы не вошли: ссылка откроет вход на сайт и после него — нужную страницу.</p>}
+      {other && user && (
+        <p className="caption" role="status" style={{ margin: "8px 0 0" }}>
+          На сайте выполнен вход под {user.email} — у этого аккаунта нет доступа к сигналам. Выйдите на сайте и войдите под аккаунтом admin или owner.
+        </p>
+      )}
+    </Panel>
+  );
+}
+
 function Strategies({ run }: { run: Run }) {
   const [d, setD] = useState<A.AdminStrategies | null>(null);
   const [form, setForm] = useState({ version: "", to: "forward", reason: "" });
@@ -58,6 +99,7 @@ function Strategies({ run }: { run: Run }) {
   if (!d) return <EmptyState text="Загрузка…" />;
   return (
     <div className={s.grid}>
+      <SignalPages />
       <Panel title="Версии стратегии" flush>
         <Table compact stack={false}>
           <thead>
@@ -295,62 +337,65 @@ function Signals({ run }: { run: Run }) {
   }, [load]);
   if (!rows) return <EmptyState text="Загрузка…" />;
   return (
-    <Panel title="Последние сигналы (все области)" flush footer="Отмена не удаляет сигнал: статус cancelled и событие с публичной причиной.">
-      {rows.length === 0 ? (
-        <EmptyState text="Сигналов нет." />
-      ) : (
-        <Table compact stack={false}>
-          <thead>
-            <tr>
-              <Th>Свеча</Th>
-              <Th>Инструмент</Th>
-              <Th>Версия</Th>
-              <Th>Статус</Th>
-              <Th>Флаги и факты движка</Th>
-              <Th />
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r) => (
-              <tr key={r.id}>
-                <Td className="caption">{formatTimeUTC(r.candle_close_time)}</Td>
-                <Td>
-                  <strong>{r.symbol}</strong> {r.direction} {r.grade} {r.score}
-                </Td>
-                <Td className="caption">
-                  {r.version} ({r.scope})
-                </Td>
-                <Td>
-                  <StatusBadge status={r.status} />
-                </Td>
-                <Td>
-                  <details>
-                    <summary className="caption">
-                      {r.flags.length} флагов, {r.facts.length} фактов
-                    </summary>
-                    <pre className={s.pre}>
-                      {[...r.flags.map((f) => `! ${f}`), ...r.facts].join("\n")}
-                      {"\nhash "}
-                      {r.input_hash}
-                    </pre>
-                  </details>
-                </Td>
-                <Td>
-                  {["pending", "active", "tp1_hit", "tp2_hit"].includes(r.status) && (
-                    <div className={t.inline}>
-                      <input placeholder="публичная причина" aria-label={`причина отмены ${r.id}`} value={reason[r.id] ?? ""} onChange={(e) => setReason({ ...reason, [r.id]: e.target.value })} />
-                      <Button size="sm" variant="danger" disabled={(reason[r.id] ?? "").length < 10} onClick={() => void run(() => A.cancelSignal(r.id, reason[r.id]), "Сигнал отменён", () => void load())}>
-                        Отменить
-                      </Button>
-                    </div>
-                  )}
-                </Td>
+    <div className={s.grid}>
+      <SignalPages />
+      <Panel title="Последние сигналы (все области)" flush footer="Отмена не удаляет сигнал: статус cancelled и событие с публичной причиной.">
+        {rows.length === 0 ? (
+          <EmptyState text="Сигналов нет." />
+        ) : (
+          <Table compact stack={false}>
+            <thead>
+              <tr>
+                <Th>Свеча</Th>
+                <Th>Инструмент</Th>
+                <Th>Версия</Th>
+                <Th>Статус</Th>
+                <Th>Флаги и факты движка</Th>
+                <Th />
               </tr>
-            ))}
-          </tbody>
-        </Table>
-      )}
-    </Panel>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.id}>
+                  <Td className="caption">{formatTimeUTC(r.candle_close_time)}</Td>
+                  <Td>
+                    <strong>{r.symbol}</strong> {r.direction} {r.grade} {r.score}
+                  </Td>
+                  <Td className="caption">
+                    {r.version} ({r.scope})
+                  </Td>
+                  <Td>
+                    <StatusBadge status={r.status} />
+                  </Td>
+                  <Td>
+                    <details>
+                      <summary className="caption">
+                        {r.flags.length} флагов, {r.facts.length} фактов
+                      </summary>
+                      <pre className={s.pre}>
+                        {[...r.flags.map((f) => `! ${f}`), ...r.facts].join("\n")}
+                        {"\nhash "}
+                        {r.input_hash}
+                      </pre>
+                    </details>
+                  </Td>
+                  <Td>
+                    {["pending", "active", "tp1_hit", "tp2_hit"].includes(r.status) && (
+                      <div className={t.inline}>
+                        <input placeholder="публичная причина" aria-label={`причина отмены ${r.id}`} value={reason[r.id] ?? ""} onChange={(e) => setReason({ ...reason, [r.id]: e.target.value })} />
+                        <Button size="sm" variant="danger" disabled={(reason[r.id] ?? "").length < 10} onClick={() => void run(() => A.cancelSignal(r.id, reason[r.id]), "Сигнал отменён", () => void load())}>
+                          Отменить
+                        </Button>
+                      </div>
+                    )}
+                  </Td>
+                </tr>
+              ))}
+            </tbody>
+          </Table>
+        )}
+      </Panel>
+    </div>
   );
 }
 
@@ -786,11 +831,47 @@ function System() {
           <dd>{d.notifications_sent_today}</dd>
           <dt>Почта</dt>
           <dd>{d.mail}</dd>
+          <dt>Сигналы на сайте</dt>
+          <dd>{d.signals_public ? "открыты всем (SIGNALS_PUBLIC включён)" : "только admin и owner (SIGNALS_PUBLIC выключен)"}</dd>
         </dl>
+      </Panel>
+      <Panel
+        title={d.monitor ? `Компоненты: ${STATUS_WORD[d.monitor.status]}` : "Компоненты"}
+        flush
+        footer="Все компоненты монитора, в том числе движок сигналов и трекер сделок: пока сигналы закрыты, на публичной странице /status их нет. Правила: сигнал публикуется в течение 60 секунд после закрытия свечи H4; отсутствие закрытия свечи дольше 2 минут или прогона движка по более чем 5 % инструментов считается инцидентом."
+      >
+        {!d.monitor ? (
+          <EmptyState text="Снимка монитора нет: нет Redis и базы или монитор ещё не отработал." />
+        ) : (
+          <Table compact stack={false}>
+            <thead>
+              <tr>
+                <Th>Компонент</Th>
+                <Th>Состояние</Th>
+                <Th>Подробности</Th>
+                <Th num>Доступность 7 д</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {d.monitor.components.map((c) => (
+                <tr key={c.key}>
+                  <Td>{c.title}</Td>
+                  <Td>
+                    <Badge tone={c.status === "ok" ? "up" : c.status === "degraded" ? "warn" : "down"}>{STATUS_WORD[c.status]}</Badge>
+                  </Td>
+                  <Td className="caption">{c.detail}</Td>
+                  <Td num>{c.uptime_7d.toFixed(2)} %</Td>
+                </tr>
+              ))}
+            </tbody>
+          </Table>
+        )}
       </Panel>
     </div>
   );
 }
+
+const STATUS_WORD = { ok: "работает", degraded: "с перебоями", down: "не работает" } as const;
 
 function Audit() {
   const [rows, setRows] = useState<A.AuditRow[] | null>(null);

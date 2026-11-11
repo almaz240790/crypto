@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from app import admin_auth, apikeys, auth, sessions, twofactor
 from app.config import settings
 from app.entitlements import entitlements_for
-from app.journal_analytics import TradeRow, analytics
+from app.journal_analytics import TradeRow, analytics, without_signal
 from app.models import (
     ApiKey,
     AuthIdentity,
@@ -35,6 +35,7 @@ from app.models import (
 )
 from app.notify import send_test, settings_dict, settings_for, unsubscribe
 from app.routers.auth import UserOut, _user_out
+from app.signals_access import signals_open
 from app.trade_import import (
     MATCH_WINDOW,
     MAX_SYMBOLS,
@@ -157,7 +158,7 @@ def export_data(
         "exported_at": datetime.now(tz=UTC).isoformat(),
         "profile": _user_out(user, risk).model_dump(),
         "watchlist": list(symbols),
-        "journal": [_journal_dict(e, sym) for e, sym in journal],
+        "journal": [_journal_dict(e, sym, signals_open(user)) for e, sym in journal],
     }
 
 
@@ -296,7 +297,10 @@ def _realized_r(e: JournalEntry) -> Decimal | None:
     return (e.exit_price - e.entry_price) * sign / risk
 
 
-def _journal_dict(e: JournalEntry, symbol: str) -> dict[str, Any]:
+def _journal_dict(e: JournalEntry, symbol: str, signals: bool = True) -> dict[str, Any]:
+    """Запись журнала для ответа. ``signals=False`` — сигналы закрыты этому пользователю
+    (ADR-0013): запись, связанная с сигналом раньше, выглядит ручной и без номера сигнала."""
+
     def dec(x: Decimal | None) -> str | None:
         return None if x is None else format(x.normalize(), "f")
 
@@ -316,8 +320,8 @@ def _journal_dict(e: JournalEntry, symbol: str) -> dict[str, Any]:
         "fees": dec(e.fees),
         "tags": e.tags,
         "note": e.note,
-        "source": e.source,
-        "signal_id": e.signal_id,
+        "source": e.source if signals or e.source != "signal" else "manual",
+        "signal_id": e.signal_id if signals else None,
         "created_at": e.created_at.isoformat() if e.created_at else None,
     }
 
@@ -610,7 +614,7 @@ def journal_list(
         .limit(limit)
         .offset(offset)
     ).all()
-    items = [_journal_dict(e, sym) for e, sym in rows]
+    items = [_journal_dict(e, sym, signals_open(user)) for e, sym in rows]
     closed = [e for e, _ in rows if e.realized_r is not None]
     rs = [e.realized_r for e in closed if e.realized_r is not None]
     summary: dict[str, Any] = {
@@ -671,11 +675,16 @@ def journal_import(
         )
         or 0
     )
-    live_signals = db.execute(
-        select(Signal.id, Signal.instrument_id, Signal.direction, Signal.candle_close_time).where(
-            Signal.scope == "live", Signal.candle_close_time >= since - MATCH_WINDOW
-        )
-    ).all()
+    # сопоставление с live-сигналами — только тем, кому сигналы видны (ADR-0013)
+    live_signals = (
+        db.execute(
+            select(
+                Signal.id, Signal.instrument_id, Signal.direction, Signal.candle_close_time
+            ).where(Signal.scope == "live", Signal.candle_close_time >= since - MATCH_WINDOW)
+        ).all()
+        if signals_open(user)
+        else []
+    )
     imported = skipped = matched = open_count = 0
     for t in trades:
         if t.tag in existing_tags:
@@ -762,15 +771,18 @@ def journal_analytics(
         )
         for e, sym, grade, sys_r in rows
     ]
+    if not signals_open(user):  # сигналы закрыты (ADR-0013): без градаций и результатов сигналов
+        trades = [without_signal(t) for t in trades]
     risk = db.get(RiskProfile, user.id)
     return analytics(trades, risk.deposit if risk else None, risk.risk_pct if risk else None)
 
 
 def _vs_system(db: Session, user: User, entries: list[JournalEntry]) -> dict[str, Any]:
     """Сравнение с сигналами (план 3.8): доля исполненных live-сигналов за период журнала
-    и средний R пользователя против среднего R тех же сигналов по трекеру."""
+    и средний R пользователя против среднего R тех же сигналов по трекеру. Тому, кому сигналы не
+    видны (ADR-0013), сравнения нет."""
     linked = [e for e in entries if e.signal_id is not None]
-    if not entries:
+    if not entries or not signals_open(user):
         return {"executed_share": None, "system_avg_r": None, "linked": 0}
     since = min(e.entry_at for e in entries)
     live_total = (
@@ -824,13 +836,15 @@ def journal_export(
         "tags",
         "note",
         "source",
-        "signal_id",
     ]
+    open_ = signals_open(user)
+    if open_:  # пока сигналы закрыты (ADR-0013) — без столбца сигнала
+        cols.append("signal_id")
 
     def gen() -> Iterator[str]:
         yield ",".join(cols) + "\n"
         for e, sym in rows:
-            d = _journal_dict(e, sym)
+            d = _journal_dict(e, sym, open_)
             vals = []
             for c in cols:
                 v = d[c]
@@ -847,7 +861,9 @@ def journal_export(
     )
 
 
-def _apply_journal(e: JournalEntry, body: JournalIn, db: Session) -> None:
+def _apply_journal(e: JournalEntry, body: JournalIn, db: Session, link_signal: bool) -> None:
+    """``link_signal`` — связывать ли запись с сигналом по ``signal_id`` (только тем, кому
+    сигналы видны, ADR-0013; иначе запись ручная)."""
     inst = db.scalar(select(Instrument).where(Instrument.symbol == body.symbol.upper()))
     if inst is None:
         raise HTTPException(404, "инструмент не найден")
@@ -863,7 +879,7 @@ def _apply_journal(e: JournalEntry, body: JournalIn, db: Session) -> None:
     e.fees = body.fees
     e.tags = body.tags
     e.note = body.note
-    if body.signal_id:
+    if body.signal_id and link_signal:
         sig = db.scalar(select(Signal).where(Signal.public_id == body.signal_id))
         e.signal_id = sig.id if sig else None
         e.source = "signal" if sig else "manual"
@@ -890,11 +906,12 @@ def journal_create(
         if count >= ent.journal_limit:
             raise HTTPException(403, f"на тарифе {ent.plan} журнал до {ent.journal_limit} записей")
     e = JournalEntry(user_id=user.id)
-    _apply_journal(e, body, db)
+    open_ = signals_open(user)
+    _apply_journal(e, body, db, open_)
     db.add(e)
     db.commit()
     inst = db.get(Instrument, e.instrument_id)
-    return _journal_dict(e, inst.symbol if inst else body.symbol.upper())
+    return _journal_dict(e, inst.symbol if inst else body.symbol.upper(), open_)
 
 
 @router.put("/journal/{entry_id}")
@@ -907,10 +924,11 @@ def journal_update(
     e = db.get(JournalEntry, entry_id)
     if e is None or e.user_id != user.id:
         raise HTTPException(404)
-    _apply_journal(e, body, db)
+    open_ = signals_open(user)
+    _apply_journal(e, body, db, open_)
     db.commit()
     inst = db.get(Instrument, e.instrument_id)
-    return _journal_dict(e, inst.symbol if inst else body.symbol.upper())
+    return _journal_dict(e, inst.symbol if inst else body.symbol.upper(), open_)
 
 
 @router.delete("/journal/{entry_id}", status_code=204)
@@ -1070,7 +1088,13 @@ def push_test(
     n = send_to_user(
         db,
         user.id,
-        {"title": "Platform", "body": "Push работает.", "url": "/signals", "tag": "test"},
+        # лента сигналов — только тем, кому сигналы видны (ADR-0013); остальным — график
+        {
+            "title": "Platform",
+            "body": "Push работает.",
+            "url": "/signals" if signals_open(user) else "/chart",
+            "tag": "test",
+        },
     )
     db.commit()
     return {"sent": n, "status": "отправлено" if n else "нет активных подписок"}

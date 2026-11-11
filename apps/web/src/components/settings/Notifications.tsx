@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import s from "@/components/tools/tools.module.css";
+import { useSignalsAccess } from "@/components/auth/signalsAccess";
 import { Button, EmptyState, Input, Panel, Select } from "@/components/ui";
 import { api } from "@/lib/auth-client";
 import { currentSubscription, pushSupported, subscribePush, testPush, unsubscribePush } from "@/lib/push";
@@ -25,8 +26,14 @@ export type NotificationSettings = {
 
 const TG_BOT = process.env.NEXT_PUBLIC_TELEGRAM_BOT;
 
+/**
+ * Настройки уведомлений (план 3.11). Пока сигналы закрыты (ADR-0013), тому, кому они не видны, поля о
+ * сигналах не показываются (письма и push о сигналах и событиях, градации, инструменты); дайджест для него —
+ * только еженедельный отчёт по журналу (API шлёт его при любом значении, кроме «выключен»).
+ */
 export function NotificationsPanel({ userId, onMessage }: { userId: number; onMessage: (text: string, kind?: "ok" | "error") => void }) {
   const t = useT();
+  const { open: signals } = useSignalsAccess();
   const [ns, setNs] = useState<NotificationSettings | null>(null);
   const [draft, setDraft] = useState<Partial<NotificationSettings> | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -59,7 +66,7 @@ export function NotificationsPanel({ userId, onMessage }: { userId: number; onMe
   };
 
   return (
-    <Panel title={t("Уведомления")} footer={t("Тихие часы — по UTC. Лимит ограничивает письма о сигналах и событиях в сутки; дайджест в лимит не входит.")}>
+    <Panel title={t("Уведомления")} footer={signals ? t("Тихие часы — по UTC. Лимит ограничивает письма о сигналах и событиях в сутки; дайджест в лимит не входит.") : t("Тихие часы — по UTC. Лимит ограничивает письма по алертам в сутки; отчёт по журналу в лимит не входит.")}>
       <form
         className={s.form}
         onSubmit={async (e) => {
@@ -82,35 +89,48 @@ export function NotificationsPanel({ userId, onMessage }: { userId: number; onMe
         }}
       >
         <div className={s.row}>
-          <Select label={t("Email-дайджест")} value={v("email_digest")} onChange={(e) => set("email_digest", e.target.value as NotificationSettings["email_digest"])}>
-            <option value="daily">{t("ежедневно (если были сделки)")}</option>
-            <option value="weekly">{t("раз в неделю, по понедельникам")}</option>
-            <option value="off">{t("выключен")}</option>
-          </Select>
-          <Select label={t("Письма о новых сигналах")} value={v("email_signals") ? "on" : "off"} onChange={(e) => set("email_signals", e.target.value === "on")}>
-            <option value="off">{t("нет")}</option>
-            <option value="on">{t("сразу при публикации")}</option>
-          </Select>
-          <Select label={t("Письма о событиях")} value={v("email_events") ? "on" : "off"} onChange={(e) => set("email_events", e.target.value === "on")}>
-            <option value="off">{t("нет")}</option>
-            <option value="on">{t("вход, цели, стоп")}</option>
-          </Select>
+          {signals ? (
+            <>
+              <Select label={t("Email-дайджест")} value={v("email_digest")} onChange={(e) => set("email_digest", e.target.value as NotificationSettings["email_digest"])}>
+                <option value="daily">{t("ежедневно (если были сделки)")}</option>
+                <option value="weekly">{t("раз в неделю, по понедельникам")}</option>
+                <option value="off">{t("выключен")}</option>
+              </Select>
+              <Select label={t("Письма о новых сигналах")} value={v("email_signals") ? "on" : "off"} onChange={(e) => set("email_signals", e.target.value === "on")}>
+                <option value="off">{t("нет")}</option>
+                <option value="on">{t("сразу при публикации")}</option>
+              </Select>
+              <Select label={t("Письма о событиях")} value={v("email_events") ? "on" : "off"} onChange={(e) => set("email_events", e.target.value === "on")}>
+                <option value="off">{t("нет")}</option>
+                <option value="on">{t("вход, цели, стоп")}</option>
+              </Select>
+            </>
+          ) : (
+            <Select label={t("Отчёт по журналу на почту")} value={v("email_digest") === "off" ? "off" : "on"} onChange={(e) => set("email_digest", e.target.value === "off" ? "off" : "weekly")}>
+              <option value="on">{t("раз в неделю, по понедельникам")}</option>
+              <option value="off">{t("выключен")}</option>
+            </Select>
+          )}
         </div>
         <div className={s.row}>
-          <div>
-            <div className="caption" style={{ marginBottom: 4 }}>{t("Градации")}</div>
-            <div className={s.actions}>
-              {["A", "B", "C"].map((g) => (
-                <label key={g} style={{ display: "inline-flex", gap: 6, alignItems: "center", fontSize: 14 }}>
-                  <input type="checkbox" checked={v("grades").includes(g)} onChange={() => toggleGrade(g)} /> {g}
-                </label>
-              ))}
-            </div>
-          </div>
-          <Select label={t("Инструменты")} value={v("scope")} onChange={(e) => set("scope", e.target.value as NotificationSettings["scope"])}>
-            <option value="all">{t("все")}</option>
-            <option value="watchlist">{t("только вотчлист")}</option>
-          </Select>
+          {signals && (
+            <>
+              <div>
+                <div className="caption" style={{ marginBottom: 4 }}>{t("Градации")}</div>
+                <div className={s.actions}>
+                  {["A", "B", "C"].map((g) => (
+                    <label key={g} style={{ display: "inline-flex", gap: 6, alignItems: "center", fontSize: 14 }}>
+                      <input type="checkbox" checked={v("grades").includes(g)} onChange={() => toggleGrade(g)} /> {g}
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <Select label={t("Инструменты")} value={v("scope")} onChange={(e) => set("scope", e.target.value as NotificationSettings["scope"])}>
+                <option value="all">{t("все")}</option>
+                <option value="watchlist">{t("только вотчлист")}</option>
+              </Select>
+            </>
+          )}
           <Input label={t("Лимит в сутки")} mono inputMode="numeric" value={String(v("daily_limit"))} onChange={(e) => set("daily_limit", Math.max(1, Math.min(200, Number(e.target.value) || 1)))} />
         </div>
         <div className={s.row}>
@@ -132,14 +152,18 @@ export function NotificationsPanel({ userId, onMessage }: { userId: number; onMe
           </Select>
         </div>
         <div className={s.row}>
-          <Select label={t("Push о сигналах")} value={v("push_signals") ? "on" : "off"} onChange={(e) => set("push_signals", e.target.value === "on")}>
-            <option value="on">{t("да")}</option>
-            <option value="off">{t("нет")}</option>
-          </Select>
-          <Select label={t("Push о событиях")} value={v("push_events") ? "on" : "off"} onChange={(e) => set("push_events", e.target.value === "on")}>
-            <option value="on">{t("да")}</option>
-            <option value="off">{t("нет")}</option>
-          </Select>
+          {signals && (
+            <>
+              <Select label={t("Push о сигналах")} value={v("push_signals") ? "on" : "off"} onChange={(e) => set("push_signals", e.target.value === "on")}>
+                <option value="on">{t("да")}</option>
+                <option value="off">{t("нет")}</option>
+              </Select>
+              <Select label={t("Push о событиях")} value={v("push_events") ? "on" : "off"} onChange={(e) => set("push_events", e.target.value === "on")}>
+                <option value="on">{t("да")}</option>
+                <option value="off">{t("нет")}</option>
+              </Select>
+            </>
+          )}
           <Select label={t("Push по алертам")} value={v("push_alerts") ? "on" : "off"} onChange={(e) => set("push_alerts", e.target.value === "on")}>
             <option value="on">{t("да")}</option>
             <option value="off">{t("нет")}</option>

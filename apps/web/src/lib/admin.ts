@@ -10,7 +10,10 @@ export type AdminInstrument = { id: number; symbol: string; exchange: string; ma
 export type AdminSignal = { id: string; symbol: string; version: string; scope: string; direction: string; grade: string; score: number; status: string; candle_close_time: string; entry: string | null; stop: string | null; flags: string[]; facts: string[]; input_hash: string };
 export type AdminUser = { id: number; email: string; name: string | null; role: string; country: string | null; verified: boolean; created_at: string | null; blocked_at: string | null; blocked_reason: string | null; deleted: boolean; plan?: string; plan_until?: string | null; plan_status?: string | null };
 export type Promo = { id: number; code: string; percent: number; fixed_usd: string; plan: string | null; max_uses: number | null; used: number; expires_at: string | null; active: boolean; created_at: string | null };
-export type SystemStatus = { now: string; workers: Record<string, { heartbeat_age_sec: number | null; status?: Record<string, unknown> | null } | string>; candles_h4: { instruments: number; stale_over_5h: number }; last_signal_at: string | null; last_event_at: string | null; notifications_sent_today: number; mail: string };
+export type MonitorComponent = { key: string; title: string; status: "ok" | "degraded" | "down"; detail: string; uptime_7d: number };
+/** Полный снимок монитора — с движком сигналов и трекером, которых нет на публичной /status, пока сигналы закрыты (ADR-0013). */
+export type MonitorSnapshot = { status: "ok" | "degraded" | "down"; generated_at: string; components: MonitorComponent[]; incidents: { component: string; severity: string; message: string; opened_at: string; closed_at: string | null }[] };
+export type SystemStatus = { now: string; workers: Record<string, { heartbeat_age_sec: number | null; status?: Record<string, unknown> | null } | string>; candles_h4: { instruments: number; stale_over_5h: number }; last_signal_at: string | null; last_event_at: string | null; notifications_sent_today: number; mail: string; monitor?: MonitorSnapshot | null; signals_public?: boolean };
 export type AuditRow = { id: number; actor: string; action: string; target: string; payload: Record<string, unknown>; at: string | null };
 
 export const getStrategies = () => api<AdminStrategies>("/v1/admin/strategies");

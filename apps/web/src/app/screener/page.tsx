@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/components/app/AppShell";
 import { Sparkline } from "@/components/signals/Sparkline";
 import { useAuth } from "@/components/auth/AuthProvider";
+import { useSignalsAccess } from "@/components/auth/signalsAccess";
 import s from "@/components/tools/tools.module.css";
 import { Badge, Button, EmptyState, Panel, Table, Td, Th } from "@/components/ui";
 import { createAlert } from "@/lib/alerts";
@@ -56,6 +57,7 @@ function TrendBadge({ t }: { t?: string }) {
 
 export default function ScreenerPage() {
   const t = useT();
+  const { open: signals } = useSignalsAccess();
   const [rows, setRows] = useState<ScreenerRow[] | null>(null);
   const [at, setAt] = useState<string | null>(null);
   const [sparks, setSparks] = useState<Record<string, string[]>>({});
@@ -236,7 +238,7 @@ export default function ScreenerPage() {
             {toast}
           </p>
         )}
-        <Panel flush title={t("Инструменты")} footer={t("Цель скринера — увидеть, что близко к сетапу, до появления сигнала. Расстояние до зоны — в ATR H4. Это не сигнал.")}>
+        <Panel flush title={t("Инструменты")} footer={signals ? t("Цель скринера — увидеть, что близко к сетапу, до появления сигнала. Расстояние до зоны — в ATR H4. Это не сигнал.") : t("Цель скринера — увидеть, что близко к сетапу. Расстояние до зоны — в ATR H4. Это не торговая рекомендация.")}>
           {error ? (
             <EmptyState text={t("Не удалось загрузить: {error}", { error })} />
           ) : !rows ? (
@@ -272,7 +274,8 @@ export default function ScreenerPage() {
                       {places.get(r.symbol) ?? "—"}
                     </Td>
                     <Td>
-                      <Link href={`/signals?symbol=${r.symbol}&tab=all`}>
+                      {/* пока сигналы закрыты (ADR-0013), строка ведёт на график инструмента, а не в ленту сигналов */}
+                      <Link href={signals ? `/signals?symbol=${r.symbol}&tab=all` : `/chart/${r.symbol}/4h`}>
                         <strong>{r.symbol}</strong>
                       </Link>
                     </Td>

@@ -14,7 +14,7 @@ export function OfflineBody() {
   const t = makeT(locale);
   return (
     <Panel title={t("Нет соединения")}>
-      <p className="text-2">{t("Сигналы и цены не кэшируются, чтобы вы не видели устаревшие данные. Проверьте сеть и обновите страницу.")}</p>
+      <p className="text-2">{t("Цены и разметка не кэшируются, чтобы вы не видели устаревшие данные. Проверьте сеть и обновите страницу.")}</p>
       <div style={{ marginTop: 12 }}>
         <Button href="/chart">{t("Повторить")}</Button>
       </div>

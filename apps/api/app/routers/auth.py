@@ -15,6 +15,7 @@ from app import admin_auth, auth, ratelimit, twofactor
 from app.config import settings
 from app.mail import send_mail
 from app.models import EmailToken, RiskProfile, TwoFactor, User
+from app.signals_access import signals_open
 
 TWO_FACTOR_TTL = timedelta(minutes=5)
 
@@ -58,6 +59,8 @@ class UserOut(BaseModel):
     timezone: str
     theme: str
     risk: dict[str, Any]
+    signals: bool = False
+    """Видны ли этому пользователю сигналы, их статистика и версии стратегии (ADR-0013)."""
 
 
 def _user_out(user: User, risk: RiskProfile | None) -> UserOut:
@@ -70,6 +73,7 @@ def _user_out(user: User, risk: RiskProfile | None) -> UserOut:
         locale=user.locale,
         timezone=user.timezone,
         theme=user.theme,
+        signals=signals_open(user),
         risk={
             "deposit": str(risk.deposit) if risk and risk.deposit is not None else None,
             "risk_pct": str(risk.risk_pct) if risk else "1.00",

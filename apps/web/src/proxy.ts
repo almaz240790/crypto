@@ -1,8 +1,9 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { ADMIN_HINT_COOKIE, adminGate, isAdminPath } from "@/lib/adminGate";
+import { SIGNALS_NEXT_HEADER } from "@/lib/signalsAccess";
 
 /** Редиректы по cookie-подсказке (без секретов). Настоящая проверка — на API по токену. */
-const PROTECTED = ["/signals", "/onboarding", "/settings", "/watchlist", "/alerts", "/journal", "/calculator", "/screener", "/billing"];
+const PROTECTED = ["/onboarding", "/settings", "/watchlist", "/alerts", "/journal", "/calculator", "/screener", "/billing"];
 const GUEST_ONLY = ["/login", "/register"];
 
 export function proxy(req: NextRequest) {
@@ -15,6 +16,13 @@ export function proxy(req: NextRequest) {
     const res = to ? NextResponse.redirect(new URL(to, req.url)) : NextResponse.next();
     res.headers.set("x-robots-tag", "noindex, nofollow");
     return res;
+  }
+  // Сигналы (ADR-0013): гостя проверяет layout раздела — пока сигналы закрыты, там 404, а не вход.
+  // Путь для возврата после входа (когда сигналы открыты) layout получает отсюда.
+  if (!authed && (pathname === "/signals" || pathname.startsWith("/signals/"))) {
+    const headers = new Headers(req.headers);
+    headers.set(SIGNALS_NEXT_HEADER, pathname + search);
+    return NextResponse.next({ request: { headers } });
   }
   if (!authed && PROTECTED.some((p) => pathname === p || pathname.startsWith(p + "/"))) {
     const url = req.nextUrl.clone();
@@ -32,6 +40,6 @@ export function proxy(req: NextRequest) {
 }
 
 export const config = {
-  // Список должен совпадать с PROTECTED, GUEST_ONLY и админкой: путь вне matcher прокси не видит.
+  // Список должен совпадать с PROTECTED, GUEST_ONLY, сигналами и админкой: путь вне matcher прокси не видит.
   matcher: ["/signals/:path*", "/onboarding", "/settings/:path*", "/watchlist", "/alerts", "/journal", "/calculator", "/screener", "/billing", "/admin", "/admin/:path*", "/login", "/register"],
 };

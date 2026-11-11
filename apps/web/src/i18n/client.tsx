@@ -4,7 +4,8 @@ import { useRouter } from "next/navigation";
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { patchProfile } from "@/lib/auth-client";
-import { DEFAULT_LOCALE, LOCALE_COOKIE, isLocale, localeFromCookie, makeT, type Locale, type T } from "./index";
+import { canSeeSignals } from "@/lib/signalsAccess";
+import { DEFAULT_LOCALE, LOCALE_COOKIE, isLocale, localeFromCookie, makeT, type Dict, type Locale, type T } from "./index";
 
 type LocaleState = { locale: Locale; t: T; setLocale: (l: Locale) => void };
 
@@ -40,7 +41,21 @@ export function LocaleProvider({ initial, children }: { initial: Locale; childre
     },
     [user, router],
   );
-  const value = useMemo(() => ({ locale, t: makeT(locale), setLocale }), [locale, setLocale]);
+  // переводы разделов сигналов — отдельным файлом и только тем, кому сигналы видны (ADR-0013, i18n/index.ts)
+  const signals = canSeeSignals(user);
+  const [signalsEn, setSignalsEn] = useState<Dict | null>(null);
+  useEffect(() => {
+    if (locale !== "en" || !signals || signalsEn) return;
+    let alive = true;
+    void import("./en.signals.json").then((m) => {
+      if (alive) setSignalsEn(m.default as Dict);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [locale, signals, signalsEn]);
+  const extra = signals && signalsEn ? signalsEn : undefined;
+  const value = useMemo(() => ({ locale, t: makeT(locale, extra), setLocale }), [locale, extra, setLocale]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 

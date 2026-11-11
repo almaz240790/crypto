@@ -1,17 +1,15 @@
-import json
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
-import redis
 import sentry_sdk
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from app.config import settings
-from app.db import SessionLocal, engine
+from app.db import engine
 from app.debug import router as debug_router
 from app.live import hub
 from app.live import router as live_router
@@ -23,9 +21,11 @@ from app.routers.billing import router as billing_router
 from app.routers.chart import router as chart_router
 from app.routers.drawings import router as drawings_router
 from app.routers.labels import router as labels_router
+from app.routers.public import SIGNALS_IN_SCHEMA
 from app.routers.public import router as public_router
 from app.routers.support import router as support_router
 from app.routers.user import router as user_router
+from app.signals_access import HideClosedSignalRoutes, hide_signal_components, scrub_signal_fields
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -47,18 +47,21 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="Platform API", version="0.1.0", lifespan=lifespan)
 app.include_router(live_router)
-app.include_router(debug_router)
+# служебные адреса (отладка, админка) — не публичный API: в схеме /docs их нет (ADR-0013)
+app.include_router(debug_router, include_in_schema=False)
 app.include_router(auth_router)
 app.include_router(billing_router)
 app.include_router(chart_router)
 app.include_router(drawings_router)
-app.include_router(admin_auth_router)
-app.include_router(admin_router)
+app.include_router(admin_auth_router, include_in_schema=False)
+app.include_router(admin_router, include_in_schema=False)
 app.include_router(alerts_router)
-app.include_router(labels_router)
+app.include_router(labels_router, include_in_schema=False)  # /v1/admin/labels
 app.include_router(public_router)
 app.include_router(support_router)
 app.include_router(user_router)
+# пока сигналы закрыты (ADR-0013) — их адреса отвечают как несуществующие; CORS — снаружи
+app.add_middleware(HideClosedSignalRoutes)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[settings.frontend_url],
@@ -66,6 +69,19 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def public_openapi() -> dict[str, Any]:
+    """Схема /docs; пока сигналы закрыты (флаг читается при запуске, как ``include_in_schema``
+    у их адресов) — без полей сигналов в публичных моделях (ADR-0013)."""
+    fresh = app.openapi_schema is None
+    schema = FastAPI.openapi(app)
+    if fresh and not SIGNALS_IN_SCHEMA:
+        scrub_signal_fields(schema)
+    return schema
+
+
+app.openapi = public_openapi  # type: ignore[method-assign]
 
 
 @app.get("/health")
@@ -96,16 +112,8 @@ def public_status() -> dict[str, Any]:
     Монитор крутится в уведомителе раз в минуту и кладёт результат в Redis; если кэша нет —
     считаем на месте (без алертов, чтобы не слать письма из API).
     """
-    from app.monitor import collect, evaluate, status_payload
+    from app.monitor import current_status
 
-    r: Any | None
-    try:
-        r = redis.from_url(settings.redis_url, socket_timeout=2)
-        cached = r.get("monitor:status")
-        if cached:
-            return dict(json.loads(cached))
-    except Exception:
-        r = None
-    with SessionLocal() as db:
-        snap = collect(db, r)
-        return status_payload(db, evaluate(snap), snap.now)
+    payload = current_status()
+    # пока сигналы закрыты (ADR-0013), их компоненты монитора — только в админке
+    return payload if settings.signals_public else hide_signal_components(payload)

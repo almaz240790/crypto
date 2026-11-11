@@ -1,6 +1,7 @@
 import { RU_STRINGS, RU_TEXT, type TextKey } from "@platform/charts";
 import { describe, expect, it } from "vitest";
 import en from "../../../i18n/en.json";
+import signalsEn from "../../../i18n/en.signals.json";
 import { makeT } from "../../../i18n";
 import { chartText } from "./chartText";
 
@@ -15,8 +16,8 @@ describe("chartText", () => {
     expect(ru.fill(ru["signal.tp"], { n: 2 })).toBe("Цель 2");
   });
 
-  it("у каждой строки есть английский перевод в en.json", () => {
-    const dict = en as Record<string, string>;
+  it("у каждой строки есть английский перевод в en.json (о сигналах — в en.signals.json, ADR-0013)", () => {
+    const dict: Record<string, string> = { ...en, ...signalsEn };
     for (const k of Object.keys(RU_STRINGS) as TextKey[]) expect(dict[RU_STRINGS[k]], `${k}: ${RU_STRINGS[k]}`).toBeTruthy();
     const e = chartText(makeT("en"));
     expect(e["sr.resistance"]).toBe("Resistance");

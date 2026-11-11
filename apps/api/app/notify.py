@@ -5,6 +5,9 @@
   записывается в ``notification_log`` (повтор невозможен).
 - ``run_digest`` — ежедневный/еженедельный дайджест: закрытые сигналы за период, активные,
   метрики за 30 дней, ссылка отписки.
+
+Пока сигналы закрыты (ADR-0013, ``SIGNALS_PUBLIC``), письма и push о сигналах и дайджест
+получают только admin и owner; отчёт по журналу остальным уходит без строк о сигналах.
 Тексты — простые, без обещаний (план 8). Без ключа Resend письма уходят в лог.
 """
 
@@ -21,7 +24,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.journal_analytics import TradeRow, analytics
+from app.journal_analytics import TradeRow, analytics, without_signal
 from app.mail import send_mail
 from app.models import (
     Instrument,
@@ -37,6 +40,7 @@ from app.models import (
     WatchlistItem,
 )
 from app.push import send_to_user
+from app.signals_access import signals_open
 from app.stats import load_trades
 from engine.backtest import summarize
 
@@ -176,7 +180,8 @@ def _live_signal(sig: Signal) -> bool:
 
 
 def _recipients(db: Session, flag: str) -> list[tuple[User, NotificationSettings]]:
-    """Получатели мгновенных уведомлений: Free получает только дневной дайджест (раздел 4)."""
+    """Получатели мгновенных уведомлений: Free получает только дневной дайджест (раздел 4);
+    пока сигналы закрыты (ADR-0013) — только admin и owner."""
     from app.entitlements import entitlements_for
 
     rows = db.execute(
@@ -185,7 +190,11 @@ def _recipients(db: Session, flag: str) -> list[tuple[User, NotificationSettings
         .where(User.deleted_at.is_(None), User.email_verified_at.is_not(None))
         .where(getattr(NotificationSettings, flag).is_(True))
     ).all()
-    return [(u, ns) for u, ns in rows if entitlements_for(db, u).instant_notifications]
+    return [
+        (u, ns)
+        for u, ns in rows
+        if signals_open(u) and entitlements_for(db, u).instant_notifications
+    ]
 
 
 def notify_new_signal(db: Session, sig: Signal, now: datetime | None = None) -> int:
@@ -332,7 +341,8 @@ def digest_text(db: Session, user: User, period: str, now: datetime) -> str | No
 
 
 def run_digest(db: Session, period: str = "daily", now: datetime | None = None) -> int:
-    """Рассылает дайджест всем с подходящей настройкой; одна отправка на день/пользователя."""
+    """Рассылает дайджест всем с подходящей настройкой; одна отправка на день/пользователя.
+    Дайджест — о сигналах: пока они закрыты (ADR-0013), его получают только admin и owner."""
     now = now or datetime.now(tz=UTC)
     ref = f"{period}:{now.strftime('%Y-%m-%d')}"
     rows = db.execute(
@@ -343,6 +353,8 @@ def run_digest(db: Session, period: str = "daily", now: datetime | None = None) 
     ).all()
     sent = 0
     for user, ns in rows:
+        if not signals_open(user):
+            continue
         text = digest_text(db, user, period, now)
         if text is None or not _record(db, user.id, "digest", ref):
             continue
@@ -367,8 +379,9 @@ def _bucket_line(title: str, b: dict[str, Any]) -> str:
     return f"  {title:<14} сделок {b['closed']}/{b['trades']}  итог {total}  винрейт {wr}"
 
 
-def journal_report_lines(a: dict[str, Any], now: datetime) -> list[str]:
-    """Текст отчёта по готовой аналитике (чистая функция, тестируется без БД)."""
+def journal_report_lines(a: dict[str, Any], now: datetime, signals: bool = True) -> list[str]:
+    """Текст отчёта по готовой аналитике (чистая функция, тестируется без БД). ``signals=False``
+    — получателю сигналы не видны (ADR-0013): без градаций сигналов и ошибок «по сигналу»."""
     t = a["total"]
     wr = f"{t['winrate'] * 100:.0f} %" if t["winrate"] is not None else "—"
     avg = _fmt_r(Decimal(t["avg_r"])) if t["avg_r"] is not None else "—"
@@ -383,19 +396,21 @@ def journal_report_lines(a: dict[str, Any], now: datetime) -> list[str]:
         lines.append(f"Максимальная просадка за неделю: {_fmt_r(-Decimal(dd))}.")
     lines += ["", "По инструментам:"]
     lines += [_bucket_line(str(b["key"]), b) for b in a["by_symbol"][:8]]
-    lines += ["", "По градациям сигналов:"]
-    lines += [
-        _bucket_line(GRADE_TITLES.get(str(b["key"]), str(b["key"])), b) for b in a["by_grade"]
-    ]
+    if signals:
+        lines += ["", "По градациям сигналов:"]
+        lines += [
+            _bucket_line(GRADE_TITLES.get(str(b["key"]), str(b["key"])), b) for b in a["by_grade"]
+        ]
     lines += ["", "По дням недели:"]
     lines += [_bucket_line(WEEKDAYS_RU[int(b["key"])], b) for b in a["by_weekday"]]
     e = a["errors"]
-    lines += [
-        "",
-        "Типовые ошибки:",
-        f"  ранний выход: {e['early_exit']['count']} из {e['early_exit']['of']} сделок по сигналу",
-        f"  вход без сигнала: {e['no_signal']['count']} из {e['no_signal']['of']}",
-    ]
+    lines += ["", "Типовые ошибки:"]
+    if signals:
+        lines += [
+            f"  ранний выход: {e['early_exit']['count']} из {e['early_exit']['of']} "
+            "сделок по сигналу",
+            f"  вход без сигнала: {e['no_signal']['count']} из {e['no_signal']['of']}",
+        ]
     if e["risk_exceeded"]["budget_usd"] is None:
         lines.append("  превышение риска: не оценивается — задайте депозит в настройках")
     else:
@@ -408,7 +423,8 @@ def journal_report_lines(a: dict[str, Any], now: datetime) -> list[str]:
 
 
 def journal_report_text(db: Session, user: User, now: datetime) -> str | None:
-    """Отчёт за 7 дней; None, если за неделю нет закрытых сделок."""
+    """Отчёт за 7 дней; None, если за неделю нет закрытых сделок. Тому, кому сигналы не видны
+    (ADR-0013), — без сопоставления с сигналами."""
     since = now - timedelta(days=7)
     rows = db.execute(
         select(JournalEntry, Instrument.symbol, Signal.grade, SignalResult.realized_r)
@@ -438,9 +454,12 @@ def journal_report_text(db: Session, user: User, now: datetime) -> str | None:
     ]
     if not any(t.realized_r is not None for t in trades):
         return None
+    open_ = signals_open(user)
+    if not open_:
+        trades = [without_signal(t) for t in trades]
     risk = db.get(RiskProfile, user.id)
     a = analytics(trades, risk.deposit if risk else None, risk.risk_pct if risk else None)
-    return "\n".join(journal_report_lines(a, now))
+    return "\n".join(journal_report_lines(a, now, signals=open_))
 
 
 def run_journal_reports(db: Session, now: datetime | None = None) -> int:
@@ -471,10 +490,17 @@ def run_journal_reports(db: Session, now: datetime | None = None) -> int:
 
 
 def send_test(db: Session, user: User) -> str:
-    """Тестовое письмо себе (приёмка 2.13: «тестовая доставка»)."""
+    """Тестовое письмо себе (приёмка 2.13: «тестовая доставка»): образец того, что придёт по
+    подписке. Дайджест — о сигналах, пока они закрыты (ADR-0013), его образец получают только
+    admin и owner; остальным — отчёт по журналу (если есть сделки) или короткий текст."""
     ns = settings_for(db, user)
     now = datetime.now(tz=UTC)
-    text = digest_text(db, user, "weekly", now) or "Тестовое письмо Platform: доставка работает."
+    sample = (
+        digest_text(db, user, "weekly", now)
+        if signals_open(user)
+        else journal_report_text(db, user, now)
+    )
+    text = sample or "Тестовое письмо Platform: доставка работает."
     send_mail(user.email, "Platform: тестовое письмо", text + unsubscribe_footer(ns))
     db.add(NotificationLog(user_id=user.id, channel="email", kind="test", ref=now.isoformat()))
     db.commit()

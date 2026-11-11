@@ -6,6 +6,8 @@
  * Cookie-подсказка `pl_auth=1` (без секретов) нужна middleware для редиректов.
  */
 
+import { ACCESS_HINT_COOKIE, canSeeSignals } from "./signalsAccess";
+
 export type Me = {
   id: number;
   email: string;
@@ -15,6 +17,8 @@ export type Me = {
   locale: string;
   timezone: string;
   theme: string;
+  /** Видны ли сигналы этому пользователю (ADR-0013): решает API по выключателю SIGNALS_PUBLIC и роли. */
+  signals?: boolean;
   risk: {
     deposit: string | null;
     risk_pct: string;
@@ -47,6 +51,14 @@ export function setHint(on: boolean) {
   document.cookie = on
     ? `${HINT_COOKIE}=1; path=/; max-age=${30 * 86400}; samesite=lax`
     : `${HINT_COOKIE}=; path=/; max-age=0; samesite=lax`;
+  if (!on) setAccessHint(false);
+}
+
+/** Подсказка «сигналы видны» для сервера сайта (ADR-0013, lib/signalsAccess.ts): по ответу /v1/auth/me. */
+function setAccessHint(on: boolean) {
+  document.cookie = on
+    ? `${ACCESS_HINT_COOKIE}=1; path=/; max-age=${30 * 86400}; samesite=lax`
+    : `${ACCESS_HINT_COOKIE}=; path=/; max-age=0; samesite=lax`;
 }
 
 export function hasHint(): boolean {
@@ -225,8 +237,10 @@ export async function loginTelegram(u: TelegramUser): Promise<void> {
   accept(await api<TokenOut>("/v1/auth/telegram", { method: "POST", json: u, auth: false }));
 }
 
-export function getMe(): Promise<Me> {
-  return api<Me>("/v1/auth/me");
+export async function getMe(): Promise<Me> {
+  const me = await api<Me>("/v1/auth/me");
+  setAccessHint(canSeeSignals(me));
+  return me;
 }
 
 export function patchRisk(body: Partial<Me["risk"]>): Promise<Me> {
