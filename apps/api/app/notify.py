@@ -8,7 +8,9 @@
   видят только они, обычные пользователи этих уведомлений не получают; исправления исхода
   (пересчёт форварда) не рассылаются. Каждая отправка (адресат × канал) — отдельно: сбой одной
   не мешает остальным, неудавшиеся не отмечаются и повторяются уведомителем
-  (``StaffDeliveryError``).
+  (``StaffDeliveryError``). Доставка — как у рассылок и алертов: письмо в строгом режиме с ключом
+  идемпотентности, push в строгом режиме с таймаутом push-сервиса, в production канал без ключей
+  ждёт процесса с ключами (``staff_channel_ready``).
 - ``run_digest`` — ежедневный/еженедельный дайджест: закрытые сигналы за период, активные,
   метрики за 30 дней, ссылка отписки.
 
@@ -35,7 +37,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.corrections import CORRECTION_SOURCE
 from app.journal_analytics import TradeRow, analytics, without_signal
-from app.mail import MailError, send_mail
+from app.mail import MailError, provider_wide, send_mail
 from app.mail import configured as mail_configured
 from app.models import (
     Instrument,
@@ -51,6 +53,7 @@ from app.models import (
     Watchlist,
     WatchlistItem,
 )
+from app.push import enabled as push_enabled
 from app.push import send_to_user
 from app.signals_access import signals_open
 from app.stats import load_trades
@@ -416,11 +419,23 @@ def staff_event_text(sig: Signal, ev: SignalEvent, head: str, result: SignalResu
     return "\n".join(lines)
 
 
+def staff_channel_ready(channel: str) -> bool:
+    """Может ли этот процесс доставить уведомление владельцу или администратору по каналу — как
+    рассылки (``mail_ready``) и алерты (``app.alerts.channels_ready``). Локально и на staging —
+    всегда: без ключа письмо пишется в лог, push пропускается. В production — только с ключами
+    канала (почта — ``RESEND_API_KEY``, push — ``VAPID_*``): иначе письмо «ушло» бы в лог, push
+    молча пропустился бы, а отметка в ``notification_log`` закрыла бы повтор. Без ключей отправка
+    не отмечается и считается неушедшей — её повторит уведомитель."""
+    if channel == "email":
+        return mail_ready()
+    return push_enabled() or not settings.is_production
+
+
 class StaffDeliveryError(RuntimeError):
-    """Часть отправок владельцу и администраторам не удалась (сеть, сбой почты или push).
-    Остальные адресаты и каналы уведомление получили, их отметки в ``notification_log``
-    зафиксированы; неудавшиеся не отмечены — повтор того же вызова отправит только их
-    (уведомитель повторяет, ``app.workers.notifier.StaffRetry``)."""
+    """Часть отправок владельцу и администраторам не удалась (сеть, сбой почты или push, нет
+    ключей канала). Остальные адресаты и каналы уведомление получили, их отметки в
+    ``notification_log`` зафиксированы; неудавшиеся не отмечены — повтор того же вызова отправит
+    только их (уведомитель повторяет, ``app.workers.notifier.StaffRetry``)."""
 
     def __init__(self, what: str, sent: int, failed: list[str]) -> None:
         super().__init__(f"{what}: не отправлено — {', '.join(failed)}")
@@ -434,7 +449,11 @@ def _staff_send(
     """Одна отправка сотруднику по одному каналу. Отметка в ``notification_log`` пишется в точке
     сохранения до отправки и фиксируется сразу после неё. Уже отмечено (отправлено раньше) — 0,
     без отправки. Ошибка отправки откатывает только эту отметку и пишется в лог — ``None``:
-    не отправлено и не отмечено, остальные отправки не затронуты."""
+    не отправлено и не отмечено, остальные отправки не затронуты. Отказ почты по адресу
+    получателя (``MailError.permanent``) повтором не лечится — 0, без отметки и без повтора.
+
+    Отказ провайдера и сбой сети (почты или push-сервиса) пишутся предупреждением с причиной, без
+    трассировки на каждую попытку — как в доставке алертов; непредвиденные — с трассировкой."""
     savepoint = db.begin_nested()
     db.add(NotificationLog(user_id=user_id, channel=channel, kind=kind, ref=ref))
     try:
@@ -444,35 +463,68 @@ def _staff_send(
         return 0
     try:
         n = send()
-    except Exception:
+    except Exception as exc:
         savepoint.rollback()
-        log.exception("%s %s → пользователь %s (%s): не отправлено", kind, ref, user_id, channel)
+        if isinstance(exc, MailError) and exc.permanent:
+            log.error(
+                "%s %s → пользователь %s (%s): адрес отклонён провайдером (%s) — без повтора",
+                kind,
+                ref,
+                user_id,
+                channel,
+                exc,
+            )
+            return 0
+        if isinstance(exc, MailError | OSError) or provider_wide(exc):
+            log.warning(
+                "%s %s → пользователь %s (%s): не отправлено (%s)", kind, ref, user_id, channel, exc
+            )
+        else:
+            log.exception(
+                "%s %s → пользователь %s (%s): не отправлено", kind, ref, user_id, channel
+            )
         return None
     savepoint.commit()
     db.commit()
     return n
 
 
-def _mail_one(to: str, subject: str, text: str) -> int:
-    send_mail(to, subject, text)
+def _staff_mail(to: str, subject: str, text: str, key: str) -> int:
+    """Письмо сотруднику — как письма рассылок и алертов (``fix/ops-without-env``): строгий
+    режим (отказ провайдера — ``MailError``, отметка не ставится) и ключ идемпотентности
+    (``mail_key``): если процесс упал между отправкой и фиксацией отметки, повтор того же письма
+    Resend второй раз не отправит."""
+    send_mail(to, subject, text, idempotency_key=key, strict=True)
     return 1
+
+
+def _staff_push(db: Session, user_id: int, payload: dict[str, str]) -> int:
+    """Push сотруднику в строгом режиме, как push алертов: запрос к push-сервису ограничен
+    ``app.push.PUSH_TIMEOUT``, а если ни одна подписка не приняла push и хотя бы одна не
+    ответила — исключение, отметка не ставится и push повторится."""
+    return send_to_user(db, user_id, payload, strict=True)
 
 
 def _deliver_staff(
     db: Session, kind: str, ref: str, subject: str, text: str, push: dict[str, str]
 ) -> int:
     """Письмо (с подтверждённым адресом) и push каждому владельцу и администратору — каждая
-    отправка отдельно (``_staff_send``). Возвращает число отправок; если какие-то не удались, —
-    ``StaffDeliveryError`` после попытки всем."""
+    отправка отдельно (``_staff_send``). Канал, для которого у процесса нет ключей
+    (``staff_channel_ready``), не отправляется и не отмечается. Возвращает число отправок; если
+    какие-то не удались, — ``StaffDeliveryError`` после попытки всем."""
     sent = 0
     failed: list[str] = []
     for user in _staff(db):
         uid = user.id
         sends: list[tuple[str, Callable[[], int]]] = []
         if user.email_verified_at is not None:
-            sends.append(("email", partial(_mail_one, user.email, subject, text)))
-        sends.append(("push", partial(send_to_user, db, uid, push)))
+            key = mail_key(kind, uid, ref)
+            sends.append(("email", partial(_staff_mail, user.email, subject, text, key)))
+        sends.append(("push", partial(_staff_push, db, uid, push)))
         for channel, send in sends:
+            if not staff_channel_ready(channel):
+                failed.append(f"{channel} пользователю {uid} (нет ключей канала)")
+                continue
             n = _staff_send(db, uid, channel, kind, ref, send)
             if n is None:
                 failed.append(f"{channel} пользователю {uid}")

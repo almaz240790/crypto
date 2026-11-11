@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session, sessionmaker
 import app.mail as mail
 import app.notify as notify
 import app.workers.notifier as notifier
-from app.config import settings
+from app.config import Settings, settings
 from app.db import engine
 from app.models import (
     Instrument,
@@ -117,7 +117,9 @@ def factory() -> Iterator[sessionmaker[Session]]:
 @pytest.fixture
 def mails(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str, str]]:
     sent: list[tuple[str, str, str]] = []
-    monkeypatch.setattr(notify, "send_mail", lambda to, subj, body: sent.append((to, subj, body)))
+    monkeypatch.setattr(
+        notify, "send_mail", lambda to, subj, body, *_a, **_k: sent.append((to, subj, body))
+    )
     return sent
 
 
@@ -363,7 +365,7 @@ def test_one_failed_mail_does_not_stop_other_staff_and_is_retried(
 
     pushes: list[int] = []
 
-    def push(_db: Session, user_id: int, _payload: dict[str, str]) -> int:
+    def push(_db: Session, user_id: int, _payload: dict[str, str], **_kw: object) -> int:
         pushes.append(user_id)
         return 1
 
@@ -422,12 +424,12 @@ def test_staff_delivery_error_reports_what_was_sent(
     db.commit()
     sent_to: list[str] = []
 
-    def flaky(to: str, _subject: str, _body: str) -> None:
+    def flaky(to: str, _subject: str, _body: str, *_a: object, **_kw: object) -> None:
         if to == p.owner.email and not sent_to:
             raise httpx.ReadTimeout("timed out")
         sent_to.append(to)
 
-    def broken_push(_db: Session, user_id: int, _payload: dict[str, str]) -> int:
+    def broken_push(_db: Session, user_id: int, _payload: dict[str, str], **_kw: object) -> int:
         if user_id == p.admin_unverified.id:
             raise RuntimeError("push-сервис недоступен")
         return 1
@@ -442,7 +444,155 @@ def test_staff_delivery_error_reports_what_was_sent(
         f"push пользователю {p.admin_unverified.id}",
     ]
     assert sent_to == [p.admin.email]
-    monkeypatch.setattr(notify, "send_to_user", lambda *_a: 1)
+    monkeypatch.setattr(notify, "send_to_user", lambda *_a, **_k: 1)
     assert notify.notify_staff_signal(db, sig) == 2  # письмо владельцу и push третьему
     assert sent_to == [p.admin.email, p.owner.email]
     assert notify.notify_staff_signal(db, sig) == 0
+
+
+# --- доставка как у рассылок и алертов (слияние с fix/ops-without-env) ------------------------
+
+
+@db_only
+def test_staff_mail_has_idempotency_key_and_push_is_strict(
+    factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Письмо сотруднику — в строгом режиме и с ключом идемпотентности Resend (повтор после сбоя
+    между отправкой и отметкой второго письма не даст), push — в строгом режиме с таймаутом
+    push-сервиса (``app.push.PUSH_TIMEOUT``): не ответивший push-сервис — повтор, а не отметка."""
+    db = factory()
+    p = People(db)
+    sig = p.signal(db)
+    db.commit()
+    mails: list[tuple[str, str | None, bool]] = []
+    pushes: list[tuple[int, bool]] = []
+
+    def fake_mail(
+        to: str, _s: str, _b: str, idempotency_key: str | None = None, *, strict: bool = False
+    ) -> None:
+        mails.append((to, idempotency_key, strict))
+
+    def fake_push(_db: Session, uid: int, _p: dict[str, str], *, strict: bool = False) -> int:
+        pushes.append((uid, strict))
+        return 1
+
+    monkeypatch.setattr(notify, "send_mail", fake_mail)
+    monkeypatch.setattr(notify, "send_to_user", fake_push)
+    assert notify.notify_staff_signal(db, sig) == 2 + 3
+    key = notify.mail_key
+    assert sorted(mails) == sorted(
+        [
+            (p.owner.email, key(notify.STAFF_SIGNAL, p.owner.id, sig.public_id), True),
+            (p.admin.email, key(notify.STAFF_SIGNAL, p.admin.id, sig.public_id), True),
+        ]
+    )
+    assert sorted(pushes) == sorted((uid, True) for uid in p.staff_ids())
+
+    # push-сервис не ответил ни по одной подписке (строгий режим): push не отмечен, повторится
+    ev = SignalEvent(signal_id=sig.id, type="activated", price=sig.entry_market, occurred_at=T)
+    db.add(ev)
+    db.commit()
+
+    def silent_push(_db: Session, uid: int, _p: dict[str, str], *, strict: bool = False) -> int:
+        assert strict
+        if uid == p.admin.id:
+            raise TimeoutError("push-сервис не ответил")
+        return 1
+
+    monkeypatch.setattr(notify, "send_to_user", silent_push)
+    with pytest.raises(notify.StaffDeliveryError) as err:
+        notify.notify_staff_event(db, ev)
+    assert err.value.failed == [f"push пользователю {p.admin.id}"]
+    assert (p.admin.id, "push", str(ev.id)) not in _log(db, notify.STAFF_EVENT)
+
+
+@db_only
+def test_staff_mail_refusals_follow_resend_answer(
+    factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Отказ Resend (строгий режим): по адресу получателя — без отметки и без повтора, общий
+    (неверный MAIL_FROM, ключ, лимит) — без отметки и с повтором; ответ 409 на тот же ключ —
+    письмо уже ушло, отметка ставится."""
+    db = factory()
+    p = People(db)
+    sig = p.signal(db)
+    db.commit()
+    answers = {
+        p.owner.email: httpx.Response(
+            422, json={"name": "validation_error", "message": "Invalid `to` field."}
+        ),
+        p.admin.email: httpx.Response(403, json={"name": "validation_error", "message": "domain"}),
+    }
+    keys: list[str] = []
+
+    def post(_url: str, **kw: object) -> httpx.Response:
+        body = kw["json"]
+        headers = kw["headers"]
+        assert isinstance(body, dict) and isinstance(headers, dict)
+        keys.append(headers["Idempotency-Key"])
+        return answers[body["to"][0]]
+
+    monkeypatch.setattr(settings, "resend_api_key", "dummy")
+    monkeypatch.setattr(mail.httpx, "post", post)
+    monkeypatch.setattr(notify, "send_to_user", lambda *_a, **_k: 1)
+    with pytest.raises(notify.StaffDeliveryError) as err:
+        notify.notify_staff_signal(db, sig)
+    assert err.value.failed == [f"email пользователю {p.admin.id}"]  # отказ по адресу — не повтор
+    assert {u for u, ch, _ in _log(db, notify.STAFF_SIGNAL) if ch == "email"} == set()
+
+    # настройки исправили; письмо админу уходит, Resend отвечает 409 на прежний ключ — уже ушло
+    answers[p.admin.email] = httpx.Response(409, json={"name": "concurrent_idempotent_requests"})
+    keys.clear()
+    assert notify.notify_staff_signal(db, sig) == 1
+    assert keys == [
+        notify.mail_key(notify.STAFF_SIGNAL, p.owner.id, sig.public_id),
+        notify.mail_key(notify.STAFF_SIGNAL, p.admin.id, sig.public_id),
+    ]
+    assert {u for u, ch, _ in _log(db, notify.STAFF_SIGNAL) if ch == "email"} == {p.admin.id}
+
+
+@db_only
+def test_staff_channel_without_keys_in_production_waits(
+    factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """В production процесс без ключа почты (или без VAPID) не «отправляет» письмо в лог и не
+    отмечает его: канал считается неушедшим, уведомитель повторит; другой канал уходит сразу.
+    Локально без ключей — как раньше: письмо в лог, отметка."""
+    db = factory()
+    p = People(db)
+    sig = p.signal(db)
+    db.commit()
+    pushes: list[int] = []
+    monkeypatch.setattr(notify, "send_to_user", lambda _db, uid, _p, **_k: pushes.append(uid) or 1)
+    monkeypatch.setattr(settings, "resend_api_key", None)
+    monkeypatch.setattr(settings, "vapid_private_key", "priv")
+    monkeypatch.setattr(settings, "vapid_public_key", "pub")
+    monkeypatch.setattr(Settings, "is_production", property(lambda self: True))
+    with pytest.raises(notify.StaffDeliveryError) as err:
+        notify.notify_staff_signal(db, sig)
+    assert sorted(err.value.failed) == sorted(
+        f"email пользователю {uid} (нет ключей канала)" for uid in (p.owner.id, p.admin.id)
+    )
+    assert sorted(pushes) == sorted(p.staff_ids())
+    assert {ch for _, ch, _ in _log(db, notify.STAFF_SIGNAL)} == {"push"}
+
+    # без VAPID — то же для push; появился ключ почты — письма уходят, push ждёт
+    monkeypatch.setattr(settings, "resend_api_key", "dummy")
+    monkeypatch.setattr(settings, "vapid_private_key", None)
+    monkeypatch.setattr(mail.httpx, "post", lambda *_a, **_k: httpx.Response(200, json={}))
+    ev = SignalEvent(signal_id=sig.id, type="activated", price=sig.entry_market, occurred_at=T)
+    db.add(ev)
+    db.commit()
+    pushes.clear()
+    with pytest.raises(notify.StaffDeliveryError) as err:
+        notify.notify_staff_event(db, ev)
+    assert len(err.value.failed) == 3 and pushes == []
+    assert {(u, ch) for u, ch, _ in _log(db, notify.STAFF_EVENT)} == {
+        (p.owner.id, "email"),
+        (p.admin.id, "email"),
+    }
+
+    # локально без ключей — письмо в лог и отметка, как раньше
+    monkeypatch.setattr(Settings, "is_production", property(lambda self: False))
+    monkeypatch.setattr(settings, "resend_api_key", None)
+    assert notify.notify_staff_signal(db, sig) == 2
