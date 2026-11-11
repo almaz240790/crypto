@@ -26,23 +26,16 @@ closed_time; pending → expired. Правило конфликта в одно�
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
 
 from engine.backtest import DEFAULT_EXECUTION, ExecutionParams, execution_cost_r
 from engine.candles import SIGNAL_TIMEFRAME, Candle, Timeframe
+from engine.candles import interval_start as interval_start  # прежний путь импорта (mypy --strict)
 from engine.params import TradeParams
 from engine.structure import Direction
 from engine.trade import TradeSetup
-
-_GRID_ORIGIN = datetime(1970, 1, 1, tzinfo=UTC)
-"""Начало сетки свечей Binance: интервалы 1m–1d отсчитываются от 1970-01-01 00:00 UTC."""
-
-
-def interval_start(t: datetime, tf: Timeframe) -> datetime:
-    """Начало интервала ``tf``, в который попадает момент ``t`` (для таймфреймов 1m–1d)."""
-    return t - (t - _GRID_ORIGIN) % tf.delta
 
 
 class SignalStatus(StrEnum):

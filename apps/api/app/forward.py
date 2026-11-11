@@ -6,6 +6,10 @@
 2. для каждого инструмента вызывает ``evaluate`` на момент последнего закрытия H4 по каждой
    версии стратегии в статусе ``forward`` или ``live``; кандидат записывается в ``signals``
    (статус pending, событие created), повторный запуск ничего не дублирует (уникальный индекс).
+   Пока у версии по инструменту есть открытая сделка, новый кандидат не пишется — правило
+   ``engine.occupancy``, то же, что в бэктесте (одна сделка на инструмент и версию).
+   Кандидаты, которые бэктест не торгует (ниже C и отложенные), тоже не пишутся (план 2.7:
+   «не публикуются»), только строка INFO: в ``signals`` попадают одни сделки.
    Версия, которой ещё нет в БД, создаётся в статусе ``backtest`` и не оценивается, пока её
    не переведут в forward заявкой в админке;
 3. ведёт открытые форвард-сигналы по свечам H4 тем же кодом, что бэктест (``simulate_trade``):
@@ -25,7 +29,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select, text
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -44,9 +48,10 @@ from app.models import (
 )
 from app.signal_scope import scope_at_publication
 from engine.backtest import DEFAULT_EXECUTION, TradeResult, TradeStatus, simulate_trade
-from engine.candles import Candle, Timeframe
+from engine.candles import SIGNAL_TIMEFRAME, Candle, Timeframe
 from engine.data.binance import BinanceHistory
 from engine.derivatives import FundingRate, LongShortRatio, OpenInterest
+from engine.occupancy import OPEN_STATUSES, TradeSpan, occupying
 from engine.params import StrategyParams
 from engine.signal import MarketInputs, NoSignal, SignalCandidate, evaluate
 from engine.strategies import STRATEGIES
@@ -352,13 +357,70 @@ def ensure_strategy_versions(session: Session) -> dict[str, StrategyVersion]:
 
 # --- сигналы ----------------------------------------------------------------------------------
 
+ENDING_EVENTS = ("expired", "cancelled")
+"""События, которыми заканчивается сигнал без ``signal_results``: истечение лимита и отмена."""
+BUSY_LOG = (
+    "%s %s: инструмент занят сигналом %s (%s, опубликован %s UTC) — кандидат %s UTC не записан "
+    "(одна сделка на инструмент и версию)"
+)
+NOT_TRADED_LOG = (
+    "%s %s: кандидат %s UTC (%s, score %s, %s) не записан — бэктест такие не торгует; input_hash %s"
+)
+
+
+def trade_spans(
+    session: Session, version_id: int, instrument_id: int, at: datetime
+) -> list[TradeSpan]:
+    """Сделки версии по инструменту, опубликованные раньше ``at``, которые могут занимать его
+    на ``at`` (``engine.occupancy``): открытые и закончившиеся позже ``at − H4``. Конец сделки —
+    ``signal_results.closed_at``, для истёкшего лимита и отмены — время этого события.
+
+    Занимает каждый сигнал версии: ``write_candidate`` пишет только то, что торгует бэктест.
+    Строки ниже C, записанные до этого правила с градацией C, трекеры ведут как сделки, а
+    статистика считает, поэтому и они занимают инструмент, пока открыты: иначе у версии по
+    монете были бы открыты два сигнала сразу."""
+    ended_event = (
+        select(func.max(SignalEvent.occurred_at))
+        .where(SignalEvent.signal_id == Signal.id, SignalEvent.type.in_(ENDING_EVENTS))
+        .correlate(Signal)
+        .scalar_subquery()
+    )
+    ended = func.coalesce(SignalResult.closed_at, ended_event)
+    rows = session.execute(
+        select(Signal.public_id, Signal.candle_close_time, Signal.status, ended)
+        .outerjoin(SignalResult, SignalResult.signal_id == Signal.id)
+        .where(
+            Signal.strategy_version_id == version_id,
+            Signal.instrument_id == instrument_id,
+            Signal.candle_close_time < at,
+            or_(Signal.status.in_(OPEN_STATUSES), ended > at - SIGNAL_TIMEFRAME.delta),
+        )
+        .order_by(Signal.candle_close_time)
+    ).all()
+    return [
+        TradeSpan(pid, opened.astimezone(UTC), status, None if end is None else end.astimezone(UTC))
+        for pid, opened, status, end in rows
+    ]
+
 
 def write_candidate(
     session: Session, version: StrategyVersion, inst: Instrument, cand: SignalCandidate
 ) -> bool:
     """Пишет кандидата в ``signals`` (pending + событие created). Область сигнала (``scope``)
     берётся из статуса версии, прочитанного из БД в момент записи, и дальше не меняется
-    (план 2.11, правило 5). Если версия к этому моменту ушла из forward/live, сигнал не пишется."""
+    (план 2.11, правило 5). Если версия к этому моменту ушла из forward/live, сигнал не пишется.
+
+    Одна сделка на инструмент и версию (``engine.occupancy``, как в бэктесте): пока прежний
+    сигнал версии по инструменту открыт или закрылся внутри свечи H4, которая закончилась в
+    ``candle_close_time`` кандидата, кандидат не пишется; об этом строка INFO. Область сигнала
+    здесь не важна: открытый форвард-сигнал версии, ставшей live, тоже занимает инструмент.
+
+    Кандидат, которого бэктест не торгует, — ниже градации C или отложенный (новости), — не
+    пишется вовсе (план 2.7: «не публикуются»; ``run_backtest`` считает их в ``skipped``): иначе
+    трекеры вели бы его как сделку, лента и статистика показывали бы его как C, а правило одной
+    сделки либо пропускало бы рядом второй сигнал, либо расходилось бы с бэктестом. Вместо записи —
+    строка INFO с временем, направлением, score и ``input_hash``; сам кандидат воспроизводится
+    ``replay()`` по свечам."""
     exists = session.scalar(
         select(Signal.id).where(
             Signal.strategy_version_id == version.id,
@@ -367,6 +429,31 @@ def write_candidate(
         )
     )
     if exists:
+        return False
+    at = cand.candle_close_time
+    busy = occupying(trade_spans(session, version.id, inst.id, at), at)
+    if busy is not None:
+        log.info(
+            BUSY_LOG,
+            inst.symbol,
+            version.version,
+            busy.ref,
+            busy.status,
+            f"{busy.opened_at:%Y-%m-%d %H:%M}",
+            f"{at:%Y-%m-%d %H:%M}",
+        )
+        return False
+    if cand.deferred or not cand.score.publishable:  # как run_backtest: skipped deferred/grade
+        log.info(
+            NOT_TRADED_LOG,
+            inst.symbol,
+            version.version,
+            f"{at:%Y-%m-%d %H:%M}",
+            "long" if cand.direction is Direction.UP else "short",
+            cand.score.total,
+            "отложен" if cand.deferred else "ниже C",
+            cand.input_hash,
+        )
         return False
     status = session.scalar(select(StrategyVersion.status).where(StrategyVersion.id == version.id))
     scope = scope_at_publication(status or "")
@@ -390,7 +477,7 @@ def write_candidate(
         tp3=t.tp3,
         rr_tp2=t.rr_tp2,
         score=cand.score.total,
-        grade=cand.score.grade.value if cand.score.publishable else "C",
+        grade=cand.score.grade.value,
         score_breakdown=dict(cand.score.components),
         rationale_facts={
             "facts": list(cand.facts),

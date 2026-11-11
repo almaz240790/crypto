@@ -45,6 +45,14 @@ SIGNAL_TIMEFRAME: Final = Timeframe.H4
 таймфрейма, какие бы свечи ни подавались трекеру. Это свойство движка, а не параметр версии,
 поэтому в ``StrategyParams`` его нет."""
 
+_GRID_ORIGIN: Final = datetime(1970, 1, 1, tzinfo=UTC)
+"""Начало сетки свечей Binance: интервалы 1m–1d отсчитываются от 1970-01-01 00:00 UTC."""
+
+
+def interval_start(t: datetime, tf: Timeframe) -> datetime:
+    """Начало интервала ``tf``, в который попадает момент ``t`` (для таймфреймов 1m–1d)."""
+    return t - (t - _GRID_ORIGIN) % tf.delta
+
 
 @dataclass(frozen=True, slots=True)
 class Candle:

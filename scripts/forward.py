@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from pathlib import Path
 
@@ -27,6 +28,9 @@ def main() -> int:
         "--no-track", action="store_true", help="не вести сигналы по H4 (их ведёт 1m-трекер)"
     )
     args = p.parse_args()
+    # строки INFO движка и записи сигналов (например, «инструмент занят сигналом …») — в журнал cron
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     stats = run_forward(args.symbols or None, refresh=not args.no_refresh, track=not args.no_track)
     print(f"готово: {stats}", flush=True)
     return 0
