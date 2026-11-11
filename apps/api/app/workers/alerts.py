@@ -21,6 +21,8 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 
 import redis.asyncio as aioredis
+from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import TimeoutError as RedisTimeoutError
 from sqlalchemy import select
 
 from app.alerts import (
@@ -41,6 +43,8 @@ from engine.candles import Timeframe
 log = logging.getLogger("alerts_worker")
 DONE_TTL = 24 * 3600
 LOOP_EVERY = 30
+LISTEN_RETRY = 5.0
+"""Подписка на ``candles.closed`` оборвалась — переподключение через столько секунд."""
 HEARTBEAT_KEY = "alerts:heartbeat"
 CURSOR_KEY = "alerts:pattern_cursor"
 FIGURE_CURSOR_KEY = "alerts:figure_cursor"
@@ -126,14 +130,34 @@ class AlertsWorker:
             await self.redis.delete(key)
 
     async def listener(self) -> None:
-        pubsub = self.redis.pubsub()
-        await pubsub.subscribe(CHANNEL_CLOSED)
-        async for msg in pubsub.listen():
-            if self.stop.is_set():
-                break
-            if msg.get("type") != "message":
-                continue
-            data = json.loads(msg["data"])
+        """Подписка на ``candles.closed``. Обрыв (Redis перезапустился, сеть) — переподключение
+        через ``LISTEN_RETRY``. Раньше задача на обрыве молча завершалась: процесс жил, а
+        алерты по ценам больше не срабатывали и платформа его не перезапускала. События,
+        опубликованные, пока подписки нет, теряются (pub/sub без хранения)."""
+        while not self.stop.is_set():
+            try:
+                async with self.redis.pubsub() as pubsub:  # выход закрывает соединение подписки
+                    await pubsub.subscribe(CHANNEL_CLOSED)
+                    async for msg in pubsub.listen():
+                        if self.stop.is_set():
+                            return
+                        if msg.get("type") == "message":
+                            await self._handle(msg["data"])
+            except Exception as exc:
+                log.warning(
+                    "подписка %s оборвалась (%s), переподключение через %.0f с",
+                    CHANNEL_CLOSED,
+                    exc,
+                    LISTEN_RETRY,
+                )
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(self.stop.wait(), timeout=LISTEN_RETRY)
+
+    async def _handle(self, raw: bytes | str) -> None:
+        """Одно событие закрытия свечи. Ошибка в нём (битое сообщение, сбой Redis на ключе
+        идемпотентности) — в лог; подписку это не обрывает."""
+        try:
+            data = json.loads(raw)
             tf = str(data.get("tf", ""))
             close_time = datetime.fromisoformat(data["close_time"]).astimezone(UTC)
             symbol = str(data["symbol"])
@@ -149,11 +173,15 @@ class AlertsWorker:
                     bar_tf,
                     close_time,
                 )
+        except Exception:
+            log.exception("событие %s: ошибка обработки", CHANNEL_CLOSED)
 
     async def loop(self) -> None:
+        """Раз в ``LOOP_EVERY``: heartbeat, паттерны, фигуры, истечение. Redis недоступен — в лог,
+        цикл продолжается (раньше первый же сбой записи heartbeat завершал задачу навсегда)."""
         while not self.stop.is_set():
-            await self.redis.set(HEARTBEAT_KEY, int(time.time()))
             try:
+                await self.redis.set(HEARTBEAT_KEY, int(time.time()))
                 cursor = int(await self.redis.get(CURSOR_KEY) or 0)
                 new_cursor, fired = await asyncio.to_thread(patterns_once, cursor)
                 if new_cursor != cursor:
@@ -170,6 +198,10 @@ class AlertsWorker:
                 expired = await asyncio.to_thread(expire_once)
                 if expired:
                     log.info("истекло алертов: %d", expired)
+            except (RedisConnectionError, RedisTimeoutError) as exc:
+                log.warning(
+                    "цикл алертов: Redis недоступен (%s), повтор через %s с", exc, LOOP_EVERY
+                )
             except Exception:
                 log.exception("цикл алертов")
             with contextlib.suppress(TimeoutError):

@@ -1748,3 +1748,89 @@ def test_notifier_survives_redis_restart(monkeypatch: pytest.MonkeyPatch, tmp_pa
         client.close()
         proc.terminate()
         proc.wait(10)
+
+
+@pytest.mark.skipif(__import__("shutil").which("redis-server") is None, reason="нет redis-server")
+def test_alerts_worker_resubscribes_after_redis_restart(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """Настоящий redis-server перезапускается под воркером алертов. Раньше процесс оставался жив,
+    но подписка на ``candles.closed`` и цикл с heartbeat молча завершались: алерты по ценам
+    больше не срабатывали, а платформа процесс не перезапускала. Теперь воркер подписывается
+    снова, событие после перезапуска обрабатывается, heartbeat пишется."""
+    import redis as sync_redis
+
+    import app.workers.alerts as worker_mod
+
+    port = _free_port()
+    url = f"redis://127.0.0.1:{port}/0"
+    monkeypatch.setattr(settings, "redis_url", url)
+    monkeypatch.setattr(worker_mod, "patterns_once", lambda cursor: (cursor, 0))
+    monkeypatch.setattr(worker_mod, "figures_once", lambda cursor: (cursor, 0))
+    monkeypatch.setattr(worker_mod, "expire_once", lambda: 0)
+    monkeypatch.setattr(worker_mod, "process_bars", lambda *a: 0)
+    monkeypatch.setattr(worker_mod, "LOOP_EVERY", 0.1)
+    monkeypatch.setattr(worker_mod, "LISTEN_RETRY", 0.1)
+    seen: list[tuple[str, datetime]] = []
+    monkeypatch.setattr(
+        worker_mod, "process_price", lambda symbol, at: seen.append((symbol, at)) or 0
+    )
+    proc = _start_redis(port, str(tmp_path))
+    client = sync_redis.from_url(url, socket_timeout=1)
+
+    def subscribed() -> bool:
+        try:
+            subs = dict(client.pubsub_numsub(worker_mod.CHANNEL_CLOSED))
+            return int(subs.get(worker_mod.CHANNEL_CLOSED.encode(), 0)) >= 1
+        except Exception:
+            return False
+
+    def heartbeat() -> bool:
+        try:
+            return client.get(worker_mod.HEARTBEAT_KEY) is not None
+        except Exception:
+            return False
+
+    async def until(cond: Callable[[], bool]) -> bool:
+        for _ in range(200):
+            if cond():
+                return True
+            await asyncio.sleep(0.05)
+        return False
+
+    def close_event(minute: int) -> datetime:
+        at = datetime(2031, 3, 7, 12, minute, tzinfo=UTC)
+        client.publish(
+            worker_mod.CHANNEL_CLOSED,
+            json.dumps({"symbol": "OPSUSDT", "tf": "1m", "close_time": at.isoformat()}),
+        )
+        return at
+
+    async def go() -> None:
+        nonlocal proc
+        w = worker_mod.AlertsWorker()
+        task = asyncio.create_task(w.run())
+        try:
+            assert await until(subscribed) and await until(heartbeat), "до перезапуска"
+            first = close_event(7)
+            assert await until(lambda: len(seen) == 1) and seen[0] == ("OPSUSDT", first)
+            proc.terminate()
+            proc.wait(10)
+            await asyncio.sleep(1.0)  # Redis лежит: несколько итераций цикла и переподключений
+            assert not task.done(), task
+            proc = _start_redis(port, str(tmp_path))  # пустой: ни подписки, ни heartbeat
+            assert await until(subscribed), "подписка после перезапуска Redis"
+            assert await until(heartbeat), "heartbeat после перезапуска Redis"
+            second = close_event(8)
+            assert await until(lambda: len(seen) == 2) and seen[1] == ("OPSUSDT", second)
+            assert not task.done()
+        finally:
+            w.stop.set()
+            await asyncio.wait_for(task, 10)
+
+    try:
+        asyncio.run(go())
+    finally:
+        client.close()
+        proc.terminate()
+        proc.wait(10)
