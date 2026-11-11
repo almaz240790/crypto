@@ -461,7 +461,12 @@ def _market(db: Session, inst: Instrument, start: datetime, hours: int, path: Pa
 @pytest.fixture
 def report_fixture(db: Session) -> SimpleNamespace:
     """Три форвард-сигнала (time stop, SL, TP3) со старыми 15-минутными закрытиями, четвёртый —
-    на инструменте первого, пока сделка первого ещё открыта; и один live-сигнал."""
+    на инструменте первого, пока сделка первого ещё открыта; и один live-сигнал.
+
+    Порядок записи — как на production: трекер с ошибкой закрыл первую сделку через 15 минут,
+    поэтому к четвёртому сигналу по записи в БД инструмент свободен и правило одной открытой
+    сделки (``write_candidate``, задача 6) его пропускает. Пересчитанная же сделка первого
+    сигнала живёт 60 часов — это пересечение отчёт и помечает."""
     ver = _version(db)
     a, b, c = (_instrument(db, n) for n in "ABC")
     _market(db, a, T0, 72, flat())
@@ -470,9 +475,10 @@ def report_fixture(db: Session) -> SimpleNamespace:
     sig_a = _publish(db, ver, a, T0)
     sig_b = _publish(db, ver, b, T0)
     sig_c = _publish(db, ver, c, T0)
-    sig_d = _publish(db, ver, a, T0 + H4 * 2)
-    for sig in (sig_a, sig_b, sig_c, sig_d):
+    for sig in (sig_a, sig_b, sig_c):
         _close_after_15_minutes(db, sig)
+    sig_d = _publish(db, ver, a, T0 + H4 * 2)
+    _close_after_15_minutes(db, sig_d)
     live = _publish(db, _version(db, status="live"), a, T0)
     slug = db.scalar(select(Strategy.slug).where(Strategy.id == ver.strategy_id))
     return SimpleNamespace(

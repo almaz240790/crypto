@@ -22,8 +22,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
+from itertools import pairwise
 
-from engine.candles import Candle, Timeframe
+from engine.candles import SIGNAL_TIMEFRAME, Candle
+from engine.lifecycle import SignalLife, SignalStatus, blocking_signal
 from engine.params import StrategyParams, TradeParams
 from engine.scoring import Grade
 from engine.signal import MarketInputs, SignalCandidate, evaluate
@@ -70,6 +72,28 @@ class TradeResult:
 
 
 DEFAULT_EXECUTION = ExecutionParams()
+
+_FINAL_STATUS = {
+    TradeStatus.EXPIRED: SignalStatus.EXPIRED,
+    TradeStatus.CLOSED_SL: SignalStatus.CLOSED_SL,
+    TradeStatus.CLOSED_BE: SignalStatus.CLOSED_BE,
+    TradeStatus.CLOSED_TP3: SignalStatus.CLOSED_TP3,
+    TradeStatus.CLOSED_TIME: SignalStatus.CLOSED_TIME,
+}
+_OPEN_STATUS_BY_HITS = (SignalStatus.ACTIVE, SignalStatus.TP1_HIT, SignalStatus.TP2_HIT)
+
+
+def signal_status(result: TradeResult) -> SignalStatus:
+    """Статус сигнала (как в ``signals.status``) по результату ``simulate_trade``.
+
+    Незакрытая сделка (``TradeStatus.OPEN``) — ``active`` / ``tp1_hit`` / ``tp2_hit`` по числу
+    взятых тейков. Единственное место этого соответствия: им пользуются правило одной открытой
+    сделки в ``run_backtest`` и ведение форвард-сигналов по H4 (``app.forward``).
+    """
+    final = _FINAL_STATUS.get(result.status)
+    if final is not None:
+        return final
+    return _OPEN_STATUS_BY_HITS[min(result.tp_hits, len(_OPEN_STATUS_BY_HITS) - 1)]
 
 
 def execution_cost_r(entry_price: Decimal, risk: Decimal, exec_params: ExecutionParams) -> Decimal:
@@ -247,13 +271,34 @@ class BacktestTrade:
 class BacktestRun:
     trades: list[BacktestTrade] = field(default_factory=list)
     skipped: dict[str, int] = field(default_factory=lambda: defaultdict(int))
-    """Причины отсутствия сигнала по этапам (data/bias/trigger/filters/trade) — для анализа."""
+    """Причины отсутствия сигнала по этапам (data/bias/trigger/filters/trade) — для анализа.
+    ``busy`` — свечи, пропущенные правилом «одна открытая сделка на инструмент и версию»:
+    сигнал на них не ищется, и в ``evaluated`` они не входят."""
     skipped_by_symbol: dict[str, dict[str, int]] = field(
         default_factory=lambda: defaultdict(lambda: defaultdict(int))
     )
     block_reasons: dict[str, int] = field(default_factory=lambda: defaultdict(int))
     """Какие фильтры блокировали (по имени из причины), чтобы видеть, что режет сигналы."""
     evaluated: int = 0
+
+
+def _window_inputs(inp: MarketInputs, h4: Sequence[Candle], i: int, window: int) -> MarketInputs:
+    """Вход ``evaluate`` на закрытии свечи ``i``: последние ``window`` свечей H4 по неё."""
+    return MarketInputs(
+        symbol=inp.symbol,
+        h4=h4[max(0, i + 1 - window) : i + 1],
+        d1=inp.d1,
+        w1=inp.w1,
+        funding=inp.funding,
+        open_interest=inp.open_interest,
+        liquidations=inp.liquidations,
+        long_short=inp.long_short,
+        calendar=inp.calendar,
+        token_events=inp.token_events,
+        active_signals=inp.active_signals,
+        btc_bias_direction=inp.btc_bias_direction,
+        avg_daily_turnover=inp.avg_daily_turnover,
+    )
 
 
 def run_backtest(
@@ -264,41 +309,57 @@ def run_backtest(
     exec_params: ExecutionParams = DEFAULT_EXECUTION,
     window: int = 700,
     on_signal: Callable[[SignalCandidate], None] | None = None,
+    on_busy: Callable[[SignalCandidate, SignalLife], None] | None = None,
 ) -> BacktestRun:
     """Проходит все закрытия H4 в [start; end] по каждому инструменту.
 
-    Одновременно по инструменту — не больше одной открытой сделки. Отложенные (новости)
-    сигналы в бэктесте пропускаются и считаются в ``skipped['deferred']``.
+    Одновременно по инструменту — не больше одной открытой сделки: правило
+    ``engine.lifecycle.blocking_signal``, то же, что при записи кандидата в форварде и live.
+    Пока инструмент занят сделкой (и на свече её выхода), сигнал не ищется: свеча считается в
+    ``skipped['busy']`` и в ``evaluated`` не входит. Истёкший лимитный ордер инструмент не
+    занимает. Свечи ``inp.h4`` идут строго по возрастанию ``open_time`` по сетке H4 (пропуски
+    допустимы); повтор свечи или неотсортированный ряд — ``ValueError``: правило считает по
+    времени, и на таком ряду ответ был бы не тем, что ждёт вызывающий.
+
+    Отложенные (новости) сигналы в бэктесте пропускаются и считаются в ``skipped['deferred']``.
     ``window`` — сколько последних свечей H4 передаётся в ``evaluate`` (экономия времени;
     должно быть ≥ ``params.min_h4_history`` и ``params.hash_candles``).
+
+    ``on_busy`` — для отчёта о том, что правило подавляет: если задан, на занятой свече кандидат
+    всё же вычисляется, и для того, который иначе стал бы сделкой, вызывается
+    ``on_busy(кандидат, мешающий сигнал)``. Сделки, ``evaluated`` и счётчики от этого не
+    меняются; ``opened_at`` мешающего сигнала — ``signal_time`` его сделки в ``run.trades``.
     """
     run = BacktestRun()
+    tf = SIGNAL_TIMEFRAME
     for inp in inputs:
         h4 = list(inp.h4)
-        busy_until = -1
+        for prev, cur in pairwise(h4):
+            if cur.open_time <= prev.open_time:
+                raise ValueError(
+                    f"{inp.symbol}: свечи H4 должны идти по возрастанию open_time без повторов "
+                    f"({prev.open_time.isoformat()} → {cur.open_time.isoformat()})"
+                )
+        signals: list[SignalLife] = []  # сигналы этой версии по инструменту — вход правила
         for i, c in enumerate(h4):
-            at = c.close_time(Timeframe.H4)
+            at = c.close_time(tf)
             if at < start or at > end:
                 continue
-            if i <= busy_until:
+            blocker = blocking_signal(signals, at)
+            if blocker is None:
+                # ни один прежний сигнал не мешает — и уже не помешает: закрытая сделка ушла за
+                # свечу выхода, истёкший лимит не занимает; список не растёт с числом сделок
+                signals.clear()
+            else:
+                run.skipped["busy"] += 1
+                run.skipped_by_symbol[inp.symbol]["busy"] += 1
+                if on_busy is not None:
+                    hidden = evaluate(_window_inputs(inp, h4, i, window), at, params)
+                    if isinstance(hidden, SignalCandidate) and hidden.publishable:
+                        on_busy(hidden, blocker)
                 continue
             run.evaluated += 1
-            sliced = MarketInputs(
-                symbol=inp.symbol,
-                h4=h4[max(0, i + 1 - window) : i + 1],
-                d1=inp.d1,
-                w1=inp.w1,
-                funding=inp.funding,
-                open_interest=inp.open_interest,
-                liquidations=inp.liquidations,
-                long_short=inp.long_short,
-                calendar=inp.calendar,
-                token_events=inp.token_events,
-                active_signals=inp.active_signals,
-                btc_bias_direction=inp.btc_bias_direction,
-                avg_daily_turnover=inp.avg_daily_turnover,
-            )
-            res = evaluate(sliced, at, params)
+            res = evaluate(_window_inputs(inp, h4, i, window), at, params)
             if not isinstance(res, SignalCandidate):
                 run.skipped[res.stage] += 1
                 run.skipped_by_symbol[inp.symbol][res.stage] += 1
@@ -317,9 +378,7 @@ def run_backtest(
             after = h4[i + 1 :]
             result = simulate_trade(res.trade, after, params.trade, exec_params)
             exit_idx = result.exit_index
-            exit_time = (
-                h4[i + 1 + exit_idx].close_time(Timeframe.H4) if exit_idx is not None else None
-            )
+            exit_time = h4[i + 1 + exit_idx].close_time(tf) if exit_idx is not None else None
             run.trades.append(
                 BacktestTrade(
                     symbol=inp.symbol,
@@ -338,10 +397,14 @@ def run_backtest(
                     facts=res.facts,
                 )
             )
-            if exit_idx is not None:
-                busy_until = i + 1 + exit_idx
-            elif result.status is TradeStatus.OPEN:
-                busy_until = len(h4)
+            signals.append(
+                SignalLife(
+                    ref=f"{inp.symbol} {at:%Y-%m-%d %H:%M}",
+                    opened_at=at,
+                    status=signal_status(result),
+                    closed_at=exit_time,
+                )
+            )
     return run
 
 

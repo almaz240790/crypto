@@ -32,6 +32,7 @@ from enum import StrEnum
 
 from engine.backtest import DEFAULT_EXECUTION, ExecutionParams, execution_cost_r
 from engine.candles import SIGNAL_TIMEFRAME, Candle, Timeframe
+from engine.lifecycle import SignalStatus as SignalStatus  # определён там; здесь — реэкспорт
 from engine.params import TradeParams
 from engine.structure import Direction
 from engine.trade import TradeSetup
@@ -43,32 +44,6 @@ _GRID_ORIGIN = datetime(1970, 1, 1, tzinfo=UTC)
 def interval_start(t: datetime, tf: Timeframe) -> datetime:
     """Начало интервала ``tf``, в который попадает момент ``t`` (для таймфреймов 1m–1d)."""
     return t - (t - _GRID_ORIGIN) % tf.delta
-
-
-class SignalStatus(StrEnum):
-    PENDING = "pending"
-    ACTIVE = "active"
-    TP1_HIT = "tp1_hit"
-    TP2_HIT = "tp2_hit"
-    CLOSED_TP3 = "closed_tp3"
-    CLOSED_BE = "closed_be"
-    CLOSED_SL = "closed_sl"
-    CLOSED_TIME = "closed_time"
-    EXPIRED = "expired"
-    CANCELLED = "cancelled"
-
-    @property
-    def is_open(self) -> bool:
-        return self in (
-            SignalStatus.PENDING,
-            SignalStatus.ACTIVE,
-            SignalStatus.TP1_HIT,
-            SignalStatus.TP2_HIT,
-        )
-
-    @property
-    def is_closed(self) -> bool:
-        return self.startswith("closed")
 
 
 class EventType(StrEnum):
