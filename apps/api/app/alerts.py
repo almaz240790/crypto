@@ -648,10 +648,15 @@ def deliver_batch(
             decided += final
             handled += 1
         except Exception as exc:
-            log.exception("срабатывание %s: ошибка доставки", tid)
+            cause = exc.cause if isinstance(exc, DeliveryIncompleteError) else exc
+            if isinstance(cause, MailError) or provider_wide(cause):
+                # отказ провайдера или сеть: причина видна по сообщению, трассировка на каждую
+                # попытку только забивает лог
+                log.warning("срабатывание %s: не доставлено (%s), повтор позже", tid, cause)
+            else:
+                log.exception("срабатывание %s: ошибка доставки", tid)
             db.rollback()
             handled += _count_failure(db, tid, exc, now)
-            cause = exc.cause if isinstance(exc, DeliveryIncompleteError) else exc
             if ready["mail"] and provider_wide(cause):
                 ready = {**ready, "mail": False}  # почта лежит — письма ждут, push идёт
                 hold = DELIVERY_RETRY_AFTER

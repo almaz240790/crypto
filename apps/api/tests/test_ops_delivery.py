@@ -985,6 +985,46 @@ def test_mail_outage_does_not_stall_the_pass(db: Session, monkeypatch: pytest.Mo
 
 
 @db_only
+def test_expected_refusals_are_logged_without_traceback(
+    db: Session, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Отказ провайдера (неверный MAIL_FROM) — предупреждение без трассировки: при сбое почты
+    такие строки идут на каждую попытку. Непредвиденная ошибка (в коде, в данных подписки) —
+    с трассировкой, как и раньше."""
+    _as_alerts_service(monkeypatch)
+    _, alert, _ = _alert_setup(db)
+    _only(monkeypatch, {alert.id})
+    now = datetime.now(tz=UTC)
+    _fire_one(db, alert, (now - timedelta(minutes=1)).replace(second=0, microsecond=0))
+    db.commit()
+    _as_notifier(monkeypatch)
+    out = Outbox()
+
+    def delivery_logs() -> list[logging.LogRecord]:
+        return [r for r in caplog.records if r.name == "alerts" and "срабатывание" in r.msg]
+
+    with caplog.at_level(logging.WARNING, logger="alerts"):
+        bad_from = Outbox(fail_mail=400, fail_message=BAD_FROM)
+        assert deliver_pending(db, now, mail=bad_from.mail, push=out.push) == 0
+    [rec] = delivery_logs()
+    assert rec.levelno == logging.WARNING and rec.exc_info is None
+    assert "Resend 400" in rec.getMessage()
+    caplog.clear()
+    _as_alerts_service(monkeypatch)
+    _fire_one(db, alert, now.replace(second=0, microsecond=0))
+    db.commit()
+    _as_notifier(monkeypatch)
+
+    def broken_push(s: Session, user_id: int, payload: dict[str, Any]) -> int:
+        raise RuntimeError("push: ошибка в данных подписки")
+
+    with caplog.at_level(logging.WARNING, logger="alerts"):
+        assert deliver_pending(db, now, mail=out.mail, push=broken_push) == 0
+    errors = [r for r in delivery_logs() if r.levelno == logging.ERROR]
+    assert len(errors) == 1 and errors[0].exc_info is not None
+
+
+@db_only
 def test_rejected_address_fails_without_retries(
     db: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
