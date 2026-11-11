@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import secrets
 import threading
@@ -46,6 +47,7 @@ from app.alerts import (
     SUPPRESSED,
     _fire,
     can_deliver_inline,
+    channels_ready,
     deliver_pending,
     delivery_ready,
     delivery_state,
@@ -54,7 +56,7 @@ from app.alerts import (
 )
 from app.config import PRODUCTION_FRONTEND_URL, Settings, is_local_url, settings
 from app.db import SessionLocal, engine
-from app.mail import MailError, send_mail
+from app.mail import MailError, provider_wide, send_mail
 from app.models import (
     Alert,
     AlertTrigger,
@@ -82,11 +84,15 @@ REAL_ALERT_MAIL = alerts_mod._alert_mail
 class Outbox:
     """Подмена отправителей: что ушло бы в Resend и Web Push."""
 
-    def __init__(self, *, fail_mail: int | None = None, delay: float = 0.0) -> None:
+    def __init__(
+        self, *, fail_mail: int | None = None, fail_message: str = "", delay: float = 0.0
+    ) -> None:
         self.mails: list[tuple[str, str, str, str | None]] = []
         self.pushes: list[tuple[int, dict[str, Any]]] = []
         self.fail_mail = fail_mail
         """Код ответа Resend, которым «отказывает» почта (None — письма уходят)."""
+        self.fail_message = fail_message
+        """Сообщение Resend при отказе (по нему видно, постоянный ли отказ)."""
         self.delay = delay
         self._lock = threading.Lock()
 
@@ -94,7 +100,7 @@ class Outbox:
         if self.delay:
             time.sleep(self.delay)
         if self.fail_mail is not None:
-            raise MailError(self.fail_mail)
+            raise MailError(self.fail_mail, "validation_error", self.fail_message)
         with self._lock:
             self.mails.append((to, subject, text, idempotency_key))
 
@@ -215,16 +221,22 @@ def test_is_local_url() -> None:
 # --- письмо: ключ идемпотентности и строгий режим ------------------------------------------------
 
 
+BAD_TO = "Invalid `to` field. The email address needs to follow the `email@example.com` format."
+BAD_FROM = "Invalid `from` field. The email address needs to follow the `email@example.com` format."
+
+
 class _Resp:
-    def __init__(self, code: int) -> None:
+    def __init__(self, code: int, name: str = "", message: str = "") -> None:
         self.status_code = code
-        self.text = "{}"
+        self.text = json.dumps({"statusCode": code, "name": name, "message": message})
 
 
-def _fake_post(calls: list[dict[str, Any]], code: int) -> Callable[..., _Resp]:
+def _fake_post(
+    calls: list[dict[str, Any]], code: int, name: str = "", message: str = ""
+) -> Callable[..., _Resp]:
     def post(url: str, **kw: Any) -> _Resp:
         calls.append({"url": url, **kw})
-        return _Resp(code)
+        return _Resp(code, name, message)
 
     return post
 
@@ -237,21 +249,29 @@ def test_send_mail_idempotency_header_and_strict(monkeypatch: pytest.MonkeyPatch
     assert calls[-1]["headers"]["Idempotency-Key"] == "alert-trigger-1"
     send_mail("a@example.com", "s", "t")
     assert "Idempotency-Key" not in calls[-1]["headers"]
-    # отказ провайдера: в строгом режиме — исключение, без него — только лог (как раньше)
-    for code, permanent in (
-        (401, False),
-        (403, False),
-        (429, False),
-        (500, False),
-        (503, False),
-        (400, True),
-        (422, True),
+    # отказ провайдера: в строгом режиме — исключение, без него — только лог (как раньше).
+    # Постоянный — только отказ по адресу получателя; неверный ключ, MAIL_FROM, пропущенное поле,
+    # лимит и сбой провайдера касаются всех писем — их повторяют (provider_wide)
+    for code, name, message, permanent in (
+        (401, "validation_error", "API key is invalid", False),
+        (403, "validation_error", "The example.com domain is not verified.", False),
+        (429, "rate_limit_exceeded", "Too many requests.", False),
+        (500, "application_error", "", False),
+        (503, "service_unavailable", "", False),
+        (400, "validation_error", "API key is invalid", False),
+        (400, "validation_error", BAD_FROM, False),
+        (422, "missing_required_field", "Missing `from` field.", False),
+        (422, "invalid_from_address", BAD_FROM, False),
+        (422, "", "", False),
+        (400, "validation_error", BAD_TO, True),
+        (422, "validation_error", BAD_TO, True),
     ):
-        monkeypatch.setattr(mail_mod.httpx, "post", _fake_post(calls, code))
+        monkeypatch.setattr(mail_mod.httpx, "post", _fake_post(calls, code, name, message))
         send_mail("a@example.com", "s", "t")
         with pytest.raises(MailError) as err:
             send_mail("a@example.com", "s", "t", strict=True)
-        assert err.value.status_code == code and err.value.permanent is permanent
+        assert err.value.status_code == code and err.value.permanent is permanent, message
+        assert err.value.name == name and provider_wide(err.value) is not permanent
     # 409 по ключу идемпотентности — письмо с этим ключом уже отправлено: это успех
     monkeypatch.setattr(mail_mod.httpx, "post", _fake_post(calls, 409))
     send_mail("a@example.com", "s", "t", idempotency_key="digest-1-daily-2031-03-04", strict=True)
@@ -274,8 +294,10 @@ def test_send_mail_network_error_raises(monkeypatch: pytest.MonkeyPatch) -> None
 
     monkeypatch.setattr(settings, "resend_api_key", "re_test")
     monkeypatch.setattr(mail_mod.httpx, "post", down)
-    with pytest.raises(httpx.ConnectError):
+    with pytest.raises(httpx.ConnectError) as err:
         send_mail("a@example.com", "s", "t")
+    assert provider_wide(err.value)
+    assert not provider_wide(RuntimeError("ошибка в коде"))
 
 
 # --- кто может рассылать -------------------------------------------------------------------------
@@ -289,7 +311,10 @@ def test_mail_ready_and_delivery_ready(monkeypatch: pytest.MonkeyPatch) -> None:
                 _keys(monkeypatch, mail=mail, push=push)
                 assert mail_ready() is (mail or not prod)
                 assert can_deliver_inline() is (mail and push)
-                assert delivery_ready() is ((mail and push) or not prod)
+                assert delivery_ready() is (mail or push or not prod)
+                assert channels_ready() == (
+                    {"mail": mail, "push": push} if prod else {"mail": True, "push": True}
+                )
 
 
 def test_mail_key_has_no_colons() -> None:
@@ -574,14 +599,20 @@ def test_inline_failure_stays_queued_for_notifier(
     db.refresh(trig)
     assert not trig.notified and delivery_state(trig)["status"] == QUEUED
     assert alert.triggers_count == 1  # срабатывание само по себе записано
+    state = delivery_state(trig)
+    assert state["attempts"] == 1 and state["push_done"] is True and "mail_done" not in state
+    assert len(broken.pushes) == 1
     out = Outbox()
-    assert deliver_pending(db, mail=out.mail, push=out.push) == 1
+    later = datetime.fromisoformat(state["retry_at"]) + timedelta(seconds=1)
+    assert deliver_pending(db, later, mail=out.mail, push=out.push) == 1
     db.refresh(trig)
-    assert trig.notified and len(out.mails) == 1
+    assert trig.notified and len(out.mails) == 1 and out.pushes == []  # push уже ушёл
 
 
 @db_only
 def test_retries_are_bounded_then_failed(db: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Сбой не почты (push падает с ошибкой) — не больше ``DELIVERY_MAX_ATTEMPTS`` попыток, затем
+    ``failed``; письмо ушло с первой попытки и не повторялось: каналы независимы."""
     _as_alerts_service(monkeypatch)
     _, alert, _ = _alert_setup(db)
     _only(monkeypatch, {alert.id})
@@ -589,26 +620,77 @@ def test_retries_are_bounded_then_failed(db: Session, monkeypatch: pytest.Monkey
     trig = _fire_one(db, alert, now.replace(second=0, microsecond=0))
     db.commit()
     _as_notifier(monkeypatch)
-    out = Outbox(fail_mail=503)
+    out = Outbox()
+
+    def broken_push(s: Session, user_id: int, payload: dict[str, Any]) -> int:
+        raise RuntimeError("push: ошибка в данных подписки")
+
     t = now
     for attempt in range(1, DELIVERY_MAX_ATTEMPTS + 1):
-        assert deliver_pending(db, t, mail=out.mail, push=out.push) == 0
+        assert deliver_pending(db, t, mail=out.mail, push=broken_push) == 0
         db.refresh(trig)
         state = delivery_state(trig)
-        assert state["attempts"] == attempt and "503" in state["error"]
+        assert state["attempts"] == attempt and "push" in state["error"]
         if attempt < DELIVERY_MAX_ATTEMPTS:
             assert state["status"] == QUEUED
             retry_at = datetime.fromisoformat(state["retry_at"])
             assert retry_at > t
             # до паузы строка не берётся
-            assert deliver_pending(db, t, mail=out.mail, push=out.push) == 0
+            assert deliver_pending(db, t, mail=out.mail, push=broken_push) == 0
             assert delivery_state(trig)["attempts"] == attempt
             t = retry_at + timedelta(seconds=1)
     assert delivery_state(trig)["status"] == FAILED and not trig.notified
-    # push ушёл с первой попытки и больше не повторялся: каналы независимы
-    assert len(out.pushes) == 1 and out.pushes[0][1]["tag"] == f"alert-{trig.id}"
-    assert delivery_state(trig)["push_done"] is True and "mail_done" not in delivery_state(trig)
-    assert deliver_pending(db, t + timedelta(hours=1), mail=out.mail, push=out.push) == 0
+    assert len(out.mails) == 1 and out.mails[0][3] == f"alert-trigger-{trig.id}"
+    assert delivery_state(trig)["mail_done"] is True and "push_done" not in delivery_state(trig)
+    assert deliver_pending(db, t + timedelta(hours=1), mail=out.mail, push=broken_push) == 0
+
+
+@db_only
+def test_provider_wide_mail_refusal_retries_until_fixed_or_stale(
+    db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Отказ почты не из-за письма (неверный MAIL_FROM — 422, сбой провайдера — 503) не делает
+    срабатывание ``failed`` ни с первой, ни с шестой попытки: письмо ждёт, пока настройки
+    исправят (повтор не реже раза в 8 минут), и уходит; не исправили за сутки — ``expired``.
+    Push уходит с первой попытки."""
+    _as_alerts_service(monkeypatch)
+    _, alert, _ = _alert_setup(db)
+    _only(monkeypatch, {alert.id})
+    now = datetime.now(tz=UTC)
+    fixed = _fire_one(db, alert, now.replace(second=0, microsecond=0))
+    stale = _fire_one(db, alert, (now - timedelta(minutes=1)).replace(second=0, microsecond=0))
+    db.commit()
+    _as_notifier(monkeypatch)
+    out = Outbox()
+    bad_from = Outbox(fail_mail=422, fail_message=BAD_FROM)
+    down = Outbox(fail_mail=503)
+    t = now
+    for attempt in range(1, DELIVERY_MAX_ATTEMPTS + 4):
+        box = bad_from if attempt % 2 else down
+        deliver_pending(db, t, mail=box.mail, push=out.push)
+        db.refresh(fixed)
+        db.refresh(stale)
+        for trig in (fixed, stale):
+            state = delivery_state(trig)
+            assert state["status"] == QUEUED and not trig.notified, state
+            assert state["push_done"] is True and "mail_done" not in state
+        retry_at = max(
+            datetime.fromisoformat(delivery_state(r)["retry_at"]) for r in (fixed, stale)
+        )
+        assert retry_at - t <= timedelta(minutes=8, seconds=1)
+        t = retry_at + timedelta(seconds=1)
+    assert len(out.pushes) == 2  # push — по разу, письма ждут
+    assert delivery_state(fixed)["attempts"] > DELIVERY_MAX_ATTEMPTS
+    # MAIL_FROM исправили: свежее срабатывание доставлено, суточное — устарело
+    stale.created_at = now - timedelta(hours=25)
+    db.commit()
+    assert deliver_pending(db, t, mail=out.mail, push=out.push) == 2
+    db.refresh(fixed)
+    db.refresh(stale)
+    assert fixed.notified and delivery_state(fixed)["status"] == SENT
+    assert [m[3] for m in out.mails] == [f"alert-trigger-{fixed.id}"]
+    assert delivery_state(stale)["status"] == EXPIRED
+    assert stale.notified  # push по нему дошёл — пользователь уведомлён
 
 
 @db_only
@@ -663,6 +745,7 @@ def test_quiet_hours_and_legacy_rows(db: Session, monkeypatch: pytest.MonkeyPatc
 def test_production_notifier_without_keys_leaves_queue(
     db: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """В production без ключей обоих каналов очередь не трогается."""
     _production(monkeypatch)
     monkeypatch.setattr(alerts_mod, "_not_ready_warned", False)
     _keys(monkeypatch, mail=True, push=False)
@@ -670,12 +753,65 @@ def test_production_notifier_without_keys_leaves_queue(
     _only(monkeypatch, {alert.id})
     trig = _fire_one(db, alert, datetime.now(tz=UTC).replace(second=0, microsecond=0))
     db.commit()
+    _keys(monkeypatch, mail=False, push=False)
     out = Outbox()
     assert deliver_pending(db, mail=out.mail, push=out.push) == 0
     db.refresh(trig)
-    assert delivery_state(trig)["status"] == QUEUED and out.mails == []
+    assert delivery_state(trig) == {"status": QUEUED} and out.mails == [] and out.pushes == []
     _keys(monkeypatch, mail=True, push=True)
     assert deliver_pending(db, mail=out.mail, push=out.push) == 1
+    assert len(out.mails) == 1 and len(out.pushes) == 1
+
+
+@db_only
+def test_production_without_vapid_sends_mail_and_holds_push(
+    db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """У уведомителя есть ключ почты, а VAPID пуст: письмо уходит сразу (и тем, кто выбрал только
+    письма), push ждёт ключей, не засчитывая попыток и не задерживая очередь; ключи вернулись —
+    push уходит с пометкой времени срабатывания. Без ключей до конца суток — ``expired``, но
+    письмо уже дошло (``notified``)."""
+    _production(monkeypatch)
+    _as_alerts_service(monkeypatch)
+    _, both, _ = _alert_setup(db)
+    _, mail_only, _ = _alert_setup(db, push_alerts=False)
+    _, push_only, _ = _alert_setup(db, email_alerts=False)
+    _only(monkeypatch, {both.id, mail_only.id, push_only.id})
+    now = datetime.now(tz=UTC)
+    at = now.replace(second=0, microsecond=0)
+    t_both, t_mail, t_push = (_fire_one(db, a, at) for a in (both, mail_only, push_only))
+    t_late = _fire_one(db, both, at - timedelta(minutes=1))
+    db.commit()
+    _keys(monkeypatch, mail=True, push=False)  # уведомитель без VAPID
+    out = Outbox()
+    assert deliver_pending(db, now, mail=out.mail, push=out.push) == 1  # только письмо-only
+    for r in (t_both, t_mail, t_push, t_late):
+        db.refresh(r)
+    assert t_mail.notified and delivery_state(t_mail)["status"] == SENT
+    for r in (t_both, t_late):
+        state = delivery_state(r)
+        assert state["status"] == QUEUED and state["mail_done"] is True
+        assert state["waiting"] == ["push"] and "attempts" not in state
+    assert delivery_state(t_push)["waiting"] == ["push"] and not t_push.notified
+    assert sorted(m[3] or "" for m in out.mails) == sorted(
+        f"alert-trigger-{r.id}" for r in (t_both, t_mail, t_late)
+    )
+    assert out.pushes == []
+    # до паузы строки не берутся — новые срабатывания ими не задерживаются
+    assert deliver_pending(db, now + timedelta(minutes=1), mail=out.mail, push=out.push) == 0
+    # VAPID вернули через 20 минут: push уходит, письма не повторяются
+    _keys(monkeypatch, mail=True, push=True)
+    t_late.created_at = now - timedelta(hours=25)  # а это срабатывание за сутки устарело
+    db.commit()
+    later = now + timedelta(minutes=20)
+    assert deliver_pending(db, later, mail=out.mail, push=out.push) == 3
+    for r in (t_both, t_push, t_late):
+        db.refresh(r)
+    assert t_both.notified and delivery_state(t_both)["status"] == SENT
+    assert t_push.notified and delivery_state(t_push)["status"] == SENT
+    assert delivery_state(t_late)["status"] == EXPIRED and t_late.notified
+    assert len(out.mails) == 3 and len(out.pushes) == 2
+    assert all("(сработал " in p[1]["body"] for p in out.pushes)
 
 
 @db_only
@@ -741,10 +877,118 @@ def test_push_failure_does_not_block_mail_and_retry_sends_only_push(
 
 
 @db_only
+def test_daily_limit_counts_mail_of_partly_failed_attempt(
+    db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Лимит 1 письмо в день. Письмо по первому срабатыванию ушло, push упал: попытка
+    откатилась, но письмо в лимите засчитано — второе срабатывание подавлено, а push первого на
+    повторе уходит (лимит, исчерпанный его же письмом, его не подавляет)."""
+    _as_alerts_service(monkeypatch)
+    _, alert, ns = _alert_setup(db, daily_limit=1)
+    _only(monkeypatch, {alert.id})
+    now = datetime.now(tz=UTC)
+    first = _fire_one(db, alert, (now - timedelta(minutes=2)).replace(second=0, microsecond=0))
+    second = _fire_one(db, alert, (now - timedelta(minutes=1)).replace(second=0, microsecond=0))
+    db.commit()
+    _as_notifier(monkeypatch)
+    out = Outbox()
+    push_fails = [True]
+
+    def flaky_push(s: Session, user_id: int, payload: dict[str, Any]) -> int:
+        if push_fails and push_fails.pop():
+            raise ConnectionError("push-сервис недоступен")
+        return out.push(s, user_id, payload)
+
+    assert deliver_pending(db, now, mail=out.mail, push=flaky_push) == 1
+    for r in (first, second, ns):
+        db.refresh(r)
+    assert [m[3] for m in out.mails] == [f"alert-trigger-{first.id}"]
+    assert ns.sent_today == 1
+    assert delivery_state(first)["mail_done"] is True and delivery_state(first)["status"] == QUEUED
+    assert delivery_state(second) == {"status": SUPPRESSED, "reason": "daily_limit"}
+    later = datetime.fromisoformat(delivery_state(first)["retry_at"]) + timedelta(seconds=1)
+    assert deliver_pending(db, later, mail=out.mail, push=flaky_push) == 1
+    db.refresh(first)
+    db.refresh(ns)
+    assert first.notified and delivery_state(first)["status"] == SENT
+    assert len(out.mails) == 1 and [p[1]["tag"] for p in out.pushes] == [f"alert-{first.id}"]
+    assert ns.sent_today == 1
+
+
+@db_only
+def test_mail_retry_respects_limit_used_by_other_triggers(
+    db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Push ушёл, письмо упало (503); пока оно ждало повтора, лимит исчерпало письмо другого
+    срабатывания — повтор письмо не шлёт (``mail_skipped``), срабатывание доставлено push."""
+    _as_alerts_service(monkeypatch)
+    _, alert, ns = _alert_setup(db, daily_limit=1)
+    _only(monkeypatch, {alert.id})
+    now = datetime.now(tz=UTC)
+    first = _fire_one(db, alert, (now - timedelta(minutes=2)).replace(second=0, microsecond=0))
+    db.commit()
+    _as_notifier(monkeypatch)
+    out = Outbox()
+    assert deliver_pending(db, now, mail=Outbox(fail_mail=503).mail, push=out.push) == 0
+    db.refresh(first)
+    assert delivery_state(first)["push_done"] is True
+    _as_alerts_service(monkeypatch)
+    second = _fire_one(db, alert, (now - timedelta(minutes=1)).replace(second=0, microsecond=0))
+    db.commit()
+    _as_notifier(monkeypatch)
+    assert deliver_pending(db, now, mail=out.mail, push=out.push) == 1
+    later = datetime.fromisoformat(delivery_state(first)["retry_at"]) + timedelta(seconds=1)
+    assert deliver_pending(db, later, mail=out.mail, push=out.push) == 1
+    for r in (first, second, ns):
+        db.refresh(r)
+    assert [m[3] for m in out.mails] == [f"alert-trigger-{second.id}"] and ns.sent_today == 1
+    assert first.notified and delivery_state(first)["status"] == SENT
+    assert delivery_state(first)["mail_skipped"] == "daily_limit"
+    assert len(out.pushes) == 2
+
+
+@db_only
+def test_mail_outage_does_not_stall_the_pass(db: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Почта недоступна (таймаут сети): в проходе одна попытка письма, остальные письма ждут
+    ``DELIVERY_RETRY_AFTER`` без попыток, push по всем срабатываниям уходит сразу; почта ожила —
+    письма уходят по одному на срабатывание."""
+    _as_alerts_service(monkeypatch)
+    _, alert, _ = _alert_setup(db)
+    _only(monkeypatch, {alert.id})
+    now = datetime.now(tz=UTC)
+    trigs = [
+        _fire_one(db, alert, (now - timedelta(minutes=i)).replace(second=0, microsecond=0))
+        for i in range(3)
+    ]
+    db.commit()
+    _as_notifier(monkeypatch)
+    out = Outbox()
+    tries: list[str | None] = []
+
+    def timeout(to: str, subject: str, text: str, idempotency_key: str | None = None) -> None:
+        tries.append(idempotency_key)
+        raise httpx.ConnectTimeout("timed out")
+
+    assert deliver_pending(db, now, mail=timeout, push=out.push) == 0
+    assert len(tries) == 1 and len(out.pushes) == 3
+    for r in trigs:
+        db.refresh(r)
+    states = sorted((delivery_state(r) for r in trigs), key=lambda st: "attempts" in st)
+    assert [st.get("attempts") for st in states] == [None, None, 1]
+    assert all(st["push_done"] is True and st["status"] == QUEUED for st in states)
+    assert [st.get("waiting") for st in states[:2]] == [["mail"], ["mail"]]
+    later = now + alerts_mod.DELIVERY_RETRY_AFTER + timedelta(seconds=1)
+    assert deliver_pending(db, later, mail=out.mail, push=out.push) == 3
+    assert sorted(m[3] or "" for m in out.mails) == sorted(f"alert-trigger-{r.id}" for r in trigs)
+    assert len(out.pushes) == 3
+
+
+@db_only
 def test_rejected_address_fails_without_retries(
     db: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Постоянный отказ (422 — неверный адрес): повтор не поможет, сразу ``failed``."""
+    """Постоянный отказ (422 по полю ``to`` — неверный адрес): повтор не поможет, сразу
+    ``failed``."""
     _as_alerts_service(monkeypatch)
     _, alert, _ = _alert_setup(db)
     _only(monkeypatch, {alert.id})
@@ -752,7 +996,7 @@ def test_rejected_address_fails_without_retries(
     trig = _fire_one(db, alert, now.replace(second=0, microsecond=0))
     db.commit()
     _as_notifier(monkeypatch)
-    out = Outbox(fail_mail=422)
+    out = Outbox(fail_mail=422, fail_message=BAD_TO)
     assert deliver_pending(db, now, mail=out.mail, push=out.push) == 0
     db.refresh(trig)
     state = delivery_state(trig)
@@ -898,7 +1142,7 @@ def test_digest_refused_by_provider_is_not_marked(
     ) -> None:
         assert strict and idempotency_key
         if codes[to] >= 300:
-            raise MailError(codes[to])
+            raise MailError(codes[to], "validation_error", BAD_TO if codes[to] == 422 else "")
         sent.append(to)
 
     def marked() -> set[int]:
@@ -981,6 +1225,76 @@ def test_two_digest_runs_send_once(monkeypatch: pytest.MonkeyPatch) -> None:
                 )
             ).all()
         assert len(logs) == 4 and len(sent) == 4
+    finally:
+        _cleanup(sorted(ids), [])
+
+
+@db_only
+@pytest.mark.parametrize(
+    ("code", "name", "message"),
+    [
+        (422, "missing_required_field", "Missing `from` field."),
+        (400, "validation_error", BAD_FROM),
+        (401, "validation_error", "API key is invalid"),
+    ],
+)
+def test_digest_config_refusal_keeps_the_day_for_retry(
+    monkeypatch: pytest.MonkeyPatch, code: int, name: str, message: str
+) -> None:
+    """Неверный MAIL_FROM или ключ: Resend отказывает всем (400/422/401), а не одному адресу.
+    Проход прерывается, ничего не отмечено, отметка дня в Redis — только аренда; настройки
+    исправили — повтор в тот же день доставляет всем по одному письму."""
+    _keys(monkeypatch, mail=True, push=True)
+    now = datetime(2031, 3, 10, 7, 0, tzinfo=UTC)  # понедельник
+    with SessionLocal() as s:
+        users = [_user(s) for _ in range(3)]
+        for u in users:
+            s.add(
+                NotificationSettings(
+                    user_id=u.id, unsubscribe_token=secrets.token_urlsafe(24), email_digest="daily"
+                )
+            )
+        s.commit()
+        ids = {u.id for u in users}
+    monkeypatch.setattr(
+        notify_mod, "digest_text", lambda db, user, *a: "дайджест" if user.id in ids else None
+    )
+    monkeypatch.setattr(notify_mod, "journal_report_text", lambda *a: None)
+    calls: list[dict[str, Any]] = []
+    key = notifier_mod.KEY_DIGEST + "date"
+
+    def run() -> list[tuple[str, str, int | None]]:
+        async def go() -> list[tuple[str, str, int | None]]:
+            n = notifier_mod.Notifier()
+            real, fake = n.redis, _FakeRedis()
+            n.redis = fake  # type: ignore[assignment]
+            try:
+                await n.digests(now)
+            finally:
+                await real.aclose()
+            return fake.sets
+
+        return asyncio.run(go())
+
+    def marked() -> int:
+        with SessionLocal() as s:
+            return len(
+                s.scalars(
+                    select(NotificationLog).where(
+                        NotificationLog.user_id.in_(ids), NotificationLog.kind == "digest"
+                    )
+                ).all()
+            )
+
+    try:
+        monkeypatch.setattr(mail_mod.httpx, "post", _fake_post(calls, code, name, message))
+        assert run() == [(key, "2031-03-10", notifier_mod.DIGEST_RETRY_AFTER)]
+        assert marked() == 0 and len(calls) == 1  # первый же отказ прерывает проход
+        monkeypatch.setattr(mail_mod.httpx, "post", _fake_post(calls, 200))
+        assert run()[-1] == (key, "2031-03-10", 3 * 86400)
+        assert marked() == 3
+        mailed = [c for c in calls[1:] if c["json"]["to"][0].startswith("ops-")]
+        assert len({c["headers"]["Idempotency-Key"] for c in mailed}) == 3
     finally:
         _cleanup(sorted(ids), [])
 

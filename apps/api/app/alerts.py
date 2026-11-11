@@ -16,6 +16,8 @@ zone (цена вошла в активную зону), structure (BOS/CHoCH), 
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
@@ -26,7 +28,7 @@ from sqlalchemy.orm import Session
 
 from app.chart_data import PAGE, bucket_start, load_candles
 from app.config import settings
-from app.mail import MailError, send_mail
+from app.mail import MailError, provider_wide, send_mail
 from app.mail import configured as mail_configured
 from app.models import (
     Alert,
@@ -34,6 +36,7 @@ from app.models import (
     FigureEvent,
     FigureRow,
     Instrument,
+    NotificationSettings,
     Pattern,
     User,
     Watchlist,
@@ -66,9 +69,10 @@ QUEUED, SENT, SUPPRESSED, EXPIRED, FAILED = "queued", "sent", "suppressed", "exp
 лимит, нет пользователя) / устарело / не доставлено после всех попыток. Строки без отметки
 (записаны до этой схемы) уведомитель не трогает."""
 DELIVERY_MAX_ATTEMPTS = 6
-"""Попыток доставки; после последней ошибки — ``failed``, строка больше не берётся."""
+"""Попыток доставки; после последней ошибки — ``failed``, строка больше не берётся. Не касается
+отказов почты не из-за письма (``provider_wide``): их повторяют до ``DELIVERY_MAX_AGE``."""
 DELIVERY_RETRY_AFTER = timedelta(seconds=30)
-"""Пауза перед повтором; удваивается с каждой попыткой (30 с … 8 мин, всего ~15 мин)."""
+"""Пауза перед повтором; удваивается с каждой попыткой (30 с … 8 мин)."""
 DELIVERY_MAX_AGE = timedelta(hours=24)
 """Срабатывание старше (по ``created_at``) не доставляется — ``expired``: уведомление о цене
 суточной давности уже вводит в заблуждение. Простой уведомителя (выкладка, перезапуск, сбой на
@@ -76,9 +80,16 @@ DELIVERY_MAX_AGE = timedelta(hours=24)
 DELIVERY_LATE = timedelta(minutes=5)
 """Доставлено позже этого после записи срабатывания — в push добавляется время срабатывания (в
 письме оно есть всегда): уведомление «с опозданием» не выдаётся за свежее."""
+DELIVERY_BACKOFF_MAX = 4
+"""Пауза между повторами растёт до ``DELIVERY_RETRY_AFTER`` × 2⁴ = 8 мин и дальше не растёт
+(повторы после отказа провайдера идут до ``DELIVERY_MAX_AGE``)."""
+DELIVERY_HOLD = timedelta(minutes=10)
+"""Канал, который этот процесс доставить не может (в production нет его ключей), ждёт столько
+до следующей проверки; попытка не засчитывается."""
 DELIVERY_BATCH = 200
 """Сколько срабатываний уведомитель берёт за один проход."""
 _not_ready_warned = False
+_waiting_warned: set[str] = set()
 
 
 class MailSender(Protocol):
@@ -390,15 +401,23 @@ def can_deliver_inline() -> bool:
     return mail_configured() and push_enabled()
 
 
-def delivery_ready() -> bool:
-    """Может ли этот процесс разбирать очередь срабатываний (``deliver_pending``).
+def channels_ready() -> dict[str, bool]:
+    """Какие каналы этот процесс может доставить: ``{"mail": …, "push": …}``.
 
-    Локально и на staging — всегда: без ключей письмо пишется в лог, push пропускается, как и
-    раньше. В production — только с ключом почты и ключами Web Push: иначе письмо ушло бы в лог,
-    push молча пропустился бы, а срабатывание отметилось бы доставленным. Без ключей строки ждут
-    в очереди процесс, у которого они есть (до ``DELIVERY_MAX_AGE``), в лог — предупреждение.
+    Локально и на staging — оба: без ключей письмо пишется в лог, push пропускается, как и раньше.
+    В production — каждый по своим ключам: без ключа почты письмо ушло бы в лог, без ключей Web
+    Push push молча пропустился бы, а срабатывание отметилось бы доставленным. Канал без ключей
+    ждёт (``DELIVERY_HOLD``), другой канал это не задерживает.
     """
-    return can_deliver_inline() or not settings.is_production
+    if not settings.is_production:
+        return {"mail": True, "push": True}
+    return {"mail": mail_configured(), "push": push_enabled()}
+
+
+def delivery_ready() -> bool:
+    """Может ли этот процесс разбирать очередь срабатываний (``deliver_pending``): локально и на
+    staging — всегда, в production — если есть ключи хотя бы одного канала."""
+    return any(channels_ready().values())
 
 
 def delivery_state(trig: AlertTrigger) -> dict[str, Any]:
@@ -424,6 +443,8 @@ def notify_trigger(
     *,
     mail: MailSender | None = None,
     push: PushSender | None = None,
+    ready: Mapping[str, bool] | None = None,
+    hold: timedelta = DELIVERY_HOLD,
 ) -> int:
     """Push и письмо по настройкам пользователя; тихие часы и дневной лимит соблюдаются.
 
@@ -431,12 +452,21 @@ def notify_trigger(
     тихие часы, дневной лимит) — ``delivery.status = suppressed`` с причиной, ``notified`` остаётся
     False, как и раньше. Письмо идёт с ключом идемпотентности ``alert-trigger-{id}``, push — с
     ``tag`` ``alert-{id}``: повтор после сбоя не даёт второго письма, а push заменяет прежний.
+
     Каналы независимы: сбой push не мешает письму и наоборот — ``DeliveryIncompleteError`` с тем,
-    что ушло (``push_done`` / ``mail_done``); повтор шлёт только недоставленное.
+    что ушло (``push_done`` / ``mail_done``); повтор шлёт только недоставленное. Канал, который
+    этот процесс сейчас доставить не может (``ready``: в production нет ключей), ждёт —
+    ``waiting`` и ``retry_at`` через ``hold``, попытка не засчитывается.
+
+    Тихие часы и лимит решают один раз — пока ни один канал не ушёл. Срабатывание, по которому
+    что-то уже доставлено, повтор не подавляет (иначе push, не ушедший из-за сбоя, пропал бы
+    из-за лимита, который исчерпало его же письмо); только письмо на повторе снова сверяется с
+    лимитом (``mail_skipped``) — его могли исчерпать другие срабатывания.
     ``mail`` / ``push`` — отправители (по умолчанию Resend и Web Push; в тестах — подмены).
     """
     mail = mail or _alert_mail
     push = push or send_to_user
+    ready = ready if ready is not None else channels_ready()
     now = now or datetime.now(tz=UTC)
     user = db.get(User, alert.user_id)
     if user is None or user.deleted_at is not None:
@@ -450,36 +480,52 @@ def notify_trigger(
     price = f" по {_fmt(trig.price)}" if trig.price is not None else ""
     tf = alert.timeframe or trig.details.get("tf") or "4h"
     url = f"/chart/{symbol}/{tf}" if symbol else "/alerts"
-    if in_quiet_hours(ns, now):
+    state = delivery_state(trig)
+    admitted = bool(state.get("push_done") or state.get("mail_done"))
+    if not admitted and in_quiet_hours(ns, now):
         _set_delivery(trig, status=SUPPRESSED, reason="quiet_hours")
         return 0
-    if limit_reached(ns, now):
+    if not admitted and limit_reached(ns, now):
         _set_delivery(trig, status=SUPPRESSED, reason="daily_limit")
         return 0
-    state = delivery_state(trig)
-    done: dict[str, bool] = {}
+    done: dict[str, Any] = {}
+    waiting: list[str] = []
     failure: Exception | None = None
     sent = 0
+    want_mail = (
+        ns.email_alerts
+        and user.email_verified_at is not None
+        and not state.get("mail_done")
+        and not state.get("mail_skipped")
+    )
+    if want_mail and admitted and limit_reached(ns, now):
+        want_mail = False
+        done["mail_skipped"] = "daily_limit"
     if ns.push_alerts and not state.get("push_done"):
         late = ""
         if trig.created_at is not None and now - trig.created_at > DELIVERY_LATE:
             late = f" (сработал {trig.triggered_at:%d.%m %H:%M} UTC)"
-        try:
-            sent += push(
-                db,
-                user.id,
-                {
-                    "title": "Алерт",
-                    "body": f"{text}{price}{late}",
-                    "url": url,
-                    "tag": f"alert-{trig.id}",
-                },
-            )
-            done["push_done"] = True
-        except Exception as exc:
-            log.warning("срабатывание %s: push не отправлен (%s)", trig.id, exc)
-            failure = exc
-    if ns.email_alerts and user.email_verified_at is not None and not state.get("mail_done"):
+        if not ready.get("push"):
+            waiting.append("push")
+        else:
+            try:
+                sent += push(
+                    db,
+                    user.id,
+                    {
+                        "title": "Алерт",
+                        "body": f"{text}{price}{late}",
+                        "url": url,
+                        "tag": f"alert-{trig.id}",
+                    },
+                )
+                done["push_done"] = True
+            except Exception as exc:
+                log.warning("срабатывание %s: push не отправлен (%s)", trig.id, exc)
+                failure = exc
+    if want_mail and not ready.get("mail"):
+        waiting.append("mail")
+    elif want_mail:
         try:
             mail(
                 user.email,
@@ -495,9 +541,25 @@ def notify_trigger(
             failure = exc  # ошибка письма важнее: по ней видно, постоянный ли отказ
     if failure is not None:
         raise DeliveryIncompleteError(failure, done)
+    if waiting:
+        _warn_waiting(waiting)
+        _set_delivery(trig, **done, waiting=waiting, retry_at=(now + hold).isoformat())
+        return sent
     trig.notified = True
-    _set_delivery(trig, status=SENT, **done)
+    _set_delivery(trig, status=SENT, waiting=[], **done)
     return sent
+
+
+def _warn_waiting(channels: list[str]) -> None:
+    """Один раз на процесс и канал: канал ждёт ключей (или восстановления провайдера)."""
+    for ch in channels:
+        if ch not in _waiting_warned:
+            _waiting_warned.add(ch)
+            log.warning(
+                "доставка алертов: канал %s сейчас недоступен (нет ключей или сбой провайдера) — "
+                "срабатывания ждут, другой канал уходит",
+                ch,
+            )
 
 
 def pending_ids(db: Session, now: datetime, limit: int = DELIVERY_BATCH) -> list[int]:
@@ -515,37 +577,55 @@ def pending_ids(db: Session, now: datetime, limit: int = DELIVERY_BATCH) -> list
     )
 
 
-def deliver_pending(
+@dataclass(frozen=True, slots=True)
+class DeliveryPass:
+    """Итог одного прохода очереди (``deliver_batch``)."""
+
+    decided: int
+    """Срабатываний решено: доставлено, подавлено, устарело или ``failed``."""
+    handled: int
+    """Срабатываний обработано этим экземпляром: решено, отложено (канал ждёт) или засчитана
+    ошибка. Строки, занятые другим экземпляром, сюда не входят."""
+    full: bool
+    """Выборка была полной (``limit`` строк): в очереди, скорее всего, есть ещё."""
+
+
+def deliver_batch(
     db: Session,
     now: datetime | None = None,
     *,
     mail: MailSender | None = None,
     push: PushSender | None = None,
     limit: int = DELIVERY_BATCH,
-) -> int:
-    """Уведомитель: доставить срабатывания из очереди (``alert_triggers`` со статусом ``queued``).
+) -> DeliveryPass:
+    """Уведомитель: один проход очереди (``alert_triggers`` со статусом ``queued``).
 
     Пока уведомитель лежит, строки ждут в БД — ничего не теряется (до ``DELIVERY_MAX_AGE``).
     Каждое срабатывание — в своей транзакции; строка берётся ``FOR UPDATE SKIP LOCKED`` и
     перепроверяется под блокировкой: второй экземпляр уведомителя (выкладка без простоя) её
-    пропустит, а уже доставленную не тронет. Исключение при доставке (сеть, 429/5xx почты, БД) —
-    попытка засчитывается, повтор через ``DELIVERY_RETRY_AFTER`` × 2ⁿ; после
-    ``DELIVERY_MAX_ATTEMPTS`` — ``failed``, и «ядовитое» срабатывание не держит очередь. Сбой
-    между отправкой и фиксацией даёт повтор, но не второе письмо: ключ идемпотентности тот же.
-    Тихие часы и лимит проверяются на момент доставки. Возвращает число решённых срабатываний.
-    В production без ключей почты и Web Push ничего не делает (``delivery_ready``).
+    пропустит, а уже доставленную не тронет. Исключение при доставке — попытка засчитывается
+    (``_count_failure``), повтор через паузу. Сбой между отправкой и фиксацией даёт повтор, но не
+    второе письмо: ключ идемпотентности тот же. Тихие часы и лимит проверяются на момент доставки.
+
+    Почта отказала не из-за письма (``provider_wide``: ключ, отправитель, лимит, сбой
+    провайдера, сеть) — до конца прохода письма не отправляются, а ждут ``DELIVERY_RETRY_AFTER``:
+    при таймаутах сети проход не растягивается на 15 с × размер очереди, а push по остальным
+    срабатываниям уходит сразу. В production без ключей обоих каналов ничего не делает.
     """
     global _not_ready_warned
     if not delivery_ready():
         if not _not_ready_warned:
             log.warning(
-                "доставка алертов: нет ключа почты или Web Push — очередь ждёт процесс с ними"
+                "доставка алертов: нет ключа почты и Web Push — очередь ждёт процесс с ними"
             )
             _not_ready_warned = True
-        return 0
+        return DeliveryPass(0, 0, False)
     now = now or datetime.now(tz=UTC)
-    done = 0
-    for tid in pending_ids(db, now, limit):
+    ready = channels_ready()
+    hold = DELIVERY_HOLD
+    decided = handled = 0
+    ids = pending_ids(db, now, limit)
+    for tid in ids:
         try:
             trig = db.get(AlertTrigger, tid, with_for_update={"skip_locked": True})
             if trig is None or trig.notified or delivery_state(trig).get("status") != QUEUED:
@@ -555,45 +635,104 @@ def deliver_pending(
             if alert is None:
                 _set_delivery(trig, status=SUPPRESSED, reason="no_alert")
             elif trig.created_at < now - DELIVERY_MAX_AGE:
-                _set_delivery(trig, status=EXPIRED)
-                log.warning("срабатывание %s: старше %s — не доставляем", tid, DELIVERY_MAX_AGE)
+                _expire(trig)
             else:
-                notify_trigger(db, alert, trig, now, mail=mail, push=push)
+                notify_trigger(db, alert, trig, now, mail=mail, push=push, ready=ready, hold=hold)
+            final = delivery_state(trig).get("status") != QUEUED
             db.commit()
-            done += 1
+            decided += final
+            handled += 1
         except Exception as exc:
             log.exception("срабатывание %s: ошибка доставки", tid)
             db.rollback()
-            _count_failure(db, tid, exc, now)
-    return done
+            handled += _count_failure(db, tid, exc, now)
+            cause = exc.cause if isinstance(exc, DeliveryIncompleteError) else exc
+            if ready["mail"] and provider_wide(cause):
+                ready = {**ready, "mail": False}  # почта лежит — письма ждут, push идёт
+                hold = DELIVERY_RETRY_AFTER
+    return DeliveryPass(decided, handled, len(ids) >= limit)
 
 
-def _count_failure(db: Session, tid: int, exc: Exception, now: datetime) -> None:
-    """Засчитать попытку: повтор через паузу, после последней (или при постоянном отказе
-    почты — неверный адрес) — ``failed``."""
+def deliver_pending(
+    db: Session,
+    now: datetime | None = None,
+    *,
+    mail: MailSender | None = None,
+    push: PushSender | None = None,
+    limit: int = DELIVERY_BATCH,
+) -> int:
+    """Один проход очереди (``deliver_batch``); возвращает число решённых срабатываний."""
+    return deliver_batch(db, now, mail=mail, push=push, limit=limit).decided
+
+
+def _expire(trig: AlertTrigger) -> None:
+    """Срабатывание старше ``DELIVERY_MAX_AGE`` — ``expired``. Если какой-то канал уже ушёл
+    (другой ждал ключей или упирался в сбой), пользователь уведомлён: ``notified``."""
+    state = delivery_state(trig)
+    trig.notified = bool(state.get("push_done") or state.get("mail_done"))
+    _set_delivery(trig, status=EXPIRED)
+    log.warning("срабатывание %s: старше %s — больше не доставляем", trig.id, DELIVERY_MAX_AGE)
+
+
+def _count_failure(db: Session, tid: int, exc: Exception, now: datetime) -> int:
+    """Засчитать попытку (в новой транзакции после отката): 1 — учтено, 0 — нет."""
     try:
         trig = db.get(AlertTrigger, tid, with_for_update=True)
         if trig is None or trig.notified or delivery_state(trig).get("status") != QUEUED:
             db.rollback()
-            return
-        attempts = int(delivery_state(trig).get("attempts", 0)) + 1
-        cause = exc.cause if isinstance(exc, DeliveryIncompleteError) else exc
-        fields: dict[str, Any] = {"attempts": attempts, "error": str(cause)[:200]}
-        if isinstance(exc, DeliveryIncompleteError):
-            fields.update(exc.done)  # ушедшие каналы повтор не шлёт
-        if isinstance(cause, MailError) and cause.permanent:
-            fields["status"] = FAILED
-            log.error("срабатывание %s: письмо отклонено (%s), не повторяем", tid, cause)
-        elif attempts >= DELIVERY_MAX_ATTEMPTS:
-            fields["status"] = FAILED
-            log.error("срабатывание %s: %d ошибок доставки, больше не пытаемся", tid, attempts)
-        else:
-            fields["retry_at"] = (now + DELIVERY_RETRY_AFTER * 2 ** (attempts - 1)).isoformat()
-        _set_delivery(trig, **fields)
+            return 0
+        _apply_failure(db, trig, exc, now)
         db.commit()
+        return 1
     except Exception:
         log.exception("срабатывание %s: учёт ошибки доставки", tid)
         db.rollback()
+        return 0
+
+
+def _apply_failure(db: Session, trig: AlertTrigger, exc: Exception, now: datetime) -> None:
+    """Попытка не удалась: повтор через паузу ``DELIVERY_RETRY_AFTER`` × 2ⁿ (не больше
+    × 2^``DELIVERY_BACKOFF_MAX``) или ``failed``.
+
+    - Постоянный отказ почты (неверный адрес получателя) — ``failed`` сразу.
+    - Отказ почты не из-за письма (``provider_wide``: ключ, MAIL_FROM, лимит, сбой провайдера,
+      сеть) — повтор, пока срабатывание не устарело (``DELIVERY_MAX_AGE``): после исправления
+      настроек письмо уйдёт, а не пропадёт.
+    - Остальное (сбой push, ошибка в данных) — не больше ``DELIVERY_MAX_ATTEMPTS`` попыток:
+      «ядовитое» срабатывание не держит очередь.
+
+    Ушедшие в этой попытке каналы (``DeliveryIncompleteError.done``) отмечаются, а ушедшее письмо
+    засчитывается в дневной лимит здесь же: увеличение счётчика в ``notify_trigger`` пропало при
+    откате вместе со всей попыткой.
+    """
+    state = delivery_state(trig)
+    attempts = int(state.get("attempts", 0)) + 1
+    cause = exc.cause if isinstance(exc, DeliveryIncompleteError) else exc
+    fields: dict[str, Any] = {"attempts": attempts, "error": str(cause)[:200]}
+    if isinstance(exc, DeliveryIncompleteError):
+        fields.update(exc.done)  # ушедшие каналы повтор не шлёт
+        if exc.done.get("mail_done") and not state.get("mail_done"):
+            _count_sent_mail(db, trig, now)
+    if isinstance(cause, MailError) and cause.permanent:
+        fields["status"] = FAILED
+        log.error("срабатывание %s: письмо отклонено (%s), не повторяем", trig.id, cause)
+    elif attempts >= DELIVERY_MAX_ATTEMPTS and not provider_wide(cause):
+        fields["status"] = FAILED
+        log.error("срабатывание %s: %d ошибок доставки, больше не пытаемся", trig.id, attempts)
+    else:
+        backoff = DELIVERY_RETRY_AFTER * 2 ** min(attempts - 1, DELIVERY_BACKOFF_MAX)
+        fields["retry_at"] = (now + backoff).isoformat()
+    _set_delivery(trig, **fields)
+
+
+def _count_sent_mail(db: Session, trig: AlertTrigger, now: datetime) -> None:
+    """Письмо по срабатыванию ушло — +1 к дневному счётчику писем пользователя."""
+    alert = db.get(Alert, trig.alert_id)
+    ns = db.get(NotificationSettings, alert.user_id) if alert is not None else None
+    if ns is None:
+        return
+    limit_reached(ns, now)  # обнуляет счётчик, если наступил новый день
+    ns.sent_today += 1
 
 
 def _symbol(db: Session, instrument_id: int) -> str:
@@ -612,9 +751,15 @@ def _fire(
         try:
             with db.begin_nested():
                 notify_trigger(db, alert, row, at)
-        except Exception:
-            # точка сохранения откатилась, строка осталась queued — повторит уведомитель
+        except Exception as exc:
+            # точка сохранения откатилась, строка осталась queued — повторит уведомитель; что
+            # успело уйти (и письмо в дневном лимите), отмечается, как и у уведомителя
             log.exception("алерт %s: доставка (повторит уведомитель)", alert.id)
+            try:
+                with db.begin_nested():
+                    _apply_failure(db, row, exc, datetime.now(tz=UTC))
+            except Exception:
+                log.exception("алерт %s: учёт ошибки доставки", alert.id)
     return 1
 
 
