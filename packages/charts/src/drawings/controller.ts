@@ -47,6 +47,11 @@ export type ControllerEvents = {
    * хранилище, на сервер и в лимит рисунков он не попадает.
    */
   onRuler?: (d: Drawing | null) => void;
+  /**
+   * Правка рисунка закончилась (отпустили, отменили, щипок вторым пальцем): то, что хозяин отложил на время правки
+   * (editing), — теперь.
+   */
+  onEditEnd?: () => void;
 };
 
 export type ControllerOptions = {
@@ -173,6 +178,14 @@ export class DrawingController {
 
   setMagnet(v: boolean): void {
     this.opts.magnet = v;
+  }
+
+  /**
+   * Идёт правка рисунка: его нажали и держат (мышью нажатие по невыбранному и выбирает его). Хозяин не меняет под ним
+   * шкалы (поле шкалы цены под карточку): точка и тело ушли бы из-под указателя; отложенное — в onEditEnd.
+   */
+  get editing(): boolean {
+    return this.drag !== null;
   }
 
   /** Поставлено точек начатого рисунка (0 — не начат). */
@@ -527,6 +540,7 @@ export class DrawingController {
       this.touched = drag.hit.id;
       this.ev.onSelect(drag.hit.id);
     }
+    this.ev.onEditEnd?.();
   }
 
   /** Правка прервана (второй палец — щипок графика): рисунок — на место, без шага отмены. */
@@ -534,6 +548,7 @@ export class DrawingController {
     const drag = this.drag;
     this.drag = null;
     if (drag && g.moved) this.ev.onMove(drag.hit.id, drag.origin, false);
+    if (drag) this.ev.onEditEnd?.();
   }
 
   /** Конец жеста постановки точки. */

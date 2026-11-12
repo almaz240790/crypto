@@ -8,7 +8,7 @@ import type { Derivatives, FigureOnChart, LayersResponse, PatternOnChart } from 
 import type { LiveSource } from "@/lib/liveBar";
 import s from "../terminal.module.css";
 import { useT } from "@/i18n/client";
-import { chartText } from "./chartText";
+import { chartText, drawingText } from "./chartText";
 import { useChartStore } from "./useChartStore";
 import { LegendChip, LiqUnavailableNote } from "./LegendChip";
 import { ObjectTooltip } from "./ObjectTooltip";
@@ -18,7 +18,6 @@ import { legendFit, legendTopMargin } from "./legendFit";
 import { cardBottomMargin, drawingExtent } from "./cardInset";
 import { LegendFitContext } from "./legendFitContext";
 import { MQ } from "@/lib/breakpoints";
-import { plural } from "@/lib/format";
 import c from "./chart.module.css";
 
 /**
@@ -206,6 +205,12 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
   const cryptoRef = useRef<Map<PanelKey, { paneIndex: number; series: ISeriesApi<"Line" | "Histogram">[] }>>(new Map());
   const drawPrimRef = useRef<DrawingsPrimitive | null>(null);
   const drawCtrlRef = useRef<DrawingController | null>(null);
+  /**
+   * Поле шкалы под карточку выбранного рисунка отложено: рисунок правят (мышью нажатие и выбирает, и тянет) — пересчёт
+   * после отпускания (marginRev), а не под курсором.
+   */
+  const marginWaitRef = useRef(false);
+  const [marginRev, setMarginRev] = useState(0);
   /** Шаг цены инструмента: стоп и цель новой позиции — по нему. */
   const tickRef = useRef<number | null>(null);
   const drawingsRef = useRef(drawings);
@@ -643,6 +648,11 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
         onDone: (ended) => drawingsRef.current?.onToolDone(ended),
         // измеритель временный (план 2A.5): не рисунок — только на графике, без состояния рисунков и синхронизации
         onRuler: (d) => prim.update({ ruler: d }),
+        onEditEnd: () => {
+          if (!marginWaitRef.current) return;
+          marginWaitRef.current = false;
+          setMarginRev((r) => r + 1);
+        },
       },
     );
     drawCtrlRef.current = dctrl;
@@ -827,11 +837,8 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     tickRef.current = n > 0 ? n : null;
   }, [tick]);
 
-  // тексты плашек позиции на холсте — на языке интерфейса
-  const drawText: DrawingText = useMemo(
-    () => ({ entry: t("Вход"), stop: t("Стоп"), target: t("Цель"), risk: t("риск"), size: t("объём"), bars: (n: number) => t(plural(n, "{n} свеча", "{n} свечи", "{n} свечей"), { n }), day: t("д"), hour: t("ч"), minute: t("мин") }),
-    [t],
-  );
+  // тексты плашек позиции и измерителя на холсте — на языке интерфейса
+  const drawText: DrawingText = useMemo(() => drawingText(t), [t]);
   const drawProfile = drawings?.profile ?? null;
   useEffect(() => {
     drawPrimRef.current?.update({ text: drawText, profile: drawProfile });
@@ -1145,7 +1152,8 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
   // под карточкой (на телефоне — раскрытые «уровни» Фибоначчи, «параметры» позиции) — нижнее поле шкалы цены растёт
   // настолько, чтобы рисунок был над ней; свернули карточку или сняли выбор — поле прежнее. Пересчёт — при выборе,
   // раскрытии карточки и правке уровней, но не при перетаскивании точки: поле, растущее за точкой, уводило бы её из-под
-  // пальца
+  // пальца. Мышью нажатие по рисунку и выбирает его, и сразу тянет: появившаяся карточка не меняет шкалу под курсором —
+  // пересчёт после отпускания
   const drawState = drawings?.state;
   const selected = useMemo(() => (drawState?.selectedId ? (visibleOn(drawState, tf).find((d) => d.id === drawState.selectedId) ?? null) : null), [drawState, tf]);
   const selectedRef = useRef(selected);
@@ -1158,9 +1166,13 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     const pr = drawPrimRef.current?.projector;
     const cur = selectedRef.current;
     if (!term || !mainBox || mainBox.h <= 0) return;
+    if (drawCtrlRef.current?.editing) {
+      marginWaitRef.current = true;
+      return;
+    }
     const sel = selectedKey && cur && pr ? drawingExtent(cur, pr.projector()) : null;
     term.setBottomMargin(cardBottomMargin(cardBoxes, mainBox, sel, { top: term.topMarginShare, bottom: term.bottomMarginShare }));
-  }, [selectedKey, cardBoxes, mainBox, scale]);
+  }, [selectedKey, cardBoxes, mainBox, scale, marginRev]);
 
   // угол графика, чип справа сверху, легенда, «A» и карточки — препятствия для подписей разметки и рисунков (координаты
   // основной панели, CSS px)

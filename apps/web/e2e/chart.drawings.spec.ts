@@ -511,6 +511,49 @@ test.describe("десктоп, мышь: шкалы, двойной клик, д
     await expect(count).toHaveText("рисунков: 0");
     await expect.poll(() => rulerText(page)).toBeNull();
   });
+
+  test("рисунок под карточкой нажали и сразу тянут: он идёт за курсором, поле шкалы растёт после отпускания (ADR-0009, 2026-11-12)", async ({ page }) => {
+    const { X } = await open(page);
+    const term = (await page.getByTestId("terminal").boundingBox())!;
+    const margin = () => page.evaluate(() => (document.querySelector('[data-testid="terminal"]') as HTMLElement & { __chart: { priceScale(id: string): { options(): { scaleMargins: { bottom: number } } } } }).__chart.priceScale("right").options().scaleMargins.bottom);
+    const priceAt = (y: number) => page.evaluate((y) => (document.querySelector('[data-testid="terminal"]') as HTMLElement & { __chart: { panes(): { getSeries(): { coordinateToPrice(y: number): number | null }[] }[] } }).__chart.panes()[0]!.getSeries()[0]!.coordinateToPrice(y - document.querySelector('[data-testid="terminal"]')!.getBoundingClientRect().top)!, y);
+    const card = page.getByRole("region", { name: "выбранный рисунок" });
+    // трендовая внизу области свечей, слева — там, где карточка выбранного рисунка (над шкалой времени)
+    const h = (await plot(page)).h;
+    await page.getByRole("toolbar", { name: "панель рисования" }).getByRole("button", { name: "Трендовая линия", exact: true }).click();
+    await page.mouse.click(X(0.1), term.y + h - 20);
+    await page.mouse.click(X(0.3), term.y + h - 30);
+    await expect(card).toContainText("Трендовая линия");
+    // выбрана и была бы под карточкой — поле шкалы выросло, линия над карточкой
+    await expect.poll(margin).toBeGreaterThan(0.2);
+    await card.getByRole("button", { name: "снять выделение" }).click();
+    await expect(card).toHaveCount(0);
+    await expect.poll(margin).toBeCloseTo(0.2, 6);
+    const before = (await stored(page))[0]!.points;
+    const [a, b] = await onScreen(page, before);
+    const mid = { x: (a!.x + b!.x) / 2, y: (a!.y + b!.y) / 2 };
+    // цена, на которую курсор приведёт середину линии, — по шкале до нажатия
+    const want = (await priceAt(mid.y - 40)) - (await priceAt(mid.y));
+    const px = Math.abs((await priceAt(mid.y)) - (await priceAt(mid.y + 1)));
+    await page.mouse.move(mid.x, mid.y);
+    await page.mouse.down();
+    for (let i = 1; i <= 8; i++) {
+      await page.mouse.move(mid.x, mid.y - 5 * i);
+      await page.waitForTimeout(25);
+    }
+    // нажатие выбрало линию, карточка появилась — но шкала под курсором не меняется, пока тянут
+    await expect(card).toContainText("Трендовая линия");
+    expect(await margin()).toBeCloseTo(0.2, 6);
+    await page.mouse.up();
+    const after = (await stored(page))[0]!.points;
+    const moved = (after[0]!.price - before[0]!.price + after[1]!.price - before[1]!.price) / 2;
+    expect(Math.abs(moved - want) / px, "линия — под курсором (px)").toBeLessThanOrEqual(3);
+    // отпустили — поле выросло: линия над карточкой
+    await expect.poll(margin).toBeGreaterThan(0.2);
+    const box = (await card.boundingBox())!;
+    const pts = await onScreen(page, after);
+    expect(Math.max(...pts.map((p) => p.y))).toBeLessThanOrEqual(box.y - 10);
+  });
 });
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
