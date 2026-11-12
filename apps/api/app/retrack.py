@@ -216,7 +216,7 @@ def load_signals(
             "join strategies st on st.id = sv.strategy_id "
             "join instruments i on i.id = s.instrument_id "
             "left join signal_results r on r.signal_id = s.id "
-            "where s.scope = any(:scopes) and s.candle_close_time <= :now "
+            "where s.scope = any(:scopes) and s.published and s.candle_close_time <= :now "
             "and (s.candle_close_time >= :since or (:open and s.status = any(:open_statuses)))"
         ),
         {

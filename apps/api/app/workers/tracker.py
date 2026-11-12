@@ -285,7 +285,8 @@ def catch_up(tf: Timeframe = Timeframe.M1, instrument_id: int | None = None) -> 
     total = 0
     changes: list[dict[str, Any]] = []
     with SessionLocal() as session:
-        q = select(Signal).where(Signal.status.in_(OPEN))
+        # кандидат ниже порога публикации и отложенный — не сделка: не ведётся (миграция 0026)
+        q = select(Signal).where(Signal.status.in_(OPEN), Signal.published)
         if instrument_id is not None:
             q = q.where(Signal.instrument_id == instrument_id)
         for sig in session.scalars(q).all():

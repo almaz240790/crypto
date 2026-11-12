@@ -170,9 +170,10 @@ def _record_push(db: Session, user_id: int, kind: str, ref: str) -> bool:
 
 
 def _live_signal(sig: Signal) -> bool:
-    """Уведомления — только по live-сигналам. Область зафиксирована при публикации
-    (``signals.scope``): по форвард-сигналу версии, ставшей потом live, писем и push нет."""
-    return sig.scope == "live"
+    """Уведомления — только по опубликованным live-сигналам. Область зафиксирована при публикации
+    (``signals.scope``): по форвард-сигналу версии, ставшей потом live, писем и push нет. По
+    кандидату ниже порога публикации и отложенному (``signals.published`` = false) — тоже."""
+    return sig.scope == "live" and sig.published is not False
 
 
 def _recipients(db: Session, flag: str) -> list[tuple[User, NotificationSettings]]:
@@ -286,7 +287,7 @@ def digest_text(db: Session, user: User, period: str, now: datetime) -> str | No
         select(Signal, Instrument.symbol, SignalResult)
         .join(Instrument, Instrument.id == Signal.instrument_id)
         .join(SignalResult, SignalResult.signal_id == Signal.id)
-        .where(Signal.scope == "live", SignalResult.closed_at >= since)
+        .where(Signal.scope == "live", Signal.published, SignalResult.closed_at >= since)
         .order_by(SignalResult.closed_at)
     ).all()
     active = db.execute(
@@ -294,6 +295,7 @@ def digest_text(db: Session, user: User, period: str, now: datetime) -> str | No
         .join(Instrument, Instrument.id == Signal.instrument_id)
         .where(
             Signal.scope == "live",
+            Signal.published,
             Signal.status.in_(("pending", "active", "tp1_hit", "tp2_hit")),
         )
         .order_by(Signal.candle_close_time.desc())

@@ -12,6 +12,7 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.models import StrategyVersion
+from app.signal_scope import PUBLISHED_SQL_FILTER
 from engine.backtest import (
     BacktestTrade,
     Metrics,
@@ -65,7 +66,7 @@ def load_trades(
     """
     if scope == FORWARD and strategy_version_id is None:
         raise ValueError("форвард считается по одной версии стратегии: укажите версию")
-    where = ["s.scope = :scope"]
+    where = ["s.scope = :scope", PUBLISHED_SQL_FILTER]  # кандидаты ниже порога — не сделки
     params: dict[str, Any] = {"scope": scope}
     if grade:
         where.append("s.grade = :grade")

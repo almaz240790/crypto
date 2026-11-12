@@ -644,20 +644,15 @@ def load_open_trades(conn: Connection) -> list[OpenTrade]:
     отложенный сделкой не считается (как в ``forward.open_trade_blocker``)."""
     rows = conn.execute(
         text(
-            "select s.public_id, i.symbol, sv.version, sv.id, i.id, s.candle_close_time, "
-            "s.rationale_facts "
+            "select s.public_id, i.symbol, sv.version, sv.id, i.id, s.candle_close_time "
             "from signals s "
             "join strategy_versions sv on sv.id = s.strategy_version_id "
             "join instruments i on i.id = s.instrument_id "
-            "where s.status = any(:open)"
+            "where s.status = any(:open) and s.published"
         ),
         {"open": list(OPEN)},
     ).all()
-    return [
-        OpenTrade(r[0], r[1], r[2], r[3], r[4], r[5].astimezone(UTC))
-        for r in rows
-        if (r[6] or {}).get("publishable") is not False and (r[6] or {}).get("deferred") is not True
-    ]
+    return [OpenTrade(r[0], r[1], r[2], r[3], r[4], r[5].astimezone(UTC)) for r in rows]
 
 
 def last_minute_close(conn: Connection, instrument_id: int, now: datetime) -> datetime | None:
