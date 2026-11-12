@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
+from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
@@ -112,11 +113,12 @@ db_only = pytest.mark.skipif(not _db_available(), reason="БД с миграци
 
 
 class Api:
-    """Запросы /v1/drawings от имени тестового пользователя по его инструменту."""
+    """Запросы /v1/drawings от имени тестового пользователя: его инструмент и второй (other)."""
 
-    def __init__(self, client: TestClient, symbol: str) -> None:
+    def __init__(self, client: TestClient, symbol: str, other: str) -> None:
         self.client = client
         self.symbol = symbol
+        self.other = other
 
     def item(self, client_id: str, **over: Any) -> dict[str, Any]:
         base: dict[str, Any] = {
@@ -145,10 +147,16 @@ class Api:
             headers={"content-type": "application/json"},
         )
 
-    def stored(self) -> dict[str, Any]:
-        r = self.client.get(f"/v1/drawings?symbol={self.symbol}")
+    def stored(self, symbol: str | None = None) -> dict[str, Any]:
+        r = self.client.get(f"/v1/drawings?symbol={symbol or self.symbol}")
         assert r.status_code == 200, r.text
         return {d["client_id"]: d["levels"] for d in r.json()["items"]}
+
+    def get(self, **params: Any) -> dict[str, Any]:
+        r = self.client.get("/v1/drawings", params={"symbol": self.symbol, **params})
+        assert r.status_code == 200, r.text
+        body: dict[str, Any] = r.json()
+        return body
 
 
 @pytest.fixture
@@ -166,16 +174,24 @@ def api() -> Iterator[Api]:
     tag = datetime.now(tz=UTC).strftime("%H%M%S%f")
     # админ: без лимита рисунков и без обращения к подпискам
     user = User(email=f"fib-{tag}@example.com", role="admin")
-    inst = Instrument(
-        exchange="binance", symbol=f"FIB{tag[-6:]}USDT", base="FIB", quote="USDT",
-        market_type="futures", tick_size=Decimal("0.1"), lot_size=Decimal(1),
-    )  # fmt: skip
-    db.add_all([user, inst])
+    inst, other = (
+        Instrument(
+            exchange="binance",
+            symbol=f"{base}{tag[-6:]}USDT",
+            base=base,
+            quote="USDT",
+            market_type="futures",
+            tick_size=Decimal("0.1"),
+            lot_size=Decimal(1),
+        )
+        for base in ("FIB", "CPY")
+    )
+    db.add_all([user, inst, other])
     db.flush()
     app.dependency_overrides[auth.get_db] = lambda: db
     app.dependency_overrides[auth.current_user] = lambda: user
     try:
-        yield Api(TestClient(app), inst.symbol)
+        yield Api(TestClient(app), inst.symbol, other.symbol)
     finally:
         app.dependency_overrides.pop(auth.get_db, None)
         app.dependency_overrides.pop(auth.current_user, None)
@@ -203,7 +219,7 @@ def test_api_fib_levels_round_trip_normalised(api: Api) -> None:
 
 
 @db_only
-def test_api_fib_levels_rejected_with_422_and_nothing_stored(api: Api) -> None:
+def test_api_fib_levels_rejected_with_422_per_drawing(api: Api) -> None:
     cases: dict[str, list[float]] = {
         "25 значений": [i / 100 for i in range(25)],
         "NaN": [0, float("nan"), 1],
@@ -212,18 +228,21 @@ def test_api_fib_levels_rejected_with_422_and_nothing_stored(api: Api) -> None:
         "-10.5": [-10.5, 0],
     }
     for name, levels in cases.items():
-        # вместе с негодным рисунком не сохраняется и годный из того же пакета
+        # отказ — только негодному рисунку: годный из того же пакета записан (DTS-4)
         r = api.put([api.item("ok_1", levels=[0, 1]), api.item("bad_1", levels=levels)])
-        assert r.status_code == 422, f"{name}: {r.status_code} {r.text}"
-        detail = r.json()["detail"]
-        assert isinstance(detail, str) and detail.startswith("bad_1: "), name
-        assert "Фибоначчи" in detail, name
-    assert api.stored() == {}
+        assert r.status_code == 200, f"{name}: {r.status_code} {r.text}"
+        body = r.json()
+        assert [d["client_id"] for d in body["items"]] == ["ok_1"], name
+        [rej] = body["rejected"]
+        assert (rej["client_id"], rej["status"], rej["code"]) == ("bad_1", 422, "invalid"), name
+        assert rej["detail"].startswith("bad_1: ") and "Фибоначчи" in rej["detail"], name
+    assert api.stored() == {"ok_1": [0, 1]}
     # ровно 24 значения и ровно ±10 — принимаются
     edge = [-10, 10, *[i / 100 for i in range(22)]]
     r = api.put([api.item("edge", levels=edge)])
     assert r.status_code == 200, r.text
     assert r.json()["items"][0]["levels"] == sorted(edge)
+    assert r.json()["rejected"] == []
 
 
 @db_only
@@ -241,3 +260,127 @@ def test_api_levels_of_other_types_are_not_stored(api: Api) -> None:
     assert r.status_code == 200, r.text
     assert [d["levels"] for d in r.json()["items"]] == [None, None, [0, 1]]
     assert api.stored() == {"line_1": None, "line_2": None, "fib_1": [0, 1]}
+
+
+# --- пакет офлайн-очереди, инструмент рисунка и курсор (аудит: DTS-1, DTS-3, DTS-4) --------------
+
+
+@db_only
+def test_api_one_bad_drawing_does_not_block_the_batch(api: Api) -> None:
+    """Пакет — офлайн-очередь клиента по всем инструментам: каждый рисунок проверяется и пишется
+    отдельно, негодный получает отказ со статусом и кодом, остальные записаны (DTS-4)."""
+    r = api.put(
+        [
+            api.item("ok_1", levels=[0, 1]),
+            api.item("bad_type", type="spiral"),
+            api.item("bad_symbol", symbol="NOPEUSDT"),
+            api.item("bad_text", type="note", text="x" * 141),
+            {"client_id": "bad_shape", "symbol": api.symbol},
+            api.item("ok_2", type="hline", symbol=api.other),
+        ]
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert [(d["client_id"], d["symbol"]) for d in body["items"]] == [
+        ("ok_1", api.symbol),
+        ("ok_2", api.other),
+    ]
+    got = {x["client_id"]: (x["status"], x["code"]) for x in body["rejected"]}
+    assert got == {
+        "bad_type": (400, "invalid"),
+        "bad_symbol": (404, "unknown_symbol"),
+        "bad_text": (422, "invalid"),
+        "bad_shape": (422, "invalid"),
+    }
+    # текст отказа — без повторения входных данных (NaN в JSON ответа не сериализуется)
+    assert all(x["detail"].startswith(f"{x['client_id']}: ") for x in body["rejected"])
+    assert api.stored() == {"ok_1": [0, 1]}
+    assert api.stored(api.other) == {"ok_2": None}
+
+
+@db_only
+def test_api_limit_rejects_only_new_drawings_over_it(
+    api: Api, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Лимит тарифа на инструмент: отказ 403 только новому рисунку сверх лимита; правка и удаление
+    уже записанных и рисунки на другом инструменте проходят в том же пакете (DTS-4)."""
+    from app.routers import drawings as router
+
+    pro = replace(ENTITLEMENTS["pro"], drawings_limit=2)
+    monkeypatch.setattr(router, "entitlements_for", lambda db, user: pro)
+    r = api.put([api.item("d_a"), api.item("d_b")])
+    assert r.status_code == 200, r.text
+    r = api.put(
+        [
+            api.item("d_c"),
+            api.item("d_a", levels=[0, 0.5, 1], updated_at=2_000),
+            api.item("gone", deleted_at=1_000),
+            api.item("d_d", symbol=api.other),
+        ]
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert [d["client_id"] for d in body["items"]] == ["d_a", "gone", "d_d"]
+    [rej] = body["rejected"]
+    assert (rej["client_id"], rej["status"], rej["code"]) == ("d_c", 403, "limit")
+    assert "лимит рисунков на инструмент: 2" in rej["detail"]
+    assert api.stored() == {"d_a": [0, 0.5, 1], "d_b": None, "gone": None}
+    assert api.stored(api.other) == {"d_d": None}
+
+
+@db_only
+def test_api_never_moves_a_drawing_to_another_instrument(api: Api) -> None:
+    """Рисунок принадлежит инструменту, на котором создан: запись того же client_id с другим
+    инструментом (призрак копии на исходном графике) — отказ 409, рисунок на месте и не изменён
+    (DTS-1: правка или удаление призрака уносили копию с целевого инструмента)."""
+    r = api.put([api.item("copy_1", symbol=api.other)])
+    assert r.status_code == 200, r.text
+    ghost = api.item("copy_1", updated_at=2_000, deleted_at=2_000)
+    r = api.put([ghost, api.item("own_1")])
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert [d["client_id"] for d in body["items"]] == ["own_1"]
+    [rej] = body["rejected"]
+    assert (rej["client_id"], rej["symbol"], rej["status"], rej["code"]) == (
+        "copy_1",
+        api.symbol,
+        409,
+        "other_symbol",
+    )
+    assert api.stored(api.other) == {"copy_1": None}
+    assert api.stored() == {"own_1": None}
+    other = api.client.get(f"/v1/drawings?symbol={api.other}").json()["items"]
+    assert [(d["client_id"], d["updated_at"], d["deleted_at"]) for d in other] == [
+        ("copy_1", 1_000, None)
+    ]
+
+
+@db_only
+def test_api_cursor_is_server_side(api: Api, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Курсор чтения — время записи на сервере (synced_at), а не updated_at клиента: рисунок,
+    нарисованный офлайн раньше уже прочитанных и записанный позже, приходит на другое устройство
+    (DTS-3). Старые клиенты (since по updated_at) работают как прежде."""
+    from app.routers import drawings as router
+
+    # без перекрытия: в тесте всё в одной транзакции и в пределах миллисекунд
+    monkeypatch.setattr(router, "CURSOR_OVERLAP_MS", 0)
+    assert api.put([api.item("d_y", updated_at=2_000)]).status_code == 200
+    first = api.get()
+    assert [d["client_id"] for d in first["items"]] == ["d_y"]
+    cursor = first["cursor"]
+    assert isinstance(cursor, int) and cursor > 0
+    # устройство было офлайн: рисунок старше d_y, на сервер дошёл позже чтения
+    assert api.put([api.item("d_z", updated_at=1_000)]).status_code == 200
+    later = api.get(cursor=cursor)
+    assert "d_z" in [d["client_id"] for d in later["items"]]
+    assert later["cursor"] >= cursor
+    # курсор впереди всех записей — ничего; прежний since (updated_at клиента) — как раньше
+    assert api.get(cursor=later["cursor"] + 86_400_000)["items"] == []
+    legacy = api.get(since=2_000)
+    assert legacy["items"] == [] and isinstance(legacy["cursor"], int)
+    assert [d["client_id"] for d in api.get(since=500)["items"]] == ["d_y", "d_z"]
+    # перекрытие по умолчанию: курсор отстаёт от времени сервера (запись, начатая до чтения и
+    # закоммиченная после, не теряется)
+    monkeypatch.undo()
+    assert router.CURSOR_OVERLAP_MS > 0
+    assert api.get()["cursor"] < cursor
