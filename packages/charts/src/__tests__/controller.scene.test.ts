@@ -368,6 +368,35 @@ describe("ChartController: стадии сцены", () => {
     expect(store.getState().legend.find((l) => l.key === "price")?.tone).toBe(last.close >= last.open ? "up" : "down");
   });
 
+  it("отсчёт под меткой цены — цветом нарисованной свечи (Heikin Ashi), у линии — цветом линии (chart-data-live-4)", () => {
+    const { ctrl, el, term, flush } = setup({ candles: fx.candles });
+    const n = fx.candles.length;
+    const tail = fx.candles.slice(n - 112);
+    term.env.chart.state.range = { from: n - 112, to: n - 1 };
+    term.env.priceState.top = Math.max(...tail.map((c) => c.high)) * 1.01;
+    term.env.priceState.bottom = Math.min(...tail.map((c) => c.low)) * 0.99;
+    ctrl.set({ text: RU_TEXT, tf: "4h", structure: fx.structure });
+    flush();
+    const last = fx.candles.at(-1)!;
+    const rawUp = last.close >= last.open;
+    // HA-свеча направлена против настоящей: метка LWC и плашка — её цветом, отсчёт под ними — тоже
+    term.displayed = (t) => (t === last.time ? (rawUp ? { open: last.close + 1, close: last.close } : { open: last.close - 1, close: last.close }) : null);
+    ctrl.overlay.updateAllViews();
+    ctrl.notifyCandles("tick");
+    const cd = (el as unknown as { children: { dataset: Record<string, string>; style: Record<string, string> }[] }).children.find((c) => c.dataset.testid === "countdown")!;
+    const pal = ctrl.overlay.theme.palette;
+    expect(cd.style.display).toBe("block");
+    expect(cd.style.background).toBe(rawUp ? pal.down : pal.up);
+    // линия: метка LWC — цветом линии, отсчёт — тоже
+    term.displayed = null;
+    term.chartType = "line";
+    ctrl.notifyCandles("tick");
+    expect(cd.style.background).toBe(ctrl.overlay.theme.tokens.accent);
+    term.chartType = "candles";
+    ctrl.notifyCandles("tick");
+    expect(cd.style.background).toBe(rawUp ? pal.up : pal.down);
+  });
+
   it("процентная шкала: фильтр делений и в localization (деление под меткой — пустое)", () => {
     const { ctrl, term, flush } = setup();
     ctrl.set({ text: RU_TEXT });
