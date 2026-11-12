@@ -7,9 +7,11 @@ Redis и БД, открывает/закрывает инциденты и шл�
 
 Компонент «Сверка сигналов» (задача 8 пакета «Сигналы») монитор сам не считает: ежедневную сверку
 выполняет уведомитель (``app.reconcile``) и кладёт итог в Redis ``reconcile:last``; здесь он только
-читается. Критичное расхождение — ``down``, предупреждение — ``degraded``. Письмо по сверке уходит
-при открытии инцидента и когда список расхождений изменился, а не каждые шесть часов: сверка
-идёт раз в сутки, повтор того же письма ничего не сообщает.
+читается. Критичное расхождение — ``down``, предупреждение — ``degraded``. Писем по этому
+компоненту монитор не шлёт (``NO_EMAIL``): письмо со списком расхождений отправляет сама сверка,
+когда этот список изменился (``workers.notifier.reconcile_once``). Если итог сверки не прочитан
+(Redis не ответил), компонент в снимок не входит: открытый инцидент не закрывается и не
+открывается заново.
 
 Пороги из плана: нет закрытия свечи в ожидаемое время +2 мин; движок не отработал по > 5 %
 инструментов; стрим биржи молчит > 60 с (у нас — REST-резерв, поэтому считаем по возрасту
@@ -42,6 +44,10 @@ RECONCILE_KEY = "reconcile:last"
 RECONCILE_STALE = timedelta(hours=36)
 """Сверка идёт раз в сутки; если итог старше — она не выполняется."""
 RECONCILE_TITLE = "Сверка сигналов"
+NO_EMAIL = frozenset({"reconcile"})
+"""Компоненты, по инцидентам которых монитор писем не шлёт: их рассылает сам источник."""
+UNREADABLE: dict[str, Any] = {"unreadable": True}
+"""Снимок: итог сверки прочитать не удалось (в отличие от «сверки ещё не было»)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,7 +65,8 @@ class Snapshot:
     api_db_ok: bool
     redis_ok: bool
     reconcile: dict[str, Any] | None = None
-    """Итог последней сверки сигналов из Redis; ``None`` — сверка ещё не выполнялась."""
+    """Итог последней сверки сигналов из Redis; ``None`` — сверка ещё не выполнялась,
+    ``UNREADABLE`` — прочитать не удалось."""
 
 
 @dataclass(slots=True)
@@ -69,10 +76,6 @@ class Component:
     status: str
     detail: str
     checks: list[str] = field(default_factory=list)
-    """Строки подробностей для письма владельцу (на статус-страницу не выводятся)."""
-    realert: bool = True
-    """Повторять ли письмо по открытому инциденту каждые ``REALERT_AFTER``. ``False`` — письмо
-    уходит при открытии инцидента и при смене его текста."""
 
 
 def parse_done_key(key: str) -> datetime | None:
@@ -88,12 +91,15 @@ def last_h4_close(now: datetime) -> datetime:
     return floored - timedelta(hours=floored.hour % 4)
 
 
-def reconcile_component(state: dict[str, Any] | None, now: datetime) -> Component:
-    """Состояние компонента «Сверка сигналов» по итогу последней сверки."""
+def reconcile_component(state: dict[str, Any] | None, now: datetime) -> Component | None:
+    """Состояние компонента «Сверка сигналов» по итогу последней сверки; ``None`` — итог не
+    прочитан, компонент в этот раз не оценивается."""
 
     def comp(status: str, detail: str, checks: list[str] | None = None) -> Component:
-        return Component("reconcile", RECONCILE_TITLE, status, detail, checks or [], realert=False)
+        return Component("reconcile", RECONCILE_TITLE, status, detail, checks or [])
 
+    if state is not None and state.get("unreadable"):
+        return None
     if state is None:
         return comp(OK, "сверка ещё не выполнялась")
     if state.get("failed"):
@@ -184,7 +190,9 @@ def evaluate(s: Snapshot) -> list[Component]:
             "ок" if (s.api_db_ok and s.redis_ok) else ("нет Redis" if s.api_db_ok else "нет базы"),
         )
     )
-    out.append(reconcile_component(s.reconcile, s.now))
+    reconcile = reconcile_component(s.reconcile, s.now)
+    if reconcile is not None:
+        out.append(reconcile)
     return out
 
 
@@ -217,7 +225,7 @@ def collect(db: Session, r: Any | None) -> Snapshot:
         loaded = json.loads(raw) if raw else None
         reconcile = loaded if isinstance(loaded, dict) else None
     except Exception:
-        reconcile = None  # Redis недоступен — это покажет компонент «API и база»
+        reconcile = UNREADABLE  # Redis недоступен — это покажет компонент «API и база»
     api_db_ok = True
     try:
         m1 = db.execute(text("select max(open_time) from candles where timeframe='1m'")).scalar()
@@ -289,19 +297,13 @@ def sync_incidents(db: Session, components: list[Component], now: datetime) -> l
         elif inc.severity != c.status or inc.message != c.detail:
             inc.severity = c.status
             inc.message = c.detail
-            if not c.realert:
-                inc.alerted_at = None  # текст сменился — письмо уйдёт ещё раз
     db.flush()
     return opened
 
 
 def send_alerts(db: Session, components: list[Component], now: datetime) -> int:
     """Письмо владельцам по каждому открытому инциденту: при открытии и затем раз в 6 часов.
-
-    У компонента с ``realert = False`` повторов по времени нет: следующее письмо уйдёт, когда
-    сменится текст инцидента (``sync_incidents`` сбрасывает ``alerted_at``). Строки
-    ``Component.checks`` добавляются в письмо — подробности, которых нет на статус-странице.
-    """
+    По компонентам ``NO_EMAIL`` писем нет — их рассылает источник."""
     owners = sorted(settings.owner_email_set)
     if not owners:
         return 0
@@ -309,9 +311,10 @@ def send_alerts(db: Session, components: list[Component], now: datetime) -> int:
     by_key = {c.key: c for c in components}
     titles = {c.key: c.title for c in components}
     for inc in db.scalars(select(Incident).where(Incident.closed_at.is_(None))).all():
+        if inc.component in NO_EMAIL:
+            continue
         comp = by_key.get(inc.component)
-        repeat = comp is None or comp.realert
-        if inc.alerted_at is not None and (not repeat or now - inc.alerted_at < REALERT_AFTER):
+        if inc.alerted_at is not None and now - inc.alerted_at < REALERT_AFTER:
             continue
         subject = f"[Platform] {inc.severity.upper()}: {titles.get(inc.component, inc.component)}"
         details = "".join(f"- {line}\n" for line in (comp.checks if comp else []))

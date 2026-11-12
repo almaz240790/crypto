@@ -11,14 +11,16 @@
 Раз в сутки после ``RECONCILE_HOUR_UTC`` (и при старте, если итога ещё нет) — сверка записанных
 сигналов с офлайн-пересчётом (``app.reconcile``, задача 8 пакета «Сигналы»): в фоне, только на
 чтение. Итог кладётся в Redis ``reconcile:last``; монитор показывает его компонентом «Сверка
-сигналов» и шлёт письмо при расхождении. Сбой сверки тоже записывается итогом — молча она не
-пропадает.
+сигналов». Письмо владельцам со списком расхождений уходит, когда изменился их набор (вид и
+сигнал), — не каждые сутки с тем же списком. Сбой сверки тоже записывается итогом и уходит
+письмом один раз — молча сверка не пропадает.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import signal as os_signal
@@ -35,6 +37,7 @@ from sqlalchemy import func, select
 from app.coin_rank import refresh_if_due
 from app.config import settings
 from app.db import SessionLocal
+from app.mail import send_mail
 from app.models import Signal, SignalEvent
 from app.monitor import RECONCILE_KEY, run_monitor
 from app.notify import notify_event, notify_new_signal, run_digest, run_journal_reports
@@ -59,6 +62,8 @@ KEY_DIGEST = "notifier:digest:"
 RECONCILE_HOUR_UTC = 1
 # как часто проверять, пора ли (и повторять после сбоя)
 RECONCILE_CHECK_EVERY = 900
+# набор расхождений, о котором владельцам уже написали (подпись ``reconcile_signature``)
+RECONCILE_EMAILED_KEY = "reconcile:emailed"
 HEARTBEAT_KEY = "notifier:heartbeat"
 KEY_SIGNAL = "notifier:last_signal_id"
 KEY_EVENT = "notifier:last_event_id"
@@ -156,6 +161,49 @@ def reconcile_due(now: datetime, last_at: datetime | None) -> bool:
     return now.hour >= RECONCILE_HOUR_UTC and last_at.date() < now.date()
 
 
+def reconcile_signature(state: dict[str, Any]) -> str | None:
+    """Подпись итога сверки для писем: набор пар (вид расхождения, сигнал) или сбой; ``None`` —
+    писать не о чем. Тексты и число проверенных сигналов в подпись не входят: они меняются
+    каждый день, а набор расхождений — нет."""
+    if state.get("failed"):
+        return "failed"
+    pairs = sorted({(str(f["kind"]), str(f["public_id"])) for f in state.get("findings", [])})
+    if not pairs:
+        return None
+    return hashlib.sha256(json.dumps(pairs).encode()).hexdigest()[:16]
+
+
+def reconcile_email(r: Any, state: dict[str, Any]) -> bool:
+    """Письмо владельцам по итогу сверки, если набор расхождений не тот, о котором уже писали.
+    ``True`` — письмо отправлено. Расхождений нет — отметка снимается, следующее уйдёт снова."""
+    signature = reconcile_signature(state)
+    if signature is None:
+        r.delete(RECONCILE_EMAILED_KEY)
+        return False
+    sent = r.get(RECONCILE_EMAILED_KEY)
+    if (sent.decode() if isinstance(sent, bytes) else sent) == signature:
+        return False
+    owners = sorted(settings.owner_email_set)
+    if not owners:
+        return False
+    if state.get("failed"):
+        subject = "[Platform] Сверка сигналов не выполнена"
+        body = f"Ошибка: {state['failed']}\n"
+    else:
+        subject = (
+            f"[Platform] Сверка сигналов: критичных {state.get('critical', 0)}, "
+            f"предупреждений {state.get('warnings', 0)}"
+        )
+        body = "".join(f"- {line}\n" for line in state.get("lines", []))
+    body += (
+        f"Статус: {settings.frontend_url}/status\nАдминка: {settings.frontend_url}/admin?tab=system"
+    )
+    for to in owners:
+        send_mail(to, subject, body)
+    r.set(RECONCILE_EMAILED_KEY, signature)
+    return True
+
+
 def reconcile_once(now: datetime) -> str:
     """Синхронно: одна сверка, итог — в Redis. Возвращает строку для журнала.
 
@@ -170,8 +218,11 @@ def reconcile_once(now: datetime) -> str:
         except Exception as exc:
             failed = {"at": now.isoformat(), "failed": f"{type(exc).__name__}: {exc}"[:300]}
             r.set(RECONCILE_KEY, json.dumps(failed, ensure_ascii=False))
+            reconcile_email(r, failed)
             raise
-        r.set(RECONCILE_KEY, json.dumps(report.to_json(), ensure_ascii=False))
+        state = report.to_json()
+        r.set(RECONCILE_KEY, json.dumps(state, ensure_ascii=False))
+        reconcile_email(r, state)
         return "; ".join([report.summary(), *report.lines()])
     finally:
         r.close()

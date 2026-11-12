@@ -26,7 +26,9 @@ from engine.signal import (
     evaluate,
     input_hash,
     inputs_fingerprint,
+    inputs_upto,
     replay,
+    trim_inputs,
 )
 from engine.structure import Direction
 from engine.zones import ZoneKind
@@ -282,3 +284,31 @@ def test_inputs_fingerprint_reads_equal_numbers_and_moments_alike() -> None:
     )
     assert str(same.h4[0].close) != str(base.h4[0].close)  # запись числа другая, число то же
     assert inputs_fingerprint(same, AT.astimezone(msk)) == inputs_fingerprint(base, AT)
+
+
+def test_inputs_upto_marks_the_last_visible_row_and_trim_cuts_by_it() -> None:
+    base = inputs(**_derivatives(AT))
+    marks = inputs_upto(base, AT)
+    assert marks == {
+        "funding": AT.isoformat(),
+        "open_interest": AT.isoformat(),
+        "liquidations": (AT - timedelta(hours=8)).isoformat(),
+        "long_short": (AT - timedelta(hours=8)).isoformat(),
+    }
+    assert inputs_upto(MarketInputs(symbol="X", h4=base.h4), AT) == dict.fromkeys(marks)
+    # записи, пришедшие позже прогона (в том числе ровно в ``at``), отрезаются по отметкам
+    live_marks = inputs_upto(base, AT - timedelta(hours=1))
+    trimmed = trim_inputs(base, live_marks)
+    assert [r.time for r in trimmed.funding] == [AT - timedelta(hours=8)]
+    assert [r.time for r in trimmed.open_interest] == [AT - timedelta(hours=8)]
+    assert trimmed.h4 == base.h4 and trimmed.d1 == base.d1  # свечи не трогаются
+    assert trim_inputs(base, {"funding": None}).funding == []  # прогон ряда не видел
+    assert trim_inputs(base, {}).funding == base.funding  # отметки нет — ряд как есть
+    assert inputs_fingerprint(trimmed, AT) == inputs_fingerprint(
+        replace(
+            base,
+            funding=base.funding[:1],
+            open_interest=base.open_interest[:1],
+        ),
+        AT,
+    )

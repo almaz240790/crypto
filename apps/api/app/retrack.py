@@ -199,9 +199,9 @@ def load_signals(
 ) -> list[SignalRow]:
     """Записанные сигналы областей ``scopes`` с закрытием сигнальной свечи в [``since``; ``now``].
 
-    ``include_open`` — добавить сигналы старше ``since``, у которых сделка ещё открыта (их
-    сопровождение продолжается, ежедневная сверка проверяет и его). Порядок и фильтр версий —
-    как у ``load_forward_signals``.
+    ``include_open`` — добавить сигналы старше ``since``, у которых сделка ещё открыта или
+    закрылась не раньше ``since`` (ежедневная сверка проверяет их сопровождение и итог: сделка
+    могла жить дольше окна). Порядок и фильтр версий — как у ``load_forward_signals``.
     """
     rows = conn.execute(
         text(
@@ -217,7 +217,8 @@ def load_signals(
             "join instruments i on i.id = s.instrument_id "
             "left join signal_results r on r.signal_id = s.id "
             "where s.scope = any(:scopes) and s.published and s.candle_close_time <= :now "
-            "and (s.candle_close_time >= :since or (:open and s.status = any(:open_statuses)))"
+            "and (s.candle_close_time >= :since or (:open and (s.status = any(:open_statuses) "
+            "or r.closed_at >= :since)))"
         ),
         {
             "since": since,

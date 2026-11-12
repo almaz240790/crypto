@@ -24,8 +24,8 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Iterable, Sequence
-from dataclasses import dataclass, field
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -37,6 +37,7 @@ from engine.derivatives import (
     LiquidationBucket,
     LongShortRatio,
     OpenInterest,
+    Timed,
     TokenEvent,
     upto,
 )
@@ -184,6 +185,46 @@ def inputs_fingerprint(inputs: MarketInputs, at: datetime) -> dict[str, str]:
             ]
         ),
     }
+
+
+DERIVATIVE_SERIES = ("funding", "open_interest", "liquidations", "long_short")
+"""Ряды деривативов ``MarketInputs``: записи с временем, которые приходят в БД с задержкой."""
+
+
+def inputs_upto(inputs: MarketInputs, at: datetime) -> dict[str, str | None]:
+    """Время последней записи каждого ряда деривативов, видимой ``evaluate`` в момент ``at``
+    (ISO, UTC); ``None`` — записей нет.
+
+    Запись с временем ``at`` (funding, начисленный в ``at``; OI и long/short за час, кончившийся
+    в ``at``) приходит в БД по REST уже после оценки, а при пересчёте она есть. Чтобы пересчёт
+    видел то же, что видел живой прогон, вместе с сигналом хранится эта отметка, а пересчёт
+    обрезает ряды по ней (``trim_inputs``).
+    """
+    out: dict[str, str | None] = {}
+    for name in DERIVATIVE_SERIES:
+        rows = upto(getattr(inputs, name), at)
+        out[name] = rows[-1].time.astimezone(UTC).isoformat() if rows else None
+    return out
+
+
+def trim_inputs(inputs: MarketInputs, marks: Mapping[str, str | None]) -> MarketInputs:
+    """Вход, обрезанный по отметкам ``inputs_upto``: в каждом ряду деривативов — только записи не
+    позже отмеченной (``None`` — ни одной). Ряд без отметки не меняется. Свечи не обрезаются:
+    их окно и так ограничено закрытием к моменту сигнала."""
+
+    def cut[T: Timed](name: str, rows: Sequence[T]) -> Sequence[T]:
+        if name not in marks:
+            return rows
+        mark = marks[name]
+        return [] if mark is None else upto(rows, datetime.fromisoformat(mark))
+
+    return replace(
+        inputs,
+        funding=cut("funding", inputs.funding),
+        open_interest=cut("open_interest", inputs.open_interest),
+        liquidations=cut("liquidations", inputs.liquidations),
+        long_short=cut("long_short", inputs.long_short),
+    )
 
 
 def _bos_for_zone(structure: MarketStructure, zone: Zone) -> int | None:
