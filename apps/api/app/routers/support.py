@@ -15,7 +15,6 @@ from app import auth
 from app.billing import plan_for
 from app.config import settings
 from app.models import User
-from app.routers.public import optional_user
 from app.support import MAX_PER_HOUR, create_ticket, ticket_dict
 
 log = logging.getLogger("support")
@@ -46,7 +45,7 @@ def _rate_ok(key: str) -> bool:
 def create(
     body: TicketIn,
     request: Request,
-    user: User | None = Depends(optional_user),
+    user: User | None = Depends(auth.optional_user),
     db: Session = Depends(auth.get_db),
 ) -> dict[str, Any]:
     if user is None and not body.email:

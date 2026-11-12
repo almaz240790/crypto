@@ -215,6 +215,25 @@ def google_exchange(code: str, redirect_uri: str) -> dict[str, Any]:
 # --- зависимости FastAPI -------------------------------------------------------------------------
 
 
+# Кто сделал запрос, решают две функции ниже — для ``current_user`` (вход обязателен) и
+# ``optional_user`` (без входа — гость) одинаково, чтобы правила не расходились (ревью PR #162:
+# ``optional_user`` читал только Bearer, и клиент Premium с ключом получал ответ гостя):
+# - ``X-API-Key`` (план 3.10) важнее Bearer: только GET, аккаунт активен, тариф с API,
+#   лимит запросов на ключ; ключ передан (даже пустой), но не подошёл, — 401, а не гость;
+# - Bearer: токен есть, но недействителен или истёк — 401 (аудит TSA-1); пользователь удалён
+#   или не найден — 401; заблокирован — 403;
+# - ни ключа, ни Bearer — гость (``None``); ``current_user`` на это отвечает 401.
+
+
+def _active(user: User | None) -> User:
+    """Аккаунт может работать с API: удалён или не найден — 401, заблокирован — 403."""
+    if user is None or user.deleted_at is not None:
+        raise HTTPException(401, "пользователь не найден")
+    if user.blocked_at is not None:
+        raise HTTPException(403, "аккаунт заблокирован")
+    return user
+
+
 def _api_key_user(request: Request, db: Session, raw: str) -> User:
     """Вход по API-ключу (план 3.10): только GET, лимит запросов на ключ, только Premium."""
     from app import apikeys, ratelimit
@@ -225,6 +244,7 @@ def _api_key_user(request: Request, db: Session, raw: str) -> User:
     user = apikeys.find_user(db, raw)
     if user is None:
         raise HTTPException(401, "неверный или отозванный API-ключ")
+    _active(user)
     if not entitlements_for(db, user).api_access:
         raise HTTPException(403, "API-ключи доступны на тарифе Premium")
     if not ratelimit.hit(f"apikey:{sha256(raw)[:16]}", *apikeys.API_RATE):
@@ -232,20 +252,67 @@ def _api_key_user(request: Request, db: Session, raw: str) -> User:
     return user
 
 
-def current_user(request: Request, db: Session = Depends(get_db)) -> User:
-    api_key = request.headers.get("x-api-key")
-    if api_key:
-        return _api_key_user(request, db, api_key.strip())
+def api_key_user(request: Request, db: Session = Depends(get_db)) -> User | None:
+    """Пользователь по заголовку ``X-API-Key``; заголовка нет — ``None``.
+
+    Заголовок есть, но пустой (скрипт не нашёл ключ в окружении: ``{"X-API-Key": ""}``), — 401, как
+    неверный ключ, а не тихий гость и не вход по Bearer.
+
+    Зависимость общая для ``current_user``, ``optional_user`` и роутеров открытых данных
+    (``/v1``, ``/v1/chart``): там ключ проверяется и на эндпоинтах, которым пользователь не нужен,
+    — ответы 401/403/429 и лимит на ключ те же, что обещает /api-docs. FastAPI вызывает её один
+    раз за запрос, поэтому запрос считается в лимите ключа один раз."""
+    raw = request.headers.get("x-api-key")
+    if raw is None:
+        return None
+    return _api_key_user(request, db, raw.strip())
+
+
+def _bearer_user(request: Request, db: Session, *, blocked_is_guest: bool = False) -> User | None:
+    """Пользователь по ``Authorization: Bearer``; заголовка нет — ``None``.
+
+    ``blocked_is_guest`` — для открытых страниц: заблокированный аккаунт получает ответ гостя, а не
+    403. Вход и обновление токена блокировку не проверяют, поэтому сайт заблокированного шлёт его
+    токен и на открытые страницы; 403 там ломал бы график и ленту, а данные тарифа ему не
+    положены."""
     header = request.headers.get("authorization", "")
     if not header.lower().startswith("bearer "):
-        raise HTTPException(401, "нужен токен")
+        return None
     payload = decode_access_token(header[7:])
-    user = db.get(User, int(payload["sub"]))
-    if user is None or user.deleted_at is not None:
-        raise HTTPException(401, "пользователь не найден")
-    if user.blocked_at is not None:
-        raise HTTPException(403, "аккаунт заблокирован")
+    try:
+        user_id = int(payload["sub"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(401, "недействительный токен") from exc
+    user = db.get(User, user_id)
+    if blocked_is_guest and user is not None and user.deleted_at is None and user.blocked_at:
+        return None
+    return _active(user)
+
+
+def current_user(
+    request: Request,
+    db: Session = Depends(get_db),
+    key_user: User | None = Depends(api_key_user),
+) -> User:
+    """Вход обязателен: ключ или Bearer, иначе 401."""
+    user = key_user or _bearer_user(request, db)
+    if user is None:
+        raise HTTPException(401, "нужен токен")
     return user
+
+
+def optional_user(
+    request: Request,
+    db: Session = Depends(get_db),
+    key_user: User | None = Depends(api_key_user),
+) -> User | None:
+    """Необязательный вход: ни ключа, ни Bearer — гость (``None``). Ключ или токен есть, но не
+    подходит, — ошибка, как у ``current_user``: 401 (клиент обновит токен и повторит запрос, а если
+    сеанс кончился — повторит без токена, как гость), 403, 429. Тихий гость вместо ошибки отдавал
+    платящему права Free (минутные ТФ — 403, без слоя сигналов, лента с задержкой) — аудит TSA-1
+    для токена и ревью PR #162 для ключа. Исключение — заблокированный аккаунт по токену сайта:
+    ответ гостя, без данных тарифа (по ключу — 403)."""
+    return key_user or _bearer_user(request, db, blocked_is_guest=True)
 
 
 def promote_owner(user: User, owner_emails: set[str]) -> bool:
