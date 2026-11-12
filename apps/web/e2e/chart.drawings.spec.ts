@@ -1,5 +1,5 @@
 import { devices, expect, test, type Page } from "@playwright/test";
-import { H4, T0, mock } from "./helpers/chart";
+import { H4, T0, chartSettled, mock } from "./helpers/chart";
 import { census, installCensus, intersects, violations } from "./helpers/census";
 
 /**
@@ -112,9 +112,15 @@ async function finger(page: Page) {
       }
       await send("touchEnd", []);
     },
-    drag: async (x1: number, y1: number, x2: number, y2: number, steps = 10) => {
+    /**
+     * Протягивание. holdMs — палец стоит перед отпусканием: без этого сдвиг графика продолжается инерцией LWC
+     * (kineticScroll.touch: отпускание не позже 50 мс после последнего сдвига), а её длина зависит от того, как быстро
+     * пришли события, — под нагрузкой вид уезжал на 15 свечей дальше, к пустому месту справа от последней свечи.
+     */
+    drag: async (x1: number, y1: number, x2: number, y2: number, steps = 10, holdMs = 0) => {
       await send("touchStart", [[x1, y1]]);
       for (let i = 1; i <= steps; i++) await send("touchMove", [[x1 + ((x2 - x1) * i) / steps, y1 + ((y2 - y1) * i) / steps]]);
+      if (holdMs > 0) await page.waitForTimeout(holdMs);
       await send("touchEnd", []);
     },
   };
@@ -1198,9 +1204,14 @@ test.describe("позиция, палец", () => {
     await page.getByRole("button", { name: "Рисовать" }).tap();
     await page.getByRole("dialog", { name: "Рисование" }).getByRole("button", { name: "Позиция Long" }).tap();
     await expect(chip).toContainText("Нажмите цену входа");
-    // жест графика до касания: график едет, позиции нет
+    // вид после загрузки успокоился: сдвиг диапазона ниже — от пальца, а не от сброса вида по ширине шкалы цены
+    await chartSettled(page);
+    // жест графика до касания: график едет, позиции нет. Палец стоит перед отпусканием — сдвиг ровно на путь пальца, без
+    // инерции: с ней под нагрузкой вид уезжал к пустому месту справа от свечей, шкала цены сжималась по оставшимся
+    // свечам, и цель позиции, поставленной ниже, оказывалась над областью свечей (ручка — выше её края, нажатие у неё —
+    // жест графика, а не правка)
     const r0 = await range(page);
-    await f.drag(X(0.7), Y(0.3), X(0.4), Y(0.3));
+    await f.drag(X(0.7), Y(0.3), X(0.4), Y(0.3), 10, 120);
     await expect.poll(async () => (await range(page))!.from).not.toBe(r0!.from);
     await expect(count).toHaveText("рисунков: 0");
     await settle(page);
@@ -1213,6 +1224,11 @@ test.describe("позиция, палец", () => {
     expect(d0.points[1]!.price).toBeLessThan(d0.points[0]!.price);
     // ручка цели — пальцем в 10 px от неё (цель касания 44 px): цель выше, вход и стоп на месте, график стоит
     const k = await knobs(page);
+    const box = (await page.getByTestId("terminal").boundingBox())!;
+    const { w: pw, h: ph } = await plot(page);
+    expect(k.target.y + 6 - box.y, "нажатие у ручки цели — в области свечей").toBeGreaterThan(0);
+    expect(k.target.y + 6 - box.y).toBeLessThan(ph);
+    expect(k.target.x + 8 - box.x).toBeLessThan(pw);
     const r1 = await range(page);
     await f.drag(k.target.x + 8, k.target.y + 6, k.target.x + 8, k.target.y - 34);
     await expect.poll(async () => (await position(page)).points[2]!.price).toBeGreaterThan(d0.points[2]!.price);
