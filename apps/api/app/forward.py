@@ -51,7 +51,14 @@ from engine.data.binance import BinanceHistory
 from engine.derivatives import FundingRate, LongShortRatio, OpenInterest
 from engine.lifecycle import SignalLife, SignalStatus, blocking_signal
 from engine.params import StrategyParams
-from engine.signal import MarketInputs, NoSignal, SignalCandidate, evaluate, inputs_fingerprint
+from engine.signal import (
+    MarketInputs,
+    NoSignal,
+    SignalCandidate,
+    evaluate,
+    inputs_fingerprint,
+    inputs_upto,
+)
 from engine.strategies import STRATEGIES
 from engine.structure import Direction
 from engine.trade import TradeSetup
@@ -74,6 +81,9 @@ PAIR_LOCK_SQL = "select pg_advisory_xact_lock(hashtextextended(:key, 0))"
 """Блокировка пары (версия, инструмент) до конца транзакции — см. ``lock_signal_pair``."""
 INPUTS_FACT = "inputs"
 """Ключ ``signals.rationale_facts``, под которым лежит отпечаток входа ``evaluate``."""
+INPUTS_UPTO_FACT = "inputs_upto"
+"""Ключ ``signals.rationale_facts``: время последней записи каждого ряда деривативов, которую
+видел прогон (``engine.signal.inputs_upto``) — по нему сверка обрезает ряды при пересчёте."""
 BUSY_LOG = "%s %s %s: кандидат не записан — по инструменту у версии уже есть сделка: сигнал %s (%s)"
 """Пропуск по правилу одной открытой сделки: время сигнальной свечи, инструмент, версия,
 ``public_id`` мешающего сигнала и его состояние."""
@@ -574,6 +584,7 @@ def write_candidate(
     }
     if inputs is not None:
         facts[INPUTS_FACT] = inputs_fingerprint(inputs, cand.candle_close_time)
+        facts[INPUTS_UPTO_FACT] = inputs_upto(inputs, cand.candle_close_time)
     sig = Signal(
         public_id=secrets.token_hex(5),
         strategy_version_id=version.id,

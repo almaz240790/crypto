@@ -71,9 +71,15 @@ from app.retrack import (
     read_only_connection,
 )
 from engine.candles import Candle, Timeframe
-from engine.derivatives import FundingRate
+from engine.derivatives import FundingRate, LongShortRatio, OpenInterest
 from engine.params import FilterParams, StrategyParams
-from engine.signal import MarketInputs, SignalCandidate, evaluate, inputs_fingerprint
+from engine.signal import (
+    MarketInputs,
+    SignalCandidate,
+    evaluate,
+    inputs_fingerprint,
+    inputs_upto,
+)
 from engine.strategies import STRATEGIES
 
 D = Decimal
@@ -199,6 +205,7 @@ def _pub(cand: SignalCandidate, inputs: MarketInputs | None = None, **kw: Any) -
     fields: dict[str, Any] = dict(
         input_hash=cand.input_hash,
         fingerprint=inputs_fingerprint(inputs or _market(), AT),
+        inputs_upto=inputs_upto(inputs or _market(), AT),
         publishable=cand.score.publishable,
         deferred=cand.deferred,
         first_event_at=None,
@@ -262,6 +269,42 @@ def test_changed_data_that_does_not_change_the_signal_is_not_reported() -> None:
     assert inputs_fingerprint(later, AT) != inputs_fingerprint(_market(), AT)
     assert _candidate(later).trade == cand.trade
     assert check_replay(_row(cand), _pub(cand), later, PARAMS) is None
+
+
+def test_rows_that_arrive_after_the_run_do_not_hide_a_logic_mismatch() -> None:
+    """Funding, OI и long/short с временем ровно ``at`` приходят в БД по REST после оценки: живой
+    прогон их не видел, пересчёт на следующий день — видит. Сверка обрезает ряды по отметкам,
+    записанным с сигналом: иначе любое расхождение логики выглядело бы как «данные изменились»,
+    а запись, которая переключает фильтр, давала бы ложное предупреждение."""
+    cand = _candidate()
+    early = AT - timedelta(hours=8)
+    live = replace(
+        _market(),
+        funding=[FundingRate(early, D("0.0001"))],
+        open_interest=[OpenInterest(AT - timedelta(hours=1), D(1000))],
+        long_short=[LongShortRatio(AT - timedelta(hours=1), D("0.5"))],
+    )
+    later = replace(
+        live,
+        funding=[*live.funding, FundingRate(AT, D("0.0090"))],
+        open_interest=[*live.open_interest, OpenInterest(AT, D(5000))],
+        long_short=[*live.long_short, LongShortRatio(AT, D("0.95"))],
+    )
+    assert inputs_fingerprint(later, AT) != inputs_fingerprint(live, AT)
+    pub = _pub(cand, live)
+    assert pub.inputs_upto == {
+        "funding": early.isoformat(),
+        "open_interest": (AT - timedelta(hours=1)).isoformat(),
+        "liquidations": None,
+        "long_short": (AT - timedelta(hours=1)).isoformat(),
+    }
+    assert check_replay(_row(cand), pub, later, PARAMS) is None
+    moved = _row(cand, stop_loss=cand.trade.stop_loss - D("0.5"))
+    finding = check_replay(moved, pub, later, PARAMS)
+    assert finding is not None and finding.kind is Kind.LOGIC
+    # без отметок (сигнал записан до них) поздние записи выглядят как изменившиеся данные
+    old = check_replay(moved, replace(pub, inputs_upto=None), later, PARAMS)
+    assert old is not None and old.kind is Kind.INPUTS
 
 
 def test_signal_recorded_before_the_fingerprint_cannot_be_blamed_on_logic() -> None:
@@ -334,10 +377,20 @@ def test_difference_from_h4_reference_explained_by_minutes_is_not_an_alert() -> 
     """Внутри одной H4-свечи цена сначала взяла TP1, потом ушла в безубыток: минутный трекер это
     видит, эталон бэктеста считает худший порядок — стоп. Запись верна, отличие учитывается."""
     cand = _candidate()
+    t = cand.trade
     be = _closed("closed_be", "0.43", AT + M1 * 200, hits=1)
     h4_sl = _closed("closed_sl", "-1.07", AT + H4)
-    res = check_result(_row(cand, be), _minutes(be), _h4(h4_sl), NOW)
+    # первая свеча после сигнала: коснулась и стопа, и первой цели — порядок по ней не виден
+    wide = Candle(AT, t.entry_market, t.tp1 + D(1), t.stop_loss - D(1), t.entry_market, D(1))
+    res = check_result(_row(cand, be), _minutes(be), _h4(h4_sl), NOW, D("0.05"), [wide])
     assert res.finding is None and res.explained
+    # свеча, где сделки разошлись, первой цели не касалась: H4 и минуты обязаны совпасть.
+    # Тот же код трекера в пересчёте повторил бы свою ошибку — отличие от эталона её выдаёт
+    narrow = replace(wide, high=t.tp1 - D("0.1"))
+    odd = check_result(_row(cand, be), _minutes(be), _h4(h4_sl), NOW, D("0.05"), [narrow])
+    assert odd.finding is not None and odd.finding.kind is Kind.RESULT and not odd.explained
+    assert "не объясняется" in odd.finding.message
+    assert check_result(_row(cand, be), _minutes(be), _h4(h4_sl), NOW).finding is not None
     # минут нет (пропуски) — подтвердить запись нечем: предупреждение
     unsure = check_result(_row(cand, be), _minutes(None), _h4(h4_sl), NOW)
     assert unsure.finding is not None and unsure.finding.kind is Kind.RESULT
@@ -428,17 +481,24 @@ def test_open_signal_must_be_tracked() -> None:
 
 
 def test_two_open_trades_on_one_instrument_and_version() -> None:
-    def trade(pid: str, version_id: int, instrument_id: int, at: datetime) -> OpenTrade:
-        return OpenTrade(pid, f"S{instrument_id}USDT", "1.2.0", version_id, instrument_id, at)
+    def trade(
+        pid: str, version_id: int, instrument_id: int, at: datetime, rule: bool = True
+    ) -> OpenTrade:
+        return OpenTrade(pid, f"S{instrument_id}USDT", "1.2.0", version_id, instrument_id, at, rule)
 
     one_each = [trade("a", 1, 1, AT), trade("b", 1, 2, AT), trade("c", 2, 1, AT)]
     assert open_overlaps(one_each) == []
     (finding,) = open_overlaps([*one_each, trade("d", 1, 1, AT + H4), trade("e", 1, 1, AT - H4)])
     assert finding.kind is Kind.OVERLAP and finding.severity == CRITICAL
     assert finding.public_id == "d" and "открыто сделок: 3" in finding.message
-    assert finding.message.index(" e ") < finding.message.index(
-        " a "
-    )  # раньше открытые — по времени
+    early, later = finding.message.index(" e "), finding.message.index(" a ")
+    assert early < later  # раньше открытые — по времени
+    # поздний сигнал записан до правила одной сделки (задача 6) — наследство, а не нарушение
+    (legacy,) = open_overlaps([trade("f", 3, 3, AT, False), trade("g", 3, 3, AT + H4, False)])
+    assert legacy.kind is Kind.OVERLAP_LEGACY and legacy.severity == WARNING
+    # а поздний, записанный уже с правилом, поверх старой открытой — нарушение
+    (fresh,) = open_overlaps([trade("h", 4, 4, AT, False), trade("i", 4, 4, AT + H4)])
+    assert fresh.kind is Kind.OVERLAP and fresh.public_id == "i"
 
 
 # --- отчёт и монитор ---------------------------------------------------------------------------
@@ -473,7 +533,9 @@ def test_report_counts_and_orders_findings() -> None:
 
 def test_monitor_component_follows_the_last_reconcile() -> None:
     def comp(report: Report | None, now: datetime = NOW) -> monitor.Component:
-        return reconcile_component(None if report is None else report.to_json(), now)
+        c = reconcile_component(None if report is None else report.to_json(), now)
+        assert c is not None
+        return c
 
     never = comp(None)
     assert (never.key, never.title, never.status) == ("reconcile", "Сверка сигналов", OK)
@@ -483,7 +545,7 @@ def test_monitor_component_follows_the_last_reconcile() -> None:
     broken = comp(_report(Kind.INPUTS, Kind.TRACKER))
     assert broken.status == DOWN and "критичных 1" in broken.detail
     assert len(broken.checks) == 2 and broken.checks[0].startswith("КРИТИЧНО")
-    assert not broken.realert
+    assert reconcile_component(monitor.UNREADABLE, NOW) is None  # Redis не ответил — не оцениваем
     stale = comp(_report(), NOW + timedelta(hours=37))
     assert stale.status == DEGRADED and "не выполнялась" in stale.detail
     failed = reconcile_component({"at": NOW.isoformat(), "failed": "OperationalError: нет БД"}, NOW)
@@ -514,6 +576,12 @@ class _Redis:
 
     def set(self, key: str, value: str) -> None:
         self.data[key] = value
+
+    def get(self, key: str) -> str | None:
+        return self.data.get(key)
+
+    def delete(self, key: str) -> None:
+        self.data.pop(key, None)
 
     def close(self) -> None:
         pass
@@ -831,6 +899,30 @@ def test_two_open_signals_on_one_instrument_give_an_alert(
 
 
 @db_only
+def test_trade_that_closes_after_the_window_is_still_checked(
+    scenario: Callable[..., Scenario],
+) -> None:
+    """Сделка жила дольше окна сверки: сигнал старше окна, но закрылась она внутри него — итог
+    сверяется. Записан неверный итог — сверка это видит."""
+    sc = scenario()
+    sc.track()
+    assert sc.signal.status == "closed_sl"
+    result = sc.db.get(SignalResult, sc.signal.id)
+    assert result is not None
+    result.realized_r = D("1.5")  # записан не тот итог
+    sc.db.flush()
+    later = AT + timedelta(days=1, hours=1)  # окно в сутки начинается после сигнала
+    assert AT < later - timedelta(days=1) < result.closed_at.astimezone(UTC)
+    with read_only_connection(sc.conn) as ro:
+        report = run_reconcile(ro, later, days=1)
+    assert [f.kind for f in report.findings] == [Kind.TRACKER]
+    assert report.checked == 1
+    # сделка, закрывшаяся до окна, уже не сверяется
+    with read_only_connection(sc.conn) as ro:
+        assert run_reconcile(ro, AT + timedelta(days=2), days=1).checked == 0
+
+
+@db_only
 def test_changed_candle_gives_an_inputs_alert(scenario: Callable[..., Scenario]) -> None:
     sc = scenario(falls=False)
     sc.track()
@@ -876,34 +968,77 @@ def test_reconcile_runs_on_its_own_read_only_connection() -> None:
 # --- письмо владельцу ---------------------------------------------------------------------------
 
 
-@db_only
-def test_reconcile_alert_is_sent_once_per_change(
-    db: Session, monkeypatch: pytest.MonkeyPatch
+class _Store:
+    """Redis в памяти: get / set / delete."""
+
+    def __init__(self) -> None:
+        self.data: dict[str, str] = {}
+
+    def get(self, key: str) -> bytes | None:
+        v = self.data.get(key)
+        return None if v is None else v.encode()
+
+    def set(self, key: str, value: str) -> None:
+        self.data[key] = value
+
+    def delete(self, key: str) -> None:
+        self.data.pop(key, None)
+
+
+def test_reconcile_email_goes_out_when_the_set_of_findings_changes(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Письмо по сверке — при открытии инцидента и при смене списка расхождений, без повторов
-    каждые шесть часов; подробности расхождений — в письме."""
+    """Письмо по сверке — при новом наборе расхождений (вид и сигнал), а не каждые сутки с тем же
+    списком и не при одинаковых числах с другим составом; подробности — в письме."""
     sent: list[tuple[str, str, str]] = []
     monkeypatch.setattr(
-        monitor, "send_mail", lambda to, subject, body: sent.append((to, subject, body))
+        notifier, "send_mail", lambda to, subject, body: sent.append((to, subject, body))
     )
+    monkeypatch.setattr(notifier.settings, "owner_emails", "owner@example.com")
+    r = _Store()
+
+    def run(report: Report, checked: int = 12) -> bool:
+        return notifier.reconcile_email(r, replace(report, checked=checked).to_json())
+
+    assert run(_report(Kind.LOGIC))
+    to, subject, body = sent[0]
+    assert to == "owner@example.com"
+    assert subject == "[Platform] Сверка сигналов: критичных 1, предупреждений 0"
+    assert "- КРИТИЧНО RECUSDT 1.2.0 id0: расхождение логики — текст" in body
+    assert not run(_report(Kind.LOGIC), checked=15)  # назавтра тот же набор — молчим
+    swapped = Report(NOW, NOW, 12, (Finding(Kind.LOGIC, "другой", "RECUSDT", "1.2.0", "текст"),))
+    assert run(swapped)  # те же числа, другой сигнал — новое письмо
+    assert not run(_report())  # расхождений нет — писать не о чем, отметка снята
+    assert run(_report(Kind.LOGIC))  # то же расхождение вернулось — пишем снова
+    failed = {"at": NOW.isoformat(), "failed": "RuntimeError: нет БД"}
+    assert notifier.reconcile_email(r, failed) and "нет БД" in sent[-1][2]
+    assert not notifier.reconcile_email(r, failed)  # сбой — одно письмо, не каждые 15 минут
+    assert len(sent) == 4
+    monkeypatch.setattr(notifier.settings, "owner_emails", "")
+    assert not run(_report(Kind.INPUTS))  # адрес владельца не задан — письмо не уходит
+
+
+@db_only
+def test_monitor_sends_no_email_for_reconcile_and_keeps_incident_on_read_failure(
+    db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sent: list[str] = []
+    monkeypatch.setattr(monitor, "send_mail", lambda to, subject, body: sent.append(subject))
     monkeypatch.setattr(monitor.settings, "owner_emails", "owner@example.com")
     db.query(Incident).filter(Incident.closed_at.is_(None)).update({"closed_at": NOW})
 
-    def tick(report: Report, now: datetime) -> None:
-        comps = [reconcile_component(report.to_json(), now)]
+    def tick(state: dict[str, Any] | None, now: datetime) -> None:
+        c = reconcile_component(state, now)
+        comps = [] if c is None else [c]
         sync_incidents(db, comps, now)
         send_alerts(db, comps, now)
 
-    tick(_report(Kind.LOGIC), NOW)
-    assert len(sent) == 1
-    to, subject, body = sent[0]
-    assert to == "owner@example.com" and subject == "[Platform] DOWN: Сверка сигналов"
-    assert "- КРИТИЧНО RECUSDT 1.2.0 id0: расхождение логики — текст" in body
-
-    tick(_report(Kind.LOGIC), NOW + timedelta(hours=7))  # то же самое через 7 часов — молчим
-    assert len(sent) == 1
-    tick(_report(Kind.LOGIC, Kind.INPUTS), NOW + timedelta(hours=8))  # список изменился
-    assert len(sent) == 2 and "предупреждений 1" in sent[1][2]
-    tick(_report(), NOW + timedelta(hours=9))  # расхождений нет — инцидент закрыт
+    tick(_report(Kind.LOGIC).to_json(), NOW)
+    open_ = db.query(Incident).filter(Incident.closed_at.is_(None)).all()
+    assert [(i.component, i.severity) for i in open_] == [("reconcile", DOWN)]
+    tick(monitor.UNREADABLE, NOW + timedelta(minutes=1))  # Redis не ответил
+    tick(monitor.UNREADABLE, NOW + timedelta(hours=7))
+    assert db.query(Incident).filter(Incident.closed_at.is_(None)).count() == 1  # не закрыт
+    tick(_report().to_json(), NOW + timedelta(hours=8))  # расхождений нет — инцидент закрыт
     assert db.query(Incident).filter(Incident.closed_at.is_(None)).count() == 0
-    assert len(sent) == 2
+    assert sent == []  # письма по сверке шлёт сама сверка, монитор — нет

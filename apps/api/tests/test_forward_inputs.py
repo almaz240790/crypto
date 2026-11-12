@@ -29,6 +29,7 @@ import app.workers.scheduler as scheduler
 from app.db import engine
 from app.forward import (
     INPUTS_FACT,
+    INPUTS_UPTO_FACT,
     context_candles_due,
     load_inputs,
     missing_context_candles,
@@ -42,7 +43,7 @@ from engine.bias import Bias, BiasContext
 from engine.candles import Candle, Timeframe
 from engine.filters import FilterSummary
 from engine.scoring import Grade, ScoreBreakdown
-from engine.signal import SignalCandidate, inputs_fingerprint
+from engine.signal import SignalCandidate, inputs_fingerprint, inputs_upto
 from engine.structure import Direction, Trend
 from engine.trade import TradeSetup
 from engine.zones import Zone, ZoneKind
@@ -304,6 +305,8 @@ def test_write_candidate_stores_the_fingerprint_of_its_inputs(db: Session) -> No
     assert with_inputs[INPUTS_FACT] == inputs_fingerprint(inputs, AT)
     assert set(with_inputs[INPUTS_FACT]) >= {"h4", "d1", "w1", "funding", "other"}
     assert INPUTS_FACT not in without
+    assert with_inputs[INPUTS_UPTO_FACT] == inputs_upto(inputs, AT)
+    assert INPUTS_UPTO_FACT not in without
     # прежние ключи обоснования на месте — их читают API и график
     assert {"facts", "publishable", "deferred", "zone", "flags"} <= set(with_inputs)
 

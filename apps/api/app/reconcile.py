@@ -58,7 +58,7 @@ from sqlalchemy import Connection, text
 from sqlalchemy.orm import Session
 
 from app.analysis import params_for_version
-from app.forward import INPUTS_FACT, load_inputs
+from app.forward import INPUTS_FACT, INPUTS_UPTO_FACT, load_inputs
 from app.models import Instrument
 from app.retrack import (
     DEFAULT_MAX_GAP_MINUTES,
@@ -73,7 +73,7 @@ from app.retrack import (
     retrack_minutes,
 )
 from app.workers.tracker import OPEN
-from engine.candles import SIGNAL_TIMEFRAME, Timeframe, closed_only
+from engine.candles import SIGNAL_TIMEFRAME, Candle, Timeframe, closed_only
 from engine.params import StrategyParams
 from engine.signal import (
     MarketInputs,
@@ -82,6 +82,7 @@ from engine.signal import (
     input_hash,
     inputs_fingerprint,
     replay,
+    trim_inputs,
 )
 from engine.strategies import STRATEGIES
 from engine.structure import Direction
@@ -115,6 +116,7 @@ class Kind(StrEnum):
     EARLY_EVENT = "event_too_early"
     NOT_TRACKED = "open_not_tracked"
     OVERLAP = "open_trades_overlap"
+    OVERLAP_LEGACY = "open_trades_overlap_legacy"
 
 
 SEVERITY: Mapping[Kind, str] = {
@@ -127,6 +129,7 @@ SEVERITY: Mapping[Kind, str] = {
     Kind.EARLY_EVENT: CRITICAL,
     Kind.NOT_TRACKED: CRITICAL,
     Kind.OVERLAP: CRITICAL,
+    Kind.OVERLAP_LEGACY: WARNING,
 }
 TITLE: Mapping[Kind, str] = {
     Kind.LOGIC: "расхождение логики",
@@ -138,6 +141,7 @@ TITLE: Mapping[Kind, str] = {
     Kind.EARLY_EVENT: "событие раньше первой минуты после сигнала",
     Kind.NOT_TRACKED: "открытый сигнал не ведётся трекером",
     Kind.OVERLAP: "несколько открытых сделок по инструменту",
+    Kind.OVERLAP_LEGACY: "несколько открытых сделок по инструменту, записаны до правила",
 }
 
 
@@ -178,6 +182,9 @@ class Publication:
     """``signal_results.entry_type_used``; ``None`` — результата нет."""
     tracked_to: datetime | None
     """До какого момента трекер обработал минуты (закрытие последней обработанной)."""
+    inputs_upto: Mapping[str, str | None] | None = None
+    """Время последней записи каждого ряда деривативов, которую видел прогон
+    (``rationale_facts['inputs_upto']``); ``None`` — сигнал записан до этой отметки."""
 
 
 def _dt(t: datetime) -> str:
@@ -289,8 +296,14 @@ def replay_difference(
 def check_replay(
     signal: SignalRow, pub: Publication, inputs: MarketInputs, params: StrategyParams
 ) -> Finding | None:
-    """Воспроизводится ли записанный сигнал на входе ``inputs`` (из БД на момент сигнала)."""
+    """Воспроизводится ли записанный сигнал на входе ``inputs`` (из БД на момент сигнала).
+
+    Ряды деривативов обрезаются по отметкам, записанным вместе с сигналом (``inputs_upto``):
+    записи с временем ``at`` приходят по REST уже после оценки, живой прогон их не видел.
+    """
     at = signal.candle_close_time
+    if pub.inputs_upto is not None:
+        inputs = trim_inputs(inputs, pub.inputs_upto)
     h4 = closed_only(inputs.h4, SIGNAL_TIMEFRAME, at)
     if input_hash(h4, params.version, params.hash_candles) != pub.input_hash:
         return _finding(
@@ -405,14 +418,42 @@ class ResultCheck:
     """Сверить не удалось — причина."""
 
 
+def ambiguous_candle(
+    signal: SignalRow, candles: Sequence[Candle], outcomes: Iterable[Outcome | None]
+) -> bool:
+    """Может ли отличие эталона H4 от пересчёта по минутам объясняться порядком цен внутри свечи.
+
+    Берётся сохранённая свеча H4, внутри которой закрылась первая из двух сделок (её видел
+    ``simulate_trade``). Объяснение возможно, только если эта свеча коснулась и цены входа (стопа
+    или безубытка), и первой цели: тогда по одной свече H4 не видно, что было раньше, а минуты
+    видят. Иначе H4 и минуты обязаны совпасть, и отличие — повод разбираться: тот же код трекера
+    в пересчёте повторил бы собственную ошибку, сравнение с ним её не покажет.
+    """
+    closes = [o.closed_at for o in outcomes if o is not None and o.closed_at is not None]
+    if not closes:
+        return False
+    start = interval_start(min(closes) - MINUTE.delta, SIGNAL_TIMEFRAME)
+    candle = next((c for c in candles if c.open_time == start), None)
+    if candle is None:
+        return False
+    if signal.direction == "long":
+        return candle.low <= signal.entry_market and candle.high >= signal.tp1
+    return candle.high >= signal.entry_market and candle.low <= signal.tp1
+
+
 def check_result(
     signal: SignalRow,
     minutes: MinuteRetrack,
     h4: H4Retrack,
     now: datetime,
     r_tolerance: Decimal = DEFAULT_R_TOLERANCE,
+    candles: Sequence[Candle] = (),
 ) -> ResultCheck:
-    """Сверяет записанные статус и результат сделки с двумя пересчётами (см. описание модуля)."""
+    """Сверяет записанные статус и результат сделки с двумя пересчётами (см. описание модуля).
+
+    ``candles`` — сохранённые свечи H4 после сигнала (те же, что получил эталон): по ним
+    решается, объясняется ли отличие от эталона ходом цены внутри свечи (``ambiguous_candle``).
+    """
     rec = signal.recorded
     if rec.status in NOT_TRADED:
         return ResultCheck()
@@ -426,7 +467,17 @@ def check_result(
         message = compare_h4(signal, h4.outcome, h4.tracked_until, now, r_tolerance)
         if message is not None:
             if minutes.outcome is not None:
-                return ResultCheck(explained=True)
+                if ambiguous_candle(signal, candles, (minutes.outcome, h4.outcome)):
+                    return ResultCheck(explained=True)
+                return ResultCheck(
+                    _finding(
+                        Kind.RESULT,
+                        signal,
+                        f"{message}. Пересчёт по 1m совпадает с записью, но свеча H4, где "
+                        "сделки разошлись, не касалась и входа, и первой цели — порядком цен "
+                        "внутри свечи это не объясняется",
+                    )
+                )
             return ResultCheck(
                 _finding(
                     Kind.RESULT,
@@ -507,10 +558,16 @@ class OpenTrade:
     strategy_version_id: int
     instrument_id: int
     opened_at: datetime
+    rule_era: bool = True
+    """Записан кодом, в котором уже было правило одной открытой сделки (задача 6)."""
 
 
 def open_overlaps(trades: Iterable[OpenTrade]) -> list[Finding]:
-    """Пары (версия, инструмент) с несколькими открытыми сделками; расхождение — на поздней."""
+    """Пары (версия, инструмент) с несколькими открытыми сделками; расхождение — на поздней.
+
+    Критично, только если поздний сигнал записан кодом с правилом (``rule_era``): тогда правило
+    нарушено. Пересечение, где поздний сигнал записан до правила, — наследство, предупреждение.
+    """
     groups: dict[tuple[int, int], list[OpenTrade]] = defaultdict(list)
     for t in trades:
         groups[(t.strategy_version_id, t.instrument_id)].append(t)
@@ -523,7 +580,7 @@ def open_overlaps(trades: Iterable[OpenTrade]) -> list[Finding]:
         others = ", ".join(f"{t.public_id} от {_dt(t.opened_at)}" for t in group[:-1])
         out.append(
             Finding(
-                Kind.OVERLAP,
+                Kind.OVERLAP if last.rule_era else Kind.OVERLAP_LEGACY,
                 last.public_id,
                 last.symbol,
                 last.version,
@@ -625,6 +682,7 @@ def load_publications(conn: Connection, signal_ids: Sequence[int]) -> dict[int, 
     for sid, hash_, facts, entry_type, last_candle, first_event in rows:
         facts = facts or {}
         fingerprint = facts.get(INPUTS_FACT)
+        marks = facts.get(INPUTS_UPTO_FACT)
         out[sid] = Publication(
             input_hash=hash_,
             fingerprint=fingerprint if isinstance(fingerprint, dict) else None,
@@ -635,6 +693,7 @@ def load_publications(conn: Connection, signal_ids: Sequence[int]) -> dict[int, 
             tracked_to=(
                 None if last_candle is None else last_candle.astimezone(UTC) + MINUTE.delta
             ),
+            inputs_upto=marks if isinstance(marks, dict) else None,
         )
     return out
 
@@ -645,7 +704,7 @@ def load_open_trades(conn: Connection) -> list[OpenTrade]:
     rows = conn.execute(
         text(
             "select s.public_id, i.symbol, sv.version, sv.id, i.id, s.candle_close_time, "
-            "s.rationale_facts "
+            "s.rationale_facts "  # отпечаток входа — признак кода с правилом одной сделки
             "from signals s "
             "join strategy_versions sv on sv.id = s.strategy_version_id "
             "join instruments i on i.id = s.instrument_id "
@@ -654,7 +713,7 @@ def load_open_trades(conn: Connection) -> list[OpenTrade]:
         {"open": list(OPEN)},
     ).all()
     return [
-        OpenTrade(r[0], r[1], r[2], r[3], r[4], r[5].astimezone(UTC))
+        OpenTrade(r[0], r[1], r[2], r[3], r[4], r[5].astimezone(UTC), INPUTS_FACT in (r[6] or {}))
         for r in rows
         if (r[6] or {}).get("publishable") is not False and (r[6] or {}).get("deferred") is not True
     ]
@@ -683,7 +742,7 @@ def run_reconcile(
 
     ``conn`` — соединение только на чтение (``retrack.read_only_connection``): сверка ничего не
     пишет и не исправляет. Воспроизводимость сигнала проверяется у сигналов окна; сопровождение и
-    инварианты — ещё и у открытых сделок старше окна.
+    инварианты — ещё и у сделок старше окна, которые открыты или закрылись внутри окна.
     """
     since = now - timedelta(days=days)
     signals = load_signals(conn, since, now, scopes=("forward", "live"), include_open=True)
@@ -719,10 +778,9 @@ def run_reconcile(
                 now,
                 max_gap_minutes,
             )
-            h4 = retrack_h4(
-                signal, load_candles(conn, signal.instrument_id, SIGNAL_TIMEFRAME, at, now), now
-            )
-            result = check_result(signal, minutes, h4, now, r_tolerance)
+            h4_candles = load_candles(conn, signal.instrument_id, SIGNAL_TIMEFRAME, at, now)
+            h4 = retrack_h4(signal, h4_candles, now)
+            result = check_result(signal, minutes, h4, now, r_tolerance, h4_candles)
             if result.finding is not None:
                 findings.append(result.finding)
             explained += result.explained
