@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createBuffer, EDGE, firstChange, MAX_CANDLES, needsNewer, needsOlder, prependOlder, pushLatest, replaceNewest, replaceTail } from "../buffer";
+import { createBuffer, EDGE, firstChange, historyCapped, MAX_CANDLES, needsNewer, needsOlder, prependOlder, pushLatest, replaceNewest, replaceTail } from "../buffer";
 import type { Candle } from "../types";
 
 const mk = (from: number, n: number): Candle[] => Array.from({ length: n }, (_, i) => ({ time: from + i * 60, open: 1, high: 2, low: 0.5, close: 1.5, volume: 1, open_: false }));
@@ -20,8 +20,12 @@ describe("буфер свечей", () => {
     expect(b.candles.at(-1)!.time).toBe(newest);
     expect(b.trimmedRight).toBe(0);
     expect(b.hasOlder).toBe(true);
-    // буфер полон — дальше влево не грузим, живые обновления продолжают приходить
+    // буфер полон — дальше влево не грузим (у края — пометка «история ограничена»), живые обновления продолжают приходить
     expect(needsOlder(b, 0)).toBe(false);
+    expect(historyCapped(b, 0)).toBe(true);
+    expect(historyCapped(b, EDGE)).toBe(false);
+    expect(historyCapped({ ...b, hasOlder: false }, 0)).toBe(false);
+    expect(historyCapped(createBuffer(mk(0, 10)), 0)).toBe(false);
     expect(needsNewer(b, MAX_CANDLES - 10)).toBe(false);
     const after = pushLatest(b, { ...mk(9_999_999, 1)[0]! });
     expect(after.candles.at(-1)!.time).toBe(9_999_999);

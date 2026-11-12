@@ -468,6 +468,7 @@ describe("ChartController: стадии сцены", () => {
       createTerminal: (_el, opts) => {
         term = new FakeTerminal(bars(10));
         (term as unknown as { need: (b: number) => void }).need = opts.onNeedOlder!;
+        (term as unknown as { edge: (e: "loading" | "capped" | null) => void }).edge = opts.onHistoryEdge!;
         return term as unknown as Terminal;
       },
       readTheme: () => makeTheme(),
@@ -475,6 +476,14 @@ describe("ChartController: стадии сцены", () => {
       schedule: () => {},
     });
     const need = (term as unknown as { need: (b: number) => void }).need;
+    // левый край истории — в хранилище графика: поверхность показывает загрузку и пометку лимита (chart-data-live-6)
+    const edge = (term as unknown as { edge: (e: "loading" | "capped" | null) => void }).edge;
+    edge("loading");
+    expect(store.getState().status.historyEdge).toBe("loading");
+    edge("capped");
+    expect(store.getState().status.historyEdge).toBe("capped");
+    edge(null);
+    expect(store.getState().status.historyEdge).toBeNull();
     need(T0);
     resolve({ candles: bars(5, -5), hasOlder: true });
     await new Promise((r) => setTimeout(r, 0));

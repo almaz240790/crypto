@@ -773,6 +773,8 @@
   "Не удалось получить цену {symbol}": "Could not get the price of {symbol}",
   "Нет свечей для графика.": "No candles for the chart.",
   "Нет свечей.": "No candles.",
+  "Загрузка истории…": "Loading history…",
+  "История ограничена {n} свечами": "History is limited to {n} candles",
   "Обновлено {time}.": "Updated {time}.",
   "Обоснование": "Rationale",
   "Объекты": "Objects",

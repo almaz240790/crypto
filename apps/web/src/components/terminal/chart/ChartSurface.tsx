@@ -11,6 +11,7 @@ import { useT } from "@/i18n/client";
 import { chartText } from "./chartText";
 import { useChartStore } from "./useChartStore";
 import { LegendChip, LiqUnavailableNote } from "./LegendChip";
+import { HistoryEdgeNote } from "./HistoryEdgeNote";
 import { ObjectTooltip } from "./ObjectTooltip";
 import { PaneChrome, type ChartGeo, type PaneGeo, type PaneSep, type ResizePhase } from "./PaneChrome";
 import { autoBox } from "./paneGeo";
@@ -1167,6 +1168,7 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
         </div>
       )}
       <ObjectTooltip store={store} coarse={coarse} />
+      {mainBox && !maximized && <HistoryEdgeNote store={store} h={mainBox.h} />}
       {legend ? (
         // «развернуть» другую панель: основная — заголовок, легенда скрыта (иначе она легла бы на развёрнутую панель)
         <div ref={legendRef} className={c.legendHost} hidden={maximized !== null}>

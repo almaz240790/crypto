@@ -190,6 +190,8 @@ export class ChartController {
       fontSize: this.view.scaleFontPx,
       onNeedOlder: (before) => this.needOlder(before),
       onVisibleRange: (r) => this.visibleChanged(r),
+      // левый край истории — поверхности: индикатор загрузки и пометка лимита (план 2A.7)
+      onHistoryEdge: (historyEdge) => this.store.patch({ status: { ...this.store.getState().status, historyEdge } }),
     });
     this.overlay = new OverlayPrimitive({
       view: this.view,
