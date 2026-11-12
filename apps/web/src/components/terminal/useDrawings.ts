@@ -201,7 +201,12 @@ export function useDrawings(symbol: string, authed: boolean, onFibLevels?: (leve
           // всё локальное, чего на сервере нет или что новее — в очередь
           const serverById = new Map(remote.map((d) => [d.id, d.updated_at]));
           const pending = merged.items.filter((d) => (serverById.get(d.id) ?? -1) < d.updated_at);
-          if (pending.length) queueAdd(pending.map((d) => toWire(d, symbol)));
+          if (pending.length) {
+            queueAdd(pending.map((d) => toWire(d, symbol)));
+            // функция обновления выполняется и после первой отправки ниже — эти рисунки уходят следом
+            clearTimeout(flushTimer.current);
+            flushTimer.current = setTimeout(() => void flushRef.current(), 600);
+          }
           return merged;
         });
         // API прежней сборки курсора не отдаёт: следующая загрузка снова прочитает всё

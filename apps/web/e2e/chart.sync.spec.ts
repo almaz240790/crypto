@@ -280,6 +280,21 @@ test.describe("синхронизация рисунков с входом", () 
     await settled(page);
   });
 
+  test("рисунок, который есть только на устройстве (нарисован без входа), уходит на сервер при загрузке графика", async ({ page }) => {
+    // тариф Pro: лимит из ответа сервера (100) отличается от прежнего — состояние обновляется не сразу, и рисунки,
+    // поставленные в очередь при слиянии, появляются в ней уже после первой отправки
+    const server: MockServer = { drawings: [], layout: null, plan: "pro" };
+    await page.addInitScript(() => {
+      if (sessionStorage.getItem("seeded")) return;
+      sessionStorage.setItem("seeded", "1");
+      localStorage.setItem("pl-drawings:BTCUSDT", JSON.stringify([{ id: "d_guestline1", type: "hline", points: [{ time: 1_792_000_000, price: 100 }], style: { color: "text2", width: 1, dashed: false }, locked: false, timeframe: null, updated_at: 1_000, deleted_at: null }]));
+    });
+    await open(page, server);
+    await expect(count(page)).toHaveText("рисунков: 1");
+    await expect.poll(() => rows(server).map((d) => d.client_id), { timeout: 10000 }).toEqual(["d_guestline1"]);
+    await settled(page);
+  });
+
   test("рисунок, нарисованный офлайн раньше прочитанных, приходит на другое устройство: курсор чтения — серверный", async ({ page, browser }) => {
     const server: MockServer = { drawings: [], layout: null };
     // устройство B без сети: рисунок Z остаётся в очереди
