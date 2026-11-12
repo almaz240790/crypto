@@ -189,7 +189,10 @@ def upsert_drawings(
                     continue
             row = Drawing(user_id=user.id, client_id=item.client_id, instrument_id=inst.id)
             db.add(row)
-        if winner is incoming:
+        # та же удалённая версия ещё раз (клиент при загрузке шлёт все свои рисунки) — без записи:
+        # иначе synced_at сдвигался бы и курсор снова отдавал бы удаление всем устройствам
+        resent = row.deleted_at is not None and row.updated_at == item.updated_at
+        if winner is incoming and not resent:
             row.timeframe = item.timeframe
             row.type = item.type
             row.points = item.points

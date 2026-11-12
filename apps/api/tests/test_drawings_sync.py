@@ -384,3 +384,25 @@ def test_api_cursor_is_server_side(api: Api, monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.undo()
     assert router.CURSOR_OVERLAP_MS > 0
     assert api.get()["cursor"] < cursor
+
+
+@db_only
+def test_api_same_deletion_sent_again_is_not_rewritten(
+    api: Api, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Клиент при каждой загрузке шлёт все свои рисунки, и удалённые тоже. Та же удалённая версия
+    ещё раз не переписывается: synced_at на месте, курсор не отдаёт удаление всем устройствам
+    заново. Удаление живой версии с той же меткой — запись (при равенстве удаление сильнее)."""
+    from app.routers import drawings as router
+
+    monkeypatch.setattr(router, "CURSOR_OVERLAP_MS", 0)
+    gone = api.item("d_gone", updated_at=2_000, deleted_at=2_000)
+    assert api.put([gone, api.item("d_live", updated_at=2_000)]).status_code == 200
+    cursor = api.get()["cursor"]
+    r = api.put([gone, api.item("d_live", updated_at=2_000, deleted_at=2_100)])
+    assert r.status_code == 200, r.text
+    assert [(d["client_id"], d["deleted_at"]) for d in r.json()["items"]] == [
+        ("d_gone", 2_000),
+        ("d_live", 2_100),
+    ]
+    assert [d["client_id"] for d in api.get(cursor=cursor)["items"]] == ["d_live"]
