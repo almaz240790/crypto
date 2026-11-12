@@ -124,6 +124,8 @@ export class DrawingController {
   private touched: string | null = null;
   /** Готовое измерение измерителя — до следующего нажатия на графике, Esc или выбора инструмента. */
   private ruler: Drawing | null = null;
+  /** Инструмент, переданный хозяином последним (syncTool). */
+  private ownerTool: DrawingType | null = null;
   private readonly handlers: Array<[EventTarget, string, (e: Event) => void]> = [];
 
   constructor(
@@ -163,6 +165,20 @@ export class DrawingController {
     this.tool = tool;
     this.clearRuler();
     this.reset();
+  }
+
+  /**
+   * Инструмент из состояния хозяина (React): применяется, только когда хозяин его сменил, а не всякий раз, когда он
+   * расходится с инструментом контроллера. Закончив рисунок, контроллер снимает инструмент сам (finish, onDone), а
+   * хозяин узнаёт об этом только своей следующей отрисовкой. Отложенный эффект отрисовки, зафиксированной до
+   * отпускания (начатый рисунок под курсором — ещё с прежним инструментом), React выполняет перед отрисовкой
+   * отпускания, то есть уже после finish. Раньше такой запоздавший эффект ставил инструмент обратно (setTool), а
+   * setTool убирает измерение: когда главный поток занят, измеритель пропадал сразу после второго клика.
+   */
+  syncTool(tool: DrawingType | null): void {
+    if (tool === this.ownerTool) return;
+    this.ownerTool = tool;
+    if (tool !== this.tool) this.setTool(tool);
   }
 
   /** Убрать измерение измерителя (хозяин — при смене инструмента графика или таймфрейма). */

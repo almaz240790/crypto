@@ -874,7 +874,10 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     const dctrl = drawCtrlRef.current;
     if (!prim || !dctrl) return;
     prim.update({ drawings: drawings ? visibleOn(drawings.state, tf) : [], draft: drawings?.draft ?? null, selectedId: drawings?.state.selectedId ?? null });
-    if (dctrl.tool !== (drawings?.tool ?? null)) dctrl.setTool(drawings?.tool ?? null);
+    // инструмент — только смена его в состоянии: эффект прежней отрисовки (начатый рисунок под курсором) выполняется и
+    // после того, как контроллер закончил рисунок и снял инструмент сам, — он не возвращает инструмент и не убирает
+    // готовое измерение (DrawingController.syncTool)
+    dctrl.syncTool(drawings?.tool ?? null);
     dctrl.setMagnet(drawings?.magnet ?? true);
     dctrl.setSeries(drawings?.series ?? false);
   }, [drawings, tf]);
