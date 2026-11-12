@@ -55,13 +55,21 @@ from app.retrack import (
     MinuteRetrack,
     Outcome,
     SignalRow,
+    TradeSpan,
     iter_candles,
     load_candles,
     load_signals,
+    open_trade_overlap,
     retrack_h4,
     retrack_minutes,
 )
-from app.retrack_report import NOT_COMPUTED, NOT_RETRACKED, STATUS_LABEL, as_stored
+from app.retrack_report import (
+    NOT_COMPUTED,
+    NOT_RETRACKED,
+    STATUS_LABEL,
+    as_stored,
+    trade_span,
+)
 from engine.backtest import (
     DEFAULT_EXECUTION,
     BacktestTrade,
@@ -114,6 +122,12 @@ SHARE_QUANT = Decimal("0.1")
 DASH = "—"
 
 ONE_TRADE_DOC = "docs/backtests/2026-11-11-one-open-trade.md"
+ONE_TRADE_RULE_FROM = datetime(2026, 11, 12, 4, 39, tzinfo=UTC)
+"""Когда правило одной открытой сделки заработало при записи кандидата (задача 6, PR #153).
+Только для текста отчёта: форвард-сигналы проверяются правилом все, с любой датой."""
+FORWARD_STATUSES = ("forward", "live")
+"""Статусы версии, в которых она публикует сигналы (``signal_scope.SIGNAL_SCOPES``)."""
+CANCELLED = "cancelled"
 DIRECTION_LABEL = {Direction.DOWN: "шорт", Direction.UP: "лонг"}
 DIRECTION_TITLE = {Direction.DOWN: "Шорт", Direction.UP: "Лонг"}
 GRADES = (Grade.A, Grade.B, Grade.C)
@@ -168,7 +182,8 @@ class GateOptions:
     """Момент отчёта (UTC): форвард-сигналы и свечи позже него не читаются; свеча, не закрытая
     к этому моменту, не попадает ни в форвард, ни в бэктест."""
     since: datetime | None = None
-    """Начало форварда (UTC). ``None`` — дата создания строки версии в БД."""
+    """Начало форварда (UTC). ``None`` — переход версии в форвард по журналу заявок на смену
+    статуса (``forward_entry``)."""
     samples: int = DEFAULT_SAMPLES
     seed: int = DEFAULT_SEED
     window: int = DEFAULT_WINDOW
@@ -225,6 +240,22 @@ class ForwardSignal:
     signal: SignalRow
     minutes: MinuteRetrack
     h4: H4Retrack
+    blocked_by: str | None = None
+    """``public_id`` сигнала, сделка которого занимала инструмент: по правилу одной открытой
+    сделки (задача 6) этот сигнал не был бы записан. Такой сигнал в метрики не входит."""
+    overlap_unknown: str | None = None
+    """``public_id`` более раннего сигнала, сделку которого пересчитать не удалось: занят ли был
+    инструмент, неизвестно. Сигнал входит в метрики."""
+
+    @property
+    def counted(self) -> bool:
+        """Входит ли сигнал в метрики форварда."""
+        return self.blocked_by is None
+
+    @property
+    def cancelled(self) -> bool:
+        """Сигнал отменён вручную (``admin.cancel_signal``)."""
+        return self.signal.recorded.status == CANCELLED
 
     @property
     def m1(self) -> Outcome | None:
@@ -246,30 +277,157 @@ class Forward:
     status: str | None
     """Статус версии в БД на момент чтения."""
     since: datetime | None
+    """Начало форварда: с него читаются сигналы. ``None`` — форвард не начинался."""
     since_source: str
     now: datetime
     signals: tuple[ForwardSignal, ...]
     outside: tuple[str, ...] = ()
     """Инструменты форвард-сигналов версии вне списка (такие сигналы не учитываются)."""
     outside_count: int = 0
+    entered: datetime | None = None
+    """Переход версии в форвард по журналу заявок (``forward_entry``); ``None`` — к моменту
+    отчёта версия в форвард не переходила или перехода в журнале нет."""
+    entered_note: str = ""
+    """Откуда взят переход или почему его нет — для отчёта."""
+    data_end: datetime | None = None
+    """Последнее закрытие H4 по инструментам списка, не позже ``now`` (``data_boundary``);
+    ``None`` — закрытых свечей H4 нет."""
+
+    @property
+    def end(self) -> datetime | None:
+        """Конец форварда: момент отчёта, но не позже границы данных."""
+        return None if self.data_end is None else min(self.now, self.data_end)
 
     @property
     def period(self) -> timedelta | None:
-        return None if self.since is None else self.now - self.since
+        """Длина форварда — от начала до границы данных."""
+        if self.since is None or self.end is None:
+            return None
+        return max(timedelta(0), self.end - self.since)
+
+    @property
+    def stale(self) -> bool:
+        """Данные H4 обрываются раньше последнего закрытия H4 к моменту отчёта."""
+        return self.data_end is None or self.data_end < last_close(self.now)
+
+    @property
+    def counted(self) -> tuple[ForwardSignal, ...]:
+        """Сигналы, которые входят в метрики (без подавленных правилом одной сделки)."""
+        return tuple(s for s in self.signals if s.counted)
+
+    @property
+    def blocked(self) -> tuple[ForwardSignal, ...]:
+        return tuple(s for s in self.signals if not s.counted)
 
 
-def load_version(conn: Connection, label: str) -> tuple[datetime, str] | None:
-    """Дата создания и статус строки версии ``стратегия@номер`` в ``strategy_versions``."""
+def last_close(now: datetime) -> datetime:
+    """Последнее закрытие свечи H4 не позже ``now``."""
+    step = SIGNAL_TIMEFRAME.delta
+    return now - (now - datetime(1970, 1, 1, tzinfo=UTC)) % step
+
+
+@dataclass(frozen=True, slots=True)
+class VersionRow:
+    """Строка версии в ``strategy_versions`` и применённые заявки на смену её статуса."""
+
+    created_at: datetime
+    status: str
+    changes: tuple[tuple[str, str, datetime], ...] = ()
+    """Применённые заявки ``(from_status, to_status, decided_at)`` по времени решения."""
+
+
+def load_version(conn: Connection, label: str) -> VersionRow | None:
+    """Строка версии ``стратегия@номер`` и журнал применённых заявок на смену статуса."""
     slug, _, number = label.rpartition("@")
     row = conn.execute(
         text(
-            "select sv.created_at, sv.status from strategy_versions sv "
+            "select sv.id, sv.created_at, sv.status from strategy_versions sv "
             "join strategies st on st.id = sv.strategy_id "
             "where st.slug = :slug and sv.version = :version"
         ),
         {"slug": slug, "version": number},
     ).first()
-    return None if row is None else (row[0].astimezone(UTC), str(row[1]))
+    if row is None:
+        return None
+    changes = conn.execute(
+        text(
+            "select from_status, to_status, decided_at from status_change_requests "
+            "where strategy_version_id = :id and decision = 'applied' and decided_at is not null "
+            "order by decided_at, id"
+        ),
+        {"id": row[0]},
+    ).all()
+    return VersionRow(
+        row[1].astimezone(UTC),
+        str(row[2]),
+        tuple((str(c[0]), str(c[1]), c[2].astimezone(UTC)) for c in changes),
+    )
+
+
+def forward_entry(version: VersionRow, now: datetime) -> tuple[datetime | None, str]:
+    """Когда версия начала публиковать сигналы (статус forward или live) — по журналу заявок.
+
+    Начальный статус версии — ``from_status`` первой применённой заявки, а без заявок — статус
+    сейчас. До задачи 4 версии создавались сразу в форварде: тогда начало — создание строки.
+    С задачи 4 версия создаётся в статусе backtest, и начало — решение по первой заявке на
+    переход в forward или live. Переход позже ``now`` — к моменту отчёта форварда не было.
+    """
+    initial = version.changes[0][0] if version.changes else version.status
+    if initial in FORWARD_STATUSES:
+        entry = version.created_at
+        note = f"создание версии в статусе {initial}"
+    else:
+        found = next((t for _, to, t in version.changes if to in FORWARD_STATUSES), None)
+        if found is None:
+            return None, f"версия в форвард не переходила (статус в БД — {version.status})"
+        entry, note = found, "решение по заявке на переход в форвард"
+    if entry > now:
+        return None, f"версия перешла в форвард {_when(entry)} UTC — позже момента отчёта"
+    return entry, note
+
+
+def data_boundary(conn: Connection, symbols: Sequence[str], now: datetime) -> datetime | None:
+    """Последнее закрытие H4 по инструментам списка, не позже ``now``: до него в БД есть
+    закрытые свечи хотя бы одного инструмента. Граница ограничена ``now`` — поэтому повторный
+    отчёт с теми же аргументами на пополнившейся базе даёт тот же результат."""
+    tf = SIGNAL_TIMEFRAME
+    row = conn.execute(
+        text(
+            "select max(x.open_time) from instruments i cross join lateral ("
+            "select c.open_time from candles c where c.instrument_id = i.id "
+            "and c.timeframe = :tf and c.is_closed and c.open_time <= :last "
+            "order by c.open_time desc limit 1) x "
+            "where i.symbol = any(:symbols) and i.market_type = 'futures'"
+        ),
+        {"tf": tf.value, "last": now - tf.delta, "symbols": list(symbols)},
+    ).first()
+    last: datetime | None = None if row is None else row[0]
+    return None if last is None else last.astimezone(UTC) + tf.delta
+
+
+def apply_one_trade_rule(signals: Sequence[ForwardSignal]) -> list[ForwardSignal]:
+    """Правило одной открытой сделки (задача 6) над форвардом, по времени сигнала.
+
+    До задачи 6 запись кандидата это правило не проверяла, и в форварде могут быть сигналы,
+    которых бэктест не взял бы. Каждому сигналу правило движка (``open_trade_overlap`` →
+    ``engine.lifecycle.blocking_signal``) задаёт вопрос: занят ли инструмент сделкой более
+    раннего **неподавленного** сигнала той же версии — так же, как в ``run_backtest``. Сделка —
+    по 1m-пересчёту, а без него по H4 (``retrack_report.trade_span``), как у правила в живом
+    режиме. Сигналы до начала форварда не учитываются."""
+    taken: dict[int, list[TradeSpan]] = {}
+    out: list[ForwardSignal] = []
+    for s in sorted(signals, key=lambda x: (x.signal.candle_close_time, x.signal.public_id)):
+        sig = s.signal
+        spans = taken.setdefault(sig.instrument_id, [])
+        overlap = open_trade_overlap(spans, sig.candle_close_time)
+        if overlap.flag is True:
+            out.append(replace(s, blocked_by=overlap.with_public_id))
+            continue
+        spans.append(trade_span(sig, s.minutes, s.h4))
+        unknown = overlap.with_public_id if overlap.flag is None else None
+        out.append(replace(s, overlap_unknown=unknown))
+    order = {id(s.signal): i for i, s in enumerate(signals)}
+    return sorted(out, key=lambda x: order[id(x.signal)])
 
 
 def build_forward(
@@ -283,20 +441,39 @@ def build_forward(
     """Форвард версии ``label`` по инструментам ``symbols``: сигналы и их пересчёты. Только
     ``SELECT``; ``conn`` — соединение только на чтение.
 
-    Начало форварда — ``since``, а если он не задан — дата создания строки версии в БД. Сигналы —
+    Начало форварда — переход версии в форвард по журналу заявок (``forward_entry``); ``since``
+    раньше перехода не уводит, а без перехода в журнале — задаёт начало сам. Сигналы —
     опубликованные (``signals.published``) форвард-сигналы с закрытием сигнальной свечи в
     [начало; ``now``]; live-сигналы, кандидаты ниже порога публикации и отложенные не читаются.
+    Конец форварда — ``now``, но не позже границы данных H4 (``data_boundary``).
     """
-    row = load_version(conn, label)
-    if row is None:
-        return Forward(label, False, None, since, "--since" if since else "", now, ())
-    created_at, status = row
-    start, source = (since, "--since") if since is not None else (created_at, "создание версии")
-    if start > now:
-        raise ValueError(
-            f"начало форварда {start:%Y-%m-%d %H:%M} UTC позже момента отчёта "
-            f"{now:%Y-%m-%d %H:%M} UTC: задайте --now или --since"
-        )
+    boundary = data_boundary(conn, symbols, now)
+    version = load_version(conn, label)
+    if version is None:
+        return Forward(label, False, None, None, "", now, (), data_end=boundary)
+    entered, note = forward_entry(version, now)
+    if since is not None and (entered is None or since >= entered):
+        start: datetime | None = since
+        source = "--since"
+    elif entered is not None:
+        start = entered
+        source = note + ("; --since раньше перехода" if since is not None else "")
+    else:
+        start, source = None, ""
+    base = Forward(
+        label,
+        True,
+        version.status,
+        start,
+        source,
+        now,
+        (),
+        entered=entered,
+        entered_note=note,
+        data_end=boundary,
+    )
+    if start is None:
+        return base
     wanted = set(symbols)
     rows = load_signals(conn, start, now, versions=(label,), scopes=("forward",))
     outside = [s for s in rows if s.symbol not in wanted]
@@ -315,16 +492,11 @@ def build_forward(
         except (ValueError, ArithmeticError) as exc:
             h4 = H4Retrack(None, None, f"ошибка данных H4: {exc}")
         out.append(ForwardSignal(signal, minutes, h4))
-    return Forward(
-        label,
-        True,
-        status,
-        start,
-        source,
-        now,
-        tuple(out),
-        tuple(sorted({s.symbol for s in outside})),
-        len(outside),
+    return replace(
+        base,
+        signals=tuple(apply_one_trade_rule(out)),
+        outside=tuple(sorted({s.symbol for s in outside})),
+        outside_count=len(outside),
     )
 
 
@@ -362,11 +534,30 @@ def as_trade(signal: SignalRow, outcome: Outcome) -> BacktestTrade:
     )
 
 
+CANCELLED_OUTCOME = Outcome(
+    status="closed_time",
+    tp_hits=0,
+    realized_r=Decimal(0),
+    cost_r=Decimal(0),
+    closed_at=None,
+    duration_hours=None,
+)
+"""Отменённый вручную сигнал в статистике — закрытая сделка с 0 R (план 2.10, ``app.stats``)."""
+
+
 def forward_trades(signals: Sequence[ForwardSignal], method: str) -> list[BacktestTrade]:
-    """Сделки форварда по расчёту ``method`` (``"h4"`` или ``"1m"``); сигналы, которые этим
-    расчётом посчитать не удалось, не входят."""
+    """Сделки форварда по расчёту ``method`` (``"h4"`` или ``"1m"``). Не входят: сигналы,
+    подавленные правилом одной сделки, и сигналы, которые этим расчётом посчитать не удалось.
+
+    Отменённый вручную сигнал в 1m — 0 R, как в статистике сайта (план 2.10); в H4-эталоне — тот
+    результат, который был бы без отмены (справочно, отчёт это помечает)."""
     out = []
     for s in signals:
+        if not s.counted:
+            continue
+        if method == "1m" and s.cancelled:
+            out.append(as_trade(s.signal, CANCELLED_OUTCOME))
+            continue
         outcome = s.ref if method == "h4" else s.m1
         if outcome is not None:
             out.append(as_trade(s.signal, outcome))
@@ -654,6 +845,10 @@ class ReconcileState:
     warnings: int = 0
     explained: int = 0
     legacy: int = 0
+    """Результаты, записанные до учёта комиссий: не сверяются (задача 10)."""
+    hidden: int = 0
+    unchecked: tuple[str, ...] = ()
+    """Сигналы, которые сверка не смогла проверить (нет 1m и H4, неизвестная версия)."""
     lines: tuple[str, ...] = ()
     failed: str | None = None
     error: str | None = None
@@ -678,6 +873,8 @@ def parse_reconcile(raw: Mapping[str, Any] | None, source: str) -> ReconcileStat
             warnings=int(raw["warnings"]),
             explained=int(raw.get("explained", 0)),
             legacy=int(raw.get("legacy", 0)),
+            hidden=int(raw.get("hidden", 0)),
+            unchecked=tuple(str(u) for u in raw.get("unchecked", [])),
             lines=tuple(str(line) for line in raw.get("lines", [])),
         )
     except (KeyError, TypeError, ValueError) as exc:
@@ -835,17 +1032,7 @@ def evaluate_criteria(report: Report, a: Analysis) -> list[Criterion]:
         )
     )
 
-    period = fwd.period
-    if not fwd.in_db:
-        value, status = f"версии {fwd.label} нет в БД: в форвард она не выпускалась", Status.NOT_MET
-    elif period is None:
-        value, status = "начало форварда неизвестно", Status.NOT_MET
-    else:
-        value = f"{_date(fwd.since)} — {_date(fwd.now)}, {_days(period)}"
-        status = Status.MET if period >= THREE_MONTHS else Status.NOT_MET
-    out.append(
-        Criterion("Форвард не короче 3 месяцев", "план 2.9; 3.19 (релиз 1.0)", value, status)
-    )
+    out.append(_forward_length(fwd))
 
     out.append(_forward_in_interval(fwd, a))
 
@@ -923,11 +1110,39 @@ def breakdown_mean(trades: Sequence[BacktestTrade], grade: Grade) -> tuple[Decim
     return (None, 0) if m is None else (m.avg_r, m.closed)
 
 
+def _forward_length(fwd: Forward) -> Criterion:
+    """Длина форварда: от перехода версии в форвард (или ``--since``) до границы данных."""
+    name = "Форвард не короче 3 месяцев"
+    source = "план 2.9; 3.19 (релиз 1.0)"
+    if not fwd.in_db:
+        value = f"версии {fwd.label} нет в БД: в форвард она не выпускалась"
+        return Criterion(name, source, value, Status.NOT_MET)
+    if fwd.since is None:
+        return Criterion(name, source, fwd.entered_note, Status.NOT_MET)
+    if fwd.end is None:
+        value = "закрытых свечей H4 по инструментам списка до момента отчёта нет"
+        return Criterion(name, source, value, Status.NOT_MET)
+    period = fwd.period or timedelta(0)
+    value = f"{_date(fwd.since)} — {_date(fwd.end)}, {_days(period)}"
+    if fwd.stale:
+        value += f"; данные H4 только до {_when(fwd.end)} UTC — раньше момента отчёта"
+    status = Status.MET if period >= THREE_MONTHS else Status.NOT_MET
+    if fwd.entered is None:
+        # начало задано --since, а перехода в форвард в журнале заявок нет
+        value += f"; {fwd.entered_note}"
+        has_signals = bool(fwd.signals) or fwd.outside_count > 0
+        status = Status.HUMAN if has_signals and status is Status.MET else Status.NOT_MET
+    return Criterion(name, source, value, status)
+
+
 def _forward_in_interval(fwd: Forward, a: Analysis) -> Criterion:
     name = "Форвард в пределах доверительного интервала бэктеста"
     source = "план 2.9; 3.19 (релиз 1.0)"
     if not fwd.signals:
         return Criterion(name, source, "форвард-сигналов нет", Status.NOT_MET)
+    if not fwd.counted:
+        value = "все форвард-сигналы подавило бы правило одной открытой сделки"
+        return Criterion(name, source, value, Status.NOT_MET)
     if not a.forward_closed_r:
         return Criterion(name, source, "закрытых форвард-сделок нет", Status.NOT_MET)
     mean = sum(a.forward_closed_r, Decimal(0)) / len(a.forward_closed_r)
@@ -938,9 +1153,26 @@ def _forward_in_interval(fwd: Forward, a: Analysis) -> Criterion:
         f"средний R форварда (H4) {_r(mean)}, закрытых сделок {len(a.forward_closed_r)}; "
         f"пределы для стольких сделок [{_r(interval.low)}; {_r(interval.high)}]"
     )
-    missing = sum(1 for s in fwd.signals if s.ref is None)
+    blocked = len(fwd.blocked)
+    if blocked:
+        value += f"; без {blocked} сигн., подавленных правилом одной сделки"
+    missing = sum(1 for s in fwd.counted if s.ref is None)
+    cancelled = sum(1 for s in fwd.counted if s.cancelled)
+    unknown = sum(1 for s in fwd.counted if s.overlap_unknown is not None)
+    doubts = []
     if missing:
-        return Criterion(name, source, f"{value}; без H4-эталона сигналов: {missing}", Status.HUMAN)
+        doubts.append(f"без H4-эталона сигналов: {missing}")
+    if cancelled:
+        doubts.append(
+            f"отменено вручную: {cancelled} (в H4-эталоне посчитаны как без отмены — решите, "
+            "учитывать ли их)"
+        )
+    if unknown:
+        doubts.append(
+            f"занятость инструмента не проверить (нет пересчёта более раннего): {unknown}"
+        )
+    if doubts:
+        return Criterion(name, source, f"{value}; {'; '.join(doubts)}", Status.HUMAN)
     return Criterion(name, source, value, Status.MET if interval.contains(mean) else Status.NOT_MET)
 
 
@@ -970,6 +1202,10 @@ def _reconcile_criterion(state: ReconcileState | None, now: datetime) -> Criteri
         f"сверка {_when(state.at)} UTC{window}: проверено сигналов {state.checked}, "
         f"критичных расхождений {state.critical}, предупреждений {state.warnings}"
     )
+    if state.unchecked:
+        value += f", не удалось сверить {len(state.unchecked)}"
+    if state.legacy:
+        value += f", результатов до учёта комиссий (не сверяются) {state.legacy}"
     if now - state.at > RECONCILE_STALE:
         hours = int(RECONCILE_STALE.total_seconds() // 3600)
         return Criterion(
@@ -977,6 +1213,9 @@ def _reconcile_criterion(state: ReconcileState | None, now: datetime) -> Criteri
         )
     if state.critical or state.warnings:
         return Criterion(name, source, value, Status.NOT_MET)
+    if state.unchecked:
+        shown = "; ".join(state.unchecked[:3]) + ("; …" if len(state.unchecked) > 3 else "")
+        return Criterion(name, source, f"{value} ({shown})", Status.HUMAN)
     return Criterion(name, source, value, Status.MET)
 
 
@@ -1138,14 +1377,24 @@ def _render_parameters(report: Report) -> list[str]:
     slip = format((DEFAULT_EXECUTION.slippage * 100).normalize(), "f")
     if not fwd.in_db:
         forward = "версии нет в БД (`strategy_versions`)"
+    elif fwd.since is None:
+        forward = f"не начинался: {fwd.entered_note}"
     else:
-        source = (
-            "аргумент --since" if fwd.since_source == "--since" else "дата создания версии в БД"
-        )
+        source = "аргумент --since" if fwd.since_source == "--since" else fwd.since_source
         forward = (
-            f"{_when(fwd.since)} — {_when(fwd.now)} UTC; начало — {source}; статус версии в "
+            f"{_when(fwd.since)} — {_when(fwd.end)} UTC; начало — {source}; статус версии в "
             f"БД — {fwd.status}"
         )
+        if fwd.entered is not None and fwd.since_source == "--since":
+            forward += f"; переход в форвард — {_when(fwd.entered)} UTC ({fwd.entered_note})"
+        elif fwd.entered is None:
+            forward += f"; {fwd.entered_note}"
+    if fwd.data_end is None:
+        boundary = "закрытых свечей H4 по инструментам списка до момента отчёта нет"
+    else:
+        boundary = f"закрытые свечи H4 по инструментам списка — до {_when(fwd.data_end)} UTC"
+        if fwd.stale:
+            boundary += " — **раньше момента отчёта**: форвард считается до этой границы"
     rows = [
         ("Версия", f"`{o.version}`"),
         ("Инструменты", f"{o.symbols_label}, {len(o.symbols)}: {', '.join(o.symbols)}"),
@@ -1154,7 +1403,8 @@ def _render_parameters(report: Report) -> list[str]:
             f"закрытия H4 с {_date(o.start)} по {_date(o.end)}; рыночный вход; комиссия "
             f"{fee} % за сторону, проскальзывание {slip} %",
         ),
-        ("Момент отчёта (граница данных)", f"{_when(o.now)} UTC"),
+        ("Момент отчёта", f"{_when(o.now)} UTC"),
+        ("Граница данных", boundary),
         ("Форвард", forward),
         ("Бутстреп", f"{_int(o.samples)} выборок, зерно {o.seed}"),
         (
@@ -1195,10 +1445,11 @@ def _render_summary(report: Report, a: Analysis) -> list[str]:
     else:
         h4, m1 = a.forward_h4, a.forward_m1
         out.append(
-            f"- Форвард: сигналов {len(fwd.signals)} за {_days(fwd.period or timedelta(0))}. "
-            f"По H4-пересчёту (эталон бэктеста) закрыто {h4.closed}, средний R {_r(h4.avg_r)}, "
-            f"сумма {_r(h4.sum_r)} R; по 1m-трекеру закрыто {m1.closed}, средний R "
-            f"{_r(m1.avg_r)}, сумма {_r(m1.sum_r)} R."
+            f"- Форвард: сигналов {len(fwd.signals)} за {_days(fwd.period or timedelta(0))}"
+            + _blocked_tail(fwd)
+            + f". По H4-пересчёту (эталон бэктеста) закрыто {h4.closed}, средний R "
+            f"{_r(h4.avg_r)}, сумма {_r(h4.sum_r)} R; по 1m-трекеру закрыто {m1.closed}, средний "
+            f"R {_r(m1.avg_r)}, сумма {_r(m1.sum_r)} R."
         )
     counts = {s: sum(1 for c in a.criteria if c.status is s) for s in Status}
     out.append(
@@ -1212,12 +1463,25 @@ def _render_summary(report: Report, a: Analysis) -> list[str]:
     return out
 
 
+def _blocked_tail(fwd: Forward) -> str:
+    """Хвост фразы о сигналах, подавленных правилом одной сделки."""
+    n = len(fwd.blocked)
+    if not n:
+        return ""
+    return (
+        f", из них {n} подавило бы правило одной открытой сделки — в метрики они не входят "
+        f"(в форварде правило действует с {_date(ONE_TRADE_RULE_FROM)})"
+    )
+
+
 def _no_forward_reason(fwd: Forward) -> str:
     if not fwd.in_db:
         return (
             f"форвард-сигналов нет — версии `{fwd.label}` нет в БД (`strategy_versions`), в "
             "форвард она не выпускалась"
         )
+    if fwd.since is None:
+        return f"форвард-сигналов нет — {fwd.entered_note}"
     tail = f" (ещё {fwd.outside_count} вне списка инструментов)" if fwd.outside_count else ""
     return (
         f"форвард-сигналов нет — с {_when(fwd.since)} по {_when(fwd.now)} UTC версия не "
@@ -1278,7 +1542,7 @@ def _render_forward(report: Report, a: Analysis) -> list[str]:
         return out
     period = fwd.period or timedelta(0)
     out.append(
-        f"Период: {_when(fwd.since)} — {_when(fwd.now)} UTC ({_days(period)}). Сигналов: "
+        f"Период: {_when(fwd.since)} — {_when(fwd.end)} UTC ({_days(period)}). Сигналов: "
         f"{len(fwd.signals)}."
         + (
             f" Сигналов версии по инструментам вне списка: {fwd.outside_count} "
@@ -1292,12 +1556,23 @@ def _render_forward(report: Report, a: Analysis) -> list[str]:
         "Каждый сигнал пересчитан тем же кодом, что в боевом пути (`app.retrack`): **1m** — "
         "исправленный трекер с комиссиями (так ведутся форвард и live), **H4** — `simulate_trade` "
         "с комиссиями, эталон бэктеста. Записанный в БД итог показан в таблице сигналов для "
-        "справки. Незакрытая сделка в суммы и средние не входит."
+        "справки. Незакрытая сделка в суммы и средние не входит. Отменённый вручную сигнал в 1m "
+        "— 0 R, как в статистике сайта (план 2.10), в H4-эталоне — результат без отмены."
     )
     out.append("")
+    if fwd.blocked:
+        out += [
+            f"**Правило одной открытой сделки.** {len(fwd.blocked)} сигн. записаны, когда "
+            "инструмент был занят сделкой более раннего сигнала той же версии: до "
+            f"{_date(ONE_TRADE_RULE_FROM)} (задача 6) запись кандидата это правило не "
+            "проверяла. Бэктест таких сигналов не берёт, поэтому в метрики форварда они не "
+            "входят; в таблице сигналов они помечены. Сделка — по 1m-пересчёту, как у правила "
+            "в живом режиме; сигналы до начала форварда не учитываются.",
+            "",
+        ]
     rows = []
-    not_m1 = sum(1 for s in fwd.signals if s.m1 is None)
-    not_h4 = sum(1 for s in fwd.signals if s.ref is None)
+    not_m1 = sum(1 for s in fwd.counted if s.m1 is None and not s.cancelled)
+    not_h4 = sum(1 for s in fwd.counted if s.ref is None)
     for name, m, missing in (
         ("1m-трекер", a.forward_m1, not_m1),
         ("H4-эталон", a.forward_h4, not_h4),
@@ -1320,10 +1595,10 @@ def _render_forward(report: Report, a: Analysis) -> list[str]:
 
     same = sum(
         1
-        for s in fwd.signals
+        for s in fwd.counted
         if s.m1 is not None and s.ref is not None and s.m1.status == s.ref.status
     )
-    both = sum(1 for s in fwd.signals if s.m1 is not None and s.ref is not None)
+    both = sum(1 for s in fwd.counted if s.m1 is not None and s.ref is not None)
     out += [
         f"Статус по 1m и по H4 совпал у {same} из {both} сигналов, посчитанных обоими способами. "
         "Расхождения законны: на 1m порядок касаний внутри H4-свечи известен, бэктест считает "
@@ -1351,6 +1626,7 @@ def _render_forward(report: Report, a: Analysis) -> list[str]:
                 rec,
                 _outcome_cell(s.m1, NOT_RETRACKED, s.minutes.reason),
                 _outcome_cell(s.ref, NOT_COMPUTED, s.h4.reason),
+                _signal_note(s),
             )
         )
     signal_headers = (
@@ -1362,9 +1638,21 @@ def _render_forward(report: Report, a: Analysis) -> list[str]:
         "Записано в БД",
         "1m",
         "H4",
+        "Пометка",
     )
     out += [*_table(signal_headers, signal_rows), ""]
     return out
+
+
+def _signal_note(s: ForwardSignal) -> str:
+    notes = []
+    if s.blocked_by is not None:
+        notes.append(f"инструмент занят сделкой `{s.blocked_by}` — в метрики не входит")
+    if s.overlap_unknown is not None:
+        notes.append(f"занятость не проверить: нет пересчёта `{s.overlap_unknown}`")
+    if s.cancelled:
+        notes.append("отменён вручную: в 1m — 0 R, H4 — справочно")
+    return "; ".join(notes) or DASH
 
 
 def _render_backtest(report: Report, a: Analysis) -> list[str]:
@@ -1388,6 +1676,11 @@ def _render_backtest(report: Report, a: Analysis) -> list[str]:
     )
     if bt.missing:
         line += f" Нет данных или мало истории: {', '.join(bt.missing)}."
+    closes = [r.last_close for r in bt.runs if r.last_close is not None]
+    if closes and max(closes) < last_close(o.end):
+        line += (
+            f" Последнее закрытие H4 в данных — {_when(max(closes))} UTC, раньше конца бэктеста."
+        )
     out += [line, ""]
 
     rows = [_metrics_row(name, mm) for name, mm in _slices(trades)]
@@ -1482,7 +1775,8 @@ def _render_expectation(report: Report, a: Analysis) -> list[str]:
             )
         out.append(text_ + ".")
     if report.forward.signals:
-        out.append(f"- Форвард: сигналов {len(report.forward.signals)}.")
+        fwd = report.forward
+        out.append(f"- Форвард: сигналов {len(fwd.signals)}{_blocked_tail(fwd)}.")
     out.append("")
     if skewed:
         out += [
@@ -1580,18 +1874,18 @@ def _render_windows(report: Report, a: Analysis) -> list[str]:
     out += [*_table(headers, rows, "lrrrrr"), ""]
     fwd = report.forward
     stats = a.forward_windows
-    if fwd.signals and stats is not None:
-        count = Decimal(len(fwd.signals))
+    if fwd.counted and stats is not None:
+        count = Decimal(len(fwd.counted))
         total = sum(a.forward_closed_r, Decimal(0))
         out += [
             f"Место форварда среди окон той же длины ({_days(stats.length)}): по числу сигналов "
-            f"({len(fwd.signals)}) — перцентиль {_rate(percentile_rank(stats.trade_counts, count))}"
+            f"({len(fwd.counted)}) — перцентиль {_rate(percentile_rank(stats.trade_counts, count))}"
             f", по сумме R по H4-пересчёту ({_r(total)}) — перцентиль "
             f"{_rate(percentile_rank(stats.sums, total))}. Перцентиль 50 % — как у типичного окна "
             "бэктеста; близко к 0 % или 100 % — форвард необычен для бэктеста.",
             "",
         ]
-    elif fwd.signals:
+    elif fwd.counted:
         out += ["Форвард короче суток или длиннее бэктеста: окон его длины нет.", ""]
     return out
 
@@ -1602,7 +1896,7 @@ def _render_differences(report: Report, a: Analysis) -> list[str]:
     rec = report.reconcile
     out = ["## Отличия форварда от бэктеста", ""]
     m1_h4 = ""
-    both = [s for s in fwd.signals if s.m1 is not None and s.ref is not None]
+    both = [s for s in fwd.counted if s.m1 is not None and s.ref is not None]
     if both:
         same = sum(
             1
@@ -1631,11 +1925,15 @@ def _render_differences(report: Report, a: Analysis) -> list[str]:
         "**Фильтры новостей, корреляции/BTC-bias, ликвидаций и разблокировок не получают данных "
         "нигде** — ни в бэктесте, ни в форварде. Между ними расхождения нет, с планом 2.5 есть: "
         "эти фильтры сигнал не блокируют и баллы не меняют.",
-        "**Лимитный вход и правило одной сделки** (задача 6, п. 3). Сейчас везде рыночный вход, и "
-        "расхождения нет. При лимитном входе оно появится: бэктест заранее знает, что лимит "
-        "истёк, и инструмент им не занят; живой режим этого не знает и считает ожидающий лимит "
-        "открытой сделкой — в live будут подавлены сигналы, которые бэктест взял бы "
-        f"(`{ONE_TRADE_DOC}`).",
+        "**Правило одной открытой сделки** (задача 6). В бэктесте оно было всегда, при записи "
+        f"форвард-кандидата — только с {_date(ONE_TRADE_RULE_FROM)}. Форвард-сигналы, которые "
+        "оно подавило бы, в метрики не входят" + _blocked_count(fwd) + ". Правило в живом "
+        "режиме смотрит на сделку по 1m-трекеру, бэктест — по H4: если по 1m сделка закрылась "
+        "раньше, следующий сигнал в живом режиме будет, а в бэктесте нет. Лимитный вход (п. 3 "
+        "задачи 6): сейчас везде рыночный вход, и расхождения нет. При лимитном входе оно "
+        "появится: бэктест заранее знает, что лимит истёк, и инструмент им не занят; живой "
+        "режим этого не знает и считает ожидающий лимит открытой сделкой — в live будут "
+        f"подавлены сигналы, которые бэктест взял бы (`{ONE_TRADE_DOC}`).",
         "**Вход по цене закрытия сигнальной свечи** — и в бэктесте, и в форварде. Задержка "
         "публикации (десятки секунд после закрытия H4) и цена, по которой пользователь входит на "
         "самом деле, в результате не учитываются.",
@@ -1653,6 +1951,11 @@ def _render_differences(report: Report, a: Analysis) -> list[str]:
     out += [f"{i}. {item}" for i, item in enumerate(items, 1)]
     out.append("")
     return out
+
+
+def _blocked_count(fwd: Forward) -> str:
+    n = len(fwd.blocked)
+    return f" (в этом форварде — {n})" if n else " (в этом форварде таких нет)"
 
 
 def write_report(text_: str, path: Path) -> Path:

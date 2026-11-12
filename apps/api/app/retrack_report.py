@@ -229,7 +229,7 @@ def _check_versions(conn: Connection, versions: Sequence[str]) -> None:
         raise UnknownVersionError(f"версии нет в БД: {', '.join(unknown)}; есть: {have}")
 
 
-def _span(signal: SignalRow, minutes: MinuteRetrack, h4: H4Retrack) -> TradeSpan:
+def trade_span(signal: SignalRow, minutes: MinuteRetrack, h4: H4Retrack) -> TradeSpan:
     """Жизнь сделки для пометки пересечения: по 1m, а если сигнал не пересчитан — по H4."""
     outcome = minutes.outcome or h4.outcome
     if outcome is None:
@@ -248,7 +248,7 @@ def overlap_flags(
     spans: dict[tuple[int, int], list[TradeSpan]] = {}
     for signal, minutes, h4 in parts:
         key = (signal.strategy_version_id, signal.instrument_id)
-        spans.setdefault(key, []).append(_span(signal, minutes, h4))
+        spans.setdefault(key, []).append(trade_span(signal, minutes, h4))
     return [
         open_trade_overlap(
             (
