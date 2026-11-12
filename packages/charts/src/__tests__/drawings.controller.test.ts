@@ -67,7 +67,7 @@ function setup(o: { magnet?: boolean; items?: Drawing[]; coarse?: boolean; pxBar
   let n = 0;
   let selected: string | null = null;
   const clock = { now: 0 };
-  const log = { created: [] as Drawing[], selected: [] as (string | null)[], drafts: [] as (Drawing | null)[], steps: [] as number[], done: [] as boolean[], moves: [] as { id: string; final: boolean; points: Drawing["points"]; origin?: Drawing["points"] }[] };
+  const log = { created: [] as Drawing[], selected: [] as (string | null)[], drafts: [] as (Drawing | null)[], steps: [] as number[], done: [] as boolean[], rulers: [] as (Drawing | null)[], editEnds: 0, moves: [] as { id: string; final: boolean; points: Drawing["points"]; origin?: Drawing["points"] }[] };
   const ctrl = new DrawingController(
     el as unknown as HTMLElement,
     o.proj ?? projOf(o.pxBar ?? PX_BAR),
@@ -91,6 +91,8 @@ function setup(o: { magnet?: boolean; items?: Drawing[]; coarse?: boolean; pxBar
       onDraft: (d) => log.drafts.push(d),
       onDone: (ended) => log.done.push(ended),
       onStep: (k) => log.steps.push(k),
+      onRuler: (d) => log.rulers.push(d),
+      onEditEnd: () => log.editEnds++,
     },
   );
   const fire = (k: string, x: number, y: number, type: string, id: number, button = 0) => {
@@ -235,6 +237,110 @@ describe("один рисунок на выбор инструмента и «с
     s.mouse.tap(...at(20, 110));
     expect(s.log.done).toEqual([true]);
     expect(s.ctrl.tool).toBeNull();
+  });
+
+  it("измеритель — временный (план 2A.5): не рисунок — onRuler, а не onCreate; следующее нажатие, Esc, выбор инструмента и clearRuler его убирают", () => {
+    const line: Drawing = { id: "L", type: "trend", points: [{ time: T0 + 60 * H, price: 150 }, { time: T0 + 80 * H, price: 160 }], style: DEFAULT_STYLE, locked: false, timeframe: null, updated_at: 0 };
+    const s = setup({ items: [line] });
+    const lastRuler = () => s.log.rulers[s.log.rulers.length - 1] ?? null;
+    const measure = () => {
+      s.ctrl.setTool("ruler");
+      s.mouse.tap(...at(10, 120));
+      s.mouse.move(...at(15, 115));
+      s.mouse.tap(...at(20, 110));
+    };
+    measure();
+    // рисунка нет: ни onCreate, ни выбора (раньше — рисунок в хранилище и на сервере, в счёте лимита)
+    expect(s.log.created).toHaveLength(0);
+    expect(s.log.selected).toEqual([]);
+    expect(lastRuler()).toMatchObject({ type: "ruler", points: [{ time: T0 + 10 * H, price: 120 }, { time: T0 + 20 * H, price: 110 }] });
+    expect(s.log.drafts.at(-1)).toBeNull();
+    expect(s.ctrl.tool).toBeNull();
+    expect(s.log.done).toEqual([true]);
+    // наведение мышью его не трогает
+    s.mouse.move(...at(40, 100));
+    expect(lastRuler()).not.toBeNull();
+    // следующее нажатие убирает измерение и делает своё: здесь — выбирает рисунок под курсором
+    s.mouse.tap(...at(70, 155));
+    expect(lastRuler()).toBeNull();
+    expect(s.log.selected.at(-1)).toBe("L");
+    // Esc
+    measure();
+    expect(lastRuler()).not.toBeNull();
+    s.doc.dispatch("keydown", { key: "Escape" });
+    expect(lastRuler()).toBeNull();
+    // другой инструмент
+    measure();
+    s.ctrl.setTool("trend");
+    expect(lastRuler()).toBeNull();
+    // хозяин: смена инструмента графика или таймфрейма
+    s.ctrl.setTool(null);
+    measure();
+    s.ctrl.clearRuler();
+    expect(lastRuler()).toBeNull();
+    // другие клавиши — нет; повторный сброс ничего не шлёт
+    measure();
+    s.doc.dispatch("keydown", { key: "Shift" });
+    expect(lastRuler()).not.toBeNull();
+    const n = s.log.rulers.length;
+    s.ctrl.clearRuler();
+    s.ctrl.clearRuler();
+    expect(s.log.rulers).toHaveLength(n + 1);
+    expect(s.log.created).toHaveLength(0);
+  });
+
+  it("измеритель пальцем: касание — A, касание — B, измерение; сдвиг графика следующим пальцем его убирает и двигает график", () => {
+    const s = setup({ coarse: true });
+    s.ctrl.setTool("ruler");
+    s.finger.tap(...at(10, 120));
+    s.finger.tap(...at(30, 100));
+    expect(s.log.created).toHaveLength(0);
+    expect(s.log.rulers.at(-1)?.points).toHaveLength(2);
+    const g = s.finger.drag(...at(40, 110), ...at(60, 110));
+    expect(s.log.rulers.at(-1)).toBeNull();
+    // жест — графику (не остановлен)
+    expect(g.d.stopped).toBe(false);
+    expect(s.touchReachesChart("touchmove", 1)).toBe(true);
+  });
+
+  it("правка идёт, пока рисунок нажат (editing): мышью нажатие и выбирает, и тянет — конец правки (onEditEnd) после отпускания, отмены и щипка", () => {
+    const line: Drawing = { id: "L", type: "trend", points: [{ time: T0 + 60 * H, price: 150 }, { time: T0 + 80 * H, price: 160 }], style: DEFAULT_STYLE, locked: false, timeframe: null, updated_at: 0 };
+    const s = setup({ items: [line] });
+    // нажатие по невыбранному: выбор — уже при нажатии, правка идёт до отпускания (хозяин не двигает под ним шкалу)
+    s.mouse.down(...at(70, 155));
+    expect(s.log.selected).toEqual(["L"]);
+    expect(s.ctrl.editing).toBe(true);
+    s.mouse.move(...at(72, 150));
+    expect(s.ctrl.editing).toBe(true);
+    expect(s.log.editEnds).toBe(0);
+    s.mouse.up(...at(72, 150));
+    expect(s.ctrl.editing).toBe(false);
+    expect(s.log.editEnds).toBe(1);
+    expect(s.log.moves.at(-1)?.final).toBe(true);
+    // клик без сдвига — тоже конец правки
+    s.mouse.tap(...at(72, 150));
+    expect(s.log.editEnds).toBe(2);
+    // отмена жеста браузером
+    s.mouse.down(...at(72, 150));
+    s.mouse.cancel(...at(72, 150));
+    expect(s.ctrl.editing).toBe(false);
+    expect(s.log.editEnds).toBe(3);
+    // палец по выбранному: второй палец — щипок графика, правка прервана
+    const t = setup({ items: [line], coarse: true });
+    t.select("L");
+    const [hx, hy] = [xOf(T0 + 60 * H), yOf(150)];
+    t.finger.down(hx, hy);
+    t.finger.move(hx + 20, hy);
+    expect(t.ctrl.editing).toBe(true);
+    t.pointer("touch", 2).down(hx + 80, hy);
+    expect(t.ctrl.editing).toBe(false);
+    expect(t.log.editEnds).toBe(1);
+    // мимо рисунков и жест графика — не правка
+    const u = setup({ items: [line] });
+    u.mouse.down(...at(20, 100));
+    expect(u.ctrl.editing).toBe(false);
+    u.mouse.up(...at(20, 100));
+    expect(u.log.editEnds).toBe(0);
   });
 
   it("одноточечные (горизонтальная линия, заметка) готовы с первого нажатия — мышью и пальцем", () => {
@@ -587,6 +693,118 @@ describe("палец над готовым рисунком: график важ
   });
 });
 
+describe("палец: только что нарисованный рисунок", () => {
+  /** Фибоначчи двумя касаниями на свечах 10 и 40: выбран сразу (как useDrawings). */
+  const drawn = () => {
+    const s = setup({ coarse: true });
+    s.ctrl.setTool("fib");
+    s.finger.tap(...at(10, 120));
+    s.finger.tap(...at(40, 80));
+    expect(s.log.created).toHaveLength(1);
+    const d = s.log.created[0]!;
+    expect(s.selected()).toBe(d.id);
+    return { s, d };
+  };
+
+  it("выбран, но сдвиг из его середины — графику, пока по нему не коснулись; ручки тянутся сразу", () => {
+    const { s, d } = drawn();
+    // сдвиг из середины: график едет (касания доходят до LWC), рисунок на месте, выбор остаётся
+    const pan = s.finger.down(...at(25, 100));
+    expect(pan.stopped).toBe(false);
+    expect(s.touchReachesChart("touchstart", 1)).toBe(true);
+    s.finger.move(...at(18, 100));
+    expect(s.touchReachesChart("touchmove", 1)).toBe(true);
+    s.finger.up(...at(10, 100));
+    expect(s.log.moves).toHaveLength(0);
+    expect(s.selected()).toBe(d.id);
+    // ручка B — сразу: график стоит
+    const h = s.finger.down(...at(40, 80));
+    expect(h.stopped).toBe(true);
+    expect(s.touchReachesChart("touchstart", 1)).toBe(false);
+    s.finger.move(...at(45, 75));
+    s.finger.up(...at(45, 75));
+    expect(s.log.moves.at(-1)).toMatchObject({ id: d.id, final: true, points: [d.points[0], { time: T0 + 45 * H, price: 75 }] });
+    // после правки ручки тело всё ещё не тянется — только касание по рисунку
+    const n = s.log.moves.length;
+    expect(s.finger.drag(...at(25, 100), ...at(15, 100)).d.stopped).toBe(false);
+    expect(s.log.moves).toHaveLength(n);
+    // касание по рисунку — теперь тело тянется, график стоит
+    s.finger.tap(...at(25, 100));
+    expect(s.selected()).toBe(d.id);
+    const b = s.finger.down(...at(25, 100));
+    expect(b.stopped).toBe(true);
+    expect(s.touchReachesChart("touchstart", 1)).toBe(false);
+    s.finger.move(...at(20, 100));
+    s.finger.up(...at(20, 100));
+    expect(s.log.moves.at(-1)).toMatchObject({ id: d.id, final: true });
+    expect(s.items()[0]!.points[0]!.time).toBe(T0 + 5 * H);
+  });
+
+  it("касание по ручке тоже считается касанием по рисунку; выбран другой рисунок и снова этот без касания — тело не тянется", () => {
+    const { s, d } = drawn();
+    s.finger.tap(...at(40, 80));
+    expect(s.finger.drag(...at(25, 100), ...at(20, 100)).d.stopped).toBe(true);
+    // выбор снят мимо, затем рисунок выбран не касанием (список рисунков, отмена): тело — снова графику
+    s.finger.tap(...at(70, 160));
+    expect(s.selected()).toBeNull();
+    s.select(d.id);
+    const n = s.log.moves.length;
+    expect(s.finger.drag(...at(20, 100), ...at(10, 100)).d.stopped).toBe(false);
+    expect(s.log.moves).toHaveLength(n);
+  });
+
+  it("мышь — как прежде: только что нарисованный тянется за тело сразу", () => {
+    const s = setup();
+    s.ctrl.setTool("fib");
+    s.mouse.tap(...at(10, 120));
+    s.mouse.tap(...at(40, 80));
+    const g = s.mouse.drag(...at(25, 100), ...at(20, 100));
+    expect(g.d.stopped).toBe(true);
+    expect(s.log.moves.at(-1)!.final).toBe(true);
+  });
+});
+
+describe("заблокированный рисунок: выбирается, но не правится", () => {
+  const LOCKED: Drawing = { ...FIB, locked: true };
+
+  it("мышь: клик по телу, линии уровня и точке выбирает (карточка с «разблокировать» и «удалить»); протягивание — графику", () => {
+    const s = setup({ items: [LOCKED] });
+    s.mouse.tap(...at(25, 100));
+    expect(s.log.selected.at(-1)).toBe("F");
+    s.mouse.tap(...at(25, 120 + 40 * 0.272));
+    expect(s.log.selected.at(-1)).toBe("F");
+    s.mouse.tap(...at(10, 120));
+    expect(s.log.selected.at(-1)).toBe("F");
+    // протягивание по нему — жест графика: не поглощено, рисунок на месте, выбор не меняется
+    const g = s.mouse.drag(...at(25, 100), ...at(30, 95));
+    expect(g.d.stopped || g.d.prevented).toBe(false);
+    expect(g.moves.some((m) => m.stopped)).toBe(false);
+    expect(s.log.moves).toHaveLength(0);
+    expect(s.selected()).toBe("F");
+    // клик мимо — выбор снят
+    s.mouse.tap(...at(70, 150));
+    expect(s.log.selected.at(-1)).toBeNull();
+  });
+
+  it("палец: касание выбирает; сдвиг по выбранному — графику, рисунок на месте", () => {
+    const s = setup({ items: [LOCKED], coarse: true });
+    s.finger.tap(...at(25, 100));
+    expect(s.selected()).toBe("F");
+    const pan = s.finger.down(...at(25, 100));
+    expect(pan.stopped).toBe(false);
+    expect(s.touchReachesChart("touchstart", 1)).toBe(true);
+    s.finger.move(...at(15, 100));
+    expect(s.touchReachesChart("touchmove", 1)).toBe(true);
+    s.finger.up(...at(15, 100));
+    expect(s.log.moves).toHaveLength(0);
+    expect(s.selected()).toBe("F");
+    // ручки заблокированного не тянутся
+    s.finger.drag(...at(40, 80), ...at(45, 75));
+    expect(s.log.moves).toHaveLength(0);
+    expect(s.log.created).toHaveLength(0);
+  });
+});
+
 describe("шкалы цены и времени, другие панели — жесты графика", () => {
   it("с инструментом нажатие и протягивание по шкале цены и клик по шкале времени точек не ставят", () => {
     const s = setup();
@@ -631,6 +849,39 @@ describe("шкалы цены и времени, другие панели — �
     s.mouse.tap(...at(60, 120));
     s.mouse.tap(...at(60, 60));
     expect(s.log.created.map((d) => d.type)).toEqual(["fib", "trend"]);
+  });
+});
+
+describe("правка Фибоначчи и прямоугольника: не нулевой ширины", () => {
+  it("ручку отпустили на свече другой точки — остаётся последнее положение по пути, как при постановке второй точки", () => {
+    const s = setup({ items: [FIB] });
+    // B (свеча 40) — влево на свечу A (10) с промахом в треть свечи: раньше обе точки на свече 10, линии уровней — 0 px
+    s.mouse.drag(...at(40, 80), xOf(T0 + 10 * H) + PX_BAR * 0.3, yOf(85));
+    const end = s.log.moves.at(-1)!;
+    expect(end.final).toBe(true);
+    expect(end.points[0]).toEqual(FIB.points[0]);
+    expect(end.points[1]!.time).not.toBe(FIB.points[0]!.time);
+    expect(end.points[1]!.time).toBe(s.log.moves.at(-2)!.points[1]!.time);
+    // промежуточные положения — тоже без нулевой ширины
+    for (const m of s.log.moves) expect(m.points[1]!.time).not.toBe(m.points[0]!.time);
+    // через A на другую сторону — можно (как и при постановке)
+    s.mouse.drag(...at((end.points[1]!.time - T0) / H, 85), ...at(4, 85));
+    expect(s.items()[0]!.points[1]!.time).toBe(T0 + 4 * H);
+    // ручка A на свечу B, первым же сдвигом (последнего положения ещё нет) — A на месте
+    const s2 = setup({ items: [FIB], stale: true });
+    s2.mouse.drag(...at(10, 120), ...at(40, 110), 1);
+    expect(s2.items()[0]!.points).toEqual(FIB.points);
+  });
+
+  it("прямоугольник — так же; трендовая на одной свече (вертикальный отрезок) — можно", () => {
+    const rect: Drawing = { ...FIB, id: "R", type: "rect", levels: undefined };
+    const s = setup({ items: [rect] });
+    s.mouse.drag(...at(40, 80), ...at(10, 90));
+    expect(s.items()[0]!.points[1]!.time).not.toBe(T0 + 10 * H);
+    const line: Drawing = { ...FIB, id: "L", type: "trend", levels: undefined };
+    const t = setup({ items: [line] });
+    t.mouse.drag(...at(40, 80), ...at(10, 90));
+    expect(t.items()[0]!.points[1]).toEqual({ time: T0 + 10 * H, price: 90 });
   });
 });
 
@@ -996,7 +1247,9 @@ describe("позиция: ручки и тело", () => {
     ];
     for (const kind of ["mouse", "touch"] as const) {
       const s = setup({ items: [{ ...POS, points: pts }], tick: 0.1, coarse: kind === "touch" });
-      s.select("P");
+      // выбрать касанием (кликом): тело выбранного палец тянет после касания по нему
+      s.pointer(kind).tap(300, 384);
+      expect(s.selected()).toBe("P");
       // сдвиг на 19.3 px — 4.825 цены: не кратно шагу
       s.pointer(kind).drag(300, 384, 300, 403.3);
       const m = last(s);

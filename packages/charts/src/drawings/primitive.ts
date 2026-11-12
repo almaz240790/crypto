@@ -2,16 +2,18 @@ import type { IChartApi, IPrimitivePaneRenderer, IPrimitivePaneView, ISeriesApi,
 import { layoutLabels } from "../layout/labels";
 import type { TextMeasurer } from "../layout/measure";
 import type { LabelCandidate, PlacedLabel, Rect } from "../layout/types";
+import { logicalX } from "../render/projector";
 import { alpha } from "../theme";
-import type { ThemeTokens } from "../types";
-import { channelOffset, extend, fibLevels, lineAt, positionKnobs, positionScreen, type Projector } from "./geometry";
+import type { Candle, ThemeTokens } from "../types";
+import { channelShift, extend, fibLevels, lineAt, positionKnobs, positionScreen, rulerInfo, type Projector, type RulerInfo } from "./geometry";
 import { DRAWING_TEXT, drawingColor, drawingLabels, formatDrawingPrice, handleCandidate, handleRects, toCandidate, type DrawingLabel, type DrawingText, type MeasureText, type RiskProfile } from "./labels";
 import type { DrawProjector } from "./controller";
+import { atrAt } from "./position";
 import { FIB_KEY_LEVELS, FIB_MINOR_ALPHA, HANDLE_PX, POSITION_FILL_ALPHA, POSITION_KNOB_R, POSITION_KNOB_TOUCH_R, isPosition, type Drawing, type Point } from "./types";
 
 /**
  * Примитив LWC, рисующий все рисунки поверх основной серии (план 2A.5): линии, каналы, зоны,
- * Фибоначчи, позиции, заметки, измеритель; хэндлы у выбранного рисунка. Координаты считает
+ * Фибоначчи, позиции, заметки, временный измеритель; хэндлы у выбранного рисунка. Координаты считает
  * ``TimeProjector`` — по индексам баров с экстраполяцией за правый край.
  */
 export class TimeProjector {
@@ -56,8 +58,10 @@ export class TimeProjector {
     return t[i]! + (logical - i) * (t[i + 1]! - t[i]!);
   }
 
+  /** x времени: между свечами и за краями — по доле интервала (logicalX: LWC дробному индексу даёт 0). */
   x(time: number): number | null {
-    return this.chart.timeScale().logicalToCoordinate(this.timeToLogical(time) as never);
+    const ts = this.chart.timeScale();
+    return logicalX((l) => ts.logicalToCoordinate(l as never), this.timeToLogical(time));
   }
 
   y(price: number): number | null {
@@ -104,14 +108,14 @@ class Renderer implements IPrimitivePaneRenderer {
       const width = mediaSize.width;
       const src = this.src;
       const all = src.draft ? [...src.drawings, src.draft] : src.drawings;
-      for (const d of all) this.drawOne(ctx, d, width);
+      for (const d of src.ruler ? [...all, src.ruler] : all) this.drawOne(ctx, d, width);
       // подписи — поверх всех рисунков, на местах из общей раскладки с разметкой
       const { labels, placed } = src.paintLabels(ctx, this.proj);
       for (const l of labels) {
         const r = placed.get(l.id);
         if (r) this.drawLabel(ctx, l, r);
       }
-      // ручки выбранного и начатого — поверх подписей
+      // ручки выбранного и начатого — поверх подписей; у временного измерителя ручек нет (его не правят)
       for (const d of all) if ((d === src.draft || d.id === src.selectedId) && !d.locked) this.drawHandles(ctx, d);
     });
   }
@@ -166,14 +170,17 @@ class Renderer implements IPrimitivePaneRenderer {
         l.lines.forEach((line, i) => ctx.fillText(line, r.x + POSITION_TEXT_DX, r.y + 1 + lh * (i + 0.5)));
         break;
       }
-      default:
+      default: {
         if (l.style === "plaque") {
           ctx.fillStyle = alpha(t.surface, LABEL_PLAQUE_ALPHA);
           ctx.fillRect(r.x, r.y, r.w, r.h);
         }
         ctx.fillStyle = l.color;
         ctx.textBaseline = "bottom";
-        ctx.fillText(l.lines[0] ?? "", r.x + 2, r.y + r.h);
+        // строка за строкой (измеритель — две), низ последней — у низа плашки
+        const lh = r.h / Math.max(1, l.lines.length);
+        l.lines.forEach((line, i) => ctx.fillText(line, r.x + 2, r.y + lh * (i + 1)));
+      }
     }
     ctx.restore();
   }
@@ -253,17 +260,16 @@ class Renderer implements IPrimitivePaneRenderer {
         if (!b) break;
         line(ctx, a!.x, a!.y, b.x, b.y);
         if (c) {
-          const off = channelOffset(d.points[0]!, d.points[1]!, d.points[2]!);
-          const yA = this.proj.y(d.points[0]!.price + off), yB = this.proj.y(d.points[1]!.price + off);
-          if (yA !== null && yB !== null) {
-            line(ctx, a!.x, yA, b.x, yB);
-            ctx.setLineDash([3, 3]);
-            line(ctx, a!.x, (a!.y + yA) / 2, b.x, (b.y + yB) / 2);
-            ctx.fillStyle = alpha(color, 0.06);
-            ctx.beginPath();
-            ctx.moveTo(a!.x, a!.y); ctx.lineTo(b.x, b.y); ctx.lineTo(b.x, yB); ctx.lineTo(a!.x, yA); ctx.closePath();
-            ctx.fill();
-          }
+          // сдвиг — на экране (channelShift): параллельна на любой шкале цены и проходит через третью точку
+          const off = channelShift(a!, b, c);
+          const yA = a!.y + off, yB = b.y + off;
+          line(ctx, a!.x, yA, b.x, yB);
+          ctx.setLineDash([3, 3]);
+          line(ctx, a!.x, (a!.y + yA) / 2, b.x, (b.y + yB) / 2);
+          ctx.fillStyle = alpha(color, 0.06);
+          ctx.beginPath();
+          ctx.moveTo(a!.x, a!.y); ctx.lineTo(b.x, b.y); ctx.lineTo(b.x, yB); ctx.lineTo(a!.x, yA); ctx.closePath();
+          ctx.fill();
         }
         break;
       }
@@ -349,6 +355,11 @@ class View implements IPrimitivePaneView {
 export class DrawingsPrimitive implements ISeriesPrimitive<Time> {
   drawings: Drawing[] = [];
   draft: Drawing | null = null;
+  /**
+   * Временный измеритель (план 2A.5; DrawingController.onRuler): не рисунок — не выбирается, без ручек; подпись — как у
+   * начатого рисунка.
+   */
+  ruler: Drawing | null = null;
   selectedId: string | null = null;
   projector: TimeProjector | null = null;
   touch = false;
@@ -363,6 +374,8 @@ export class DrawingsPrimitive implements ISeriesPrimitive<Time> {
    * среди подписей рисунков (график без разметки, тесты).
    */
   linked: (() => readonly PlacedLabel[] | null) | null = null;
+  /** Свечи графика: у измерителя — ход в ATR(14) по закрытым свечам; без них — подпись без хода в ATR. */
+  candles: (() => readonly Candle[]) | null = null;
   /**
    * Проекция для контроллера рисования. Смена типа графика пересоздаёт основную серию: примитив отсоединяется и
    * присоединяется к новой, проектор — новый. Контроллер живёт дольше, поэтому получает не сам проектор, а этот
@@ -379,6 +392,8 @@ export class DrawingsPrimitive implements ISeriesPrimitive<Time> {
   /** Растёт при каждом update(): подписи раскладки разметки — того же состояния, что и кадр. */
   private rev = 0;
   private sent: { rev: number; labels: DrawingLabel[] } | null = null;
+  /** ATR(14) измерителя — кэш на тот же буфер свечей и время. */
+  private atrMemo: { candles: readonly Candle[]; n: number; last: number; time: number; atr: number | null } | null = null;
 
   constructor(public tokens: ThemeTokens) {}
 
@@ -394,14 +409,34 @@ export class DrawingsPrimitive implements ISeriesPrimitive<Time> {
     this.requestUpdate = null;
   }
 
-  update(patch: Partial<Pick<DrawingsPrimitive, "drawings" | "draft" | "selectedId" | "tokens" | "touch" | "precision" | "profile" | "text">>): void {
+  update(patch: Partial<Pick<DrawingsPrimitive, "drawings" | "draft" | "ruler" | "selectedId" | "tokens" | "touch" | "precision" | "profile" | "text">>): void {
     Object.assign(this, patch);
     this.rev++;
     this.requestUpdate?.();
   }
 
   private labels(proj: Projector, measure: MeasureText): DrawingLabel[] {
-    return drawingLabels({ drawings: this.drawings, draft: this.draft, selectedId: this.selectedId, proj, tokens: this.tokens, precision: this.precision, profile: this.profile, text: this.text, measure });
+    return drawingLabels({ drawings: this.drawings, draft: this.draft, ruler: this.ruler, rulerStats: (p1, p2) => this.rulerStats(p1, p2), selectedId: this.selectedId, proj, tokens: this.tokens, precision: this.precision, profile: this.profile, text: this.text, measure, touch: this.touch });
+  }
+
+  /**
+   * Измеритель: свечи — по свечам графика (номер свечи у проектора: пропуск в данных — не свеча), ход — в ATR(14) на
+   * левой точке по закрытым свечам (незакрытая текущая его не раздувает).
+   */
+  private rulerStats(p1: Point, p2: Point): RulerInfo {
+    const pr = this.projector;
+    return rulerInfo(p1, p2, (t) => (pr ? pr.timeToLogical(t) : 0), this.closedAtr(Math.min(p1.time, p2.time)));
+  }
+
+  private closedAtr(time: number): number | null {
+    const all = this.candles?.() ?? [];
+    const n = all.length;
+    const last = n > 0 ? all[n - 1]!.time : -1;
+    const m = this.atrMemo;
+    if (m && m.candles === all && m.n === n && m.last === last && m.time === time) return m.atr;
+    const atr = atrAt(n > 0 && all[n - 1]!.open_ ? all.slice(0, -1) : all, time);
+    this.atrMemo = { candles: all, n, last, time, atr };
+    return atr;
   }
 
   /**

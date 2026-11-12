@@ -20,11 +20,14 @@ import { CLICK_SLOP_PX, DBLCLICK_MS, DBLCLICK_SLOP_PX, DEFAULT_STYLE, HANDLE_PX,
  * - точки ставятся только в области свечей основной панели: нажатие на шкалу цены или времени, в другой панели —
  *   жест графика (масштаб шкалы, прокрутка);
  * - правка рисунка (хэндлы, тело) рисунков не создаёт. Мышь правит любой рисунок под курсором; палец — только
- *   выбранный: по невыбранному касание выбирает, сдвиг и щипок принадлежат графику. Касание мимо снимает выбор,
- *   сдвиг графика — нет;
+ *   выбранный: по невыбранному касание выбирает, сдвиг и щипок принадлежат графику. Тело выбранного палец тянет, только
+ *   если по рисунку коснулись: только что нарисованный выбран сам, и сдвиг из его середины — графику (ручки — сразу).
+ *   Касание мимо снимает выбор, сдвиг графика — нет. Заблокированный выбирается кликом и касанием, но не правится;
  * - позиция Long/Short — одним нажатием на цену входа: стоп по ATR(14), цель 1:2, ширина ~30 свечей (position.ts).
  *   Правка: ручки входа, стопа и цели двигают свою цену (по вертикали, не за вход), правый край — длительность,
- *   тело — всю позицию.
+ *   тело — всю позицию;
+ * - измеритель — временный (план 2A.5): две точки — измерение (onRuler), а не рисунок; его убирает следующее нажатие на
+ *   графике (оно делает и своё — сдвиг, выбор), Esc, выбор инструмента и хозяин (clearRuler).
  */
 export type ControllerEvents = {
   onCreate: (d: Drawing) => void;
@@ -35,10 +38,20 @@ export type ControllerEvents = {
   onMove: (id: string, points: Point[], final: boolean, origin?: Point[]) => void;
   onSelect: (id: string | null) => void;
   onDraft: (d: Drawing | null) => void;
-  /** Рисунок завершён; ended — инструмент снят (без «серии», а у измерителя всегда). */
+  /** Рисунок (или измерение) завершён; ended — инструмент снят (без «серии», а у измерителя всегда). */
   onDone?: (ended: boolean) => void;
   /** Сколько точек начатого рисунка поставлено (0 — рисунок не начат): подсказка шага в чипе. */
   onStep?: (placed: number) => void;
+  /**
+   * Измерение измерителя (план 2A.5: «временный»): готовое — две точки, null — убрано. onCreate измеритель не зовёт: в
+   * хранилище, на сервер и в лимит рисунков он не попадает.
+   */
+  onRuler?: (d: Drawing | null) => void;
+  /**
+   * Правка рисунка закончилась (отпустили, отменили, щипок вторым пальцем): то, что хозяин отложил на время правки
+   * (editing), — теперь.
+   */
+  onEditEnd?: () => void;
 };
 
 export type ControllerOptions = {
@@ -104,6 +117,13 @@ export class DrawingController {
   private atrCache: { candles: readonly Candle[]; n: number; last: number; time: number; atr: number | null } | null = null;
   /** Касания (touch*) не доходят до LWC: палец двигает точку или рисунок, а не график. */
   private blockTouch = false;
+  /**
+   * Рисунок, по которому коснулись (выбран касанием): только его тело палец тянет. Только что нарисованный хозяин
+   * выбирает сам — до касания по нему сдвиг из его середины принадлежит графику (ADR-0009, «Правка»).
+   */
+  private touched: string | null = null;
+  /** Готовое измерение измерителя — до следующего нажатия на графике, Esc или выбора инструмента. */
+  private ruler: Drawing | null = null;
   private readonly handlers: Array<[EventTarget, string, (e: Event) => void]> = [];
 
   constructor(
@@ -122,6 +142,10 @@ export class DrawingController {
     const doc: EventTarget = el.ownerDocument ?? el;
     on(doc, "pointerup", (e) => this.up(e as PointerEvent));
     on(doc, "pointercancel", (e) => this.cancelGesture(e as PointerEvent));
+    // Esc убирает измерение (как у TradingView): инструмента уже нет — снять его хозяину нечего
+    on(doc, "keydown", (e) => {
+      if ((e as KeyboardEvent).key === "Escape") this.clearRuler();
+    });
     // LWC сдвигает и масштабирует по touchstart/touchmove, а не по pointer-событиям: их отсекаем отдельно
     for (const k of ["touchstart", "touchmove", "touchend", "touchcancel"]) on(el, k, (e) => this.touch(e as TouchEvent));
     // двойной клик при рисовании — две точки, а не сброс вида; в том числе тот, чьё первое отпускание завершило
@@ -137,7 +161,15 @@ export class DrawingController {
 
   setTool(tool: DrawingType | null): void {
     this.tool = tool;
+    this.clearRuler();
     this.reset();
+  }
+
+  /** Убрать измерение измерителя (хозяин — при смене инструмента графика или таймфрейма). */
+  clearRuler(): void {
+    if (!this.ruler) return;
+    this.ruler = null;
+    this.ev.onRuler?.(null);
   }
 
   setSeries(v: boolean): void {
@@ -146,6 +178,14 @@ export class DrawingController {
 
   setMagnet(v: boolean): void {
     this.opts.magnet = v;
+  }
+
+  /**
+   * Идёт правка рисунка: его нажали и держат (мышью нажатие по невыбранному и выбирает его). Хозяин не меняет под ним
+   * шкалы (поле шкалы цены под карточку): точка и тело ушли бы из-под указателя; отложенное — в onEditEnd.
+   */
+  get editing(): boolean {
+    return this.drag !== null;
   }
 
   /** Поставлено точек начатого рисунка (0 — не начат). */
@@ -271,6 +311,8 @@ export class DrawingController {
   }
 
   private down(e: PointerLike): void {
+    // следующее нажатие на графике убирает измерение — и делает своё (сдвиг, выбор, новая точка)
+    this.clearRuler();
     if (e.button !== 0 && e.pointerType === "mouse") return;
     // перо — как палец: iPad (Apple Pencil) и Android (S Pen) шлют для него и touch-события, которые LWC сдвигает
     const touch = e.pointerType !== "mouse";
@@ -321,15 +363,23 @@ export class DrawingController {
     DrawingController.consume(e);
     const d = this.opts.getDrawings().find((q) => q.id === hit.id)!;
     this.drag = { hit, type: d.type, start, origin: d.points.map((p) => ({ ...p })), last: null };
+    // нажатие мышью по рисунку — выбор им самим (на устройстве с мышью и экраном тело потом тянется и пальцем)
+    if (!touch) this.touched = hit.id;
     this.ev.onSelect(hit.id);
     this.capture(e);
   }
 
-  /** Незаблокированные рисунки под точкой: мышью правится любой, пальцем и пером — только выбранный. */
+  /**
+   * Незаблокированные рисунки под точкой: мышью правится любой, пальцем и пером — только выбранный, а его тело — только
+   * после касания по нему (ручки — сразу).
+   */
   private editHit(p: Xy, touch: boolean): Hit | null {
     const selected = this.opts.getSelectedId?.() ?? null;
+    // выбор ушёл с рисунка, по которому коснулись (снят, выбран другой): снова выбранный — уже без касания
+    if (this.touched !== selected) this.touched = null;
     const ds = this.opts.getDrawings().filter((d) => !d.locked && (!touch || d.id === selected));
-    return hitTest(ds, p.x, p.y, this.proj.projector(), this.tolerance, this.knobTolerance);
+    const hit = hitTest(ds, p.x, p.y, this.proj.projector(), this.tolerance, this.knobTolerance);
+    return touch && hit?.part === "body" && hit.id !== this.touched ? null : hit;
   }
 
   private move(e: PointerLike): void {
@@ -388,8 +438,10 @@ export class DrawingController {
       this.markPlace(at);
       return this.addPoint(at.x, at.y, g.touch);
     }
-    // касание по невыбранному рисунку выбирает его (правится пальцем, когда выбран); мимо — снять выбор
-    const hit = g.touch && g.plot ? hitTest(this.opts.getDrawings().filter((d) => !d.locked), at.x, at.y, this.proj.projector(), this.tolerance, this.knobTolerance) : null;
+    // касание по невыбранному рисунку выбирает его (правится пальцем, когда выбран); клик и касание по заблокированному —
+    // тоже (карточка с «разблокировать» и «удалить»; на телефоне другого пути к ним нет), но правки нет; мимо — снять выбор
+    const hit = g.plot ? hitTest(this.opts.getDrawings(), at.x, at.y, this.proj.projector(), this.tolerance, this.knobTolerance) : null;
+    this.touched = hit?.id ?? null;
     this.ev.onSelect(hit?.id ?? null);
   }
 
@@ -430,7 +482,11 @@ export class DrawingController {
       }
     } else if (hit.part === "point") {
       const np = this.toPoint(x, y);
-      if (np) pts[hit.index] = np;
+      // Фибоначчи и прямоугольник: ручка на свече другой точки — рисунок нулевой ширины (линии уровней — 0 px). Как и
+      // при постановке второй точки (sameAsLast), такое положение не принимается: ручка — на последнем по пути
+      const other = WIDE_TYPES.includes(type) ? origin[1 - hit.index] : undefined;
+      if (np && other && np.time === other.time) pts = this.drag!.last ?? pts;
+      else if (np) pts[hit.index] = np;
     } else {
       const t0 = this.proj.timeAt(start.x), t1 = this.proj.timeAt(x);
       const p0 = this.proj.priceAt(start.y), p1 = this.proj.priceAt(y);
@@ -479,7 +535,12 @@ export class DrawingController {
     const d = this.opts.getDrawings().find((q) => q.id === drag.hit.id);
     const points = drag.last ?? d?.points;
     if (g.moved && d && points) this.ev.onMove(drag.hit.id, points, true, drag.origin);
-    else if (!g.moved) this.ev.onSelect(drag.hit.id);
+    else if (!g.moved) {
+      // касание по ручке выбранного — тоже касание по рисунку
+      this.touched = drag.hit.id;
+      this.ev.onSelect(drag.hit.id);
+    }
+    this.ev.onEditEnd?.();
   }
 
   /** Правка прервана (второй палец — щипок графика): рисунок — на место, без шага отмены. */
@@ -487,6 +548,7 @@ export class DrawingController {
     const drag = this.drag;
     this.drag = null;
     if (drag && g.moved) this.ev.onMove(drag.hit.id, drag.origin, false);
+    if (drag) this.ev.onEditEnd?.();
   }
 
   /** Конец жеста постановки точки. */
@@ -547,11 +609,16 @@ export class DrawingController {
 
   private finish(): void {
     const d = this.makeDraft(this.pending);
+    const ruler = this.tool === "ruler";
     // один рисунок на выбор инструмента; «серия» оставляет инструмент, измеритель — всегда разовый
-    const ended = !this.series || this.tool === "ruler";
+    const ended = !this.series || ruler;
     if (ended) this.tool = null;
     this.reset();
-    this.ev.onCreate(d);
+    // измеритель — временный: измерение до следующего нажатия, а не рисунок
+    if (ruler) {
+      this.ruler = d;
+      this.ev.onRuler?.(d);
+    } else this.ev.onCreate(d);
     this.ev.onDone?.(ended);
   }
 
