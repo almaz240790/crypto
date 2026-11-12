@@ -270,6 +270,27 @@ def test_every_documented_endpoint_honours_the_key(
             assert r.status_code == 401, (path, name, r.text)
 
 
+# из одних пробелов — то же, что пустой: uvicorn обрезает пробелы вокруг значения заголовка
+@pytest.mark.parametrize("value", ["", "   "], ids=["empty", "blank"])
+def test_empty_key_header_is_401_not_guest(db: Session, client: TestClient, value: str) -> None:
+    """Заголовок ``X-API-Key`` есть, но пустой (скрипт не нашёл ключ в окружении и отправил
+    ``{"X-API-Key": ""}``), — 401, как неверный ключ. Было: пустой заголовок считался «ключа нет» —
+    скрипт тихо получал ответ гостя (лента без активных сигналов, 200), а с токеном вход шёл по
+    Bearer в обход правила «ключ важнее токена»."""
+    inst, _, _ = _world(db)
+    empty = _key_header(value)
+    for path in (f"/v1/signals?symbol={inst.symbol}", "/v1/instruments"):
+        r = client.get(path, headers=empty)
+        assert r.status_code == 401, (path, r.text)
+        assert r.json()["detail"] == "неверный или отозванный API-ключ"
+    # закрытый эндпоинт: пустой ключ не уступает место токену
+    r = client.get("/v1/journal", headers={**empty, **_bearer(_user(db, "premium"))})
+    assert r.status_code == 401, r.text
+    # запись с пустым ключом — тоже не гость
+    body = {"email": "who@example.com", "subject": "вопрос", "message": "текст обращения"}
+    assert client.post("/v1/support/tickets", json=body, headers=empty).status_code == 403
+
+
 def test_blocked_users_key_is_403(db: Session, client: TestClient) -> None:
     """Заблокированный аккаунт не читает API и по ключу — как по токену."""
     inst, _, _ = _world(db)
