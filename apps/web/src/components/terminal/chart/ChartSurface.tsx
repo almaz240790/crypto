@@ -792,12 +792,14 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     const all = snap.bar ? [...snap.closed, snap.bar] : snap.closed.slice();
     if (same && prev.live === live && all.length === 0) return;
     loadedRef.current = { key: dataKey, tf, candles, live, filled: all.length > 0 };
-    // таймфрейм — до данных: сброс вида считает число свечей по лимиту таймфрейма
-    ctrl.set({ tf });
+    // таймфрейм — до данных: сброс вида считает число свечей по лимиту таймфрейма. Шаг цены приходит в том же ответе,
+    // что и свечи: формат шкалы — тоже до них (замена применяет его сразу), иначе первый кадр с новыми свечами
+    // размечен прежним форматом, шкала цены кадром позже меняет ширину, и вид перестраивается ещё раз
+    ctrl.set({ tf, tick });
     term.setCandles(all, true);
     ctrl.notifyCandles("replace");
     syncModel();
-  }, [candles, tf, dataKey, syncModel, live]);
+  }, [candles, tf, tick, dataKey, syncModel, live]);
 
   // живая свеча — единственный путь живых изменений графика (ADR-0010): закрытые — дописать, уточнённую — заменить
   // (Terminal.amend), текущую — обновить; догон — хвост с первой изменённой свечи (Terminal.replaceTail: устаревшая

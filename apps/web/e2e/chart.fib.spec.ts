@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { H4, T0, mock, type MockServer } from "./helpers/chart";
+import { H4, T0, chartSettled, mock, type MockServer } from "./helpers/chart";
 import { installStrokes, paneStrokes } from "./helpers/strokes";
 
 /**
@@ -88,6 +88,8 @@ async function open(page: Page, authed = false, server?: MockServer) {
   const term = page.getByTestId("terminal");
   await expect(term.locator("canvas").first()).toBeVisible();
   await expect(page.getByTestId("drawings-count")).toHaveText(/рисунков: \d+/);
+  // координаты свечей (swing, onScreen) — на успокоившемся виде: точки рисунков сверяются со временем свечи точно
+  await chartSettled(page);
   const b = (await term.boundingBox())!;
   return { X: (f: number) => b.x + b.width * f, Y: (f: number) => b.y + b.height * f, box: b };
 }
@@ -461,6 +463,9 @@ test.describe("рисунок с другого таймфрейма", () => {
     await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 0");
     const step = () => page.evaluate(() => { const d = (document.querySelector('[data-testid="terminal"]') as Term).__chart.panes()[0]!.getSeries()[0]!.data(); return d.length > 1 ? d[1]!.time - d[0]!.time : 0; });
     await expect.poll(step).toBe(3600);
+    // свечи в серии — раньше, чем вид перестроился по ширине шкалы цены (chartSettled): координаты свечей — после него,
+    // иначе клик по прежнему x попадает на соседнюю свечу
+    await chartSettled(page);
     // свечи 1ч не на границе свечи 4ч: A — 3 ч после неё (около 30 % ширины), B — 1 ч после (около 60 %)
     const pick = await page.evaluate((H4) => {
       const el = document.querySelector('[data-testid="terminal"]') as Term;
@@ -488,6 +493,9 @@ test.describe("рисунок с другого таймфрейма", () => {
       await page.getByRole("link", { name }).click();
       await expect(page).toHaveURL(new RegExp(`/chart/BTCUSDT/${url}$`));
       await expect.poll(step).toBe(want);
+      // график таймфрейма — новый: координаты точек и подписи сравниваются на успокоившемся виде (chartSettled), а не
+      // на кадре, после которого вид ещё перестраивается
+      await chartSettled(page);
       // где точки должны быть: между свечами — по доле интервала, правее последней — шагом таймфрейма
       const at = await page.evaluate(
         ({ pts, want }) => {
