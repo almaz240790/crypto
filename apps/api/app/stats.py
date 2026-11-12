@@ -161,7 +161,8 @@ def forward_versions(session: Session) -> list[dict[str, Any]]:
             "select sv.id, st.slug, st.name, sv.version, sv.status from strategy_versions sv "
             "join strategies st on st.id = sv.strategy_id "
             "where sv.status = 'forward' or exists (select 1 from signals s "
-            "where s.strategy_version_id = sv.id and s.scope = 'forward') order by sv.id"
+            "where s.strategy_version_id = sv.id and s.scope = 'forward' and s.published) "
+            "order by sv.id"
         )
     ).all()
     return [

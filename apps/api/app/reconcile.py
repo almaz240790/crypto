@@ -603,6 +603,9 @@ class Report:
     findings: tuple[Finding, ...]
     explained: int = 0
     legacy: int = 0
+    hidden: int = 0
+    """Из проверенных — кандидатов ниже порога публикации и отложенных: у них проверяется только
+    воспроизводимость (движок не скрыл ли сигнал по ошибке)."""
     unchecked: tuple[str, ...] = ()
 
     @property
@@ -623,6 +626,8 @@ class Report:
         ]
         if self.explained:
             parts.append(f"отличий от эталона H4 из-за хода цены внутри свечи {self.explained}")
+        if self.hidden:
+            parts.append(f"из них скрытых кандидатов {self.hidden}")
         if self.legacy:
             parts.append(f"результатов до учёта комиссий (не сверяются) {self.legacy}")
         if self.unchecked:
@@ -644,6 +649,7 @@ class Report:
             "warnings": self.warnings,
             "explained": self.explained,
             "legacy": self.legacy,
+            "hidden": self.hidden,
             "unchecked": list(self.unchecked),
             "lines": self.lines(),
             "findings": [
@@ -741,11 +747,15 @@ def run_reconcile(
     инварианты — ещё и у сделок старше окна, которые открыты или закрылись внутри окна.
     """
     since = now - timedelta(days=days)
-    signals = load_signals(conn, since, now, scopes=("forward", "live"), include_open=True)
+    # скрытые кандидаты окна (ниже порога, отложенные) — только на воспроизводимость: движок,
+    # ошибочно скрывший сигнал, виден лишь так; сделкой они не были, трекер их не ведёт
+    signals = load_signals(
+        conn, since, now, scopes=("forward", "live"), include_open=True, published_only=False
+    )
     pubs = load_publications(conn, [s.id for s in signals])
     findings: list[Finding] = []
     unchecked: list[str] = []
-    explained = legacy = 0
+    explained = legacy = hidden = 0
     instruments: dict[int, Instrument | None] = {}
     minute_ends: dict[int, datetime | None] = {}
     with Session(bind=conn, join_transaction_mode="create_savepoint") as session:
@@ -768,6 +778,9 @@ def run_reconcile(
                     finding = check_replay(signal, pub, load_inputs(session, inst, at), params)
                     if finding is not None:
                         findings.append(finding)
+            if not pub.publishable or pub.deferred:
+                hidden += 1  # не сделка: сопровождения и итога у кандидата нет
+                continue
             minutes = retrack_minutes(
                 signal,
                 iter_candles(conn, signal.instrument_id, MINUTE, at, now),
@@ -802,5 +815,6 @@ def run_reconcile(
         findings=tuple(findings),
         explained=explained,
         legacy=legacy,
+        hidden=hidden,
         unchecked=tuple(unchecked),
     )

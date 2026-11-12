@@ -30,17 +30,27 @@ from sqlalchemy.orm import Session
 
 import app.forward as forward
 import app.notify as notify
+import app.routers.user as user_router
 import app.workers.tracker as worker
 from app import auth
 from app.chart_data import signal_layer
 from app.db import engine
 from app.forward import open_trade_blocker, write_candidate
-from app.models import Instrument, Signal, SignalResult, Strategy, StrategyVersion, User
+from app.models import (
+    Instrument,
+    JournalEntry,
+    Signal,
+    SignalResult,
+    Strategy,
+    StrategyVersion,
+    User,
+)
 from app.models.signals import PUBLISHED_SQL
 from app.reconcile import load_open_trades
 from app.retrack import load_signals
 from app.routers import public
 from app.stats import load_trades
+from app.trade_import import Trade
 from engine.structure import Direction
 
 T0 = datetime(2026, 11, 2, 8, tzinfo=UTC)
@@ -292,5 +302,71 @@ def test_reconcile_reads_only_published(db: Session, three: Any) -> None:
     conn = db.connection()
     rows = load_signals(conn, T0 - H4, T0 + H4 * 10, scopes=("live",))
     assert [r.public_id for r in rows if r.instrument_id == inst.id] == [shown.public_id]
+    # ежедневная сверка просит и скрытых кандидатов окна — пересчитать их на воспроизводимость
+    every = load_signals(conn, T0 - H4, T0 + H4 * 10, scopes=("live",), published_only=False)
+    assert len([r for r in every if r.instrument_id == inst.id]) == 3
+    # открытые скрытые кандидаты старше окна не подгружаются: сделкой они не были
+    late = load_signals(
+        conn, T0 + H4 * 5, T0 + H4 * 10, scopes=("live",), include_open=True, published_only=False
+    )
+    assert [r.public_id for r in late if r.instrument_id == inst.id] == [shown.public_id]
     opened = [t.public_id for t in load_open_trades(conn) if t.instrument_id == inst.id]
     assert opened == [shown.public_id]
+
+
+@db_only
+def test_journal_import_links_trades_only_to_published_signals(
+    db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Импорт с Binance привязывает сделку к ближайшему live-сигналу до входа. Кандидат ниже
+    порога, записанный позже опубликованного сигнала, пользователь не видел: привязка — к
+    опубликованному, стоп и цели — его."""
+    ver, inst = _setup(db)
+    now = datetime.now(tz=UTC)
+    t1 = now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=now.hour % 4) - H4 * 2
+    shown = _write(db, ver, inst, t1)
+    hidden = _write(db, ver, inst, t1 + H4, publishable=False)
+    trade = Trade(
+        symbol=inst.symbol,
+        direction="long",
+        entry_at=t1 + H4 + timedelta(hours=1),
+        entry_price=Decimal(100),
+        size=Decimal(1),
+        fees=Decimal(0),
+        first_trade_id=secrets.randbelow(10**9),
+    )
+    monkeypatch.setattr(
+        user_router, "entitlements_for", lambda *_: SimpleNamespace(journal_limit=None, plan="pro")
+    )
+    monkeypatch.setattr(user_router, "fetch_fills", lambda *_, **__: [])
+    monkeypatch.setattr(user_router, "group_fills", lambda fills: [trade])
+    user = _admin(db)
+    body = user_router.ImportIn(api_key="k" * 16, api_secret="s" * 16, symbols=[inst.symbol])
+
+    out = user_router.journal_import(body, user, db)
+
+    assert out["imported"] == 1 and out["matched"] == 1
+    entry = db.scalars(select(JournalEntry).where(JournalEntry.user_id == user.id)).one()
+    assert entry.signal_id == shown.id != hidden.id
+    assert entry.stop_loss == shown.stop_loss
+
+
+@db_only
+def test_journal_share_of_executed_signals_counts_only_published(db: Session) -> None:
+    """«Исполнено сигналов» — доля опубликованных live-сигналов периода; кандидаты ниже порога и
+    отложенные в знаменатель не входят."""
+    ver, inst = _setup(db)
+    far = datetime(2031, 3, 3, 8, tzinfo=UTC)  # в тестовой БД позже этого сигналов нет
+    shown = _write(db, ver, inst, far)
+    _write(db, ver, inst, far + H4, publishable=False)
+    _write(db, ver, inst, far + H4 * 2, deferred=True)
+    user = _admin(db)
+    entry = JournalEntry(
+        user_id=user.id,
+        instrument_id=inst.id,
+        direction="long",
+        entry_price=Decimal(100),
+        entry_at=far - timedelta(hours=1),
+        signal_id=shown.id,
+    )
+    assert user_router._vs_system(db, user, [entry])["executed_share"] == 1.0
