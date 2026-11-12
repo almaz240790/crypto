@@ -439,6 +439,29 @@ describe("догон: свежая порция истории поверх жи
     expect(near.bars.current!.time).toBe(T + 502 * Q);
   });
 
+  it("свеча порции с минутами после through, которые поток уже подтвердил, не затирает закрытую потоком (chart-data-live-2)", () => {
+    const F = 5 * M;
+    // поток закрыл 07:00 целиком (минута 07:04 — закрытой, объём 50); ответ прочитал БД до записи закрытой 07:04:
+    // его 07:00 — со снимком недописанной минуты (объём 47), through — 07:03
+    const own = { ...bar(T, 103.9, false, 50), high: 104 };
+    const s: LiveBars = { closed: [bar(T - F, 1), own], current: bar(T + F, 104, true), through: T + 4 * M };
+    const page = [bar(T - F, 1), { ...bar(T, 102.8, false, 47), high: 103 }];
+    const r = mergeLive(s, page, null, T + 3 * M, "5m")!;
+    expect(r.closed[1]).toBe(own);
+    expect(r.closed[0]).toBe(page[0]); // все минуты 06:55 учтены ответом — его свеча
+    expect(r.through).toBe(T + 4 * M);
+    // ответ учёл и 07:04 — его свеча окончательна
+    expect(mergeLive(s, page, null, T + 4 * M, "5m")!.closed[1]).toBe(page[1]);
+    // поток минут после through не подтверждал (минута 07:04 ещё не пришла) — свеча ответа
+    expect(mergeLive({ ...s, through: T + 3 * M }, page, null, T + 3 * M, "5m")!.closed[1]).toBe(page[1]);
+    // through неизвестен (ни поля, ни времени сервера) — свечи ответа как раньше
+    expect(mergeLive(s, page, null, -Infinity, "5m")!.closed[1]).toBe(page[1]);
+    // 1m: закрытая потоком минута после through ответа — его, а не снимок недописанной из ответа
+    const m = { ...bar(T + 4 * M, 9, false, 10) };
+    const r1 = mergeLive({ closed: [bar(T + 3 * M, 1), m], current: null, through: T + 4 * M }, [bar(T + 3 * M, 1), bar(T + 4 * M, 8, false, 7)], null, T + 3 * M, "1m")!;
+    expect(r1.closed[1]).toBe(m);
+  });
+
   it("прежняя текущая старше начала порции — окончательной её версии в порции нет: замена целиком", () => {
     const s: LiveBars = { closed: [bar(T, 1)], current: bar(T + M, 2, true), through: T };
     expect(mergeLive(s, [bar(T + 2 * M, 3)], bar(T + 3 * M, 4, true), T + 2 * M, "1m")).toBeNull();

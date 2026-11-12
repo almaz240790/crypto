@@ -62,10 +62,12 @@ def candles(
 ) -> dict[str, Any]:
     """Закрытые свечи порцией (по умолчанию последние 500) и текущая незакрытая свеча.
 
-    Идущий интервал (tf ≥ 5m) — свёртка только закрытых минут; ``through`` — последняя закрытая
-    минута в БД на момент ответа (unix-время; null — неизвестно, клиент оценивает по
-    ``server_time``): минуты WebSocket не позже неё уже учтены, более поздние клиент сворачивает
-    сам. Хранимая свеча 4h/1d/1w без минут с начала интервала — без объёма недописанных минут."""
+    Текущая (tf ≥ 5m) — свёртка только закрытых минут; ``through`` — последняя закрытая минута в
+    БД на момент ответа (unix-время; null — неизвестно, клиент оценивает по ``server_time``; у 1m
+    не отдаётся): минуты WebSocket не позже неё уже учтены, более поздние клиент сворачивает сам.
+    Хранимая свеча 4h/1d/1w без минут с начала интервала — без объёма недописанных минут. Свеча,
+    последняя минута которой ещё не записана закрытой (сразу после закрытия интервала), —
+    текущая, а не окончательная; свечи новее неё не отдаются (current_candle)."""
     timeframe = _tf(tf)
     ent = entitlements_for(db, user)
     if timeframe in INTRADAY and not ent.intraday:
@@ -73,29 +75,40 @@ def candles(
     inst = _instrument(db, symbol)
     now = datetime.now(tz=UTC)
     b = datetime.fromtimestamp(before, tz=UTC) if before else None
+    # текущая и through — до порции: минута, записанная закрытой между запросами, окажется в порции
+    # уже после through (клиент её свернёт), а не наоборот — учтённой в through, но не в свечах
+    live = current_candle(db, inst.id, timeframe, now) if b is None else None
     rows, has_older = load_candles(db, inst.id, timeframe, b, limit)
     cur = None
     through: datetime | None = None
-    if b is None and timeframe is not Timeframe.M1:
-        live = current_candle(db, inst.id, timeframe, now)
-        if live is not None:
-            through = live.through
-            start = bucket_start(timeframe, now)
-            if rows and rows[-1].open_time >= start:
-                # идущий интервал уже в порции (агрегат из 1m с идущей минутой или хранимая свеча
-                # Binance): заменяем свёрткой закрытых минут — клиент досворачивает минуты потока
-                # после through, ни одна не учтётся дважды и не потеряется
-                if live.candle is not None and (timeframe in AGGREGATED or live.first == start):
-                    rows = [*rows[:-1], live.candle]
-                elif live.candle is not None and live.through is not None:
-                    # хранимая свеча, а минут с начала интервала нет: в ней уже есть недописанные
-                    # минуты после through — их объём вычитается, клиент досворачивает их сам
-                    part = open_minutes(db, inst.id, live.through, start)
-                    rows = [*rows[:-1], without_open_minutes(rows[-1], live.candle, part)]
-            elif live.candle is not None:
-                cur = candle_dict(live.candle, open_=True)
-    # последняя хранимая свеча tf может быть ещё не закрыта — помечаем
-    out = [candle_dict(c, open_=c.open_time + timeframe.delta > now) for c in rows]
+    start: datetime | None = None
+    if live is not None:
+        through = live.through if timeframe is not Timeframe.M1 else None
+        start = live.start or bucket_start(timeframe, now)
+        # новее текущей — только недописанные минуты после through: их свернёт клиент
+        rows = [c for c in rows if c.open_time <= start]
+        if rows and rows[-1].open_time >= start:
+            # текущая уже в порции (агрегат из 1m с недописанными минутами или хранимая свеча
+            # Binance): заменяем свёрткой закрытых минут — клиент досворачивает минуты потока
+            # после through, ни одна не учтётся дважды и не потеряется
+            if live.candle is not None and (timeframe in AGGREGATED or live.first == start):
+                rows = [*rows[:-1], live.candle]
+            elif live.candle is not None and live.through is not None:
+                # хранимая свеча, а минут с начала интервала нет: в ней уже есть недописанные
+                # минуты после through — их объём вычитается, клиент досворачивает их сам
+                part = open_minutes(db, inst.id, live.through, start, start + timeframe.delta)
+                rows = [*rows[:-1], without_open_minutes(rows[-1], live.candle, part)]
+        elif live.candle is not None:
+            cur = candle_dict(live.candle, open_=True)
+    # последняя хранимая свеча tf может быть ещё не закрыта, текущая — не окончательна: помечаем
+    out = [
+        candle_dict(
+            c,
+            open_=c.open_time + timeframe.delta > now
+            or (start is not None and c.open_time >= start),
+        )
+        for c in rows
+    ]
     return {
         "symbol": inst.symbol,
         "tf": timeframe.value,
