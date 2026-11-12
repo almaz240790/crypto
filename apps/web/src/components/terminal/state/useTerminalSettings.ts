@@ -1,6 +1,7 @@
 import { CHART_TYPES, LAYERS_VERSION, canAdd, clampParams, indicatorById, isEmptyPaneLayout, nextUid, normalizeFibLevels, normalizeInstances, normalizeMarkup, normalizePaneLayout, prunePaneLayout, resolvePreset, selectPreset, setLayerOverride, suggestParams, type ChartType, type IndicatorInstance, type LayerKey, type MarkupSettings, type PaneLayout, type PanelKey, type PresetId, type ScaleMode } from "@platform/charts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getLayout, putLayout } from "@/lib/drawings";
+import { loadError, retryable } from "../loadError";
 import { TEMPLATES } from "../templates";
 
 /**
@@ -119,6 +120,8 @@ export function addInstance(list: readonly IndicatorInstance[], id: string): Ind
 export const STORAGE = "pl-terminal";
 /** Задержка отправки изменённых настроек на сервер. */
 const PUSH_DELAY_MS = 800;
+/** Паузы перед повтором загрузки раскладки с сервера после сбоя, мс; дальше — последняя. */
+const PULL_RETRY_MS = [3000, 10_000, 30_000, 60_000];
 
 /** Настройки из localStorage, приведённые к версии 5; legacy — найдено сохранение старше v5. */
 function readSaved(): { saved: SavedV5; legacy: boolean } {
@@ -157,30 +160,56 @@ export function useTerminalSettings(authed: boolean) {
       }
     }
   }, [saved]);
-  // раскладка: при входе берём с сервера, если она новее локальной; изменения отправляем с задержкой
-  const layoutPulled = useRef(false);
+  // раскладка: при входе берём с сервера, если она новее локальной; изменения отправляем с задержкой — только после
+  // того, как ответ сервера получен (сбой — повтор с паузами), и только правки пользователя новее копии на сервере:
+  // иначе значения по умолчанию нового устройства (или до медленного ответа) затирали раскладку на всех устройствах
+  // (аудит TSA-3)
+  const [pulled, setPulled] = useState(false);
+  /** updated_at копии на сервере после последней сверки (0 — копии нет): не новее — не отправляем. */
+  const serverAt = useRef(0);
   useEffect(() => {
-    if (!authed || layoutPulled.current) return;
-    layoutPulled.current = true;
-    getLayout()
-      .then((r) => {
-        if (!r.data) return;
-        const local = load();
-        if (r.updated_at > (local.updated_at ?? 0)) {
-          setSaved({ ...migrateLayout(r.data, local), updated_at: r.updated_at });
-          if (isLegacySave(r.data)) setLegacyFound(true);
-        }
-      })
-      .catch(() => {});
-  }, [authed]);
+    if (!authed || pulled) return;
+    let dead = false;
+    let tries = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const pull = () =>
+      getLayout()
+        .then((r) => {
+          if (dead) return;
+          if (r.data) {
+            serverAt.current = r.updated_at;
+            const local = load();
+            if (r.updated_at > (local.updated_at ?? 0)) {
+              setSaved({ ...migrateLayout(r.data, local), updated_at: r.updated_at });
+              if (isLegacySave(r.data)) setLegacyFound(true);
+            }
+          }
+          setPulled(true);
+        })
+        .catch((e: unknown) => {
+          // сеть, 5xx, 429 — повтор; отказ (сеанс кончился) — без раскладки сервера и без отправки
+          if (!dead && retryable(loadError(e))) timer = setTimeout(pull, PULL_RETRY_MS[Math.min(tries++, PULL_RETRY_MS.length - 1)]);
+        });
+    pull();
+    return () => {
+      dead = true;
+      clearTimeout(timer);
+    };
+  }, [authed, pulled]);
   useEffect(() => {
-    if (!authed || !saved || !layoutPulled.current) return;
+    const at = saved?.updated_at;
+    if (!authed || !saved || !pulled || at === undefined || at <= serverAt.current) return;
     const t = setTimeout(() => {
-      const { updated_at, ...data } = saved;
-      void putLayout(data, updated_at ?? Date.now()).catch(() => {});
+      const { updated_at: _u, ...data } = saved;
+      void _u;
+      void putLayout(data, at)
+        .then(() => {
+          serverAt.current = Math.max(serverAt.current, at);
+        })
+        .catch(() => {});
     }, PUSH_DELAY_MS);
     return () => clearTimeout(t);
-  }, [saved, authed]);
+  }, [saved, authed, pulled]);
 
   const st = saved ?? load();
   /** Изменение настроек с отметкой времени (по ней сервер и локальная копия решают, что новее). */

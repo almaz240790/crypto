@@ -11,6 +11,7 @@ import { MQ, useMediaQuery } from "@/lib/breakpoints";
 import { TF_LABEL, TIMEFRAMES, INTRADAY } from "@/lib/timeframes";
 import s from "./terminal.module.css";
 import { BottomSheet } from "./BottomSheet";
+import { ChartLoadError } from "./ChartLoadError";
 import { DrawToolbar } from "./DrawToolbar";
 import { DrawingLimitCard, SelectedDrawingCard } from "./SelectedDrawingCard";
 import { download } from "./snapshot";
@@ -224,8 +225,6 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
     const copy = dr.actions.copyTo(id, target, ratio);
     if (copy) say(`${t("Рисунок скопирован на {symbol}", { symbol: target })}${ratio !== 1 ? t(" (цены пропорционально)") : ""}`);
   };
-  // минутный ТФ без тарифа: сервер отвечает ошибкой — вместо графика объяснение со ссылкой на подписку
-  const intradayDenied = !user || (data.error ?? "").includes(t("тарифе"));
   const goSymbol = useCallback((x: string) => router.push(`/chart/${x}/${tf}`), [router, tf]);
   const clearDrawings = () => {
     if (confirm(t("Удалить все рисунки по {symbol} ({n})?", { symbol, n: dr.items.length }))) dr.actions.clear();
@@ -388,14 +387,10 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
             {/* карточка перекрестия телефона (вид прежний до C2); на десктопе — легенда в углу графика. С инструментом
                 рисования её нет: на её месте чип шага с «Отменить» (ADR-0009, «Рисование») */}
             {!desktop && !dr.tool && <CrosshairCard store={store} tick={data.tick} more={ohlcMore} onMore={setOhlcMore} onClose={clearCrosshair} />}
-            {data.error && !intradayDenied ? (
-              <div className={s.empty} role="alert">
-                {data.error}
-              </div>
-            ) : intradayDenied && data.error ? (
-              <div className={s.empty}>
-                {t("Таймфреймы 1m–15m доступны после входа с подпиской Pro.")} <Link href="/pricing">{t("Подписка")}</Link>
-              </div>
+            {/* первая порция не загрузилась — объяснение по статусу: 403 минутного ТФ — «Pro», 404 — нет инструмента,
+                иначе сбой с «Повторить» (аудит TSA-2) */}
+            {data.error ? (
+              <ChartLoadError error={data.error} symbol={symbol} tf={tf} guest={!authed} retrying={data.retrying} onRetry={data.retry} />
             ) : (
               <ChartSurface
                 store={store}
