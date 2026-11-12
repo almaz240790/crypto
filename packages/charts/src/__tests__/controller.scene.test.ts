@@ -321,6 +321,30 @@ describe("ChartController: стадии сцены", () => {
     expect(r.from + 0.7 * (r.to - r.from)).toBeCloseTo(toIdx, 0);
   });
 
+  it("замена свечей вместе с шагом цены: формат шкалы — сразу, до сброса вида и первой отрисовки LWC, а не кадром позже", () => {
+    const { ctrl, term, flush, queue } = setup();
+    ctrl.set({ text: RU_TEXT, structure: fx.structure });
+    flush();
+    term.calls.length = 0;
+    // эффект данных ChartSurface: шаг цены из того же ответа, что и свечи, — до замены
+    ctrl.set({ tick: "0.1" });
+    ctrl.notifyCandles("replace");
+    // кадр стадий ещё впереди (LWC рисует новые свечи раньше него), а формат уже применён — и до сброса вида
+    expect(queue.length).toBeGreaterThan(0);
+    const fmt = term.calls.indexOf("setPriceFormat");
+    expect(fmt).toBeGreaterThanOrEqual(0);
+    expect(fmt).toBeLessThan(term.calls.findIndex((c) => c.startsWith("resetView")));
+    // в кадре стадий — не второй раз
+    flush();
+    expect(term.calls.filter((c) => c === "setPriceFormat")).toHaveLength(1);
+    // шаг цены без новых свечей (тот же инструмент) — по-прежнему в кадре стадий
+    term.calls.length = 0;
+    ctrl.set({ tick: "0.01" });
+    expect(term.calls).not.toContain("setPriceFormat");
+    flush();
+    expect(term.calls).toContain("setPriceFormat");
+  });
+
   it("ширина области сменилась, а вид после сброса не трогали — сброс заново; после масштаба или прокрутки — нет", () => {
     const { ctrl, term, flush } = setup();
     ctrl.set({ text: RU_TEXT, structure: fx.structure });

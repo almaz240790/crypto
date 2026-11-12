@@ -265,3 +265,53 @@ export async function mock(page: Page, calls: string[], authed = false, server: 
   });
 }
 
+/**
+ * График успокоился: видимый диапазон, шаг свечей, ширина области свечей и шкалы цены, высота панели, поля шкалы и
+ * диапазон цен не менялись `quietMs` и не меньше трёх кадров подряд (ошибка — если не успокоился за 10 с).
+ *
+ * Зачем: после загрузки и смены таймфрейма вид ещё перестраивается — LWC размечает шкалу цены по первым делениям, область
+ * свечей меняет ширину, и контроллер сбрасывает вид заново по новой ширине (ChartController, «ширина области
+ * сменилась»); заданный диапазон LWC применяет только при отрисовке, а таймер шкалы (OverlayPrimitive.scheduleAxis)
+ * срабатывает через ~160 мс. Свечи в серии появляются раньше всего этого: координаты, прочитанные сразу, — от прежнего
+ * вида (под нагрузкой — на сотни миллисекунд), и клик по ним попадает на соседнюю свечу, а подписи сравниваются с
+ * прежними координатами рисунка. Проверяют то, что видит пользователь, — успокоившийся график.
+ */
+export async function chartSettled(page: Page, quietMs = 300): Promise<void> {
+  await page.evaluate(
+    (quietMs) =>
+      new Promise<void>((resolve, reject) => {
+        type Range = { from: number; to: number } | null;
+        type Chart = {
+          timeScale(): { width(): number; getVisibleLogicalRange(): Range; options(): { barSpacing: number; rightOffset: number } };
+          priceScale(id: string): { width(): number; getVisibleRange(): Range; options(): { scaleMargins: { top: number; bottom: number } } };
+          paneSize(i: number): { height: number };
+        };
+        const el = document.querySelector('[data-testid="terminal"]') as (HTMLElement & { __chart?: Chart }) | null;
+        const shot = () => {
+          const c = el?.__chart;
+          if (!c) return "нет графика";
+          const ts = c.timeScale();
+          const ps = c.priceScale("right");
+          return JSON.stringify([ts.width(), ps.width(), c.paneSize(0).height, ts.options().barSpacing, ts.options().rightOffset, ts.getVisibleLogicalRange(), ps.options().scaleMargins, ps.getVisibleRange()]);
+        };
+        const t0 = performance.now();
+        let prev = shot();
+        let since = t0;
+        let frames = 0;
+        const tick = () => {
+          const now = performance.now();
+          const cur = shot();
+          if (cur !== prev) {
+            prev = cur;
+            since = now;
+            frames = 0;
+          } else frames++;
+          if (frames >= 3 && now - since >= quietMs && cur !== "нет графика") return resolve();
+          if (now - t0 > 10_000) return reject(new Error(`график не успокоился за 10 с: ${cur}`));
+          requestAnimationFrame(tick);
+        };
+        requestAnimationFrame(tick);
+      }),
+    quietMs,
+  );
+}
