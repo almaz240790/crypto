@@ -33,6 +33,7 @@ import signal as os_signal
 import threading
 import time
 from collections import Counter
+from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 
 import redis.asyncio as aioredis
@@ -121,11 +122,18 @@ _summaries: dict[datetime, CloseSummary] = {}
 _summary_lock = threading.Lock()
 
 
-def record_evaluation(at: datetime, symbol: str, outcomes: dict[str, str]) -> None:
+def record_evaluation(
+    at: datetime, symbol: str, outcomes: dict[str, str], evaluated: Iterable[str] = ()
+) -> None:
     """Запоминает исход оценки инструмента на закрытии ``at``: версия → этап отсева из
-    ``STAGES`` или исход кандидата (``SIGNAL`` / ``NOT_A_TRADE`` / ``NOT_WRITTEN``)."""
+    ``STAGES`` или исход кандидата (``SIGNAL`` / ``NOT_A_TRADE`` / ``NOT_WRITTEN``).
+
+    ``evaluated`` — все оцениваемые версии (forward/live): строка сводки будет у каждой, даже у
+    версии со своим списком инструментов, ни одна пара которой к сроку не оценена («0 из N»)."""
     with _summary_lock:
         summary = _summaries.setdefault(at, CloseSummary())
+        for key in evaluated:
+            summary.versions.setdefault(key, Counter())
         if symbol in summary.symbols:
             return  # повторный запуск по той же свече сводку не удваивает
         summary.symbols.add(symbol)
@@ -238,7 +246,7 @@ def process_symbol(symbol: str, at: datetime) -> dict[str, int]:
                         res.reason[:80],
                     )
         session.commit()
-    record_evaluation(at, symbol, outcomes)
+    record_evaluation(at, symbol, outcomes, versions.keys())
     return stats
 
 

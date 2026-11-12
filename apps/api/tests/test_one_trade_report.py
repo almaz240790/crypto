@@ -750,6 +750,28 @@ def test_cli_rejects_bad_arguments(tmp_path: Path, capsys: pytest.CaptureFixture
         cli.main(["--strategy", VERSION, "--symbols", "AAAUSDT", "--out", "x"])
 
 
+def test_cli_keeps_only_the_pairs_of_a_version_with_its_own_list(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """У версии со своим списком инструментов (1.2.1 — 20 пар MVP) отчёт строится только по её
+    парам, как и бэктест: вне списка версия сигналов не выпускает (задача 11)."""
+    import backtest
+    import one_trade_report as cli
+
+    from engine.strategies import MVP_SYMBOLS, STRATEGIES
+
+    v121 = STRATEGIES["trend-ob-retest@1.2.1"]
+    assert backtest.version_symbols(v121, []) == (list(MVP_SYMBOLS), [])
+    assert backtest.version_symbols(v121, ["BTCUSDT", "AAAUSDT"]) == (["BTCUSDT"], ["AAAUSDT"])
+    v120 = STRATEGIES["trend-ob-retest@1.2.0"]
+    assert backtest.version_symbols(v120, ["AAAUSDT"]) == (["AAAUSDT"], [])
+    args = ["--strategy", "trend-ob-retest@1.2.1", "--symbols", "AAAUSDT", "--to", "2026-09-01"]
+    assert cli.main([*args, "--out", str(tmp_path / "x")]) == 2
+    err = capsys.readouterr().err
+    assert "пропущены: AAAUSDT" in err and "укажите --symbols" in err
+    assert not (tmp_path / "x").exists()
+
+
 def test_cli_in_several_processes_gives_the_same_files(tmp_path: Path) -> None:
     """``--jobs``: инструменты считаются в отдельных процессах, файлы — те же. Здесь настоящий
     ``evaluate`` (подмена в дочерние процессы не передаётся): на спокойном ряду сигналов нет."""
