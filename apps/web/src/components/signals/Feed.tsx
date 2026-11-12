@@ -102,8 +102,10 @@ export function Feed({ instruments }: { instruments: { symbol: string; tick_size
   }, []);
 
   const symbols = useMemo(() => Array.from(new Set((data?.items ?? []).map((i) => i.symbol))), [data]);
-  const onSignal = useCallback(() => setTick((t) => t + 1), []);
-  const { prices: livePrices, connected, online } = useLive(symbols, getAccessToken(), { onSignal });
+  // событие сигнала — лента заново; сокет открыт заново или вкладка вернулась без него (обрыв, фон дольше 30 с — сокет
+  // закрыт, план 2A.7): события между могли пропасть — тоже заново, один раз
+  const refresh = useCallback(() => setTick((t) => t + 1), []);
+  const { prices: livePrices, connected, online } = useLive(symbols, getAccessToken(), { onSignal: refresh, onResync: refresh });
   // «live» — тики идут; без строк в ленте цены не нужны, достаточно открытого соединения
   const live = online || (connected && symbols.length === 0);
 

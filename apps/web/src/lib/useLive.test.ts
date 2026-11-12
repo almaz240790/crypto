@@ -422,6 +422,38 @@ describe("соединение /v1/ws (LiveSocket)", () => {
     sock.stop();
   });
 
+  it("вкладка открыта в фоне (скрыта с самого начала, visibilitychange не было): сокет закрывается через BACKGROUND_MS; возврат — новый и один догон", async () => {
+    vi.useFakeTimers();
+    const doc = fakeDoc();
+    doc.visibilityState = "hidden";
+    const log: string[] = [];
+    const sock = socket(log, doc);
+    sock.start();
+    await flush();
+    const a = FakeWS.all[0]!;
+    a.open();
+    // сервер шлёт тики раз в секунду, пока сокет открыт
+    for (let t = 0; t < BACKGROUND_MS - 1000; t += 1000) {
+      tick(a);
+      await vi.advanceTimersByTimeAsync(1000);
+    }
+    expect(a.closed).toBe(false);
+    tick(a);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(a.closed).toBe(true);
+    expect(log.slice(-2)).toEqual(["online:false", "connected:false"]);
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(FakeWS.all).toHaveLength(1);
+    doc.visibilityState = "visible";
+    doc.fire();
+    await flush();
+    expect(FakeWS.all).toHaveLength(2);
+    FakeWS.all[1]!.open();
+    expect(log.filter((e) => e === "reconnect")).toHaveLength(1);
+    expect(log).not.toContain("wake");
+    sock.stop();
+  });
+
   it("пробуждение при неоткрытом сокете: история сразу (onWake) и новый сокет; сокет уже подключается — только история", async () => {
     vi.useFakeTimers();
     const doc = fakeDoc();

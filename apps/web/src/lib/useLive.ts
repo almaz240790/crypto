@@ -18,9 +18,11 @@
  *   подключается уже.
  * Пока сокет, сменивший прежний, открывается (resyncPending), другие поводы догона (просрочка) ждут: его открытие —
  * один догон по reconnect, а не два.
- * Вкладка скрыта дольше BACKGROUND_MS — сокет закрывается сам и в фоне не переподключается (план 2A.7, «фон —
- * отключение сокета через 30 с»); при возврате — новый сокет сразу и один догон по его открытию (reconnect), как
- * после полуоткрытого; сокет до фона ни разу не открывался — ещё и история сразу (wake).
+ * Вкладка скрыта дольше BACKGROUND_MS (или открыта в фоне и скрыта с самого начала) — сокет закрывается сам и в фоне
+ * не переподключается (план 2A.7, «фон — отключение сокета через 30 с»); при возврате — новый сокет сразу и один
+ * догон по его открытию (reconnect), как после полуоткрытого; сокет до фона ни разу не открывался — ещё и история
+ * сразу (wake). Это касается всех страниц с сокетом: лента сигналов по onResync перечитывается — статусы и сигналы,
+ * пришедшие, пока вкладка была в фоне, не теряются.
  * Без анимаций — просто новые числа.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -212,6 +214,8 @@ export class LiveSocket {
     this.doc?.addEventListener("visibilitychange", this.onVisibility);
     this.win?.addEventListener("pageshow", this.onPageShow as EventListener);
     this.win?.addEventListener("online", this.onOnline);
+    // вкладка открыта в фоне (visibilitychange до возврата не будет) — таймер фона сразу
+    if (this.doc?.visibilityState === "hidden") this.background = setTimeout(() => this.sleep(), BACKGROUND_MS);
     void this.connect();
   }
 
