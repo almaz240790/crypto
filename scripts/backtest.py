@@ -190,6 +190,19 @@ def load_inputs(
     )
 
 
+def version_symbols(params: StrategyParams, requested: list[str]) -> tuple[list[str], list[str]]:
+    """Инструменты прогона и отброшенные. У версии со своим списком (``StrategyParams.symbols``)
+    без явного списка берётся её список, а из явного отбрасывается всё, чего в нём нет: вне
+    списка версия сигналов не выпускает. У версии без списка — то, что передано."""
+    if params.symbols is None:
+        return requested, []
+    if not requested:
+        return list(params.symbols), []
+    return [s for s in requested if params.covers(s)], [
+        s for s in requested if not params.covers(s)
+    ]
+
+
 def override_params(
     base: StrategyParams, overrides: dict[str, dict[str, object]]
 ) -> StrategyParams:
@@ -310,12 +323,19 @@ def main() -> int:
             for s in args.symbols_file.read_text().splitlines()
             if s.strip() and not s.startswith("#")
         ]
+    params = STRATEGIES[args.strategy] if args.strategy else StrategyParams()
+    symbols, dropped = version_symbols(params, symbols)
+    if dropped:
+        print(
+            f"нет в списке версии {params.version}, пропущены: {', '.join(dropped)}",
+            file=sys.stderr,
+            flush=True,
+        )
     if not symbols:
-        p.error("укажите --symbols или --symbols-file")
+        p.error("укажите --symbols или --symbols-file (у версии нет своего списка инструментов)")
 
     global DATA_DIR
     DATA_DIR = args.data_dir
-    params = STRATEGIES[args.strategy] if args.strategy else StrategyParams()
     if args.params_json:
         raw = args.params_json.strip()
         text_json = raw if raw.startswith("{") else Path(raw).read_text()

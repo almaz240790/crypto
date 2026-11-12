@@ -223,3 +223,20 @@ class StrategyParams:
     scoring: ScoringParams = ScoringParams()
     min_h4_history: int = 250
     hash_candles: int = 400
+    symbols: tuple[str, ...] | None = None
+    """Инструменты, по которым версия выпускает сигналы (``BTCUSDT``…); ``None`` — все активные.
+    Scheduler и форвард не оценивают версию по инструменту вне списка, бэктест-скрипт по
+    умолчанию берёт этот список. Список — часть версии: сменить его можно только новой версией."""
+
+    def __post_init__(self) -> None:
+        if self.symbols is not None:
+            if not self.symbols:
+                raise ValueError("symbols: пустой список — используйте None (все инструменты)")
+            if len(set(self.symbols)) != len(self.symbols):
+                raise ValueError("symbols: инструменты повторяются")
+            if any(s != s.strip().upper() or not s for s in self.symbols):
+                raise ValueError("symbols: инструменты пишутся заглавными без пробелов")
+
+    def covers(self, symbol: str) -> bool:
+        """Выпускает ли версия сигналы по инструменту ``symbol``."""
+        return self.symbols is None or symbol in self.symbols

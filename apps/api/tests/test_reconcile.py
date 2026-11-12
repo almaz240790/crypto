@@ -628,7 +628,8 @@ def test_scheduler_logs_one_summary_line_per_version(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     monkeypatch.setattr(scheduler, "_summaries", {})
-    monkeypatch.setattr(scheduler, "active_instruments", lambda: 4)
+    active = frozenset({"BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"})
+    monkeypatch.setattr(scheduler, "active_instruments", lambda: active)
     caplog.set_level(logging.INFO, logger="scheduler")
     a, b = "trend-ob-retest@1.1.0", "trend-ob-retest@1.2.0"
     scheduler.record_evaluation(AT, "BTCUSDT", {a: "bias", b: "trigger"})

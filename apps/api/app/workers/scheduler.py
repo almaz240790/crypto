@@ -36,7 +36,7 @@ from collections import Counter
 from datetime import UTC, datetime, timedelta
 
 import redis.asyncio as aioredis
-from sqlalchemy import func, select
+from sqlalchemy import select
 
 from app.config import settings
 from app.db import SessionLocal
@@ -112,7 +112,8 @@ class CloseSummary:
     def __init__(self) -> None:
         self.symbols: set[str] = set()
         self.versions: dict[str, Counter[str]] = {}
-        self.expected: int | None = None
+        self.expected: frozenset[str] | None = None
+        """Активные инструменты на момент первой сводки (по ним — «из скольких»)."""
         self.logged = False
 
 
@@ -132,15 +133,14 @@ def record_evaluation(at: datetime, symbol: str, outcomes: dict[str, str]) -> No
             summary.versions.setdefault(key, Counter())[outcome] += 1
 
 
-def active_instruments() -> int:
+def active_instruments() -> frozenset[str]:
     with SessionLocal() as session:
-        return (
-            session.scalar(
-                select(func.count())
-                .select_from(Instrument)
-                .where(Instrument.market_type == "futures", Instrument.is_active)
-            )
-            or 0
+        return frozenset(
+            session.scalars(
+                select(Instrument.symbol).where(
+                    Instrument.market_type == "futures", Instrument.is_active
+                )
+            ).all()
         )
 
 
@@ -160,20 +160,22 @@ def log_close_summary(at: datetime, force: bool = False) -> bool:
         expected = active_instruments()
     with _summary_lock:
         summary.expected = expected
-        if summary.logged or (not force and len(summary.symbols) < expected):
+        if summary.logged or (not force and len(summary.symbols) < len(expected)):
             return False
         summary.logged = True
-        evaluated = len(summary.symbols)
         versions = {key: Counter(c) for key, c in sorted(summary.versions.items())}
         for old in [t for t in _summaries if t < at - SUMMARY_KEEP]:
             del _summaries[old]
     for key, c in versions.items():
+        params = STRATEGIES.get(key)
+        # «из скольких» — по списку версии (StrategyParams.symbols), если он есть
+        due = sum(1 for sym in expected if params is None or params.covers(sym))
         log.info(
             SUMMARY_LOG,
             at.strftime("%d.%m %H:%M"),
             key,
-            evaluated,
-            expected,
+            sum(c.values()),
+            due,
             *(c[stage] for stage in STAGES),
             c[SIGNAL],
             c[NOT_A_TRADE],
@@ -203,7 +205,10 @@ def process_symbol(symbol: str, at: datetime) -> dict[str, int]:
         inputs = load_inputs(session, inst, at)
         outcomes: dict[str, str] = {}
         for key, version in versions.items():
-            res = evaluate(inputs, at, STRATEGIES[key])
+            params = STRATEGIES[key]
+            if not params.covers(symbol):
+                continue  # инструмента нет в списке версии (StrategyParams.symbols)
+            res = evaluate(inputs, at, params)
             if isinstance(res, SignalCandidate):
                 if write_candidate(session, version, inst, res, inputs):
                     outcomes[key] = SIGNAL if res.publishable else NOT_A_TRADE

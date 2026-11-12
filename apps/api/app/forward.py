@@ -736,6 +736,8 @@ def run_forward(
             inputs = load_inputs(session, inst, at)
             for key, version in versions.items():
                 params: StrategyParams = STRATEGIES[key]
+                if not params.covers(inst.symbol):
+                    continue  # инструмента нет в списке версии (StrategyParams.symbols)
                 res = evaluate(inputs, at, params)
                 if isinstance(res, SignalCandidate):
                     if write_candidate(session, version, inst, res, inputs):
