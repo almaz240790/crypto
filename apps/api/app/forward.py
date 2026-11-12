@@ -7,7 +7,9 @@
    версии стратегии в статусе ``forward`` или ``live``; кандидат записывается в ``signals``
    (статус pending, событие created), повторный запуск ничего не дублирует (уникальный индекс).
    Версия, которой ещё нет в БД, создаётся в статусе ``backtest`` и не оценивается, пока её
-   не переведут в forward заявкой в админке;
+   не переведут в forward заявкой в админке. Кандидат не пишется, пока у версии по инструменту
+   есть открытая сделка или сделка закрылась внутри сигнальной свечи — то же правило, что в
+   бэктесте (``engine.lifecycle.blocking_signal``; см. ``write_candidate``);
 3. ведёт открытые форвард-сигналы по свечам H4 тем же кодом, что бэктест (``simulate_trade``):
    меняет статус через ``signal_events``, закрытые — в ``signal_results``.
 
@@ -43,10 +45,11 @@ from app.models import (
     StrategyVersion,
 )
 from app.signal_scope import scope_at_publication
-from engine.backtest import DEFAULT_EXECUTION, TradeResult, TradeStatus, simulate_trade
+from engine.backtest import DEFAULT_EXECUTION, TradeResult, signal_status, simulate_trade
 from engine.candles import Candle, Timeframe
 from engine.data.binance import BinanceHistory
 from engine.derivatives import FundingRate, LongShortRatio, OpenInterest
+from engine.lifecycle import SignalLife, SignalStatus, blocking_signal
 from engine.params import StrategyParams
 from engine.signal import MarketInputs, NoSignal, SignalCandidate, evaluate
 from engine.strategies import STRATEGIES
@@ -62,13 +65,15 @@ NEW_VERSION_STATUS = "backtest"
 EVALUATED_STATUSES = ("forward", "live")
 SKIPPED_VERSION_LOG = "версия %s в статусе %s — не оценивается"
 H4_WINDOW = 700
-STATUS_BY_RESULT = {
-    TradeStatus.EXPIRED: "expired",
-    TradeStatus.CLOSED_SL: "closed_sl",
-    TradeStatus.CLOSED_BE: "closed_be",
-    TradeStatus.CLOSED_TP3: "closed_tp3",
-    TradeStatus.CLOSED_TIME: "closed_time",
-}
+PAIR_LOCK_SQL = "select pg_advisory_xact_lock(hashtextextended(:key, 0))"
+"""Блокировка пары (версия, инструмент) до конца транзакции — см. ``lock_signal_pair``."""
+BUSY_LOG = "%s %s %s: кандидат не записан — по инструменту у версии уже есть сделка: сигнал %s (%s)"
+"""Пропуск по правилу одной открытой сделки: время сигнальной свечи, инструмент, версия,
+``public_id`` мешающего сигнала и его состояние."""
+UNREADABLE_SIGNAL_LOG = (
+    "%s %s: запись сигнала %s не читается правилом одной открытой сделки (%s) — "
+    "сделка считается открытой, новые сигналы версии по инструменту не пишутся"
+)
 EVENT_BY_STATUS = {
     "active": "activated",
     "tp1_hit": "tp1",
@@ -353,12 +358,100 @@ def ensure_strategy_versions(session: Session) -> dict[str, StrategyVersion]:
 # --- сигналы ----------------------------------------------------------------------------------
 
 
+def lock_signal_pair(session: Session, version_id: int, instrument_id: int) -> None:
+    """Берёт блокировку пары (версия, инструмент) до конца текущей транзакции.
+
+    Запись кандидата — это «проверить и вставить». Уникальный индекс (версия, инструмент,
+    ``candle_close_time``) защищает только от повтора той же свечи; правило одной открытой
+    сделки смотрит на другие строки пары, и без блокировки два процесса (scheduler и форвард)
+    могли бы оба пройти проверку и оба записать сигнал. С блокировкой второй процесс ждёт,
+    пока первый зафиксирует или откатит транзакцию, и проверяет уже по её итогу (уровень
+    изоляции — READ COMMITTED, как у приложения: запрос после ожидания видит зафиксированное).
+    Блокировка рекомендательная (``pg_advisory_xact_lock``), снимается сама при commit/rollback
+    и другим запросам к ``signals`` (трекер, API) не мешает.
+    """
+    session.execute(text(PAIR_LOCK_SQL), {"key": f"signals:{version_id}:{instrument_id}"})
+
+
+def open_trade_blocker(
+    session: Session, version: StrategyVersion, inst: Instrument, at: datetime
+) -> SignalLife | None:
+    """Сигнал версии, из-за которого инструмент занят в момент ``at``; ``None`` — свободен.
+
+    Само правило — ``engine.lifecycle.blocking_signal``, то же, что в ``run_backtest``; здесь
+    только чтение его входа из БД: сигналы версии по инструменту (и форвардные, и live —
+    область не важна), статус из ``signals.status``, время закрытия из
+    ``signal_results.closed_at``. Статус и время закрытия читаются одним запросом, поэтому
+    трекер, закрывающий сделку в эту же секунду, ответа не меняет: сделка либо ещё открыта,
+    либо закрылась внутри сигнальной свечи — в обоих случаях инструмент занят.
+
+    Как и в бэктесте, инструмент занимают только сигналы, которые там становятся сделками.
+    Кандидат ниже порога публикации или отложенный (``rationale_facts``: ``publishable`` = false
+    или ``deferred`` = true) в бэктесте сделкой не становится (``skipped['grade_none']``,
+    ``skipped['deferred']``) и инструмент не занимает — его строка сюда не читается. Строка без
+    этих пометок считается сделкой.
+
+    Строка, которую правило прочитать не может (закрытый статус без ``signal_results``, время
+    закрытия раньше сигнальной свечи — так код не пишет), считается открытой сделкой и пишется
+    в журнал как предупреждение: лучше не выдать сигнал, чем открыть вторую сделку поверх
+    непонятной первой. Прогон при этом не падает, остальные пары оцениваются как обычно.
+    """
+    rows = session.execute(
+        select(
+            Signal.public_id,
+            Signal.candle_close_time,
+            Signal.status,
+            SignalResult.closed_at,
+            Signal.rationale_facts["publishable"],
+            Signal.rationale_facts["deferred"],
+        )
+        .outerjoin(SignalResult, SignalResult.signal_id == Signal.id)
+        .where(Signal.strategy_version_id == version.id, Signal.instrument_id == inst.id)
+    ).all()
+    signals: list[SignalLife] = []
+    for public_id, opened_at, status, closed_at, publishable, deferred in rows:
+        if publishable is False or deferred is True:
+            continue  # в бэктесте такой кандидат сделкой не становится
+        opened_at = opened_at.astimezone(UTC)
+        try:
+            life = SignalLife(
+                ref=public_id,
+                opened_at=opened_at,
+                status=SignalStatus(status),
+                closed_at=None if closed_at is None else closed_at.astimezone(UTC),
+            )
+        except ValueError as exc:
+            log.warning(UNREADABLE_SIGNAL_LOG, inst.symbol, version.version, public_id, exc)
+            life = SignalLife(ref=public_id, opened_at=opened_at, status=SignalStatus.ACTIVE)
+        signals.append(life)
+    return blocking_signal(signals, at.astimezone(UTC) if at.tzinfo is not None else at)
+
+
+def _blocker_state(blocker: SignalLife) -> str:
+    if blocker.closed_at is None or blocker.status.is_open:
+        return f"статус {blocker.status.value}"
+    return (
+        f"{blocker.status.value}, закрыт {blocker.closed_at:%d.%m %H:%M} UTC — в сигнальной свече"
+    )
+
+
 def write_candidate(
     session: Session, version: StrategyVersion, inst: Instrument, cand: SignalCandidate
 ) -> bool:
     """Пишет кандидата в ``signals`` (pending + событие created). Область сигнала (``scope``)
     берётся из статуса версии, прочитанного из БД в момент записи, и дальше не меняется
-    (план 2.11, правило 5). Если версия к этому моменту ушла из forward/live, сигнал не пишется."""
+    (план 2.11, правило 5). Если версия к этому моменту ушла из forward/live, сигнал не пишется.
+
+    Не пишется и кандидат по занятому инструменту — правило «одна открытая сделка на инструмент
+    и версию», как в бэктесте (``open_trade_blocker``): пропуск идёт в журнал на уровне INFO с
+    инструментом, версией и ``public_id`` мешающего сигнала. Проверка и вставка идут под
+    блокировкой пары (``lock_signal_pair``), она держится до commit вызывающего.
+
+    Правило касается кандидатов, которые в бэктесте становятся сделками. Кандидат ниже порога
+    публикации или отложенный пишется, как и раньше (с пометкой в ``rationale_facts``): в
+    бэктесте он не сделка, поэтому под правило не подпадает и инструмент не занимает.
+    """
+    lock_signal_pair(session, version.id, inst.id)
     exists = session.scalar(
         select(Signal.id).where(
             Signal.strategy_version_id == version.id,
@@ -373,6 +466,22 @@ def write_candidate(
     if scope is None:
         log.warning(
             "%s %s: версия в статусе %s — сигнал не записан", inst.symbol, version.version, status
+        )
+        return False
+    becomes_trade = cand.score.publishable and not cand.deferred  # как в run_backtest
+    blocker = (
+        open_trade_blocker(session, version, inst, cand.candle_close_time)
+        if becomes_trade
+        else None
+    )
+    if blocker is not None:
+        log.info(
+            BUSY_LOG,
+            cand.candle_close_time.strftime("%d.%m %H:%M"),
+            inst.symbol,
+            version.version,
+            blocker.ref,
+            _blocker_state(blocker),
         )
         return False
     t = cand.trade
@@ -436,9 +545,7 @@ def _setup_from_row(sig: Signal) -> TradeSetup:
 
 
 def _status_from_result(r: TradeResult) -> str:
-    if r.status in STATUS_BY_RESULT:
-        return STATUS_BY_RESULT[r.status]
-    return {0: "active", 1: "tp1_hit", 2: "tp2_hit"}[min(r.tp_hits, 2)]
+    return signal_status(r).value
 
 
 def track_open_signals(session: Session, versions: dict[str, StrategyVersion]) -> int:
@@ -529,7 +636,9 @@ def run_forward(
         q = select(Instrument).where(Instrument.market_type == "futures", Instrument.is_active)
         if symbols:
             q = q.where(Instrument.symbol.in_(symbols))
-        instruments = list(session.scalars(q).all())
+        # постоянный порядок: блокировки пар (версия, инструмент) копятся до commit в конце
+        # прогона, и два одновременных прогона с разным порядком строк блокировали бы друг друга
+        instruments = list(session.scalars(q.order_by(Instrument.id)).all())
         stats["instruments"] = len(instruments)
         if refresh:
             refresh_market_data(session, instruments, now)

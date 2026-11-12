@@ -28,9 +28,10 @@
 ``simulate_trade`` считает сроки в штуках свечей, поэтому любая недостающая свеча до выхода
 делает эталон непригодным.
 
-**Пересечение сделок** (``open_trade_overlap``) — только пометка для отчёта по правилу задачи 6
-(«одна открытая сделка на инструмент и версию»). Планировщик, форвард и бэктест её не вызывают
-и своего поведения не меняют.
+**Пересечение сделок** (``open_trade_overlap``) — пометка для отчёта по правилу задачи 6
+(«одна открытая сделка на инструмент и версию»). Само правило одно — в движке
+(``engine.lifecycle.blocking_signal``): его же применяют бэктест и запись кандидата в форварде
+и live. Здесь оно только спрашивается о записанных сигналах; отчёт ничего не меняет.
 """
 
 from __future__ import annotations
@@ -53,6 +54,7 @@ from app.models import Signal, SignalEvent, SignalResult, SignalTracking, Strate
 from app.workers.tracker import OPEN, apply_candles, state_from_json
 from engine.backtest import DEFAULT_EXECUTION, simulate_trade
 from engine.candles import SIGNAL_TIMEFRAME, Candle, Timeframe, closed_only
+from engine.lifecycle import SignalLife, SignalStatus, blocking_signal
 from engine.strategies import STRATEGIES
 from engine.tracker import interval_start
 
@@ -576,26 +578,38 @@ class Overlap:
     with_public_id: str | None = None
 
 
+def _signal_life(span: TradeSpan) -> SignalLife:
+    """Пересчитанная сделка как вход правила движка. Вход у пересчёта всегда рыночный, поэтому
+    сделка либо открыта, либо закрыта; чем именно закрыта, в ``TradeSpan`` нет, а правилу и не
+    нужно — все статусы ``closed_*`` оно читает одинаково, по времени закрытия."""
+    status = SignalStatus.ACTIVE if span.closed_at is None else SignalStatus.CLOSED_TIME
+    return SignalLife(span.public_id, span.opened_at, status, span.closed_at)
+
+
 def open_trade_overlap(others: Iterable[TradeSpan], at: datetime) -> Overlap:
     """Правило задачи 6 как пометка (только чтение): занят ли инструмент в момент ``at``.
 
-    ``others`` — сделки других сигналов **той же версии по тому же инструменту**. Инструмент
-    занят, если у более раннего сигнала сделка ещё открыта или закрылась внутри свечи
-    сигнального таймфрейма, которая заканчивается в ``at`` (``closed_at > at − H4``): в
-    бэктесте свеча выхода тоже пропускается (``run_backtest``, ``i <= busy_until``).
+    ``others`` — сделки других сигналов **той же версии по тому же инструменту**. Ответ даёт
+    правило движка ``engine.lifecycle.blocking_signal`` — то же, что в ``run_backtest`` и при
+    записи кандидата: инструмент занят, если у более раннего сигнала сделка ещё открыта или
+    закрылась внутри свечи сигнального таймфрейма, которая заканчивается в ``at``
+    (``closed_at > at − H4``).
 
     Возвращается самая ранняя мешающая сделка. Сравнение — со всеми записанными сигналами, в
     том числе с теми, что сами помечены: это факт пересечения, а не моделирование того, какие
-    сигналы появились бы при действующем правиле.
+    сигналы появились бы при действующем правиле. Сделка, которую не удалось пересчитать
+    (``known=False``), правилу не подаётся: если ни одна известная сделка не мешает, а такая
+    среди более ранних есть — ответ «нет данных».
     """
-    earlier = sorted(
-        (s for s in others if s.opened_at < at), key=lambda s: (s.opened_at, s.public_id)
+    spans = list(others)
+    blocker = blocking_signal((_signal_life(s) for s in spans if s.known), at)
+    if blocker is not None:
+        return Overlap(True, blocker.ref)
+    unknown = min(
+        (s for s in spans if not s.known and s.opened_at < at),
+        key=lambda s: (s.opened_at, s.public_id),
+        default=None,
     )
-    boundary = at - SIGNAL_TIMEFRAME.delta
-    for span in earlier:
-        if span.known and (span.closed_at is None or span.closed_at > boundary):
-            return Overlap(True, span.public_id)
-    unknown = next((s for s in earlier if not s.known), None)
     if unknown is not None:
         return Overlap(None, unknown.public_id)
     return Overlap(False)

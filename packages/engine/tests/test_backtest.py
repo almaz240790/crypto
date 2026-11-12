@@ -1,21 +1,36 @@
 from __future__ import annotations
 
+import random
+from collections import Counter
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
+import pytest
+
+import engine.backtest as backtest
 from engine.backtest import (
+    BacktestTrade,
     ExecutionParams,
+    TradeResult,
     TradeStatus,
     breakdown,
     equity_curve,
     run_backtest,
+    signal_status,
     simulate_trade,
     summarize,
 )
+from engine.bias import Bias, BiasContext
 from engine.candles import Candle, Timeframe
+from engine.filters import FilterSummary
+from engine.lifecycle import SignalLife, SignalStatus
 from engine.params import FilterParams, StrategyParams, TradeParams
-from engine.structure import Direction
+from engine.scoring import Grade, ScoreBreakdown
+from engine.signal import MarketInputs, NoSignal, SignalCandidate
+from engine.structure import Direction, Trend
 from engine.trade import TradeSetup
+from engine.zones import Zone, ZoneKind
 from tests.test_signal import FLAT, SETUP, inputs
 
 D = Decimal
@@ -220,3 +235,282 @@ def test_trade_list_digest_is_unchanged() -> None:
     """Эталон посчитан до выноса формулы cost_r в ``execution_cost_r``: на 55402f6 и на
     origin/main a91eab4 (после задач 1, 2, 4, 5) — хэш совпал."""
     assert trade_list_digest() == "7704a4aba7394b7cd1e40e78fce4ccc3f51ec39a79755fec20ffee1c20b076cc"
+
+
+# --- одна открытая сделка на инструмент: общее правило движка (задача 6) -----------------------
+
+
+def test_signal_status_of_trade_result() -> None:
+    def res(status: TradeStatus, hits: int) -> TradeResult:
+        return TradeResult(status, D(0), None, None, hits, 0, None, D(0), D(0), D(0))
+
+    assert signal_status(res(TradeStatus.OPEN, 0)) is SignalStatus.ACTIVE
+    assert signal_status(res(TradeStatus.OPEN, 1)) is SignalStatus.TP1_HIT
+    assert signal_status(res(TradeStatus.OPEN, 2)) is SignalStatus.TP2_HIT
+    assert signal_status(res(TradeStatus.EXPIRED, 0)) is SignalStatus.EXPIRED
+    for closed in (
+        TradeStatus.CLOSED_SL,
+        TradeStatus.CLOSED_BE,
+        TradeStatus.CLOSED_TP3,
+        TradeStatus.CLOSED_TIME,
+    ):
+        status = signal_status(res(closed, 1))
+        assert status.is_closed and status.value == closed.value
+    # у каждого исхода сделки есть статус сигнала
+    assert all(isinstance(signal_status(res(s, 0)), SignalStatus) for s in TradeStatus)
+
+
+def test_busy_candles_are_counted_on_synthetic_setup() -> None:
+    """Свечи, пока сделка открыта, и свеча её выхода не оцениваются и считаются в
+    ``skipped['busy']``; ``evaluated`` — только свечи, на которых вызван ``evaluate``."""
+    params = StrategyParams(filters=FilterParams(atr_min_history=10**6))
+    after = [
+        (99.5, 104, 99, 103),
+        (103, 106, 102, 105.5),
+        (105.5, 111, 105, 110),
+        (110, 112, 109, 111),
+    ]
+    inp = inputs(after)
+    start = T0 + H4 * (len(FLAT) + len(SETUP) - 3)
+    end = T0 + H4 * (len(FLAT) + len(SETUP) + len(after))
+    run = run_backtest([inp], params, start, end, NO_COST)
+    (t,) = run.trades
+    assert t.exit_time is not None
+    in_range = [c for c in inp.h4 if start <= c.close_time(Timeframe.H4) <= end]
+    # заняты свечи после сигнальной по свечу выхода включительно
+    busy = [c for c in in_range if t.signal_time < c.close_time(Timeframe.H4) <= t.exit_time]
+    assert len(busy) >= 1
+    assert run.skipped["busy"] == len(busy)
+    assert run.skipped_by_symbol["BTCUSDT"]["busy"] == len(busy)
+    assert run.evaluated == len(in_range) - len(busy)
+    # каждая оценённая свеча — либо сделка, либо пропуск на одном из этапов ``evaluate``
+    assert sum(run.skipped.values()) - run.skipped["busy"] + len(run.trades) == run.evaluated
+
+
+def test_backtest_rejects_repeated_or_unsorted_candles() -> None:
+    """Правило одной сделки считает по времени: на ряду с повтором свечи или не по порядку ответ
+    был бы другим, чем у прежнего счёта по номеру свечи, — такой ряд отклоняется сразу и с
+    понятным сообщением про ряд (а не про сигнал где-то в середине прогона)."""
+    params = StrategyParams(filters=FilterParams(atr_min_history=10**6))
+    inp = inputs([(99.5, 104, 99, 103)])
+    h4 = list(inp.h4)
+    start, end = T0, T0 + H4 * (len(h4) + 1)
+    repeated = replace(inp, h4=(*h4[:5], h4[4], *h4[5:]))
+    with pytest.raises(ValueError, match="BTCUSDT: свечи H4 должны идти по возрастанию"):
+        run_backtest([repeated], params, start, end, NO_COST)
+    unsorted = replace(inp, h4=(*h4[:5], h4[6], h4[5], *h4[7:]))
+    with pytest.raises(ValueError, match="по возрастанию open_time без повторов"):
+        run_backtest([unsorted], params, start, end, NO_COST)
+    # пропуск в сетке H4 — допустимый ряд
+    gapped = replace(inp, h4=(*h4[:5], *h4[6:]))
+    run_backtest([gapped], params, start, end, NO_COST)
+
+
+def _walk(seed: int, n: int, drop: frozenset[int] = frozenset()) -> list[Candle]:
+    """Случайный ряд H4 с шагом цены до 2 %; ``drop`` — номера свечей, которых в ряду нет."""
+    rng = random.Random(seed)
+    out = []
+    price = 100.0
+    for i in range(n):
+        o = price
+        cl = o * (1 + rng.uniform(-0.02, 0.02))
+        h = max(o, cl) * (1 + rng.uniform(0, 0.012))
+        lo = min(o, cl) * (1 - rng.uniform(0, 0.012))
+        price = cl
+        if i not in drop:
+            ohlc = (D(f"{x:.4f}") for x in (o, h, lo, cl))
+            out.append(Candle(T0 + H4 * i, *ohlc, D(1)))
+    return out
+
+
+def _fake_evaluate(
+    inp: MarketInputs, at: datetime, params: StrategyParams
+) -> SignalCandidate | NoSignal:
+    """Вместо ``evaluate``: кандидат почти на каждой свече — правило занятости работает на
+    пределе. Часть свечей — без сигнала, часть кандидатов отложена или ниже порога публикации.
+    Решение зависит только от сигнальной свечи (последней во входе)."""
+    c = inp.h4[-1]
+    assert c.close_time(Timeframe.H4) == at
+    kind = int(c.close * 10_000) % 10
+    if kind == 0:
+        return NoSignal("trigger", "нет ретеста")
+    if kind == 5:
+        return NoSignal("filters", "ATR: вне режима; объём: ниже среднего")
+    up = kind % 2 == 0
+    direction = Direction.UP if up else Direction.DOWN
+    sign = 1 if up else -1
+    risk = c.close * D("0.03")
+    trade = TradeSetup(
+        direction,
+        c.close,
+        c.close - sign * risk / 2,
+        c.close - sign * risk,
+        c.close + sign * risk,
+        c.close + sign * risk * D("2.3"),
+        c.close + sign * risk * 4,
+        risk,
+        D("2.3"),
+        (),
+    )
+    return SignalCandidate(
+        symbol=inp.symbol,
+        direction=direction,
+        candle_close_time=at,
+        strategy_version=params.version,
+        zone=Zone(ZoneKind.OB, direction, c.high, c.low, 0, 0, 0, 0),
+        zone_kinds=frozenset({ZoneKind.OB}),
+        trade=trade,
+        score=ScoreBreakdown({}, 70, Grade.NONE if kind == 1 else Grade.B),
+        filters=FilterSummary(()),
+        bias=BiasContext(Bias.LONG, Trend.UP, Trend.UP, None, None, None, ()),
+        input_hash="",
+        facts=(),
+        deferred=kind == 3,
+    )
+
+
+def _reference_run(
+    all_inputs: list[MarketInputs],
+    params: StrategyParams,
+    start: datetime,
+    end: datetime,
+    exec_params: ExecutionParams,
+) -> tuple[list[BacktestTrade], int, dict[str, int], int]:
+    """Цикл ``run_backtest`` до задачи 6, дословно: занятость по номеру свечи
+    (``i <= busy_until``). Возвращает сделки, число оценённых свечей, пропуски по этапам и
+    число занятых свечей в периоде."""
+    trades = []
+    skipped: Counter[str] = Counter()
+    evaluated = busy = 0
+    for inp in all_inputs:
+        h4 = list(inp.h4)
+        busy_until = -1
+        for i, c in enumerate(h4):
+            at = c.close_time(Timeframe.H4)
+            if at < start or at > end:
+                continue
+            if i <= busy_until:
+                busy += 1
+                continue
+            evaluated += 1
+            res = _fake_evaluate(replace(inp, h4=h4[: i + 1]), at, params)
+            if not isinstance(res, SignalCandidate):
+                skipped[res.stage] += 1
+                continue
+            if res.deferred:
+                skipped["deferred"] += 1
+                continue
+            if not res.score.publishable:
+                skipped["grade_none"] += 1
+                continue
+            result = simulate_trade(res.trade, h4[i + 1 :], params.trade, exec_params)
+            exit_idx = result.exit_index
+            exit_time = (
+                h4[i + 1 + exit_idx].close_time(Timeframe.H4) if exit_idx is not None else None
+            )
+            trades.append(
+                BacktestTrade(
+                    symbol=inp.symbol,
+                    direction=res.direction,
+                    signal_time=at,
+                    grade=res.score.grade,
+                    score=res.score.total,
+                    rr_tp2=res.trade.rr_tp2,
+                    entry=res.trade.entry_market,
+                    stop=res.trade.stop_loss,
+                    tp1=res.trade.tp1,
+                    tp2=res.trade.tp2,
+                    tp3=res.trade.tp3,
+                    result=result,
+                    exit_time=exit_time,
+                    facts=res.facts,
+                )
+            )
+            if exit_idx is not None:
+                busy_until = i + 1 + exit_idx
+            elif result.status is TradeStatus.OPEN:
+                busy_until = len(h4)
+    return trades, evaluated, dict(skipped), busy
+
+
+def _two_instruments() -> list[MarketInputs]:
+    return [
+        MarketInputs(symbol="AAAUSDT", h4=_walk(1, 900)),
+        # ряд с пропусками свечей: правило считает по времени, а не по номеру свечи
+        MarketInputs(symbol="BBBUSDT", h4=_walk(2, 900, drop=frozenset({200, 201, 455, 700}))),
+    ]
+
+
+def test_trades_are_bit_for_bit_the_same_as_with_the_candle_index_rule(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Критерий «бэктест не меняется»: при кандидате почти на каждой свече (сделки идут одна за
+    другой, все исходы, рыночный и лимитный вход, ряд с пропусками, незакрытая сделка в конце
+    данных) список сделок и счётчики совпадают с прежним циклом; занятые свечи теперь посчитаны.
+    Хэш-эталон ``test_trade_list_digest_is_unchanged`` эту замену не ловит: в нём одна сделка
+    ``run_backtest``, а занятость на исход не влияет."""
+    monkeypatch.setattr(backtest, "evaluate", _fake_evaluate)
+    params = StrategyParams()
+    start, end = T0 + H4 * 10, T0 + H4 * 880
+    seen = set()
+    for entry_type in ("market", "limit"):
+        exec_params = ExecutionParams(entry_type=entry_type)
+        run = run_backtest(_two_instruments(), params, start, end, exec_params)
+        trades, evaluated, skipped, busy = _reference_run(
+            _two_instruments(), params, start, end, exec_params
+        )
+        assert run.trades == trades
+        assert run.evaluated == evaluated
+        assert busy > 100 and run.skipped.pop("busy") == busy
+        assert dict(run.skipped) == skipped
+        assert run.block_reasons == {"ATR": skipped["filters"], "объём": skipped["filters"]}
+        assert sum(v["busy"] for v in run.skipped_by_symbol.values()) == busy
+        assert len(trades) > 50
+        seen |= {t.result.status for t in trades}
+    # проверены все исходы, в том числе истёкший лимит (не занимает инструмент) и сделка,
+    # не закрытая к концу данных
+    assert seen == set(TradeStatus)
+
+    # данные кончаются раньше выхода: незакрытая сделка занимает инструмент до конца ряда
+    calm = [c(100, 100.5, 99.5, 100.0002, i) for i in range(40)]  # кандидат на каждой свече
+    one = [MarketInputs(symbol="CCCUSDT", h4=calm)]
+    params = StrategyParams(trade=TradeParams(time_stop_candles=100))
+    run = run_backtest(one, params, T0, T0 + H4 * 100, NO_COST)
+    trades, evaluated, skipped, busy = _reference_run(one, params, T0, T0 + H4 * 100, NO_COST)
+    assert run.trades == trades and [t.result.status for t in trades] == [TradeStatus.OPEN]
+    assert (run.evaluated, run.skipped["busy"]) == (evaluated, busy) == (1, 39)
+
+
+def test_on_busy_reports_suppressed_candidates_without_changing_the_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``on_busy`` (для отчёта владельцу): на занятой свече кандидат всё же вычисляется и, если
+    стал бы сделкой, отдаётся вместе с мешающим сигналом. Сделки и счётчики те же, что без него."""
+    monkeypatch.setattr(backtest, "evaluate", _fake_evaluate)
+    params = StrategyParams()
+    start, end = T0 + H4 * 10, T0 + H4 * 880
+    plain = run_backtest(_two_instruments(), params, start, end)
+    suppressed: list[tuple[SignalCandidate, SignalLife]] = []
+    published: list[SignalCandidate] = []
+    run = run_backtest(
+        _two_instruments(),
+        params,
+        start,
+        end,
+        on_signal=published.append,
+        on_busy=lambda cand, blocker: suppressed.append((cand, blocker)),
+    )
+    assert run.trades == plain.trades and run.evaluated == plain.evaluated
+    assert run.skipped == plain.skipped and run.skipped_by_symbol == plain.skipped_by_symbol
+    assert len(published) == len(run.trades)
+
+    trades = {(t.symbol, t.signal_time): t for t in run.trades}
+    # не на каждой занятой свече есть кандидат; отложенные и ниже порога — не подавленные сигналы
+    assert 0 < len(suppressed) < run.skipped["busy"]
+    for cand, blocker in suppressed:
+        assert cand.publishable
+        blocking_trade = trades[(cand.symbol, blocker.opened_at)]  # мешает сделка этого прогона
+        assert blocking_trade.signal_time < cand.candle_close_time
+        if blocking_trade.exit_time is not None:  # None — сделка не закрыта к концу данных
+            assert cand.candle_close_time <= blocking_trade.exit_time
+        assert (cand.symbol, cand.candle_close_time) not in trades  # сам сделкой не стал
