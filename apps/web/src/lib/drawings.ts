@@ -1,7 +1,7 @@
 "use client";
 
 /** Синхронизация рисунков и раскладок терминала (план 2A.5, 2B.7). */
-import type { Drawing } from "@platform/charts";
+import { cleanDrawingLevels, type Drawing } from "@platform/charts";
 import { api } from "./auth-client";
 
 export type DrawingWire = {
@@ -32,18 +32,20 @@ export const toWire = (d: Drawing, symbol: string): DrawingWire => ({
   deleted_at: d.deleted_at ?? null,
 });
 
-export const fromWire = (w: DrawingWire): Drawing => ({
-  id: w.client_id,
-  type: w.type,
-  points: w.points,
-  style: w.style,
-  text: w.text ?? undefined,
-  levels: w.levels ?? undefined,
-  locked: w.locked,
-  timeframe: w.timeframe,
-  updated_at: w.updated_at,
-  deleted_at: w.deleted_at,
-});
+/** Рисунок с сервера: уровни Фибоначчи приводятся (пустой список и мусор — уровни по умолчанию), у других типов их нет. */
+export const fromWire = (w: DrawingWire): Drawing =>
+  cleanDrawingLevels({
+    id: w.client_id,
+    type: w.type,
+    points: w.points,
+    style: w.style,
+    text: w.text ?? undefined,
+    levels: w.levels ?? undefined,
+    locked: w.locked,
+    timeframe: w.timeframe,
+    updated_at: w.updated_at,
+    deleted_at: w.deleted_at,
+  });
 
 export const listDrawings = (symbol: string, since = 0) => api<{ symbol: string; items: DrawingWire[]; limit: number | null; sync: boolean }>(`/v1/drawings?symbol=${symbol}&since=${since}`);
 export const upsertDrawings = (items: DrawingWire[]) => api<{ items: DrawingWire[] }>("/v1/drawings", { method: "PUT", json: items });

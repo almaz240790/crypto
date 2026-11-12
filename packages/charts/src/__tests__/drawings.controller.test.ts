@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { DrawingController, type DrawProjector } from "../drawings/controller";
 import { positionScreen } from "../drawings/geometry";
 import { atrAt } from "../drawings/position";
-import { CLICK_SLOP_PX, DBLCLICK_MS, DEFAULT_STYLE, HANDLE_TOUCH_PX, type Drawing } from "../drawings/types";
+import { CLICK_SLOP_PX, DBLCLICK_MS, DEFAULT_STYLE, FIB_LEVELS, HANDLE_TOUCH_PX, type Drawing } from "../drawings/types";
 import type { Candle } from "../types";
 import { INTERACTION } from "../presets";
 import { bars, H, T0 } from "./fakes/lwc";
@@ -60,7 +60,7 @@ const projOf = (pxBar: number): DrawProjector => ({
 });
 const CANDLES = bars(100);
 
-function setup(o: { magnet?: boolean; items?: Drawing[]; coarse?: boolean; pxBar?: number; candles?: Candle[]; tick?: number | null; tf?: () => number; stale?: boolean; proj?: DrawProjector } = {}) {
+function setup(o: { magnet?: boolean; items?: Drawing[]; coarse?: boolean; pxBar?: number; candles?: Candle[]; tick?: number | null; tf?: () => number; stale?: boolean; proj?: DrawProjector; fibLevels?: () => readonly number[] | null | undefined } = {}) {
   const doc = new FakeTarget();
   const el = Object.assign(new FakeTarget(), { ownerDocument: doc, getBoundingClientRect: () => ({ left: 0, top: 0 }), setPointerCapture: () => undefined });
   let items: Drawing[] = o.items ?? [];
@@ -71,7 +71,7 @@ function setup(o: { magnet?: boolean; items?: Drawing[]; coarse?: boolean; pxBar
   const ctrl = new DrawingController(
     el as unknown as HTMLElement,
     o.proj ?? projOf(o.pxBar ?? PX_BAR),
-    { getDrawings: () => items, getCandles: () => o.candles ?? CANDLES, tfSeconds: H, ...(o.tf ? { getTfSeconds: o.tf } : {}), getTick: () => o.tick ?? null, timeframe: null, touch: o.coarse ?? false, magnet: o.magnet ?? false, newId: () => `n${++n}`, getSelectedId: () => selected, now: () => clock.now },
+    { getDrawings: () => items, getCandles: () => o.candles ?? CANDLES, tfSeconds: H, ...(o.tf ? { getTfSeconds: o.tf } : {}), getTick: () => o.tick ?? null, timeframe: null, touch: o.coarse ?? false, magnet: o.magnet ?? false, newId: () => `n${++n}`, getSelectedId: () => selected, now: () => clock.now, ...(o.fibLevels ? { getFibLevels: o.fibLevels } : {}) },
     {
       onCreate: (d) => {
         log.created.push(d);
@@ -137,6 +137,56 @@ function setup(o: { magnet?: boolean; items?: Drawing[]; coarse?: boolean; pxBar
 
 /** Точка на свече i с ценой p — в пикселях. */
 const at = (i: number, p: number) => [xOf(T0 + i * H), yOf(p)] as const;
+
+describe("уровни нового Фибоначчи", () => {
+  const draw = (s: ReturnType<typeof setup>) => {
+    s.ctrl.setTool("fib");
+    s.mouse.tap(...at(10, 120));
+    s.mouse.tap(...at(30, 90));
+    return s.log.created[s.log.created.length - 1]!;
+  };
+
+  it("без настройки — уровни по умолчанию, у каждого рисунка свой массив", () => {
+    const s = setup();
+    const a = draw(s);
+    const b = draw(s);
+    expect(a.levels).toEqual(FIB_LEVELS);
+    expect(a.levels).not.toBe(FIB_LEVELS);
+    expect(b.levels).not.toBe(a.levels);
+  });
+
+  it("с набором, выбранным в прошлый раз, — он же, приведённый; набор читается в момент рисунка", () => {
+    let remembered: readonly number[] | null = [1, -0.618, 0, 0.5, 0.5000001];
+    const s = setup({ fibLevels: () => remembered });
+    // предпросмотр за курсором — уже с этим набором
+    s.ctrl.setTool("fib");
+    s.mouse.tap(...at(10, 120));
+    s.mouse.move(...at(20, 100));
+    expect(s.lastDraft()!.levels).toEqual([-0.618, 0, 0.5, 1]);
+    s.mouse.tap(...at(30, 90));
+    expect(s.log.created[0]!.levels).toEqual([-0.618, 0, 0.5, 1]);
+    // пользователь сменил набор — следующий рисунок с новым; первый не тронут
+    remembered = [0, 1, 2.618];
+    expect(draw(s).levels).toEqual([0, 1, 2.618]);
+    expect(s.log.created[0]!.levels).toEqual([-0.618, 0, 0.5, 1]);
+    // набор сбросили или в настройках мусор — уровни по умолчанию
+    remembered = null;
+    expect(draw(s).levels).toEqual(FIB_LEVELS);
+    remembered = [];
+    expect(draw(s).levels).toEqual(FIB_LEVELS);
+    remembered = [Number.NaN];
+    expect(draw(s).levels).toEqual(FIB_LEVELS);
+  });
+
+  it("у других инструментов уровней нет, какой бы набор ни был выбран", () => {
+    const s = setup({ fibLevels: () => [0, 1] });
+    s.ctrl.setTool("trend");
+    s.mouse.tap(...at(10, 120));
+    s.mouse.tap(...at(30, 90));
+    expect(s.log.created[0]!.type).toBe("trend");
+    expect(s.log.created[0]!.levels).toBeUndefined();
+  });
+});
 
 describe("один рисунок на выбор инструмента и «серия»", () => {
   it("после рисунка инструмент снят: дальнейшие клики, протягивания и касания рисунков не создают", () => {

@@ -25,7 +25,11 @@ function fixed(p: number, decimals: number): string {
   return `${p < 0 && Number(s) !== 0 ? "−" : ""}${group(i!)}${f ? `.${f}` : ""}`;
 }
 
+/** Не число (NaN, ±Infinity): цены нет — прочерк, а не исключение (раньше compact падал на NaN) и не «InfinityB». */
+const NO_VALUE = "—";
+
 function compact(p: number): string | null {
+  if (!Number.isFinite(p)) return NO_VALUE;
   const a = Math.abs(p);
   if (a < COMPACT_FROM) return null;
   // сначала округление, потом единица: 999 999 999 — «1.00B», а не «1000.00M»
@@ -35,7 +39,7 @@ function compact(p: number): string | null {
   return `${p < 0 ? "−" : ""}${s}${COMPACT[unit]![1]}`;
 }
 
-/** Цена с точностью инструмента (последнее значение, перекрестие). */
+/** Цена с точностью инструмента (последнее значение, перекрестие); не число — прочерк. */
 export function formatPriceLabel(p: number, precision: number): string {
   return compact(p) ?? fixed(p, precision);
 }
@@ -43,7 +47,7 @@ export function formatPriceLabel(p: number, precision: number): string {
 /** Значения от этого порога пишем без дробной части на телефоне: «80 724» вместо «80 723.7». */
 const SHORT_INT_FROM = 10_000;
 
-/** Цена для узкой шкалы (телефон): крупные значения — целым числом, чтобы шкала занимала меньше места. */
+/** Цена для узкой шкалы (телефон): крупные значения — целым числом, чтобы шкала занимала меньше места; не число — прочерк. */
 export function formatPriceShort(p: number, precision: number): string {
   return compact(p) ?? fixed(p, Math.abs(p) >= SHORT_INT_FROM ? 0 : precision);
 }

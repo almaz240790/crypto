@@ -1,4 +1,4 @@
-import { CHART_TYPES, LAYERS_VERSION, canAdd, clampParams, indicatorById, isEmptyPaneLayout, nextUid, normalizeInstances, normalizeMarkup, normalizePaneLayout, prunePaneLayout, resolvePreset, selectPreset, setLayerOverride, suggestParams, type ChartType, type IndicatorInstance, type LayerKey, type MarkupSettings, type PaneLayout, type PanelKey, type PresetId, type ScaleMode } from "@platform/charts";
+import { CHART_TYPES, LAYERS_VERSION, canAdd, clampParams, indicatorById, isEmptyPaneLayout, nextUid, normalizeFibLevels, normalizeInstances, normalizeMarkup, normalizePaneLayout, prunePaneLayout, resolvePreset, selectPreset, setLayerOverride, suggestParams, type ChartType, type IndicatorInstance, type LayerKey, type MarkupSettings, type PaneLayout, type PanelKey, type PresetId, type ScaleMode } from "@platform/charts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getLayout, putLayout } from "@/lib/drawings";
 import { TEMPLATES } from "../templates";
@@ -24,6 +24,14 @@ export interface SavedV5 {
    * версии: старые сохранения его не имеют, старая сборка его отбрасывает.
    */
   paneLayout?: PaneLayout;
+  /**
+   * Уровни нового Фибоначчи — набор, который пользователь выбрал последним в карточке рисунка (ADR-0009, «Рисование»,
+   * дополнение 2026-11-11): трейдер настраивает уровни один раз. Поля нет — уровни по умолчанию (FIB_LEVELS); после
+   * первого выбора поле есть всегда, «стандартные» записывают в него набор по умолчанию (а не убирают поле: раскладка
+   * с сервера без поля не отличалась бы от «ещё не выбирал» и не сбрасывала бы набор на другом устройстве). Новое
+   * поле без смены версии, как paneLayout. В именованные раскладки не пишется — это настройка инструмента рисования.
+   */
+  fibLevels?: number[];
   updated_at?: number;
 }
 
@@ -75,6 +83,8 @@ export function migrateSaved(raw: unknown): SavedV5 {
     overlay: typeof raw.overlay === "string" && raw.overlay ? raw.overlay : null,
   };
   if (typeof raw.updated_at === "number" && Number.isFinite(raw.updated_at)) out.updated_at = raw.updated_at;
+  // уровни нового Фибоначчи: приведённый набор (числа, 3 знака, по возрастанию); не список — без поля
+  if (Array.isArray(raw.fibLevels)) out.fibLevels = normalizeFibLevels(raw.fibLevels);
   // раскладка панелей: мусор — без поля; ключи — только панелей из этих же настроек
   return raw.paneLayout === undefined ? out : withPaneLayout(out, normalizePaneLayout(raw.paneLayout));
 }
@@ -260,8 +270,10 @@ export function useTerminalSettings(authed: boolean) {
   );
   /** Именованная раскладка поверх текущих настроек — через ту же миграцию: v4 применяется как «Чистый». */
   const applyLayout = useCallback((raw: unknown) => update((cur) => migrateLayout(raw, cur)), [update]);
+  /** Уровни, выбранные у Фибоначчи в карточке рисунка (в том числе «стандартные»): с ними начнётся следующий. */
+  const setFibLevels = useCallback((levels: readonly number[]) => update((cur) => ({ ...cur, fibLevels: normalizeFibLevels(levels) })), [update]);
 
-  return { st, resolved, legacyFound, patch, toggleIndicator, addIndicator, removeInstance, setInstanceParams, toggleInstanceHidden, togglePanel, toggleLayer, selectMarkup, applyTemplate, applyLayout, setPaneLayout, removePane };
+  return { st, resolved, legacyFound, patch, toggleIndicator, addIndicator, removeInstance, setInstanceParams, toggleInstanceHidden, togglePanel, toggleLayer, selectMarkup, applyTemplate, applyLayout, setPaneLayout, removePane, setFibLevels };
 }
 
 export type TerminalSettings = ReturnType<typeof useTerminalSettings>;

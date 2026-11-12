@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import auth
-from app.drawings_sync import resolve
+from app.drawings_sync import fib_levels, resolve
 from app.entitlements import entitlements_for
 from app.models import ChartLayout, Drawing, Instrument, User
 
@@ -29,6 +29,8 @@ class DrawingIn(BaseModel):
     points: list[dict[str, float]] = Field(max_length=5)
     style: dict[str, Any] = Field(default_factory=dict)
     text: str | None = Field(default=None, max_length=140)
+    # уровни Фибоначчи: число значений, диапазон и приведение — fib_levels, в обработчике (ответ 422
+    # с текстом: стандартный ответ 422 повторяет входные данные, а NaN в JSON не сериализуется)
     levels: list[float] | None = None
     locked: bool = False
     updated_at: int = Field(ge=0)
@@ -93,10 +95,17 @@ def upsert_drawings(
         raise HTTPException(403, "синхронизация рисунков доступна на тарифе Pro")
     if len(body) > 200:
         raise HTTPException(400, "не больше 200 рисунков за запрос")
-    out: list[dict[str, Any]] = []
+    # проверка всего пакета до первой записи: негодный рисунок не оставляет в сессии часть пакета
+    checked: list[list[float] | None] = []
     for item in body:
         if item.type not in TYPES:
             raise HTTPException(400, f"неизвестный тип рисунка: {item.type}")
+        try:
+            checked.append(fib_levels(item.type, item.levels))
+        except ValueError as e:
+            raise HTTPException(422, f"{item.client_id}: {e}") from e
+    out: list[dict[str, Any]] = []
+    for item, levels in zip(body, checked, strict=True):
         inst = db.scalar(select(Instrument).where(Instrument.symbol == item.symbol.upper()))
         if inst is None:
             raise HTTPException(404, f"инструмент не найден: {item.symbol}")
@@ -130,7 +139,7 @@ def upsert_drawings(
             row.points = item.points
             row.style = item.style
             row.text = item.text
-            row.levels = item.levels
+            row.levels = levels
             row.locked = item.locked
             row.updated_at = item.updated_at
             row.deleted_at = item.deleted_at

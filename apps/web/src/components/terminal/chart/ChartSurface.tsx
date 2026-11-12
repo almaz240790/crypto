@@ -129,6 +129,8 @@ type Props = {
     onToolDone: (ended: boolean) => void;
     /** Депозит и доля риска из настроек: у позиции на графике — риск в $ и объём. */
     profile?: RiskProfile | null;
+    /** Уровни нового Фибоначчи — набор, выбранный пользователем в прошлый раз (настройки терминала); без него — по умолчанию. */
+    fibLevels?: readonly number[];
   };
 };
 
@@ -626,6 +628,7 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
         magnet: true,
         newId: () => `d_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`,
         getSelectedId: () => drawingsRef.current?.state.selectedId ?? null,
+        getFibLevels: () => drawingsRef.current?.fibLevels,
       },
       {
         onCreate: (d) => drawingsRef.current?.onCreate(d),

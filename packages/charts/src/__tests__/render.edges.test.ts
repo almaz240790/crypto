@@ -54,6 +54,30 @@ describe("timeToIndex", () => {
 });
 
 describe("OverlayPrimitive: края", () => {
+  it("Heikin Ashi: плашка цены и отсчёт — от закрытия нарисованной свечи, а не свечи буфера", () => {
+    const candles = bars(100);
+    const env = makeEnv(() => candles, { range: { from: 0, to: 114 }, width: 800 });
+    const last = candles[candles.length - 1]!;
+    // нарисованная (HA) последняя свеча: закрытие на 3 ниже настоящего, свеча падающая
+    let drawn: { open: number; close: number } | null = { open: last.close + 1, close: last.close - 3 };
+    const prim = new OverlayPrimitive({ view: VIEW.desktop, theme: makeTheme(), measure: monoMeasurer(), candles: () => candles, tfSeconds: () => H, displayed: (time) => (time === last.time ? drawn : null) });
+    env.series.attachPrimitive(prim as never);
+    const frames: { plaque: { y: number; up: boolean; live: boolean } | null; countdownY: number | null }[] = [];
+    prim.onFrame = (screen) => frames.push({ plaque: screen.plaque, countdownY: screen.countdownY });
+    prim.setScene(sceneOf([line(95)]));
+    prim.updateAllViews();
+    const yDrawn = env.series.priceToCoordinate(last.close - 3)!;
+    const yReal = env.series.priceToCoordinate(last.close)!;
+    expect(yDrawn).not.toBe(yReal);
+    // метка LWC стоит на закрытии нарисованной свечи — плашка и отсчёт там же (раньше — у настоящего закрытия)
+    expect(frames.at(-1)!.plaque).toEqual({ y: yDrawn, up: false, live: true });
+    expect(frames.at(-1)!.countdownY).toBe(yDrawn + VIEW.desktop.axisLabelPx);
+    // серия рисует свечи буфера как есть (не Heikin Ashi) — плашка от свечи буфера
+    drawn = null;
+    prim.updateAllViews();
+    expect(frames.at(-1)!.plaque).toMatchObject({ y: yReal, live: true });
+  });
+
   it("палец: во время жеста только подписи с приоритетом ≥ 80; после паузы — все", () => {
     vi.useFakeTimers();
     let now = 1000;

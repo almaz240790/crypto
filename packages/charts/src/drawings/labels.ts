@@ -1,6 +1,7 @@
 import { formatPriceLabel, formatQuantity } from "../format";
 import type { LabelCandidate, Slot } from "../layout/types";
 import type { ThemeTokens } from "../types";
+import { fibLevelText } from "./fib";
 import { fibLevels, positionKnobs, positionScreen, type Projector } from "./geometry";
 import { formatRR, positionParts, type PositionParts } from "./position";
 import { FIB_KEY_LEVELS, HANDLE_PX, POSITION_KNOB_R, POSITION_KNOB_TOUCH_R, isPosition, type Drawing, type StyleColor } from "./types";
@@ -100,8 +101,12 @@ export function drawingColor(tokens: ThemeTokens, c: StyleColor): string {
  * прежняя грубая запись.
  */
 export function formatDrawingPrice(p: number, precision: number | null): string {
+  if (!Number.isFinite(p)) return "—";
   if (precision !== null) return formatPriceLabel(p, precision);
-  return p >= 1000 ? p.toFixed(1) : p >= 1 ? p.toFixed(2) : p.toPrecision(4);
+  // цена ниже нуля (уровень Фибоначчи далеко за точками) — с типографским минусом, как у шкалы
+  const a = Math.abs(p);
+  const s = a >= 1000 ? a.toFixed(1) : a >= 1 ? a.toFixed(2) : a.toPrecision(4);
+  return p < 0 && Number(s) !== 0 ? `−${s}` : s;
 }
 
 /** Процент в подписи позиции: «2.31». */
@@ -223,7 +228,8 @@ function labelsOf(d: Drawing, base: number, o: DrawingLabelInput, out: DrawingLa
         if (y === null) continue;
         const key = FIB_KEY_LEVELS.includes(level);
         const edge = level === 0 || level === 1;
-        const text = `${level} · ${formatDrawingPrice(price, precision)}`;
+        // отрицательный уровень (цель по движению) — с типографским минусом: «−0.618 · 123.4»
+        const text = `${fibLevelText(level)} · ${formatDrawingPrice(price, precision)}`;
         // от x до конца плашки: отступ плашки, отступ текста, текст, поле плашки справа
         const span = TEXT_DX + measure(text, "mono", LABEL_PX, key ? 600 : 400) + 2 * TEXT_DX;
         // второстепенный уровень без места не подписывается: подписи не ложатся друг на друга и на разметку

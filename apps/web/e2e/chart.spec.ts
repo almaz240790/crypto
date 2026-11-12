@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { mock } from "./helpers/chart";
+import { FIRST_PAGE, mock } from "./helpers/chart";
 
 /** Терминал-график (план 3.17, 2A): загрузка свечей, строка состояния, таймфреймы, индикаторы и слои. */
 
@@ -503,6 +503,38 @@ test("шкала: логарифмическая и процентная, нал
   await expect(page.getByTestId("terminal").locator("canvas").first()).toBeVisible();
   await page.getByRole("button", { name: "Вид", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "Вид" }).getByLabel("шкала")).toHaveValue("percent");
+});
+
+test("сравнение: линия второго инструмента догружается влево вместе с историей основного и покрывает весь буфер", async ({ page }) => {
+  const calls: string[] = [];
+  // сравнение с ETHUSDT в процентной шкале, без индикаторов: единственная линия на панели цены — наложение
+  await page.addInitScript(() => localStorage.setItem("pl-terminal", JSON.stringify({ layers_v: 5, type: "candles", indicators: [], markup: { preset: "clean", overrides: {} }, panels: [], scale: "percent", overlay: "ETHUSDT" })));
+  await mock(page, calls);
+  await page.goto("/chart/BTCUSDT/4h");
+  await expect(page.getByTestId("terminal").locator("canvas").first()).toBeVisible();
+  type S = { seriesType(): string; data(): { time: number }[] };
+  type Host = HTMLElement & { __chart: { panes(): { getSeries(): S[] }[]; timeScale(): { setVisibleLogicalRange(r: { from: number; to: number }): void } } };
+  const state = () =>
+    page.evaluate(() => {
+      const series = (document.querySelector('[data-testid="terminal"]') as Host).__chart.panes()[0]!.getSeries();
+      const main = series.find((s) => s.seriesType() === "Candlestick")!.data();
+      const line = series.find((s) => s.seriesType() === "Line")?.data() ?? [];
+      return { main: main.length, mainFirst: main[0]?.time ?? null, overlay: line.length, overlayFirst: line[0]?.time ?? null };
+    });
+  const older = () => calls.filter((c) => c.startsWith("/v1/chart/candles?symbol=ETHUSDT") && c.includes("before=")).length;
+  // первая порция: закрытые свечи цели на времени закрытых свечей основного инструмента
+  await expect.poll(async () => (await state()).overlay).toBe(FIRST_PAGE);
+  expect(older()).toBe(0);
+  // у левого края подгружается история основного — и история наложения до той же первой свечи. Раньше наложение
+  // оставалось разовым снимком: начиналось посреди экрана, и проценты двух инструментов считались от разных свечей
+  await page.evaluate(() => (document.querySelector('[data-testid="terminal"]') as Host).__chart.timeScale().setVisibleLogicalRange({ from: 20, to: 120 }));
+  await expect.poll(async () => (await state()).main).toBe(FIRST_PAGE + 1 + 500);
+  await expect.poll(async () => (await state()).overlay).toBe(FIRST_PAGE + 500);
+  const s = await state();
+  expect(s.overlayFirst).toBe(s.mainFirst);
+  // одна порция истории цели на одну порцию основного — без каскада запросов
+  await page.waitForTimeout(800);
+  expect(older()).toBe(1);
 });
 
 test("уровни: поддержка, сопротивление и карта ликвидаций — слоями и списком в «Найдено»", async ({ page }) => {

@@ -1,8 +1,9 @@
 import { INTERACTION } from "../presets";
 import type { Candle } from "../types";
+import { normalizeFibLevels } from "./fib";
 import { hitTest, magnetSnap, positionScreen, type Hit, type Projector } from "./geometry";
 import { POSITION_PARTS, POSITION_PART_INDEX, atrAt, positionDir, positionFromEntry, roundToTick, setPositionEnd, setPositionPrice } from "./position";
-import { CLICK_SLOP_PX, DBLCLICK_MS, DBLCLICK_SLOP_PX, DEFAULT_STYLE, FIB_LEVELS, HANDLE_PX, HANDLE_TOUCH_PX, POSITION_BARS, POSITION_EDGE_PX, POSITION_KNOB_TOUCH_PX, WIDE_TYPES, isPosition, pointsNeeded, type Drawing, type DrawingType, type Point } from "./types";
+import { CLICK_SLOP_PX, DBLCLICK_MS, DBLCLICK_SLOP_PX, DEFAULT_STYLE, HANDLE_PX, HANDLE_TOUCH_PX, POSITION_BARS, POSITION_EDGE_PX, POSITION_KNOB_TOUCH_PX, WIDE_TYPES, isPosition, pointsNeeded, type Drawing, type DrawingType, type Point } from "./types";
 
 /**
  * Контроллер жестов рисования (план 2A.5, 2A.7; ADR-0009, «Рисование»): постановка точек кликами и касаниями,
@@ -54,6 +55,11 @@ export type ControllerOptions = {
   newId: () => string;
   /** Выбранный рисунок: пальцем правится только он. */
   getSelectedId?: () => string | null;
+  /**
+   * Уровни нового Фибоначчи — набор, который пользователь выбрал последним (настройки терминала); без него, пустой
+   * или с мусором — уровни по умолчанию FIB_LEVELS (normalizeFibLevels).
+   */
+  getFibLevels?: () => readonly number[] | null | undefined;
   /** Часы, мс (по умолчанию performance.now): двойной клик сразу после рисунка. */
   now?: () => number;
 };
@@ -625,7 +631,7 @@ export class DrawingController {
       style: { ...DEFAULT_STYLE, color },
       locked: false,
       timeframe: this.opts.timeframe,
-      levels: type === "fib" ? FIB_LEVELS : undefined,
+      levels: type === "fib" ? normalizeFibLevels(this.opts.getFibLevels?.()) : undefined,
       updated_at: Date.now(),
     };
   }
