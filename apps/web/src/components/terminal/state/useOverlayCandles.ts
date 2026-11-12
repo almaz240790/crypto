@@ -50,6 +50,21 @@ export function applyPage(state: OverlayState | null, key: string, need: NonNull
   };
 }
 
+/** Повтор хвоста, пока свеча цели, уже закрытая у основного инструмента, не окончательная (tailPending), мс. */
+export const TAIL_RETRY_MS = 2000;
+/** Повторов хвоста не больше (≈ 20 с — дольше REST-опроса минут, 15 с); дальше — со следующей закрытой свечой. */
+export const TAIL_RETRIES = 10;
+
+/**
+ * Хвост пришёл без окончательной свечи, которую основной инструмент уже закрыл (не новее mainLast): сервер отдаёт только
+ * что закрытую по времени свечу текущей (open), пока её последняя минута не записана закрытой — до секунды, при
+ * REST-опросе до 15 с (ADR-0003, chart-data-live-2). Закрытие основного и запрос хвоста приходятся как раз на это окно:
+ * без повтора линия сравнения отставала бы на свечу до следующего закрытия (на 4h — 4 часа).
+ */
+export function tailPending(candles: readonly { t: number; open?: boolean }[], mainLast: number | null): boolean {
+  return mainLast !== null && candles.some((c) => c.open && c.t <= mainLast);
+}
+
 /**
  * symbol — наложенный инструмент (null — сравнения нет); mainFirst / mainLast — времена первой и последней закрытой
  * свечи буфера основного инструмента. Возвращает закрытые свечи цели по возрастанию времени или null (нет сравнения,
@@ -62,23 +77,29 @@ export function useOverlayCandles(symbol: string | null, tf: Timeframe, mainFirs
   const need = key ? overlayNeed(current, mainFirst, mainLast) : null;
   const kind = need?.kind ?? null;
   const before = need?.kind === "older" ? need.before : undefined;
+  // повторы хвоста — свои у каждой закрытой свечи основного инструмента
+  const [retry, setRetry] = useState<{ last: number | null; n: number }>({ last: null, n: 0 });
+  const attempt = retry.last === mainLast ? retry.n : 0;
   useEffect(() => {
     if (!symbol || !key || !kind) return;
     let dead = false;
+    let again: ReturnType<typeof setTimeout> | undefined;
     const asked: NonNullable<OverlayNeed> = kind === "older" ? { kind, before: before! } : { kind };
     getCandles(symbol, tf, before)
       .then((r) => {
         if (dead) return;
         const candles = r.candles.filter((c) => !c.open).map(toCandle);
         setState((prev) => applyPage(prev, key, asked, candles, r.has_older));
+        if (asked.kind === "tail" && attempt < TAIL_RETRIES && tailPending(r.candles, mainLast)) again = setTimeout(() => setRetry({ last: mainLast, n: attempt + 1 }), TAIL_RETRY_MS);
       })
       // сбой порции: наложение остаётся каким было; следующая закрытая свеча основного инструмента повторит запрос
       .catch(() => undefined);
     return () => {
       dead = true;
+      clearTimeout(again);
     };
     // mainLast — в зависимостях: хвост запрашивается заново на каждой новой закрытой свече, даже если прошлый
-    // запрос ничего не добавил (у цели свеча ещё не записана) или не удался
-  }, [symbol, tf, key, kind, before, mainLast]);
+    // запрос ничего не добавил (у цели свеча ещё не записана) или не удался; attempt — повтор недописанного хвоста
+  }, [symbol, tf, key, kind, before, mainLast, attempt]);
   return current && current.candles.length ? current.candles : null;
 }

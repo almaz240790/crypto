@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
-import { FIRST_PAGE, mock } from "./helpers/chart";
+import { FIRST_PAGE, H4, T0, mock } from "./helpers/chart";
+import { liveSocket } from "./helpers/live";
 
 /** Терминал-график (план 3.17, 2A): загрузка свечей, строка состояния, таймфреймы, индикаторы и слои. */
 
@@ -535,6 +536,55 @@ test("сравнение: линия второго инструмента до�
   // одна порция истории цели на одну порцию основного — без каскада запросов
   await page.waitForTimeout(800);
   expect(older()).toBe(1);
+});
+
+test("сравнение: свеча цели, закрытая перед самым ответом (сервер отдаёт её текущей), догружается повтором — линия не отстаёт на свечу", async ({ page }) => {
+  const calls: string[] = [];
+  await page.addInitScript(() => localStorage.setItem("pl-terminal", JSON.stringify({ layers_v: 5, type: "candles", indicators: [], markup: { preset: "clean", overrides: {} }, panels: [], scale: "percent", overlay: "ETHUSDT" })));
+  await mock(page, calls);
+  // цель после закрытия свечи основного: первый ответ прочитал БД до записи последней минуты свечи FIRST_PAGE — сервер
+  // отдаёт её открытой (текущей), новее — ничего; следующий ответ — она закрыта, текущая — следующая
+  let closed = false;
+  let tails = 0;
+  const bar = (i: number, open = false) => ({ t: T0 + i * H4, o: "50.00", h: "51.00", l: "49.00", c: (50 + Math.sin(i) * 0.5).toFixed(2), v: "1000", open });
+  await page.route("**/v1/chart/candles?**", (route) => {
+    const u = new URL(route.request().url());
+    if (!closed || u.searchParams.get("symbol") !== "ETHUSDT" || u.searchParams.get("before")) return route.fallback();
+    calls.push(`${u.pathname}?${u.searchParams.toString()}`);
+    const late = tails++ === 0;
+    const candles = Array.from({ length: FIRST_PAGE + 1 }, (_, i) => bar(i, late && i === FIRST_PAGE));
+    const body = { symbol: "ETHUSDT", tf: "4h", candles, current: late ? null : bar(FIRST_PAGE + 1, true), has_older: true, tick_size: "0.01", server_time: "" };
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+  });
+  const live = await liveSocket(page, { ticks: false, at: () => 0 });
+  type S = { seriesType(): string; data(): { time: number }[] };
+  type Host = HTMLElement & { __chart: { panes(): { getSeries(): S[] }[] } };
+  const state = () =>
+    page.evaluate(() => {
+      const series = (document.querySelector('[data-testid="terminal"]') as Host).__chart.panes()[0]!.getSeries();
+      const line = series.find((s) => s.seriesType() === "Line")?.data() ?? [];
+      return { main: series.find((s) => s.seriesType() === "Candlestick")!.data().length, overlay: line.length, overlayLast: line.at(-1)?.time ?? null };
+    });
+  try {
+    await page.goto("/chart/BTCUSDT/4h");
+    await expect(page.getByTestId("terminal").locator("canvas").first()).toBeVisible();
+    await expect.poll(async () => (await state()).overlay).toBe(FIRST_PAGE);
+    await expect.poll(() => live.subs.length).toBe(1);
+    // первый тик следующего интервала закрывает текущую свечу основного — наложение просит хвост
+    closed = true;
+    live.send({ t: "tick", s: "BTCUSDT", p: "101.0", at: new Date((T0 + (FIRST_PAGE + 1) * H4 + 1) * 1000).toISOString() });
+    await expect.poll(async () => (await state()).main).toBe(FIRST_PAGE + 2);
+    await expect.poll(() => tails).toBeGreaterThan(0);
+    // раньше линия так и оставалась без этой свечи до следующего закрытия (на 4h — 4 часа)
+    await expect.poll(async () => (await state()).overlayLast, { timeout: 8000 }).toBe(T0 + FIRST_PAGE * H4);
+    expect((await state()).overlay).toBe(FIRST_PAGE + 1);
+    // свеча стала окончательной — повторов больше нет
+    const n = tails;
+    await page.waitForTimeout(3000);
+    expect(tails).toBe(n);
+  } finally {
+    live.dispose();
+  }
 });
 
 test("уровни: поддержка, сопротивление и карта ликвидаций — слоями и списком в «Найдено»", async ({ page }) => {
