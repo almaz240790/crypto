@@ -2,13 +2,13 @@ import { formatPriceLabel, formatQuantity } from "../format";
 import { LABEL_GAP, type LabelCandidate, type Slot } from "../layout/types";
 import type { ThemeTokens } from "../types";
 import { fibLevelText } from "./fib";
-import { fibLevels, positionKnobs, positionScreen, type Projector } from "./geometry";
+import { fibLevels, positionKnobs, positionScreen, rulerInfo, type Projector, type RulerInfo } from "./geometry";
 import { formatRR, positionParts, type PositionParts } from "./position";
-import { FIB_KEY_LEVELS, HANDLE_PX, POSITION_KNOB_R, POSITION_KNOB_TOUCH_R, isPosition, type Drawing, type StyleColor } from "./types";
+import { FIB_KEY_LEVELS, HANDLE_PX, POSITION_KNOB_R, POSITION_KNOB_TOUCH_R, isPosition, type Drawing, type Point, type StyleColor } from "./types";
 
 /**
  * Подписи рисунков как кандидаты общей раскладки подписей (план 2B.2; ADR-0009, «Рисование»): уровни Фибоначчи,
- * плашки позиции, цена горизонтальной линии, процент трендовой и измерителя, текст прямоугольника и заметки.
+ * плашки позиции, цена горизонтальной линии, процент трендовой, измеритель, текст прямоугольника и заметки.
  * Раскладка разметки (layoutLabels) ставит их вместе с подписями разметки: рисунок пользователя важнее —
  * приоритет DRAWING_LABEL_PRIORITY выше «Сопр.», «Подд.», зон и структуры, поэтому подписи разметки обходят подписи
  * рисунков, а рисунок уступает только алертам, уровням сигнала и выбранному объекту. Подписи рисунков не обходят
@@ -69,9 +69,17 @@ export interface DrawingLabel {
   rank: number;
 }
 
-/** Тексты подписей позиции на холсте (русский оригинал; web передаёт перевод через t()). */
-export type DrawingText = { entry: string; stop: string; target: string; risk: string; size: string };
-export const DRAWING_TEXT: DrawingText = { entry: "Вход", stop: "Стоп", target: "Цель", risk: "риск", size: "объём" };
+/**
+ * Тексты подписей на холсте (русский оригинал; web передаёт перевод через t()): плашки позиции; у измерителя — число
+ * свечей словом и единицы времени («25 свечей · 4д 8ч»).
+ */
+export type DrawingText = { entry: string; stop: string; target: string; risk: string; size: string; bars: (n: number) => string; day: string; hour: string; minute: string };
+/** Склонение: 1 свеча, 2 свечи, 5 свечей. */
+const ruPlural = (n: number, one: string, few: string, many: string) => {
+  const a = Math.abs(n) % 100, b = a % 10;
+  return a > 10 && a < 20 ? many : b > 1 && b < 5 ? few : b === 1 ? one : many;
+};
+export const DRAWING_TEXT: DrawingText = { entry: "Вход", stop: "Стоп", target: "Цель", risk: "риск", size: "объём", bars: (n) => `${n} ${ruPlural(n, "свеча", "свечи", "свечей")}`, day: "д", hour: "ч", minute: "мин" };
 
 export type RiskProfile = { deposit: number; riskPct: number };
 
@@ -81,6 +89,12 @@ export type MeasureText = (text: string, font: "mono" | "sans", px: number, weig
 export interface DrawingLabelInput {
   drawings: readonly Drawing[];
   draft: Drawing | null;
+  /** Временный измеритель (план 2A.5): не рисунок — подпись, как у начатого. */
+  ruler?: Drawing | null;
+  /**
+   * Свечи и ход в ATR у измерителя — по свечам графика (DrawingsPrimitive): без них подпись — только разница цен и %.
+   */
+  rulerStats?: (p1: Point, p2: Point) => RulerInfo;
   selectedId: string | null;
   proj: Projector;
   tokens: ThemeTokens;
@@ -114,6 +128,26 @@ export function formatDrawingPrice(p: number, precision: number | null): string 
 /** Процент в подписи позиции: «2.31». */
 const pct2 = (v: number) => (Math.round(v * 100) / 100).toFixed(2);
 
+/** Длительность у измерителя — по часам: «5д», «4д 8ч», «16ч», «4ч 30мин», «15мин». */
+export function formatSpan(seconds: number, text: Pick<DrawingText, "day" | "hour" | "minute">): string {
+  const total = Math.round(Math.abs(seconds) / 60);
+  const d = Math.floor(total / 1440), h = Math.floor((total % 1440) / 60), m = total % 60;
+  if (d > 0) return h > 0 ? `${d}${text.day} ${h}${text.hour}` : `${d}${text.day}`;
+  if (h > 0) return m > 0 ? `${h}${text.hour} ${m}${text.minute}` : `${h}${text.hour}`;
+  return `${m}${text.minute}`;
+}
+
+/**
+ * Строки подписи измерителя (план 2A.5): «−4.50 · −4.50 %» — разница цен и % от первой точки (минус типографский, как
+ * у цен), «25 свечей · 5д · 1.8 ATR» — свечи, время и ход в ATR(14); ATR ещё нет — без него.
+ */
+export function rulerLabelLines(r: RulerInfo, precision: number | null, text: DrawingText): string[] {
+  const sign = r.priceDiff < 0 ? "−" : "+";
+  const head = `${sign}${formatDrawingPrice(Math.abs(r.priceDiff), precision)} · ${sign}${Math.abs(r.changePct).toFixed(2)} %`;
+  const tail = [text.bars(r.bars), formatSpan(r.seconds, text), ...(r.atrMultiple !== null ? [`${r.atrMultiple.toFixed(1)} ATR`] : [])];
+  return [head, tail.join(" · ")];
+}
+
 /**
  * Риск в $ и объём позиции по профилю: «риск 100 $ · объём 449 438» — одна строка для плашки входа на графике и для
  * карточки позиции (те же слова и та же запись числа, без экспоненты).
@@ -123,7 +157,7 @@ export function positionRiskText(riskUsd: number, size: number, text: Pick<Drawi
 }
 
 /** Тексты плашек позиции: цель, стоп, вход (с риском и объёмом по профилю — второй строкой). */
-export function positionLabelTexts(p: PositionParts, precision: number | null, profile: RiskProfile | null, text: DrawingText): { target: string; stop: string; entry: string[] } {
+export function positionLabelTexts(p: PositionParts, precision: number | null, profile: RiskProfile | null, text: Pick<DrawingText, "entry" | "stop" | "target" | "risk" | "size">): { target: string; stop: string; entry: string[] } {
   const risk = Math.abs(p.entry - p.stop);
   const reward = Math.abs(p.target - p.entry);
   const rr = risk > 0 ? reward / risk : 0;
@@ -157,12 +191,12 @@ export function fibXs(span: number, left: number, right: number, width: number):
   return [...new Set(out)];
 }
 
-/** Все подписи видимых рисунков и начатого рисунка — в координатах панели (CSS px). */
+/** Все подписи видимых рисунков, начатого рисунка и измерителя — в координатах панели (CSS px). */
 export function drawingLabels(o: DrawingLabelInput): DrawingLabel[] {
   const out: DrawingLabel[] = [];
-  const list = o.draft ? [...o.drawings, o.draft] : o.drawings;
+  const list = [...o.drawings, ...(o.draft ? [o.draft] : []), ...(o.ruler ? [o.ruler] : [])];
   for (const d of list) {
-    const base = d === o.draft ? -20 : d.id === o.selectedId ? -10 : 0;
+    const base = d === o.draft || d === o.ruler ? -20 : d.id === o.selectedId ? -10 : 0;
     labelsOf(d, base, o, out);
   }
   return out;
@@ -198,8 +232,7 @@ function labelsOf(d: Drawing, base: number, o: DrawingLabelInput, out: DrawingLa
       line("price", text, [x0, Math.max(x0, W - w - 2 * TEXT_DX)], a.y);
       return;
     }
-    case "trend":
-    case "ruler": {
+    case "trend": {
       const b = xy(1);
       if (!b) return;
       const p1 = d.points[0]!, p2 = d.points[1]!;
@@ -211,6 +244,24 @@ function labelsOf(d: Drawing, base: number, o: DrawingLabelInput, out: DrawingLa
       // (прямоугольник подписи — на TEXT_DX от x, раскладка раздувает его на LABEL_GAP; 1 px — запас на округление).
       const r = (o.touch ? HANDLE_TOUCH_R : HANDLE_R) + LABEL_GAP - TEXT_DX + 1;
       line("pct", text, [b.x, b.x - w - 2 * TEXT_DX, b.x + r, b.x - w - 2 * TEXT_DX - r], b.y);
+      return;
+    }
+    case "ruler": {
+      const b = xy(1);
+      if (!b) return;
+      const p1 = d.points[0]!, p2 = d.points[1]!;
+      const lines = o.rulerStats ? rulerLabelLines(o.rulerStats(p1, p2), precision, o.text) : rulerLabelLines(rulerInfo(p1, p2, () => 0, null), precision, o.text).slice(0, 1);
+      const w = Math.max(...lines.map((l) => measure(l, "mono", LABEL_PX, 400))) + 2 * TEXT_DX;
+      const h = lines.length * LABEL_H;
+      const top = Math.min(a.y, b.y), bottom = Math.max(a.y, b.y), left = Math.min(a.x, b.x), right = Math.max(a.x, b.x);
+      // за точкой B по ходу (вниз — под измерением, вверх — над ним), с зазором на ручку B (начатый и выбранный), потом —
+      // с другой стороны; по горизонтали — посередине измерения, под B, у правого и левого края. В панели — всегда
+      const gap = (o.touch ? HANDLE_TOUCH_R : HANDLE_R) + LABEL_GAP + 1;
+      const ys = b.y >= a.y ? [bottom + gap, top - gap - h] : [top - gap - h, bottom + gap];
+      const xs = [(left + right) / 2 - w / 2, b.x - w / 2, right - w, left];
+      const clamp = (v: number, max: number) => Math.min(Math.max(v, 0), Math.max(0, max));
+      const slots = ys.flatMap((y) => xs.map((x) => ({ x: clamp(x, W - w), y: clamp(y, proj.height - h) })));
+      out.push({ id: `${d.id}#ruler`, drawingId: d.id, lines, style: "plaque", color, font: "mono", px: LABEL_PX, weight: 400, w, h, slots, mode: "soft", rank: base });
       return;
     }
     case "rect": {

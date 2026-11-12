@@ -25,7 +25,9 @@ import { CLICK_SLOP_PX, DBLCLICK_MS, DBLCLICK_SLOP_PX, DEFAULT_STYLE, HANDLE_PX,
  *   Касание мимо снимает выбор, сдвиг графика — нет. Заблокированный выбирается кликом и касанием, но не правится;
  * - позиция Long/Short — одним нажатием на цену входа: стоп по ATR(14), цель 1:2, ширина ~30 свечей (position.ts).
  *   Правка: ручки входа, стопа и цели двигают свою цену (по вертикали, не за вход), правый край — длительность,
- *   тело — всю позицию.
+ *   тело — всю позицию;
+ * - измеритель — временный (план 2A.5): две точки — измерение (onRuler), а не рисунок; его убирает следующее нажатие на
+ *   графике (оно делает и своё — сдвиг, выбор), Esc, выбор инструмента и хозяин (clearRuler).
  */
 export type ControllerEvents = {
   onCreate: (d: Drawing) => void;
@@ -36,10 +38,15 @@ export type ControllerEvents = {
   onMove: (id: string, points: Point[], final: boolean, origin?: Point[]) => void;
   onSelect: (id: string | null) => void;
   onDraft: (d: Drawing | null) => void;
-  /** Рисунок завершён; ended — инструмент снят (без «серии», а у измерителя всегда). */
+  /** Рисунок (или измерение) завершён; ended — инструмент снят (без «серии», а у измерителя всегда). */
   onDone?: (ended: boolean) => void;
   /** Сколько точек начатого рисунка поставлено (0 — рисунок не начат): подсказка шага в чипе. */
   onStep?: (placed: number) => void;
+  /**
+   * Измерение измерителя (план 2A.5: «временный»): готовое — две точки, null — убрано. onCreate измеритель не зовёт: в
+   * хранилище, на сервер и в лимит рисунков он не попадает.
+   */
+  onRuler?: (d: Drawing | null) => void;
 };
 
 export type ControllerOptions = {
@@ -110,6 +117,8 @@ export class DrawingController {
    * выбирает сам — до касания по нему сдвиг из его середины принадлежит графику (ADR-0009, «Правка»).
    */
   private touched: string | null = null;
+  /** Готовое измерение измерителя — до следующего нажатия на графике, Esc или выбора инструмента. */
+  private ruler: Drawing | null = null;
   private readonly handlers: Array<[EventTarget, string, (e: Event) => void]> = [];
 
   constructor(
@@ -128,6 +137,10 @@ export class DrawingController {
     const doc: EventTarget = el.ownerDocument ?? el;
     on(doc, "pointerup", (e) => this.up(e as PointerEvent));
     on(doc, "pointercancel", (e) => this.cancelGesture(e as PointerEvent));
+    // Esc убирает измерение (как у TradingView): инструмента уже нет — снять его хозяину нечего
+    on(doc, "keydown", (e) => {
+      if ((e as KeyboardEvent).key === "Escape") this.clearRuler();
+    });
     // LWC сдвигает и масштабирует по touchstart/touchmove, а не по pointer-событиям: их отсекаем отдельно
     for (const k of ["touchstart", "touchmove", "touchend", "touchcancel"]) on(el, k, (e) => this.touch(e as TouchEvent));
     // двойной клик при рисовании — две точки, а не сброс вида; в том числе тот, чьё первое отпускание завершило
@@ -143,7 +156,15 @@ export class DrawingController {
 
   setTool(tool: DrawingType | null): void {
     this.tool = tool;
+    this.clearRuler();
     this.reset();
+  }
+
+  /** Убрать измерение измерителя (хозяин — при смене инструмента графика или таймфрейма). */
+  clearRuler(): void {
+    if (!this.ruler) return;
+    this.ruler = null;
+    this.ev.onRuler?.(null);
   }
 
   setSeries(v: boolean): void {
@@ -277,6 +298,8 @@ export class DrawingController {
   }
 
   private down(e: PointerLike): void {
+    // следующее нажатие на графике убирает измерение — и делает своё (сдвиг, выбор, новая точка)
+    this.clearRuler();
     if (e.button !== 0 && e.pointerType === "mouse") return;
     // перо — как палец: iPad (Apple Pencil) и Android (S Pen) шлют для него и touch-события, которые LWC сдвигает
     const touch = e.pointerType !== "mouse";
@@ -571,11 +594,16 @@ export class DrawingController {
 
   private finish(): void {
     const d = this.makeDraft(this.pending);
+    const ruler = this.tool === "ruler";
     // один рисунок на выбор инструмента; «серия» оставляет инструмент, измеритель — всегда разовый
-    const ended = !this.series || this.tool === "ruler";
+    const ended = !this.series || ruler;
     if (ended) this.tool = null;
     this.reset();
-    this.ev.onCreate(d);
+    // измеритель — временный: измерение до следующего нажатия, а не рисунок
+    if (ruler) {
+      this.ruler = d;
+      this.ev.onRuler?.(d);
+    } else this.ev.onCreate(d);
     this.ev.onDone?.(ended);
   }
 
