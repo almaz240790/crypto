@@ -897,3 +897,28 @@ test.describe("iPhone с сайтом на главном экране: отст
     });
   }
 });
+
+test.describe("ландшафт телефона уже 900 px (844×390, палец): ⤢ «скрыть панели» не закрывает выбор инструмента (TSA-5)", () => {
+  test.use({ hasTouch: true, isMobile: true, viewport: { width: 844, height: 390 } });
+
+  test("кнопка левее выбора инструмента, касание по началу выбора — сам выбор; ⤢ прячет и возвращает панели", async ({ page }) => {
+    await open(page, "/chart/BTCUSDT/4h", true);
+    const root = page.locator("[data-layout]").first();
+    await expect(root).toHaveAttribute("data-layout", "phone");
+    const fs = page.getByRole("button", { name: "скрыть панели" });
+    const picker = root.getByLabel("инструмент", { exact: true });
+    await expect(fs).toBeVisible();
+    const b = (await fs.boundingBox())!;
+    const p = (await picker.boundingBox())!;
+    expect(b.x + b.width).toBeLessThanOrEqual(p.x);
+    // в начале выбора (где была кнопка) — сам выбор инструмента
+    const hit = await picker.evaluate((el, r) => el.contains(document.elementFromPoint(r.x + 10, r.y + r.height / 2)), p);
+    expect(hit).toBe(true);
+    await page.touchscreen.tap(b.x + b.width / 2, b.y + b.height / 2);
+    await expect(root).toHaveAttribute("data-bars", "hidden");
+    const show = page.getByRole("button", { name: "показать панели" });
+    await expect(show).toBeVisible();
+    await show.tap();
+    await expect(root).toHaveAttribute("data-bars", "shown");
+  });
+});

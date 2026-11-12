@@ -41,7 +41,7 @@ export function PhoneTop(p: TopProps) {
   return (
     <div className={s.top}>
       <select aria-label={t("инструмент")} value={p.symbol} onChange={(e) => p.onSymbol(e.target.value)}>
-        {(p.instruments.length ? p.instruments : [{ symbol: p.symbol } as Instrument]).map((i) => (
+        {(p.instruments.some((i) => i.symbol === p.symbol) ? p.instruments : [{ symbol: p.symbol } as Instrument, ...p.instruments]).map((i) => (
           <option key={i.symbol} value={i.symbol}>
             {i.symbol}
           </option>
