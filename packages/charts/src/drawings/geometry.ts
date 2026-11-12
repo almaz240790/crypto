@@ -30,9 +30,14 @@ export function trendInfo(p1: Point, p2: Point): { changePct: number; bars: numb
   return { changePct, bars: 0, seconds: p2.time - p1.time };
 }
 
-export function fibLevels(p1: Point, p2: Point, levels: number[] = FIB_LEVELS): { level: number; price: number }[] {
+/**
+ * Цены уровней Фибоначчи: цена = B − (B − A) × уровень (0 — вторая точка, 1 — первая; отрицательные — за второй
+ * точкой по движению, больше 1 — за первой). Набора нет или он пуст — уровни по умолчанию: рисунок без линий не
+ * рисуется (сохранённые наборы приводит normalizeFibLevels).
+ */
+export function fibLevels(p1: Point, p2: Point, levels?: readonly number[] | null): { level: number; price: number }[] {
   const diff = p2.price - p1.price;
-  return levels.map((l) => ({ level: l, price: p2.price - diff * l }));
+  return (levels && levels.length > 0 ? levels : FIB_LEVELS).map((l) => ({ level: l, price: p2.price - diff * l }));
 }
 
 export type PositionStats = {

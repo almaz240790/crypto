@@ -799,6 +799,62 @@
   }
 }
 
+/* уровни Фибоначчи: три подписанные группы переключателей и «стандартные» — во всю ширину карточки, под названием */
+.fibLevels {
+  flex: 1 1 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 6px 12px;
+  min-width: 0;
+}
+
+.fibGroup {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.fibCaption {
+  font-size: 11px;
+  line-height: 14px;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+.fibRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+/* выключенный уровень — контур и приглушённый текст; включённый — рамка и заливка акцента, текст основной */
+.fibToggle {
+  justify-content: center;
+  min-width: 48px;
+  font-family: var(--font-mono);
+  font-weight: 400;
+  color: var(--text-2);
+}
+
+.fibToggle[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent-fill);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.fibReset {
+  margin-left: auto;
+}
+
+@media (pointer: coarse) {
+  .fibToggle {
+    min-width: var(--touch-min);
+    padding: 0 6px;
+  }
+}
+
 .posStats {
   display: inline-flex;
   flex: 1 1 100%;
@@ -1075,6 +1131,41 @@
 
 .page[data-layout="desktop"] .card {
   max-width: min(720px, 100%);
+}
+
+/* карточка Фибоначчи шире на «уровни»: свёрнутая остаётся одной строкой, как до этой кнопки. Ширина списка задана
+   явно: по одному flex-basis карточка считала свою ширину по содержимому списка (уже 180 px) и строка не помещалась */
+.page[data-layout="desktop"] .cardFib {
+  max-width: min(800px, 100%);
+}
+
+.page[data-layout="desktop"] .cardFib .cardSelect {
+  width: 180px;
+}
+
+/* телефон: «на всех таймфреймах» и список «скопировать на…» — всегда в одной строке раскрытой карточки Фибоначчи.
+   С базой 180 px пара помещалась впритык (подпись + 8 + 180 ≈ ширине карточки): со шрифтом чуть шире список уходил
+   на отдельную строку, и карточка закрывала почти половину свечей. База 120 px — запас, список занимает остаток строки */
+.page:not([data-layout="desktop"]) .cardFib .cardSelect {
+  flex: 1 1 120px;
+}
+
+/* телефон: уровни Фибоначчи — одной строкой с прокруткой вбок (карточка — название и строка уровней: рисунок над ней
+   виден, пока уровни переключают); обрезанный у края переключатель показывает, что строка длиннее */
+.page:not([data-layout="desktop"]) .fibLevels {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+
+.page:not([data-layout="desktop"]) .fibGroup,
+.page:not([data-layout="desktop"]) .fibReset {
+  flex: none;
+}
+
+.page:not([data-layout="desktop"]) .fibRow {
+  flex-wrap: nowrap;
 }
 
 /* карточка лимита рисунков — по центру, на месте угла «− + →|» (он на это время скрыт), над карточкой рисунка */

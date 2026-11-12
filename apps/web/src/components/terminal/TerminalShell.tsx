@@ -1,6 +1,6 @@
 "use client";
 
-import { INDICATORS, TOOL_TITLES, createChartStore, positionStats, type Candle, type ChartType, type Drawing, type DrawingType, type ScaleMode, type Timeframe } from "@platform/charts";
+import { INDICATORS, TOOL_TITLES, createChartStore, positionStats, type ChartType, type Drawing, type DrawingType, type ScaleMode, type Timeframe } from "@platform/charts";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -24,6 +24,7 @@ import { SidePanel } from "./panels/SidePanel";
 import { LAYER_LABEL, layerKeysFor } from "./panels/LayersTab";
 import { AskBox } from "./panels/found/AskBox";
 import { FoundTab, type FoundData } from "./panels/found/FoundTab";
+import { useOverlayCandles } from "./state/useOverlayCandles";
 import { useTerminalSettings } from "./state/useTerminalSettings";
 import { useTopdown } from "./state/useTopdown";
 import { useChartAlerts } from "./state/useChartAlerts";
@@ -34,7 +35,7 @@ import { useInstruments } from "./state/useInstruments";
 import { usePlan } from "./state/usePlan";
 import { useTrend } from "./state/useTrend";
 import { useDrawings } from "./useDrawings";
-import { getCandles, toCandle, type FigureOnChart, type PatternOnChart } from "@/lib/chart";
+import { getCandles, type FigureOnChart, type PatternOnChart } from "@/lib/chart";
 import { useTerminalData } from "./useTerminalData";
 import { useT } from "@/i18n/client";
 import { TerminalHeader, type HeaderFacts } from "./chrome/TerminalHeader";
@@ -78,7 +79,7 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
   const { sheet, setSheet, closeSheet, ohlcMore, setOhlcMore, bars, setBars, objects, setObjects, panelOverlay, panelTab, setPanelTab, showPanel, objWidth, objResize, toast, say, notifyOnce } = useTerminalUi(wide);
   // вопросы о графике — Premium (админы и владелец — всегда); минутные ТФ закрыты гостю и на Free
   const { askAccess, intradayLocked } = usePlan();
-  const { st, resolved, legacyFound, patch, toggleIndicator, addIndicator, removeInstance, setInstanceParams, toggleInstanceHidden, togglePanel, toggleLayer, selectMarkup, applyTemplate, applyLayout, setPaneLayout, removePane } = useTerminalSettings(authed);
+  const { st, resolved, legacyFound, patch, toggleIndicator, addIndicator, removeInstance, setInstanceParams, toggleInstanceHidden, togglePanel, toggleLayer, selectMarkup, applyTemplate, applyLayout, setPaneLayout, removePane, setFibLevels } = useTerminalSettings(authed);
   // «Разбор» (резерв): вкладка и пункт тулбара — владельцу и админам, если ресурс topdown ответил 200
   const topdown = useTopdown(symbol, tf, user);
   const role = user?.role ?? null;
@@ -114,7 +115,8 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
   );
   // пояснение «нет данных OI» у слоя и пресета — флаг каталога сцены (лист «Найдено» читает каталог сам)
   const liqUnavailable = useChartStore((x) => x.sceneIndex?.liqUnavailable ?? false, store);
-  const dr = useDrawings(symbol, authed);
+  // уровни, выбранные у Фибоначчи (карточка рисунка, отмена и повтор такой правки), — с ними начнётся следующий
+  const dr = useDrawings(symbol, authed, setFibLevels);
   const data = useTerminalData(symbol, tf, user ? getAccessToken() : null);
   const trend = useTrend(data.layers);
   const figures = data.figures?.items ?? NO_FIGURES;
@@ -164,22 +166,14 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
     if (legacyFound) notifyOnce(MARKUP_NOTICE_KEY, t("Разметка графика обновлена: по умолчанию «Чистый». Прежний вид — «Подробный» в «Разметке»."), NOTICE_MS);
   }, [legacyFound, t, notifyOnce]);
 
-  // наложенный инструмент (план 2A.3 v2): закрытые свечи цели на том же таймфрейме
-  const [overlayCandles, setOverlayCandles] = useState<Candle[] | null>(null);
+  // наложенный инструмент (план 2A.3 v2): закрытые свечи цели на том же таймфрейме — следуют за буфером основного
+  // инструмента (хвост на каждой новой закрытой свече, история слева вместе с его историей)
   const overlaySymbol = st.overlay && st.overlay !== symbol ? st.overlay : null;
-  useEffect(() => {
-    if (!overlaySymbol) {
-      queueMicrotask(() => setOverlayCandles(null));
-      return;
-    }
-    let dead = false;
-    getCandles(overlaySymbol, tf)
-      .then((r) => !dead && setOverlayCandles(r.candles.filter((c) => !c.open).map(toCandle)))
-      .catch(() => !dead && setOverlayCandles(null));
-    return () => {
-      dead = true;
-    };
-  }, [overlaySymbol, tf]);
+  // начало буфера: первая порция — в data.candles, подгруженная история уходит прямо в терминал (store: historyFrom)
+  const historyFrom = useChartStore((x) => x.status.historyFrom, store);
+  const mainFirst = historyFrom ?? data.candles?.[0]?.time ?? null;
+  const mainLast = data.candles?.length ? data.candles[data.candles.length - 1]!.time : null;
+  const overlayCandles = useOverlayCandles(overlaySymbol, tf, mainFirst, mainLast);
   const last = data.current ?? data.candles?.[data.candles.length - 1] ?? null;
   const prevClose = data.candles && data.candles.length > 1 ? data.candles[data.candles.length - (data.current ? 1 : 2)]!.close : null;
   // цена шапки — живая (data.prices: шапка подписана сама, терминал на тиках не перерисовывается), без неё — закрытие
@@ -294,8 +288,9 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
         if (ended) setDrawTool(null);
       },
       profile: riskProfile,
+      fibLevels: st.fibLevels,
     }),
-    [dr.state, dr.tool, dr.magnet, dr.series, dr.draft, dr.actions, dr.setDraft, dr.setStep, setDrawTool, riskProfile],
+    [dr.state, dr.tool, dr.magnet, dr.series, dr.draft, dr.actions, dr.setDraft, dr.setStep, setDrawTool, riskProfile, st.fibLevels],
   );
   const fundingRate = data.derivatives?.funding_current ?? null;
   const fundingNext = data.derivatives?.next_funding_t ?? null;

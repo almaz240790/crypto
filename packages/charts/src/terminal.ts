@@ -18,9 +18,10 @@ const TOP_MARGIN_EPS = 0.005;
 const NO_AUTOSCALE = (): null => null;
 import { createBuffer, EDGE, needsNewer, needsOlder, prependOlder, pushLatest, replaceAt, replaceNewest, replaceTail, type BufferState } from "./buffer";
 import { heikinAshi } from "./heikin";
-import { LayerManager } from "./layers";
+import { LayerManager, type Layer, type LayerContext } from "./layers";
 import { INTERACTION, VIEW } from "./presets";
 import type { PanePlan } from "./controller/paneManager";
+import { PercentLinesPrimitive } from "./render/PercentLines";
 import { chartOptions, PRICE_MARGIN_TOP_MAX, PRICE_MARGINS, seriesColors } from "./theme";
 import type { Candle, ChartType, ThemeTokens } from "./types";
 
@@ -53,6 +54,34 @@ const FALLBACK_BARS = 100;
 /** Формат цены до того, как известен шаг инструмента (как у LWC по умолчанию). */
 const DEFAULT_PRICE_FORMAT: PriceFormat = { type: "price", precision: 2, minMove: 0.01 };
 
+/**
+ * Серия наложенного индикатора в процентной шкале: LWC её не рисует (линию, метку последнего значения на шкале и
+ * точку под перекрестием — всё это было бы в процентах от её собственного первого видимого значения); в остальных
+ * режимах — как создана в addLine. Видимость экземпляра (visible) здесь не трогается: её ставит хозяин серии.
+ */
+function overlayLineMode(mode: ScaleMode): { lineVisible: boolean; lastValueVisible: boolean; crosshairMarkerVisible: boolean } {
+  const lwc = mode !== "percent";
+  return { lineVisible: lwc, lastValueVisible: lwc, crosshairMarkerVisible: lwc };
+}
+
+/** Слой-обёртка над примитивом основной серии: менеджер слоёв переподключает его при смене типа графика. */
+class SeriesPrimitiveLayer implements Layer {
+  private main: LayerContext["main"] | null = null;
+  constructor(
+    readonly id: string,
+    private readonly primitive: PercentLinesPrimitive,
+  ) {}
+  attach(ctx: LayerContext): void {
+    this.main = ctx.main;
+    ctx.main.attachPrimitive(this.primitive);
+  }
+  detach(): void {
+    this.main?.detachPrimitive(this.primitive);
+    this.main = null;
+  }
+  setVisible(): void {}
+}
+
 export class Terminal {
   readonly chart: IChartApi;
   readonly layers = new LayerManager();
@@ -71,8 +100,19 @@ export class Terminal {
   private priceFormat: PriceFormat = DEFAULT_PRICE_FORMAT;
   /** Серии на шкале цены основной панели (наложенные индикаторы): у них формат цены инструмента. */
   private readonly priceSeries = new Set<ISeriesApi<SeriesType>>();
+  /**
+   * Линии наложенных индикаторов на панели цены. В процентной шкале LWC нормировал бы каждую от её собственного
+   * первого видимого значения, поэтому там их рисует примитив основной серии (PercentLinesPrimitive) — по ценам.
+   */
+  private readonly overlayLines = new Set<ISeriesApi<"Line">>();
+  private readonly percentLines = new PercentLinesPrimitive(
+    () => this.overlayLines,
+    () => this.scaleMode === "percent",
+  );
   private scaleMode: ScaleMode = "linear";
   private overlay: ISeriesApi<"Line"> | null = null;
+  /** HA-свечи, как они отданы основной серии (только тип heikin). */
+  private heikin: readonly Candle[] | null = null;
   /** Свечи наложенного инструмента целиком; на графике — только на времени свечей буфера (см. overlayData). */
   private overlayCandles: readonly Candle[] = [];
   private overlayLast: number | null = null;
@@ -96,6 +136,8 @@ export class Terminal {
     this.main = this.createMain(this.type);
     this.volume = this.chart.addSeries(HistogramSeries, { priceFormat: { type: "volume" }, priceScaleId: "", lastValueVisible: false, priceLineVisible: false });
     this.volume.priceScale().applyOptions({ scaleMargins: { top: VIEW.desktop.volumeTop, bottom: 0 } });
+    // первым слоем — под разметкой и рисунками; слой переподключается к новой серии при смене типа графика
+    this.layers.add(new SeriesPrimitiveLayer("percent-lines", this.percentLines));
     this.layers.attach({ chart: this.chart, main: this.main });
     this.chart.timeScale().subscribeVisibleLogicalRangeChange((r) => this.onRange(r));
   }
@@ -426,6 +468,10 @@ export class Terminal {
   addLine(paneIndex: number, color: string, lineWidth: 1 | 2 = 1, priceFormat?: PriceFormat): ISeriesApi<"Line"> {
     const s = this.chart.addSeries(LineSeries, { color, lineWidth, priceLineVisible: false, lastValueVisible: true, priceFormat: this.paneFormat(paneIndex, priceFormat), ...this.paneAutoscale(paneIndex) }, paneIndex);
     if (paneIndex === 0 && !priceFormat) this.priceSeries.add(s);
+    if (paneIndex === 0) {
+      this.overlayLines.add(s);
+      if (this.scaleMode === "percent") s.applyOptions(overlayLineMode("percent"));
+    }
     return s;
   }
 
@@ -446,6 +492,7 @@ export class Terminal {
 
   removeSeries(s: PaneSeries): void {
     this.priceSeries.delete(s);
+    this.overlayLines.delete(s as ISeriesApi<"Line">);
     this.chart.removeSeries(s);
   }
 
@@ -456,6 +503,9 @@ export class Terminal {
     // режим — только у шкалы цены: панели индикаторов остаются линейными
     this.resetPaneScales();
     this.overlay?.applyOptions({ priceScaleId: mode === "percent" ? "right" : OVERLAY_SCALE });
+    // наложенные индикаторы в процентной шкале рисует примитив по ценам, в остальных — их серии
+    for (const s of this.overlayLines) s.applyOptions(overlayLineMode(mode));
+    this.percentLines.update();
   }
 
   get scale(): ScaleMode {
@@ -648,8 +698,30 @@ export class Terminal {
     }
   }
 
+  /**
+   * Свеча, как её рисует основная серия, если она отличается от свечи буфера: в Heikin Ashi — HA-свеча. Метка
+   * последней цены LWC стоит на закрытии нарисованной свечи, поэтому отсчёт до закрытия и полоса без делений под
+   * меткой считаются от неё же (раньше — от настоящего закрытия: отсчёт висел в стороне от метки). null — серия
+   * рисует свечи буфера как есть.
+   */
+  displayedBar(time: number): { open: number; close: number } | null {
+    const ha = this.type === "heikin" ? this.heikin : null;
+    if (!ha) return null;
+    let lo = 0, hi = ha.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const c = ha[mid]!;
+      if (c.time === time) return { open: c.open, close: c.close };
+      if (c.time < time) lo = mid + 1;
+      else hi = mid - 1;
+    }
+    return null;
+  }
+
   private seriesData() {
-    const src = this.type === "heikin" ? heikinAshi(this.buffer.candles) : this.buffer.candles;
+    // HA-свечи, отданные серии, — и для displayedBar (пересчитываются при каждой отрисовке и обновлении серии)
+    this.heikin = this.type === "heikin" ? heikinAshi(this.buffer.candles) : null;
+    const src = this.heikin ?? this.buffer.candles;
     if (this.type === "line") return src.map((c) => ({ time: c.time as UTCTimestamp, value: c.close }));
     return src.map((c) => ({ time: c.time as UTCTimestamp, open: c.open, high: c.high, low: c.low, close: c.close }));
   }
