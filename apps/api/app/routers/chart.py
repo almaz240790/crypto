@@ -30,10 +30,10 @@ from app.chart_data import (
 from app.config import settings
 from app.entitlements import allowed_instrument_ids, entitlements_for
 from app.models import Instrument, User
-from app.routers.public import optional_user
 from engine.candles import Timeframe
 
-router = APIRouter(prefix="/v1/chart", tags=["chart"])
+# X-API-Key проверяется на всех эндпоинтах графика, как в /v1 (routers/public.py)
+router = APIRouter(prefix="/v1/chart", tags=["chart"], dependencies=[Depends(auth.api_key_user)])
 INTRADAY = {Timeframe.M1, Timeframe.M5, Timeframe.M15}
 
 
@@ -57,7 +57,7 @@ def candles(
     tf: str = "4h",
     before: int | None = Query(None, description="unix-время: отдать свечи строго раньше"),
     limit: int = Query(PAGE, ge=20, le=PAGE),
-    user: User | None = Depends(optional_user),
+    user: User | None = Depends(auth.optional_user),
     db: Session = Depends(auth.get_db),
 ) -> dict[str, Any]:
     """Закрытые свечи порцией (по умолчанию последние 500) и текущая незакрытая свеча.
@@ -126,7 +126,7 @@ def candles(
 def layers(
     symbol: str,
     tf: str = "4h",
-    user: User | None = Depends(optional_user),
+    user: User | None = Depends(auth.optional_user),
     db: Session = Depends(auth.get_db),
 ) -> dict[str, Any]:
     """Слои: структура (swing, BOS/CHoCH), зоны, уровни, равные уровни, снятия, bias — по tf ≥ 1h,
@@ -262,7 +262,7 @@ def derivatives(
     tf: str = "4h",
     before: int | None = Query(None),
     limit: int = Query(PAGE, ge=20, le=PAGE),
-    user: User | None = Depends(optional_user),
+    user: User | None = Depends(auth.optional_user),
     db: Session = Depends(auth.get_db),
 ) -> dict[str, Any]:
     """Панели funding / OI / ликвидаций, выровненные по корзинам tf, за окно ``limit`` свечей."""

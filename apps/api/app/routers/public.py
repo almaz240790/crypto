@@ -13,13 +13,14 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from app import auth
 from app.analysis import analyze_signal
+from app.auth import optional_user
 from app.coin_rank import current_ranks, rank_of, rank_sort_key
 from app.config import settings
 from app.entitlements import (
@@ -59,7 +60,10 @@ from engine.candles import Timeframe
 from engine.patterns import PatternType
 from engine.strategies import STRATEGIES
 
-router = APIRouter(prefix="/v1", tags=["public"])
+# Ключ X-API-Key проверяется на всех эндпоинтах роутера, и на тех, которым пользователь не нужен
+# (/v1/stats, /v1/instruments…): ключ неверный — 401, тариф без API — 403, лимит — 429 (/api-docs).
+# Без ключа зависимость ничего не делает; Bearer она не читает.
+router = APIRouter(prefix="/v1", tags=["public"], dependencies=[Depends(auth.api_key_user)])
 OPEN_STATUSES = ("pending", "active", "tp1_hit", "tp2_hit")
 SPARK_LEN = 24
 
@@ -107,18 +111,6 @@ def _last_prices(db: Session, instrument_ids: list[int]) -> dict[int, tuple[str,
         {"ids": instrument_ids},
     ).all()
     return {int(r[0]): (_dec(r[1]) or "0", r[2]) for r in rows}
-
-
-def optional_user(request: Request, db: Session = Depends(auth.get_db)) -> User | None:
-    """Необязательный вход: без токена — гость (None). Токен есть, но недействителен или истёк —
-    401, как у ``current_user``: клиент обновит токен и повторит запрос, а если сеанс кончился —
-    повторит без токена, как гость. Тихий гость вместо 401 отдавал платящему права Free
-    (минутные ТФ — 403, без слоя сигналов), и клиент токен не обновлял (аудит TSA-1)."""
-    header = request.headers.get("authorization", "")
-    if not header.lower().startswith("bearer "):
-        return None
-    payload = auth.decode_access_token(header[7:])
-    return db.get(User, int(payload["sub"]))
 
 
 def _dec(x: Decimal | None) -> str | None:

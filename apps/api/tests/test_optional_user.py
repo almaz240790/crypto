@@ -1,6 +1,8 @@
 """Необязательный вход на публичных эндпоинтах (optional_user): нет токена — гость; токен есть, но
 недействителен или истёк — 401, а не тихий гость (аудит TSA-1: Pro с истёкшим access-токеном
-получал «1m–15m на тарифе Pro» и терял слой сигналов, а клиент токен не обновлял)."""
+получал «1m–15m на тарифе Pro» и терял слой сигналов, а клиент токен не обновлял). Пользователь
+по токену удалён или не найден — 401, заблокирован — 403, как у ``current_user`` (ревью PR #162).
+API-ключ на тех же эндпоинтах — ``test_api_key_public.py``."""
 
 from __future__ import annotations
 
@@ -16,7 +18,6 @@ from starlette.requests import Request
 from app import auth
 from app.config import settings
 from app.models import User
-from app.routers.public import optional_user
 
 
 class _Db:
@@ -28,6 +29,11 @@ class _Db:
     def get(self, model: Any, pk: int) -> User | None:
         assert model is User
         return self.users.get(pk)
+
+
+def optional_user(request: Request, db: Any) -> User | None:
+    """``auth.optional_user`` вне FastAPI: зависимость ``api_key_user`` вызывается явно."""
+    return auth.optional_user(request, db, auth.api_key_user(request, db))
 
 
 def _request(authorization: str | None) -> Request:
@@ -42,6 +48,12 @@ def _token(user_id: int, exp: datetime) -> str:
 
 
 ADMIN = User(id=7, email="a@example.com", role="admin")
+DELETED = User(
+    id=8, email="d@example.com", role="user", deleted_at=datetime(2026, 11, 1, tzinfo=UTC)
+)
+BLOCKED = User(
+    id=9, email="b@example.com", role="user", blocked_at=datetime(2026, 11, 1, tzinfo=UTC)
+)
 
 
 def test_no_token_is_guest_valid_token_is_user() -> None:
@@ -52,13 +64,22 @@ def test_no_token_is_guest_valid_token_is_user() -> None:
     assert optional_user(_request(""), db) is None
     fresh = _token(7, datetime.now(tz=UTC) + timedelta(minutes=10))
     assert optional_user(_request(f"Bearer {fresh}"), db) is ADMIN
-    # токен действителен, а пользователя нет — гость (как раньше)
-    assert (
-        optional_user(
-            _request(f"Bearer {_token(8, datetime.now(tz=UTC) + timedelta(minutes=10))}"), db
-        )
-        is None
-    )
+
+
+@pytest.mark.parametrize(
+    ("user_id", "status"),
+    [(8, 401), (10, 401), (9, 403)],
+    ids=["deleted", "missing", "blocked"],
+)
+def test_token_of_inactive_account_is_error_not_user(user_id: int, status: int) -> None:
+    """Токен действителен, но аккаунт удалён или не найден — 401, заблокирован — 403, как у
+    ``current_user``. Было: удалённый и заблокированный получали данные своего тарифа, а токен
+    несуществующего пользователя — ответ гостя."""
+    db: Any = _Db({7: ADMIN, 8: DELETED, 9: BLOCKED})
+    fresh = _token(user_id, datetime.now(tz=UTC) + timedelta(minutes=10))
+    with pytest.raises(HTTPException) as e:
+        optional_user(_request(f"Bearer {fresh}"), db)
+    assert e.value.status_code == status
 
 
 @pytest.mark.parametrize(
@@ -75,7 +96,7 @@ def test_no_token_is_guest_valid_token_is_user() -> None:
 )
 def test_present_but_invalid_token_is_401(bearer: str) -> None:
     with pytest.raises(HTTPException) as e:
-        optional_user(_request(f"Bearer {bearer}"), _Db({7: ADMIN}))  # type: ignore[arg-type]
+        optional_user(_request(f"Bearer {bearer}"), _Db({7: ADMIN}))
     assert e.value.status_code == 401
 
 
