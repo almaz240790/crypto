@@ -1310,7 +1310,14 @@ def test_stop_during_resync_writes_and_publishes_what_it_found(monkeypatch: Any)
     assert ok is True
     assert 0 < len(calls) < 30  # вышла после текущего запроса, не досверяв
     written = sorted({i for _, i, tf, t, closed in db.log if (tf, t, closed) == ("1m", m, True)})
-    published = sorted(e["instrument_id"] for e in _closed(md) if e["tf"] == "1m")
+    # только свеча m: если тест начался в последние доли секунды минуты, за время прогона
+    # закрывается и свеча m + 1 из того же ответа REST — её закрытие тоже публикуется, и без
+    # фильтра каждый инструмент попадал в список дважды (CI, PR #156)
+    published = sorted(
+        e["instrument_id"]
+        for e in _closed(md)
+        if e["tf"] == "1m" and datetime.fromisoformat(e["open_time"]) == m
+    )
     assert written and published == written  # всё, что сверка записала, — опубликовано
     assert md.closed_events == [] and md.ready_events == [] and md.candle_buffer == {}
     assert md.held == {} and md.deferred == {}
