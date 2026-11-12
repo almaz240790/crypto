@@ -34,7 +34,7 @@ import { useTerminalUi } from "./state/useTerminalUi";
 import { useInstruments } from "./state/useInstruments";
 import { usePlan } from "./state/usePlan";
 import { useTrend } from "./state/useTrend";
-import { useDrawings } from "./useDrawings";
+import { useDrawings, type DrawingsRefused } from "./useDrawings";
 import { getCandles, type FigureOnChart, type PatternOnChart } from "@/lib/chart";
 import { useTerminalData } from "./useTerminalData";
 import { useT } from "@/i18n/client";
@@ -116,7 +116,12 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
   // пояснение «нет данных OI» у слоя и пресета — флаг каталога сцены (лист «Найдено» читает каталог сам)
   const liqUnavailable = useChartStore((x) => x.sceneIndex?.liqUnavailable ?? false, store);
   // уровни, выбранные у Фибоначчи (карточка рисунка, отмена и повтор такой правки), — с ними начнётся следующий
-  const dr = useDrawings(symbol, authed, setFibLevels);
+  // сервер не принял рисунки (аудит DTS-4): коротко о причине — рисунок остаётся на устройстве, очередь идёт дальше
+  const drawingsRefused = useCallback(
+    (r: DrawingsRefused) => say(r.code === "limit" ? t("Лимит рисунков на {symbol} исчерпан: рисунок сохранён только на этом устройстве", { symbol: r.symbol }) : t("Сервер не принял рисунок: он сохранён только на этом устройстве")),
+    [say, t],
+  );
+  const dr = useDrawings(symbol, authed, setFibLevels, drawingsRefused);
   const data = useTerminalData(symbol, tf, user ? getAccessToken() : null);
   const trend = useTrend(data.layers);
   const figures = data.figures?.items ?? NO_FIGURES;
@@ -222,7 +227,8 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
       return;
     }
     const copy = dr.actions.copyTo(id, target, ratio);
-    if (copy) say(`${t("Рисунок скопирован на {symbol}", { symbol: target })}${ratio !== 1 ? t(" (цены пропорционально)") : ""}`);
+    if (copy === "limit") say(t("Лимит рисунков на {symbol}: {n}. Рисунок не скопирован", { symbol: target, n: dr.limit ?? "—" }));
+    else if (copy) say(`${t("Рисунок скопирован на {symbol}", { symbol: target })}${ratio !== 1 ? t(" (цены пропорционально)") : ""}`);
   };
   // минутный ТФ без тарифа: сервер отвечает ошибкой — вместо графика объяснение со ссылкой на подписку
   const intradayDenied = !user || (data.error ?? "").includes(t("тарифе"));

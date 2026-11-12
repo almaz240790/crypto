@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { channelOffset, distToSegment, extend, fibLevels, hitTest, lineAt, magnetSnap, positionStats, rulerInfo, type Projector } from "../drawings/geometry";
 import { addDrawing, alive, canRedo, canUndo, clearDrawings, commitMove, createState, mergeRemote, redo, removeDrawing, resolve, toggleLock, undo, updateDrawing, visibleOn } from "../drawings/store";
 import { HANDLE_TOUCH_PX, UNDO_STEPS, pointsNeeded, type Drawing } from "../drawings/types";
@@ -69,6 +69,107 @@ describe("хранилище рисунков", () => {
     expect(visibleOn(s, "4h").map((x) => x.id)).toEqual(["a", "b"]);
     expect(visibleOn(s, "1d").map((x) => x.id)).toEqual(["b"]);
     expect(visibleOn({ ...s, hidden: true }, "4h")).toEqual([]);
+  });
+});
+
+describe("отмена и повтор с синхронизацией — новая версия рисунка (аудит FI-1, DTS-2)", () => {
+  // сервер и слияние на клиенте: последняя запись побеждает по updated_at, при равенстве — удаление. Отмена уже
+  // записанной правки должна выиграть у версии сервера, иначе следующая синхронизация её откатывает.
+  const serverKeeps = (server: Drawing, incoming: Drawing) => resolve(server, incoming) === server;
+  const at = (ms: number) => vi.setSystemTime(ms);
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("отмена правки, перетаскивания и удаления — прежний рисунок с новым updated_at, он побеждает версию сервера", () => {
+    vi.useFakeTimers();
+    at(1000);
+    let s = addDrawing(createState(), { ...d("a", "fib"), levels: [0, 0.5, 1], updated_at: 1000 });
+    at(2000);
+    s = updateDrawing(s, "a", { levels: [-0.618, 0, 0.5, 1] });
+    const edited = s.items[0]!;
+    at(3000);
+    s = undo(s);
+    expect(s.items[0]!.levels).toEqual([0, 0.5, 1]);
+    expect(s.items[0]!.updated_at).toBe(3000);
+    expect(serverKeeps(edited, s.items[0]!)).toBe(false);
+    // повтор — тоже новая версия
+    at(4000);
+    s = redo(s);
+    expect(s.items[0]!.levels).toEqual([-0.618, 0, 0.5, 1]);
+    expect(s.items[0]!.updated_at).toBe(4000);
+
+    const origin = s.items[0]!.points;
+    at(5000);
+    s = commitMove(s, "a", [{ time: 0, price: 90 }, { time: 60, price: 95 }], origin);
+    const moved = s.items[0]!;
+    at(6000);
+    s = undo(s);
+    expect(s.items[0]!.points).toEqual(origin);
+    expect(s.items[0]!.updated_at).toBe(6000);
+    expect(serverKeeps(moved, s.items[0]!)).toBe(false);
+
+    at(7000);
+    s = removeDrawing(s, "a");
+    const gone = s.items[0]!;
+    at(8000);
+    s = undo(s);
+    expect(alive(s)).toHaveLength(1);
+    expect(s.items[0]!.deleted_at ?? null).toBeNull();
+    expect(s.items[0]!.updated_at).toBe(8000);
+    expect(serverKeeps(gone, s.items[0]!)).toBe(false);
+  });
+
+  it("отмена создания — удаление (deleted_at), а не выброшенный рисунок; повтор возвращает его новой версией", () => {
+    vi.useFakeTimers();
+    at(1000);
+    let s = addDrawing(createState(), { ...d("a"), updated_at: 1000 });
+    const created = s.items[0]!;
+    at(2000);
+    s = undo(s);
+    expect(alive(s)).toEqual([]);
+    expect(s.items).toHaveLength(1);
+    expect(s.items[0]!.deleted_at).toBe(2000);
+    expect(s.items[0]!.updated_at).toBe(2000);
+    // удаление доходит до сервера: живая версия там старше
+    expect(serverKeeps(created, s.items[0]!)).toBe(false);
+    const tomb = s.items[0]!;
+    at(3000);
+    s = redo(s);
+    expect(alive(s)).toHaveLength(1);
+    expect(s.items[0]!.deleted_at ?? null).toBeNull();
+    expect(s.items[0]!.updated_at).toBe(3000);
+    expect(serverKeeps(tomb, s.items[0]!)).toBe(false);
+  });
+
+  it("отмена в ту же миллисекунду, что и правка, всё равно новее; нетронутые рисунки — те же объекты (без лишней синхронизации)", () => {
+    vi.useFakeTimers();
+    at(1000);
+    let s = addDrawing(addDrawing(createState(), { ...d("a"), updated_at: 1000 }), { ...d("b"), updated_at: 1000 });
+    const b = s.items[1]!;
+    s = updateDrawing(s, "a", { text: "x" });
+    const edited = s.items[0]!;
+    s = undo(s);
+    expect(s.items[0]!.text).toBeUndefined();
+    expect(s.items[0]!.updated_at).toBeGreaterThan(edited.updated_at);
+    expect(s.items[1]).toBe(b);
+  });
+
+  it("рисунок с другого устройства отмена своего шага не удаляет, а чужое удаление не отменяет", () => {
+    vi.useFakeTimers();
+    at(1000);
+    let s = addDrawing(createState(), { ...d("b"), updated_at: 1000 });
+    at(2000);
+    s = addDrawing(s, { ...d("a"), updated_at: 2000 });
+    // слияние с сервером при непустой истории: новый рисунок r и удаление b другим устройством
+    const r = { ...d("r"), updated_at: 2500 };
+    s = mergeRemote(s, [r, { ...s.items[0]!, updated_at: 2600, deleted_at: 2600 }]);
+    at(3000);
+    s = undo(s); // отмена создания a
+    expect(alive(s).map((x) => x.id)).toEqual(["r"]);
+    expect(s.items.find((x) => x.id === "r")).toBe(r);
+    expect(s.items.find((x) => x.id === "b")!.updated_at).toBe(2600);
+    expect(s.items.find((x) => x.id === "a")!.deleted_at).toBe(3000);
   });
 });
 
