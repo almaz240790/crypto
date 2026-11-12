@@ -615,6 +615,65 @@ test.describe("телефон 390×844, палец", () => {
     await expect.poll(() => remembered(page)).toEqual([-0.618, ...FIB, 2.618]);
   });
 
+  test("Фибоначчи в нижней части области свечей (последний ход у текущей цены): раскрытые «уровни» его не закрывают — график над карточкой, переключение видно", async ({ page }) => {
+    const { X, Y } = await open(page);
+    const f = await finger(page);
+    const margin = () => page.evaluate(() => (document.querySelector('[data-testid="terminal"]') as HTMLElement & { __chart: { priceScale(id: string): { options(): { scaleMargins: { top: number; bottom: number } } } } }).__chart.priceScale("right").options().scaleMargins.bottom);
+    expect(await margin()).toBeCloseTo(0.2, 6);
+    await page.getByRole("button", { name: "Рисовать" }).tap();
+    await page.getByRole("dialog", { name: "Рисование" }).getByRole("button", { name: "Фибоначчи" }).tap();
+    // нижние 40 % колонки: там раскрытая карточка (234 px из ~600)
+    await f.tap(X(0.2), Y(0.55));
+    await f.tap(X(0.6), Y(0.8));
+    await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 1");
+    const d0 = (await stored(page))[0]!;
+    // свёрнутая карточка (одна строка) — в нижнем поле шкалы: график не сжимается
+    await expect(card(page)).toContainText("Фибоначчи");
+    expect(await margin()).toBeCloseTo(0.2, 6);
+
+    const more = card(page).getByRole("button", { name: /уровни/ });
+    await more.tap();
+    await expect(panel(page).locator("button[aria-pressed]")).toHaveCount(14);
+    // ручки и уровни коррекции — над карточкой (раньше ручка B и 0…0.5 — под ней): нижнее поле шкалы растёт
+    const opened = (await card(page).boundingBox())!;
+    await expect.poll(async () => Math.max(...(await onScreen(page, d0.points)).map((h) => h.y)), "ручки — над карточкой").toBeLessThanOrEqual(opened.y - 10);
+    expect(await margin()).toBeGreaterThan(0.25);
+    const t = (await page.getByTestId("terminal").boundingBox())!;
+    const retracement = [0, 0.236, 0.382, 0.5, 0.618, 1];
+    await expect
+      .poll(async () => {
+        const ls = await levelLabels(page);
+        return retracement.filter((l) => {
+          const x = ls.find((q) => q.id === `${d0.id}#L${l}`);
+          return x && t.y + x.rect.y + x.rect.h <= opened.y;
+        });
+      }, "подписи уровней коррекции — над карточкой")
+      .toEqual(retracement);
+    // переключение видно на графике: 0.382 выключили — его подписи нет, включили — снова есть
+    await toggle(page, "0.382").tap();
+    await expect(toggle(page, "0.382")).toHaveAttribute("aria-pressed", "false");
+    await expect.poll(() => labelOf(page, d0.id, 0.382)).toBeNull();
+    await toggle(page, "0.382").tap();
+    await expect.poll(async () => (await labelOf(page, d0.id, 0.382))?.text ?? null).toMatch(/^0\.382 · /);
+    // ручку B тянут пальцем вниз, к карточке: поле шкалы за ней не растёт — точка остаётся под пальцем, а не уезжает
+    const m0 = await margin();
+    const [, hb] = await onScreen(page, d0.points);
+    await f.drag(hb!.x, hb!.y, hb!.x - 20, hb!.y + 8);
+    await expect.poll(async () => (await stored(page))[0]!.points[1]!.time).not.toBe(d0.points[1]!.time);
+    expect(await margin()).toBeCloseTo(m0, 6);
+    const [, nb] = await onScreen(page, (await stored(page))[0]!.points);
+    expect(Math.abs(nb!.y - (hb!.y + 8)), "точка B — под пальцем").toBeLessThanOrEqual(13);
+    // свернули — поле шкалы прежнее; сняли выделение — тоже
+    await more.tap();
+    await expect(more).toHaveAttribute("aria-expanded", "false");
+    await expect.poll(margin).toBeCloseTo(0.2, 6);
+    await more.tap();
+    await expect.poll(margin).toBeGreaterThan(0.25);
+    await card(page).getByRole("button", { name: "снять выделение" }).tap();
+    await expect(card(page)).toHaveCount(0);
+    await expect.poll(margin).toBeCloseTo(0.2, 6);
+  });
+
   test("заблокированный Фибоначчи: касание выбирает — в раскрытой карточке «разблокировать» и «удалить»; сдвиг по нему — графику", async ({ page }) => {
     await seedLocked(page);
     await open(page);

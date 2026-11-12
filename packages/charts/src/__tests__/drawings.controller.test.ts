@@ -67,7 +67,7 @@ function setup(o: { magnet?: boolean; items?: Drawing[]; coarse?: boolean; pxBar
   let n = 0;
   let selected: string | null = null;
   const clock = { now: 0 };
-  const log = { created: [] as Drawing[], selected: [] as (string | null)[], drafts: [] as (Drawing | null)[], steps: [] as number[], done: [] as boolean[], moves: [] as { id: string; final: boolean; points: Drawing["points"]; origin?: Drawing["points"] }[] };
+  const log = { created: [] as Drawing[], selected: [] as (string | null)[], drafts: [] as (Drawing | null)[], steps: [] as number[], done: [] as boolean[], rulers: [] as (Drawing | null)[], editEnds: 0, moves: [] as { id: string; final: boolean; points: Drawing["points"]; origin?: Drawing["points"] }[] };
   const ctrl = new DrawingController(
     el as unknown as HTMLElement,
     o.proj ?? projOf(o.pxBar ?? PX_BAR),
@@ -91,6 +91,8 @@ function setup(o: { magnet?: boolean; items?: Drawing[]; coarse?: boolean; pxBar
       onDraft: (d) => log.drafts.push(d),
       onDone: (ended) => log.done.push(ended),
       onStep: (k) => log.steps.push(k),
+      onRuler: (d) => log.rulers.push(d),
+      onEditEnd: () => log.editEnds++,
     },
   );
   const fire = (k: string, x: number, y: number, type: string, id: number, button = 0) => {
@@ -235,6 +237,110 @@ describe("один рисунок на выбор инструмента и «с
     s.mouse.tap(...at(20, 110));
     expect(s.log.done).toEqual([true]);
     expect(s.ctrl.tool).toBeNull();
+  });
+
+  it("измеритель — временный (план 2A.5): не рисунок — onRuler, а не onCreate; следующее нажатие, Esc, выбор инструмента и clearRuler его убирают", () => {
+    const line: Drawing = { id: "L", type: "trend", points: [{ time: T0 + 60 * H, price: 150 }, { time: T0 + 80 * H, price: 160 }], style: DEFAULT_STYLE, locked: false, timeframe: null, updated_at: 0 };
+    const s = setup({ items: [line] });
+    const lastRuler = () => s.log.rulers[s.log.rulers.length - 1] ?? null;
+    const measure = () => {
+      s.ctrl.setTool("ruler");
+      s.mouse.tap(...at(10, 120));
+      s.mouse.move(...at(15, 115));
+      s.mouse.tap(...at(20, 110));
+    };
+    measure();
+    // рисунка нет: ни onCreate, ни выбора (раньше — рисунок в хранилище и на сервере, в счёте лимита)
+    expect(s.log.created).toHaveLength(0);
+    expect(s.log.selected).toEqual([]);
+    expect(lastRuler()).toMatchObject({ type: "ruler", points: [{ time: T0 + 10 * H, price: 120 }, { time: T0 + 20 * H, price: 110 }] });
+    expect(s.log.drafts.at(-1)).toBeNull();
+    expect(s.ctrl.tool).toBeNull();
+    expect(s.log.done).toEqual([true]);
+    // наведение мышью его не трогает
+    s.mouse.move(...at(40, 100));
+    expect(lastRuler()).not.toBeNull();
+    // следующее нажатие убирает измерение и делает своё: здесь — выбирает рисунок под курсором
+    s.mouse.tap(...at(70, 155));
+    expect(lastRuler()).toBeNull();
+    expect(s.log.selected.at(-1)).toBe("L");
+    // Esc
+    measure();
+    expect(lastRuler()).not.toBeNull();
+    s.doc.dispatch("keydown", { key: "Escape" });
+    expect(lastRuler()).toBeNull();
+    // другой инструмент
+    measure();
+    s.ctrl.setTool("trend");
+    expect(lastRuler()).toBeNull();
+    // хозяин: смена инструмента графика или таймфрейма
+    s.ctrl.setTool(null);
+    measure();
+    s.ctrl.clearRuler();
+    expect(lastRuler()).toBeNull();
+    // другие клавиши — нет; повторный сброс ничего не шлёт
+    measure();
+    s.doc.dispatch("keydown", { key: "Shift" });
+    expect(lastRuler()).not.toBeNull();
+    const n = s.log.rulers.length;
+    s.ctrl.clearRuler();
+    s.ctrl.clearRuler();
+    expect(s.log.rulers).toHaveLength(n + 1);
+    expect(s.log.created).toHaveLength(0);
+  });
+
+  it("измеритель пальцем: касание — A, касание — B, измерение; сдвиг графика следующим пальцем его убирает и двигает график", () => {
+    const s = setup({ coarse: true });
+    s.ctrl.setTool("ruler");
+    s.finger.tap(...at(10, 120));
+    s.finger.tap(...at(30, 100));
+    expect(s.log.created).toHaveLength(0);
+    expect(s.log.rulers.at(-1)?.points).toHaveLength(2);
+    const g = s.finger.drag(...at(40, 110), ...at(60, 110));
+    expect(s.log.rulers.at(-1)).toBeNull();
+    // жест — графику (не остановлен)
+    expect(g.d.stopped).toBe(false);
+    expect(s.touchReachesChart("touchmove", 1)).toBe(true);
+  });
+
+  it("правка идёт, пока рисунок нажат (editing): мышью нажатие и выбирает, и тянет — конец правки (onEditEnd) после отпускания, отмены и щипка", () => {
+    const line: Drawing = { id: "L", type: "trend", points: [{ time: T0 + 60 * H, price: 150 }, { time: T0 + 80 * H, price: 160 }], style: DEFAULT_STYLE, locked: false, timeframe: null, updated_at: 0 };
+    const s = setup({ items: [line] });
+    // нажатие по невыбранному: выбор — уже при нажатии, правка идёт до отпускания (хозяин не двигает под ним шкалу)
+    s.mouse.down(...at(70, 155));
+    expect(s.log.selected).toEqual(["L"]);
+    expect(s.ctrl.editing).toBe(true);
+    s.mouse.move(...at(72, 150));
+    expect(s.ctrl.editing).toBe(true);
+    expect(s.log.editEnds).toBe(0);
+    s.mouse.up(...at(72, 150));
+    expect(s.ctrl.editing).toBe(false);
+    expect(s.log.editEnds).toBe(1);
+    expect(s.log.moves.at(-1)?.final).toBe(true);
+    // клик без сдвига — тоже конец правки
+    s.mouse.tap(...at(72, 150));
+    expect(s.log.editEnds).toBe(2);
+    // отмена жеста браузером
+    s.mouse.down(...at(72, 150));
+    s.mouse.cancel(...at(72, 150));
+    expect(s.ctrl.editing).toBe(false);
+    expect(s.log.editEnds).toBe(3);
+    // палец по выбранному: второй палец — щипок графика, правка прервана
+    const t = setup({ items: [line], coarse: true });
+    t.select("L");
+    const [hx, hy] = [xOf(T0 + 60 * H), yOf(150)];
+    t.finger.down(hx, hy);
+    t.finger.move(hx + 20, hy);
+    expect(t.ctrl.editing).toBe(true);
+    t.pointer("touch", 2).down(hx + 80, hy);
+    expect(t.ctrl.editing).toBe(false);
+    expect(t.log.editEnds).toBe(1);
+    // мимо рисунков и жест графика — не правка
+    const u = setup({ items: [line] });
+    u.mouse.down(...at(20, 100));
+    expect(u.ctrl.editing).toBe(false);
+    u.mouse.up(...at(20, 100));
+    expect(u.log.editEnds).toBe(0);
   });
 
   it("одноточечные (горизонтальная линия, заметка) готовы с первого нажатия — мышью и пальцем", () => {

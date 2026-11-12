@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { monoMeasurer } from "../layout/measure";
 import { VIEW } from "../presets";
 import { OverlayPrimitive } from "../render/OverlayPrimitive";
@@ -137,6 +137,29 @@ describe("OverlayPrimitive: кадр, шкала, автомасштаб", () =>
     prim.updateAllViews();
     await Promise.resolve();
     expect(calls).toBe(1);
+  });
+
+  it("полосы сменились вместе с масштабом (поле шкалы под карточку рисунка, жест) — onAxisChanged один раз, когда масштаб успокоится", () => {
+    vi.useFakeTimers();
+    try {
+      const { prim, env } = setup({ objects: [box] });
+      let calls = 0;
+      prim.onAxisChanged = () => calls++;
+      // три кадра подряд с новым масштабом (LWC перестраивает деления в том же кадре — бывает, по полосам прошлого)
+      for (const [top, bottom] of [[111, 89], [112, 88], [113, 87]] as const) {
+        env.priceState.top = top;
+        env.priceState.bottom = bottom;
+        prim.updateAllViews();
+      }
+      vi.advanceTimersByTime(100);
+      expect(calls).toBe(0);
+      vi.advanceTimersByTime(100);
+      expect(calls).toBe(1);
+      vi.advanceTimersByTime(1000);
+      expect(calls).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("автомасштаб включает только выбранный объект", () => {

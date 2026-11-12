@@ -80,14 +80,20 @@ export function positionStats(
 
 export type RulerInfo = { changePct: number; priceDiff: number; bars: number; seconds: number; atrMultiple: number | null };
 
-export function rulerInfo(p1: Point, p2: Point, tfSeconds: number, atr: number | null): RulerInfo {
+/**
+ * Измеритель (план 2A.5: «расстояние в %, в ATR, в свечах, во времени»). Разница цен и % — от первой точки ко второй,
+ * со знаком хода; свечи, время и ход в ATR — расстояние, без знака. Свечи — по свечам графика: barOf — номер свечи по
+ * времени (TimeProjector.timeToLogical: пропуск в данных — не свеча, правее последней — шагом таймфрейма), а не
+ * разница времени, делённая на таймфрейм; время — по часам. atr — ATR(14) на левой точке (null — его ещё нет).
+ */
+export function rulerInfo(p1: Point, p2: Point, barOf: (time: number) => number, atr: number | null): RulerInfo {
   const priceDiff = p2.price - p1.price;
   return {
     changePct: p1.price === 0 ? 0 : (priceDiff / p1.price) * 100,
     priceDiff,
-    bars: Math.round((p2.time - p1.time) / tfSeconds),
-    seconds: p2.time - p1.time,
-    atrMultiple: atr ? priceDiff / atr : null,
+    bars: Math.round(Math.abs(barOf(p2.time) - barOf(p1.time))),
+    seconds: Math.abs(p2.time - p1.time),
+    atrMultiple: atr !== null && atr > 0 ? Math.abs(priceDiff) / atr : null,
   };
 }
 

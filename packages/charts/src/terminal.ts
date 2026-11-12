@@ -22,7 +22,7 @@ import { LayerManager, type Layer, type LayerContext } from "./layers";
 import { INTERACTION, VIEW } from "./presets";
 import type { PanePlan } from "./controller/paneManager";
 import { PercentLinesPrimitive } from "./render/PercentLines";
-import { chartOptions, PRICE_MARGIN_TOP_MAX, PRICE_MARGINS, seriesColors } from "./theme";
+import { chartOptions, PRICE_CANDLES_MIN, PRICE_MARGIN_TOP_MAX, PRICE_MARGINS, seriesColors } from "./theme";
 import type { Candle, ChartType, ThemeTokens } from "./types";
 
 export type TerminalOptions = {
@@ -120,6 +120,8 @@ export class Terminal {
   private rightOffsetPx: number;
   /** Верхнее поле шкалы цены (доля панели): под легендой графика (setTopMargin). */
   private topMargin: number = PRICE_MARGINS.top;
+  /** Нижнее поле шкалы цены (доля панели, запрошенное): под карточкой выбранного рисунка (setBottomMargin). */
+  private bottomMargin: number = PRICE_MARGINS.bottom;
   private readonly container: HTMLElement;
 
   constructor(container: HTMLElement, opts: TerminalOptions) {
@@ -230,8 +232,26 @@ export class Terminal {
     return this.topMargin;
   }
 
+  /**
+   * Нижнее поле шкалы цены — доля основной панели (ADR-0009, «Рисование», дополнение 2026-11-12): карточка закрыла
+   * бы выбранный рисунок (раскрытые «уровни» Фибоначчи, «параметры» позиции на телефоне) — поле растёт, и рисунок над
+   * карточкой. Не меньше PRICE_MARGINS.bottom; свечам остаётся не меньше PRICE_CANDLES_MIN панели и при выросшем потом
+   * верхнем поле. У наложенного инструмента — то же.
+   */
+  setBottomMargin(share: number): void {
+    const bottom = Math.max(PRICE_MARGINS.bottom, Number.isFinite(share) ? share : PRICE_MARGINS.bottom);
+    if (Math.abs(bottom - this.bottomMargin) < TOP_MARGIN_EPS) return;
+    this.bottomMargin = bottom;
+    this.applyMargins();
+  }
+
+  /** Текущее нижнее поле шкалы цены (доля панели). */
+  get bottomMarginShare(): number {
+    return this.margins().bottom;
+  }
+
   private margins() {
-    return { top: this.topMargin, bottom: PRICE_MARGINS.bottom };
+    return { top: this.topMargin, bottom: Math.max(PRICE_MARGINS.bottom, Math.min(this.bottomMargin, 1 - this.topMargin - PRICE_CANDLES_MIN)) };
   }
 
   private applyMargins(): void {
@@ -257,7 +277,7 @@ export class Terminal {
   setTheme(tokens: ThemeTokens): void {
     this.tokens = tokens;
     this.chart.applyOptions(chartOptions(tokens, this.fontSize));
-    if (this.topMargin !== PRICE_MARGINS.top) this.applyMargins();
+    if (this.topMargin !== PRICE_MARGINS.top || this.bottomMargin !== PRICE_MARGINS.bottom) this.applyMargins();
     const c = seriesColors(tokens);
     if (this.type === "bars") this.main.applyOptions(c.bars);
     else if (this.type === "line") this.main.applyOptions(c.line);

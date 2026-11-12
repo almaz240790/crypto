@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { channelOffset, distToSegment, extend, fibLevels, hitTest, lineAt, magnetSnap, positionStats, rulerInfo, type Projector } from "../drawings/geometry";
 import { addDrawing, alive, canRedo, canUndo, clearDrawings, commitMove, createState, mergeRemote, redo, removeDrawing, resolve, toggleLock, undo, updateDrawing, visibleOn } from "../drawings/store";
+import { atrAt } from "../drawings/position";
 import { HANDLE_TOUCH_PX, UNDO_STEPS, pointsNeeded, type Drawing, type Point } from "../drawings/types";
 import { DrawingsPrimitive, formatDrawingPrice } from "../drawings/primitive";
 import { fibXs, handleRects } from "../drawings/labels";
@@ -205,10 +206,12 @@ describe("геометрия", () => {
     const sh = positionStats("short", 100, 105, 90, null);
     expect(sh.rr).toBe(2);
     expect(sh.size).toBeNull();
-    const r = rulerInfo({ time: 0, price: 100 }, { time: 14400 * 10, price: 110 }, 14400, 2);
+    const r = rulerInfo({ time: 0, price: 100 }, { time: 14400 * 10, price: 110 }, (t) => t / 14400, 2);
     expect(r.bars).toBe(10);
     expect(r.atrMultiple).toBe(5);
     expect(r.changePct).toBeCloseTo(10, 9);
+    // справа налево: знак — по ходу, свечи, время и ход в ATR — расстояние; ATR нет — хода в ATR нет
+    expect(rulerInfo({ time: 14400 * 10, price: 110 }, { time: 0, price: 99 }, (t) => t / 14400, null)).toEqual({ changePct: -10, priceDiff: -11, bars: 10, seconds: 144000, atrMultiple: null });
   });
 
   it("попадание: сначала хэндлы, потом тело; продление луча", () => {
@@ -411,7 +414,7 @@ describe("рисунок «на всех таймфреймах» с точка�
   });
 });
 
-describe("процент трендовой и измерителя у выбранного рисунка", () => {
+describe("процент трендовой у выбранного рисунка", () => {
   const candles = bars(60);
   /** Своя раскладка примитива (без разметки): подписи и их места, ручки — занятые места. */
   const layout = (drawing: Drawing, o: { selected?: boolean; draft?: boolean; touch?: boolean }) => {
@@ -428,23 +431,93 @@ describe("процент трендовой и измерителя у выбр�
   const down: Point[] = [{ time: T0 + 10 * H, price: 120 }, { time: T0 + 30 * H, price: 100 }];
   const up: Point[] = [{ time: T0 + 10 * H, price: 100 }, { time: T0 + 30 * H, price: 120 }];
 
-  for (const type of ["trend", "ruler"] as const)
-    for (const pts of [down, up])
+  for (const pts of [down, up])
+    for (const touch of [false, true])
+      it(`${pts === down ? "вниз" : "вверх"}, ${touch ? "палец" : "мышь"}: выбранная и начатая — с процентом рядом с точкой B, не под ручкой`, () => {
+        const dr = d("R", "trend", pts);
+        const free = layout(dr, {});
+        expect(free.pct, "без выбора").not.toBeNull();
+        for (const o of [{ selected: true, touch }, { draft: true, touch }]) {
+          const { pct, handles, b } = layout(dr, o);
+          expect(pct, JSON.stringify(o)).not.toBeNull();
+          for (const h of handles) expect(intersects(pct!, h.rect), `${JSON.stringify(o)}: подпись ${JSON.stringify(pct)} на ручке ${h.id}`).toBe(false);
+          // рядом с B: не дальше ручки и зазора по горизонтали, по вертикали — у самой линии
+          const dx = Math.min(Math.abs(pct!.x - b.x), Math.abs(pct!.x + pct!.w - b.x));
+          expect(dx, JSON.stringify(o)).toBeLessThanOrEqual(16);
+          expect(Math.min(Math.abs(pct!.y + pct!.h - b.y), Math.abs(pct!.y - b.y)), JSON.stringify(o)).toBeLessThanOrEqual(3);
+        }
+      });
+});
+
+describe("измеритель (план 2A.5): временный, подпись — Δ цены · % · свечи · время · ход в ATR(14)", () => {
+  // свечи 0…19 и 25…59: пять свечей пропуска (биржа стояла) — не свечи; последняя — незакрытая, с огромным ходом
+  const closed = [...bars(20), ...bars(35, 25)];
+  const live: Candle = { ...closed[closed.length - 1]!, time: T0 + 60 * H, high: 200, low: 10, open_: true };
+  const candles = [...closed, live];
+  const layout = (o: { drawings?: Drawing[]; draft?: Drawing | null; ruler?: Drawing | null; selectedId?: string | null; touch?: boolean }) => {
+    const env = makeEnv(() => candles, { top: 150, bottom: 70 });
+    const prim = new DrawingsPrimitive(TOKENS);
+    prim.attached({ chart: env.chart, series: env.series, requestUpdate: () => undefined } as never);
+    prim.projector!.setBars(candles.map((c) => c.time), H);
+    prim.candles = () => candles;
+    prim.update({ drawings: o.drawings ?? [], draft: o.draft ?? null, ruler: o.ruler ?? null, selectedId: o.selectedId ?? null, precision: 2, touch: o.touch ?? false });
+    const proj = prim.projector!.projector();
+    const c = canvas();
+    const { labels, placed } = prim.paintLabels(c.ctx as never, proj);
+    const handles = handleRects({ drawings: o.drawings ?? [], draft: o.draft ?? null, selectedId: o.selectedId ?? null, proj }, o.touch ?? false);
+    return { prim, proj, labels, placed, handles, c };
+  };
+  // A — свеча 15, B — 30 интервалов 4ч спустя, через пропуск: 25 свечей, 5 дней
+  const A: Point = { time: T0 + 15 * H, price: 100 };
+  const B: Point = { time: T0 + 45 * H, price: 95.5 };
+  const lines = (o: Parameters<typeof layout>[0], id = "R") => layout(o).labels.find((l) => l.id === `${id}#ruler`)?.lines ?? null;
+
+  it("Δ цены и % — от первой точки; свечи — по свечам графика (пропуск — не свеча); время — по часам; ход — в ATR(14) по закрытым свечам на левой точке", () => {
+    const k = (4.5 / atrAt(closed, A.time)!).toFixed(1);
+    const want = ["−4.50 · −4.50 %", `25 свечей · 5д · ${k} ATR`];
+    // временный, начатый и сохранённый раньше (рисунок старых версий) — одна подпись
+    expect(lines({ ruler: d("R", "ruler", [A, B]) })).toEqual(want);
+    expect(lines({ draft: d("R", "ruler", [A, B]) })).toEqual(want);
+    expect(lines({ drawings: [d("R", "ruler", [A, B])] })).toEqual(want);
+    // справа налево: знак — по ходу от первой точки, свечи, время и ход в ATR — расстояние
+    expect(lines({ ruler: d("R", "ruler", [B, A]) })).toEqual(["+4.50 · +4.71 %", `25 свечей · 5д · ${k} ATR`]);
+    // правее последней свечи — шагом таймфрейма; ATR — по закрытым: незакрытая свеча с ходом 190 его не раздувает
+    const far: Point[] = [{ time: live.time + 2 * H, price: 100 }, { time: live.time + 6 * H, price: 103 }];
+    const kFar = (3 / atrAt(closed, far[0]!.time)!).toFixed(1);
+    expect(Number(kFar)).toBeGreaterThan(0.5);
+    expect(lines({ ruler: d("R", "ruler", far) })).toEqual(["+3.00 · +3.00 %", `4 свечи · 16ч · ${kFar} ATR`]);
+    // одна свеча, часы и минуты; ATR ещё нет (меньше 14 закрытых свечей до левой точки) — без хода в ATR
+    expect(lines({ ruler: d("R", "ruler", [{ time: T0 + 2 * H, price: 100 }, { time: T0 + 3 * H, price: 100 }]) })).toEqual(["+0.00 · +0.00 %", "1 свеча · 4ч"]);
+  });
+
+  it("подпись — у точки B (за ней по ходу), в панели, не под ручками; у временного ручек нет; рисуется двумя строками", () => {
+    for (const pts of [[A, B], [B, A]])
       for (const touch of [false, true])
-        it(`${type}, ${pts === down ? "вниз" : "вверх"}, ${touch ? "палец" : "мышь"}: выбранный и начатый — с процентом рядом с точкой B, не под ручкой`, () => {
-          const dr = d("R", type, pts);
-          const free = layout(dr, {});
-          expect(free.pct, "без выбора").not.toBeNull();
-          for (const o of [{ selected: true, touch }, { draft: true, touch }]) {
-            const { pct, handles, b } = layout(dr, o);
-            expect(pct, JSON.stringify(o)).not.toBeNull();
-            for (const h of handles) expect(intersects(pct!, h.rect), `${JSON.stringify(o)}: подпись ${JSON.stringify(pct)} на ручке ${h.id}`).toBe(false);
-            // рядом с B: не дальше ручки и зазора по горизонтали, по вертикали — у самой линии
-            const dx = Math.min(Math.abs(pct!.x - b.x), Math.abs(pct!.x + pct!.w - b.x));
-            expect(dx, JSON.stringify(o)).toBeLessThanOrEqual(16);
-            expect(Math.min(Math.abs(pct!.y + pct!.h - b.y), Math.abs(pct!.y - b.y)), JSON.stringify(o)).toBeLessThanOrEqual(3);
-          }
-        });
+        for (const o of [{ ruler: d("R", "ruler", pts) }, { draft: d("R", "ruler", pts) }, { drawings: [d("R", "ruler", pts)], selectedId: "R" }]) {
+          const r = layout({ ...o, touch });
+          const tag = `${JSON.stringify(pts.map((p) => p.price))} ${touch ? "палец" : "мышь"} ${Object.keys(o).join("+")}`;
+          const rect = r.placed.get("R#ruler");
+          expect(rect, tag).toBeDefined();
+          for (const h of r.handles) expect(intersects(rect!, h.rect), `${tag}: подпись на ручке ${h.id}`).toBe(false);
+          expect(rect!.x, tag).toBeGreaterThanOrEqual(0);
+          expect(rect!.x + rect!.w, tag).toBeLessThanOrEqual(r.proj.width);
+          const ya = r.proj.y(pts[0]!.price)!, yb = r.proj.y(pts[1]!.price)!;
+          const xa = r.proj.x(pts[0]!.time)!, xb = r.proj.x(pts[1]!.time)!;
+          // по вертикали — за точкой B (вниз — под ней, вверх — над ней), рядом; по горизонтали — над измерением
+          if (yb > ya) expect(rect!.y - yb, tag).toBeGreaterThan(0);
+          else expect(yb - (rect!.y + rect!.h), tag).toBeGreaterThan(0);
+          expect(Math.min(Math.abs(rect!.y - yb), Math.abs(rect!.y + rect!.h - yb)), tag).toBeLessThanOrEqual(16);
+          expect(rect!.x < Math.max(xa, xb) && rect!.x + rect!.w > Math.min(xa, xb), tag).toBe(true);
+          if ("ruler" in o) expect(r.handles, tag).toEqual([]);
+        }
+    const r = layout({ ruler: d("R", "ruler", [A, B]) });
+    r.prim.paneViews()[0]!.renderer()!.draw({ useMediaCoordinateSpace: (cb: (s: unknown) => void) => cb({ context: r.c.ctx, mediaSize: { width: PANE_W, height: 400 } }) } as never);
+    const texts = r.c.texts.map((t) => t.text);
+    expect(texts).toContain("−4.50 · −4.50 %");
+    expect(texts.some((t) => t.startsWith("25 свечей · 5д · "))).toBe(true);
+    // линия A–B — нарисована
+    expect(r.c.strokes.some((st) => st.x0 === r.proj.x(A.time) && st.x1 === r.proj.x(B.time))).toBe(true);
+  });
 });
 
 describe("параллельный канал на любой шкале цены", () => {
