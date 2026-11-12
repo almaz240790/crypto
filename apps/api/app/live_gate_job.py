@@ -47,6 +47,9 @@ LIVE_GATE_HOUR_UTC = 2
 """Час UTC: после ежедневной сверки (01:00), чтобы отчёт взял её свежий итог."""
 LIVE_GATE_MAX_AGE = timedelta(days=8)
 """Отчёт старше — строится в любой день (понедельник пропущен: уведомитель лежал)."""
+LIVE_GATE_RETRY = timedelta(hours=12)
+"""Если отчёт по какой-то цели не построился, через столько весь набор строится заново — не
+ждать неделю (например, версию перевели в форвард после последнего закрытия H4)."""
 TARGET_TIMEOUT = 3600
 """Секунд на одну цель: бэктест 59 пар идёт десятки минут."""
 NICE = 10
@@ -120,10 +123,23 @@ def last_run_at(raw: bytes | str | None) -> datetime | None:
         return None
 
 
-def live_gate_due(now: datetime, last_at: datetime | None) -> bool:
+def has_errors(raw: bytes | str | None) -> bool:
+    """Есть ли в последнем наборе отчёт, который не построился."""
+    if not raw:
+        return False
+    try:
+        state = json.loads(raw)
+        return isinstance(state, dict) and any(r.get("error") for r in state.get("reports", []))
+    except (AttributeError, TypeError, ValueError):
+        return False
+
+
+def live_gate_due(now: datetime, last_at: datetime | None, errors: bool = False) -> bool:
     """Пора ли строить: отчёта нет; или понедельник после 02:00 UTC, а сегодня ещё не строили;
-    или отчёт старше 8 дней."""
+    или отчёт старше 8 дней; или какая-то цель не построилась, а прошло 12 часов."""
     if last_at is None or now - last_at > LIVE_GATE_MAX_AGE:
+        return True
+    if errors and now - last_at >= LIVE_GATE_RETRY:
         return True
     return (
         now.weekday() == LIVE_GATE_WEEKDAY

@@ -544,8 +544,9 @@ def system(user: User = Depends(ADMIN), db: Session = Depends(auth.get_db)) -> d
 @router.get("/live-gate")
 def live_gate(user: User = Depends(ADMIN)) -> dict[str, Any]:
     """Последний отчёт «готовность к live» (``app.live_gate_job``, задача 9 пакета «Сигналы»):
-    по каждой цели — сводка с критериями и Markdown целиком. Строит уведомитель раз в неделю;
-    отчёт ничего не решает — выпуск в live решает владелец."""
+    по каждой цели — сводка с критериями и Markdown целиком. Строит уведомитель раз в неделю,
+    цель, которая не построилась, — повтор через 12 часов. Отчёт ничего не решает: выпуск в live
+    решает владелец."""
     schedule = f"раз в неделю, в понедельник после {LIVE_GATE_HOUR_UTC:02d}:00 UTC"
     try:
         r = redis_sync.Redis.from_url(settings.redis_url, decode_responses=True)

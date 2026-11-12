@@ -45,6 +45,7 @@ from app.live_gate_job import (
     LIVE_GATE_KEY,
     build_all,
     gate_targets,
+    has_errors,
     last_run_at,
     live_gate_due,
     load_statuses,
@@ -351,7 +352,8 @@ class Notifier:
             ):
                 next_live_gate = time.monotonic() + RECONCILE_CHECK_EVERY
                 try:
-                    if live_gate_due(now, last_run_at(await self.redis.get(LIVE_GATE_KEY))):
+                    raw = await self.redis.get(LIVE_GATE_KEY)
+                    if live_gate_due(now, last_run_at(raw), has_errors(raw)):
                         # в фоне: отчёт идёт отдельным процессом десятки минут
                         live_gate_task = asyncio.create_task(live_gate_once(self.redis, now))
                         live_gate_task.add_done_callback(_live_gate_done)

@@ -18,6 +18,7 @@ from app.live_gate_job import (
     GateTarget,
     build_all,
     gate_targets,
+    has_errors,
     last_run_at,
     live_gate_due,
     summary_line,
@@ -61,6 +62,15 @@ def test_schedule_is_weekly_with_catch_up() -> None:
     assert not live_gate_due(tuesday, MONDAY.replace(hour=2))
     # понедельник пропущен (уведомитель лежал) — догоняем в любой день
     assert live_gate_due(MONDAY + timedelta(days=2), MONDAY - timedelta(days=7))
+    # какая-то цель не построилась — повтор через 12 часов, а не через неделю
+    built = MONDAY.replace(hour=2, minute=5)
+    assert not live_gate_due(built + timedelta(hours=11), built, errors=True)
+    assert live_gate_due(built + timedelta(hours=12), built, errors=True)
+    assert not live_gate_due(built + timedelta(hours=12), built)
+    broken = json.dumps({"at": MONDAY.isoformat(), "reports": [{"title": "t", "error": "код 2"}]})
+    assert has_errors(broken) and has_errors(broken.encode())
+    for raw in (None, "", ok, "не json", "[]", json.dumps({"failed": "x"})):
+        assert not has_errors(raw), raw
 
 
 def _arg(args: Sequence[str], name: str) -> str:
