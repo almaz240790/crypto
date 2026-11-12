@@ -171,7 +171,8 @@ export async function mock(page: Page, calls: string[], authed = false, server: 
         }
         const iu = it.updated_at as number;
         const su = (cur?.updated_at as number | undefined) ?? -1;
-        if (!cur || iu > su || (iu === su && it.deleted_at)) {
+        // та же удалённая версия ещё раз — без записи (курсор её заново не отдаёт)
+        if (!cur || iu > su || (iu === su && it.deleted_at && !cur.deleted_at)) {
           const row = { ...it, symbol, __seq: seq() + 1 };
           if (i >= 0) server.drawings[i] = row;
           else server.drawings.push(row);

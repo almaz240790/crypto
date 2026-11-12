@@ -56,6 +56,16 @@ const priceY = (page: Page, price: number) =>
     return el.getBoundingClientRect().top + el.__chart.panes()[0]!.getSeries()[0]!.priceToCoordinate(price)!;
   }, price);
 
+/** Призрак копии от прежней сборки: копия на ETHUSDT, а её id — и в памяти и очереди BTCUSDT. */
+const GHOST = { client_id: "d_ghostcopy1", symbol: "ETHUSDT", timeframe: null, type: "hline", points: [{ time: 1_792_000_000, price: 2600 }], style: { color: "text2", width: 1, dashed: false }, text: null, levels: null, locked: false, updated_at: 1_000, deleted_at: null };
+const seedGhost = (page: Page) =>
+  page.addInitScript((g) => {
+    if (sessionStorage.getItem("seeded")) return;
+    sessionStorage.setItem("seeded", "1");
+    localStorage.setItem("pl-drawings:BTCUSDT", JSON.stringify([{ id: g.client_id, type: g.type, points: g.points, style: g.style, locked: false, timeframe: null, updated_at: g.updated_at, deleted_at: null }]));
+    localStorage.setItem("pl-drawings-queue", JSON.stringify([{ ...g, symbol: "BTCUSDT" }]));
+  }, GHOST);
+
 test.describe("синхронизация рисунков с входом", () => {
   test("отмена правки уровней Фибоначчи и отмена его создания доходят до сервера: после ответа и перезагрузки — как после отмены", async ({ page }) => {
     const server: MockServer = { drawings: [], layout: null };
@@ -196,21 +206,78 @@ test.describe("синхронизация рисунков с входом", () 
   });
 
   test("призрак копии, оставленный прежней сборкой, убирается с исходного графика; копия на целевом не трогается", async ({ page }) => {
-    const ghost = { client_id: "d_ghostcopy1", symbol: "ETHUSDT", timeframe: null, type: "hline", points: [{ time: 1_792_000_000, price: 2600 }], style: { color: "text2", width: 1, dashed: false }, text: null, levels: null, locked: false, updated_at: 1_000, deleted_at: null };
-    const server: MockServer = { drawings: [{ ...ghost, __seq: 1 }], layout: null };
-    await page.addInitScript((g) => {
-      if (sessionStorage.getItem("seeded")) return;
-      sessionStorage.setItem("seeded", "1");
-      localStorage.setItem("pl-drawings:BTCUSDT", JSON.stringify([{ id: g.client_id, type: g.type, points: g.points, style: g.style, locked: false, timeframe: null, updated_at: g.updated_at, deleted_at: null }]));
-      localStorage.setItem("pl-drawings-queue", JSON.stringify([{ ...g, symbol: "BTCUSDT" }]));
-    }, ghost);
+    const server: MockServer = { drawings: [{ ...GHOST, __seq: 1 }], layout: null };
+    await seedGhost(page);
     await open(page, server);
     await expect(count(page)).toHaveText("рисунков: 0");
     await settled(page);
     expect(await local(page)).toEqual([]);
-    expect(rows(server, "ETHUSDT")).toMatchObject([{ client_id: ghost.client_id, updated_at: 1_000, deleted_at: null }]);
+    expect(rows(server, "ETHUSDT")).toMatchObject([{ client_id: GHOST.client_id, updated_at: 1_000, deleted_at: null }]);
     await page.reload();
     await expect(count(page)).toHaveText("рисунков: 0");
+  });
+
+  test("убранный призрак не возвращается отменой: его нет и в истории шагов", async ({ page }) => {
+    const server: MockServer = { drawings: [{ ...GHOST, __seq: 1 }], layout: null };
+    await seedGhost(page);
+    await mock(page, [], true, server);
+    // ответ на отправку очереди задержан: линия нарисована, пока призрак ещё на графике (он попадает в шаг отмены)
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const sent: string[][] = [];
+    await page.route("**/v1/drawings", async (r) => {
+      if (r.request().method() !== "PUT") return r.fallback();
+      sent.push((r.request().postDataJSON() as Row[]).map((d) => d.client_id));
+      await gate;
+      return r.fallback();
+    });
+    await page.goto("/chart/BTCUSDT/4h");
+    const term = page.getByTestId("terminal");
+    await expect(term.locator("canvas").first()).toBeVisible();
+    await expect(count(page)).toHaveText("рисунков: 1");
+    await expect.poll(() => sent.length, { timeout: 10000 }).toBeGreaterThan(0);
+    const b = (await term.boundingBox())!;
+    await hline(page, b.x + b.width * 0.4, b.y + b.height * 0.5);
+    await expect(count(page)).toHaveText("рисунков: 2");
+    // и линия ушла в очередь второй отправкой — тоже задержанной
+    await expect.poll(() => sent.length, { timeout: 10000 }).toBe(2);
+    release();
+    await settled(page);
+    await expect(count(page)).toHaveText("рисунков: 1");
+    // отмена линии: призрак не оживает и снова на сервер не уходит
+    const before = sent.length;
+    await page.keyboard.press("Control+z");
+    await expect(count(page)).toHaveText("рисунков: 0");
+    await settled(page);
+    expect(sent.slice(before).flat()).not.toContain(GHOST.client_id);
+    expect(await local(page)).toEqual([]);
+  });
+
+  test("рисунок, нарисованный, пока шла отправка предыдущего, уходит на сервер следом: ответ не отменяет отправку", async ({ page }) => {
+    const server: MockServer = { drawings: [], layout: null };
+    await mock(page, [], true, server);
+    // ответ на первую отправку задержан: вторая линия нарисована, пока запрос идёт
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let puts = 0;
+    await page.route("**/v1/drawings", async (r) => {
+      if (r.request().method() !== "PUT") return r.fallback();
+      if (++puts === 1) await gate;
+      return r.fallback();
+    });
+    await page.goto("/chart/BTCUSDT/4h");
+    const term = page.getByTestId("terminal");
+    await expect(term.locator("canvas").first()).toBeVisible();
+    const b = (await term.boundingBox())!;
+    await hline(page, b.x + b.width * 0.4, b.y + b.height * 0.4);
+    await expect.poll(() => puts, { timeout: 10000 }).toBe(1);
+    await page.keyboard.press("Escape");
+    await hline(page, b.x + b.width * 0.4, b.y + b.height * 0.6);
+    await expect(count(page)).toHaveText("рисунков: 2");
+    // ответ про первую линию приходит раньше, чем истекла задержка отправки второй
+    release();
+    await expect.poll(() => alive(server).length, { timeout: 10000 }).toBe(2);
+    await settled(page);
   });
 
   test("рисунок, нарисованный офлайн раньше прочитанных, приходит на другое устройство: курсор чтения — серверный", async ({ page, browser }) => {

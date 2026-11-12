@@ -149,7 +149,10 @@ export function useDrawings(symbol: string, authed: boolean, onFibLevels?: (leve
         if (x.symbol === open) purge.add(x.client_id);
         else dropStored(x.symbol, new Set([x.client_id]));
       }
-      if (remote.length || purge.size) setState((s) => mergeRemote({ ...s, items: s.items.filter((d) => !purge.has(d.id)) }, remote));
+      // призрак убирается и из истории шагов: отмена его не возвращает
+      const drop = (list: Drawing[]) => list.filter((d) => !purge.has(d.id));
+      const clean = (s: DrawingsState) => (purge.size ? { ...s, items: drop(s.items), past: s.past.map(drop), future: s.future.map(drop) } : s);
+      if (remote.length || purge.size) setState((s) => mergeRemote(clean(s), remote));
       // остальные отказы постоянны (лимит тарифа, негодный рисунок): рисунок остаётся только на устройстве
       const limited = rejected.filter((x) => x.code === "limit");
       const invalid = rejected.filter((x) => x.code !== "limit" && x.code !== "other_symbol");
@@ -160,6 +163,14 @@ export function useDrawings(symbol: string, authed: boolean, onFibLevels?: (leve
       setSync("queued");
     }
   }, [authed]);
+  // отложенная отправка очереди — таймер в ref: его переставляет только новая правка. Ответ синхронизации и другие
+  // изменения без правок его не сбрасывают — иначе рисунок, сделанный, пока шёл запрос, ждал бы следующего повода.
+  const flushRef = useRef(flush);
+  useEffect(() => {
+    flushRef.current = flush;
+  }, [flush]);
+  const flushTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(flushTimer.current), []);
 
   // загрузка: локально сразу, затем слияние с сервером
   useEffect(() => {
@@ -225,9 +236,9 @@ export function useDrawings(symbol: string, authed: boolean, onFibLevels?: (leve
     if (changed.length === 0) return;
     queueAdd(changed.map((d) => toWire(d, symbol)));
     setSync("queued");
-    const t = setTimeout(() => void flush(), 600);
-    return () => clearTimeout(t);
-  }, [state.items, symbol, authed, flush]);
+    clearTimeout(flushTimer.current);
+    flushTimer.current = setTimeout(() => void flushRef.current(), 600);
+  }, [state.items, symbol, authed]);
 
   useEffect(() => {
     if (!authed) return;
