@@ -343,3 +343,58 @@ test("биржа недоступна: уход на «Скринер» и во�
     server.dispose();
   }
 });
+
+/** Вкладка скрыта или видна (visibilitychange): браузер теста сам вкладку не прячет. */
+const setVisibility = (page: Page, st: "hidden" | "visible") =>
+  page.evaluate((st) => {
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => st });
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => st === "hidden" });
+    document.dispatchEvent(new Event("visibilitychange"));
+  }, st);
+
+test("фон дольше 30 с (план 2A.7): сокеты биржи и сервера закрыты, в фоне не переподключаются; возврат — снова биржа и сервер, история догружается", async ({ page }) => {
+  const calls: string[] = [];
+  const history = () => calls.filter((c) => c.startsWith("/v1/chart/candles") && !c.includes("before=")).length;
+  // часы страницы — подменяемые: фон в 30 с без ожидания
+  await page.clock.install();
+  await mock(page, calls);
+  const now = fixtureClock();
+  const server = await liveSocket(page, { at: () => now(1), price: () => RICH_C0 - 40 });
+  const bn = await binanceSocket(page, { at: () => now(), price: (k) => RICH_C0 + 10 + k * 0.1 });
+  try {
+    await page.goto("/chart/BTCUSDT/4h");
+    await expect(state(page).locator(BINANCE_TITLE)).toHaveCount(1);
+    await expect.poll(() => server.subs.length).toBe(1);
+    expect(bn.openCount()).toBe(1);
+    const loaded = history();
+    // скрыта меньше 30 с — соединения те же
+    await setVisibility(page, "hidden");
+    await page.clock.fastForward(20_000);
+    await page.waitForTimeout(500);
+    expect(bn.openCount()).toBe(1);
+    expect(server.sockets).toHaveLength(1);
+    // 30 с в фоне — оба сокета закрыты: ни сделок биржи, ни тиков сервера
+    await page.clock.fastForward(15_000);
+    await expect.poll(() => bn.openCount()).toBe(0);
+    await page.waitForTimeout(500);
+    const sent = server.state.sent;
+    await page.waitForTimeout(1000);
+    expect(server.state.sent).toBe(sent);
+    // в фоне — без новых попыток
+    await page.clock.fastForward(120_000);
+    await page.waitForTimeout(500);
+    expect(bn.sockets).toHaveLength(1);
+    expect(server.sockets).toHaveLength(1);
+    expect(history()).toBe(loaded);
+    // возврат: биржа и сервер снова, свежая история — по открытию нового сокета сервера
+    await setVisibility(page, "visible");
+    await expect.poll(() => bn.openCount()).toBe(1);
+    await expect.poll(() => server.sockets.length).toBe(2);
+    await expect(state(page).locator(BINANCE_TITLE)).toHaveCount(1);
+    await expect(state(page)).toContainText("онлайн");
+    await expect.poll(() => history()).toBe(loaded + 1);
+  } finally {
+    bn.dispose();
+    server.dispose();
+  }
+});

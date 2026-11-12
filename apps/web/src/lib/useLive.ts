@@ -18,6 +18,9 @@
  *   подключается уже.
  * Пока сокет, сменивший прежний, открывается (resyncPending), другие поводы догона (просрочка) ждут: его открытие —
  * один догон по reconnect, а не два.
+ * Вкладка скрыта дольше BACKGROUND_MS — сокет закрывается сам и в фоне не переподключается (план 2A.7, «фон —
+ * отключение сокета через 30 с»); при возврате — новый сокет сразу и один догон по его открытию (reconnect), как
+ * после полуоткрытого; сокет до фона ни разу не открывался — ещё и история сразу (wake).
  * Без анимаций — просто новые числа.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -66,6 +69,11 @@ export const RETRY_MS = 3000;
 export const RETRY_JITTER_MS = 2000;
 /** Сколько ждать открытия сокета, сменившего прежний, прежде чем догонять другими поводами (сети нет — не ждём). */
 export const RECONNECT_WAIT_MS = 10_000;
+/**
+ * Вкладка скрыта дольше — живые сокеты (сервера и биржи) закрываются до возврата (план 2A.7: «фон — отключение
+ * сокета через 30 с»): скрытая вкладка не тратит трафик и батарею на цены, которых никто не видит.
+ */
+export const BACKGROUND_MS = 30_000;
 
 /** Цена b не старше a: закрытая минута (`price`) приходит позже тиков и не должна откатывать цену. */
 export function isNewer(a: LivePrice | undefined, b: LivePrice): boolean {
@@ -176,6 +184,10 @@ export class LiveSocket {
   private stopped = false;
   private retry: ReturnType<typeof setTimeout> | undefined;
   private watch: ReturnType<typeof setInterval> | undefined;
+  /** Таймер фона: вкладка скрыта BACKGROUND_MS — сокет закрыть (sleep). */
+  private background: ReturnType<typeof setTimeout> | undefined;
+  /** Сокет закрыт фоном: до возврата вкладки не подключаемся. */
+  private asleep = false;
   private lastMsg = -Infinity;
   private lastTick = -Infinity;
   private pingAt: number | null = null;
@@ -207,6 +219,7 @@ export class LiveSocket {
     this.stopped = true;
     if (this.retry) clearTimeout(this.retry);
     if (this.watch) clearInterval(this.watch);
+    clearTimeout(this.background);
     this.doc?.removeEventListener("visibilitychange", this.onVisibility);
     this.win?.removeEventListener("pageshow", this.onPageShow as EventListener);
     this.win?.removeEventListener("online", this.onOnline);
@@ -216,10 +229,19 @@ export class LiveSocket {
   /**
    * Вкладка снова видна, страница из кэша, сеть вернулась: сокет открыт и свеж — ничего; открыт, но молчит дольше
    * ONLINE_MS (телефон спал, iOS держит «открытым» мёртвый сокет) — новый сокет сразу (его открытие — onReconnect);
-   * не открыт — история сразу (onWake) и новый сокет, если он не подключается уже.
+   * не открыт — история сразу (onWake) и новый сокет, если он не подключается уже. Сокет закрыт фоном (sleep) — новый
+   * сразу, история — по его открытию (onReconnect), а если сокет до фона не открывался ни разу — ещё и сразу (onWake);
+   * пока вкладка скрыта — ничего (online в фоне не будит).
    */
   wake(): void {
     if (this.stopped) return;
+    if (this.asleep) {
+      if (this.doc?.visibilityState === "hidden") return;
+      this.asleep = false;
+      if (this.opened === 0) this.opts.onWake?.();
+      this.reconnectNow();
+      return;
+    }
     const ws = this.ws;
     if (ws && ws.readyState === 1) {
       if (Date.now() - this.lastMsg > ONLINE_MS) this.reconnectNow();
@@ -254,7 +276,7 @@ export class LiveSocket {
     if (this.stopped) return;
     this.dialAt ??= Date.now();
     const url = await this.opts.url();
-    if (this.stopped || this.ws) return;
+    if (this.stopped || this.ws || this.asleep) return;
     const ws = new this.WS(url);
     this.ws = ws;
     this.lastMsg = Date.now();
@@ -338,8 +360,31 @@ export class LiveSocket {
     }
   }
 
+  /**
+   * Вкладка скрыта BACKGROUND_MS (план 2A.7): сокет закрывается без переподключения — отказом и обрывом это не считается,
+   * «онлайн» гаснет; новый — при возврате (wake).
+   */
+  private sleep(): void {
+    this.background = undefined;
+    if (this.stopped || this.doc?.visibilityState !== "hidden") return;
+    this.asleep = true;
+    if (this.retry) clearTimeout(this.retry);
+    this.retry = undefined;
+    this.dialAt = null;
+    const had = this.ws !== null;
+    this.detach();
+    if (had) this.lost();
+  }
+
   private readonly onVisibility = (): void => {
-    if (this.doc?.visibilityState === "visible") this.wake();
+    const st = this.doc?.visibilityState;
+    if (st === "hidden") {
+      this.background ??= setTimeout(() => this.sleep(), BACKGROUND_MS);
+      return;
+    }
+    clearTimeout(this.background);
+    this.background = undefined;
+    if (st === "visible") this.wake();
   };
 
   private readonly onPageShow = (e: PageTransitionEvent): void => {

@@ -23,7 +23,7 @@ import {
   WATCH_MS,
   type BinanceListener,
 } from "./binanceFeed";
-import type { LiveCandle, LiveTick } from "./useLive";
+import { BACKGROUND_MS, type LiveCandle, type LiveTick } from "./useLive";
 
 /** Прямой поток Binance в браузере (ADR-0010, дополнение): одно соединение, подписки сообщениями, свежесть, паузы. */
 
@@ -819,6 +819,40 @@ describe("пауза: возврат вкладки, сеть, уход со с�
     ev.show();
     expect(FakeWS.all).toHaveLength(2);
     // закрытие в скрытой вкладке паузу не нарастило: отказ после возврата — первый (5 с)
+    last().error();
+    expect(Math.round((await waitDial(RETRY_MAX_MS)) / 1000) * 1000).toBe(RETRY_MIN_MS);
+    f.dispose();
+  });
+
+  it("фон дольше BACKGROUND_MS — соединение закрывается (план 2A.7), отказом не считается; скрыта меньше — то же соединение; возврат — новое сразу", async () => {
+    const ev = targets();
+    const f = feed({ doc: ev.doc, win: ev.win });
+    const l = listener();
+    f.subscribe("BTCUSDT", l);
+    await vi.advanceTimersByTimeAsync(BATCH_MS);
+    const ws = last();
+    FakeWS.answer = true; // проверки в тишине отвечены — соединение живо
+    ws.open();
+    ws.kline("BTCUSDT");
+    expect(l.log.fresh.at(-1)).toBe(true);
+    ev.hide();
+    await vi.advanceTimersByTimeAsync(BACKGROUND_MS - 5000);
+    ev.show();
+    ev.hide();
+    await vi.advanceTimersByTimeAsync(BACKGROUND_MS - 1000);
+    expect(ws.closed).toBe(false);
+    expect(FakeWS.all).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(ws.closed).toBe(true);
+    expect(l.log.fresh.at(-1)).toBe(false); // цена — с сервера
+    // в фоне — без попыток, и online их не будит
+    await vi.advanceTimersByTimeAsync(RETRY_MAX_MS * 3);
+    ev.online();
+    expect(FakeWS.all).toHaveLength(1);
+    ev.show();
+    expect(FakeWS.all).toHaveLength(2);
+    // закрытие в фоне паузу не нарастило: отказ после возврата — первый (5 с)
+    FakeWS.answer = false;
     last().error();
     expect(Math.round((await waitDial(RETRY_MAX_MS)) / 1000) * 1000).toBe(RETRY_MIN_MS);
     f.dispose();
