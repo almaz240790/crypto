@@ -59,6 +59,12 @@ export interface ProjectOptions {
    */
   external?: readonly LabelCandidate[];
   externalKey?: string;
+  /**
+   * Видимые свечи, как их рисует основная серия, если они не те, что visibleCandles (Heikin Ashi; то же число и
+   * время): значки разметки встают у их хвостов, колонки-препятствия подписей — по ним. Профиль объёма и цена —
+   * по visibleCandles. Без поля — visibleCandles.
+   */
+  shown?: readonly Candle[];
 }
 
 export type ScreenGeom =
@@ -128,7 +134,15 @@ export function screenFrameKey(scene: Scene, proj: SceneProjector, visibleCandle
     r2(opts.overlayY),
     opts.profileKey ?? "",
     opts.plaque ? `${opts.plaque.price}:${opts.plaque.live ? 1 : 0}` : "",
+    shownKey(opts.shown),
   ].join("|");
+}
+
+/** Нарисованные свечи в ключе кадра: смена типа графика и последняя HA-свеча (её high/low зависят от прошлых). */
+function shownKey(shown: readonly Candle[] | undefined): string {
+  if (!shown) return "";
+  const last = shown[shown.length - 1];
+  return last ? `ha:${last.time}:${last.high}:${last.low}` : "ha";
 }
 
 /** Свободная зона справа от последней свечи и полоса под карту ликвидаций / профиль. */
@@ -379,12 +393,14 @@ export function projectScene(scene: Scene, proj: SceneProjector, visibleCandles:
   const { free, gutter } = freeAndGutter(proj, view);
   const viewport: Viewport = { width: proj.width, height: proj.height, insetTop: view.insetTopPx, volumeTopY: view.volumeTop * proj.height, free, gutter };
   const shared = scene.objects.some((o) => o.kind === "profile" && o.emphasis === "dimmed") && scene.objects.some((o) => o.kind === "heat");
+  // значки и препятствия — у свечей, как они нарисованы (Heikin Ashi), профиль — по настоящим
+  const drawn = opts.shown ?? visibleCandles;
   const c: Ctx = {
     proj,
     vp: viewport,
     opts,
-    candleAt: new Map(visibleCandles.map((x) => [x.time, x])),
-    candles: visibleCandles,
+    candleAt: new Map(drawn.map((x) => [x.time, x])),
+    candles: drawn,
     gutterBusy: false,
     gutterShared: shared,
     profile: (obj) => opts.profileRows?.(obj) ?? volumeProfile(visibleCandles, obj.rows, obj.valueArea),
@@ -442,7 +458,7 @@ export function projectScene(scene: Scene, proj: SceneProjector, visibleCandles:
     rects.push({ rect: { x, y: yLast - view.axisLabelPx / 2, w: Math.max(0, proj.width - x), h: view.axisLabelPx }, kind: "lastPrice" });
   }
   for (const r of opts.ui ?? []) rects.push({ rect: r, kind: "ui" });
-  const obstacles: Obstacles = { candles: candleBand(proj, visibleCandles), rects };
+  const obstacles: Obstacles = { candles: candleBand(proj, drawn), rects };
   const labels = layoutLabels(opts.external?.length ? [...cands, ...opts.external] : cands, obstacles, viewport, view.labels);
   // шкала
   const axisCands: AxisCandidate[] = [];

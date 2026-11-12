@@ -7,12 +7,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.billing import plan_for
-from app.models import Instrument, User, Watchlist, WatchlistItem
+from app.models import Instrument, Signal, User, Watchlist, WatchlistItem
 from app.plans import FREE, PREMIUM, PRO
 
 FREE_BASE_SYMBOLS = ("BTCUSDT", "ETHUSDT")
@@ -103,6 +104,21 @@ def allowed_instrument_ids(db: Session, user: User | None, ent: Entitlements) ->
             ).all()
         )
     return sorted(ids)
+
+
+def apply_signal_entitlements(
+    q: Any, ent: Entitlements, allowed_ids: list[int] | None, now: datetime
+) -> Any:
+    """Ограничения тарифа на выборку сигналов: градации, задержка, инструменты. Одни и те же для
+    ленты и слоя сигналов графика: что не видно в ленте, не видно и на графике."""
+    if ent.signal_grades is not None:
+        q = q.where(Signal.grade.in_(list(ent.signal_grades)))
+    vs = visible_since(ent, now)
+    if vs is not None:
+        q = q.where(Signal.candle_close_time <= vs)
+    if allowed_ids is not None:
+        q = q.where(Signal.instrument_id.in_(allowed_ids))
+    return q
 
 
 def restrictions_dict(ent: Entitlements) -> dict[str, object]:

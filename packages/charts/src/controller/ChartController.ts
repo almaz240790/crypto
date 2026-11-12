@@ -199,6 +199,7 @@ export class ChartController {
       tfSeconds: () => TF_SECONDS[this.inputs.tf],
       overlayY: () => this.terminal.overlayLastCoordinate(),
       displayed: (time) => this.terminal.displayedBar(time),
+      shownCandles: () => this.terminal.displayedCandles,
       hitGate: (x, y) => this.hitGate?.(x, y) ?? true,
       coarse: this.coarse,
     });

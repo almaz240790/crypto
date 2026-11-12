@@ -73,6 +73,11 @@ export interface OverlayOptions {
    * закрытии, и плашка с отсчётом считается от неё. null и без функции — свеча буфера.
    */
   displayed?: (time: number) => { open: number; close: number } | null;
+  /**
+   * Свечи, как их рисует основная серия (Heikin Ashi; то же число и время, что у буфера): значки разметки и
+   * препятствия подписей — у них. null и без функции — свечи буфера.
+   */
+  shownCandles?: () => readonly Candle[] | null;
   /** y последнего значения наложенного инструмента — его метку на шкале не перекрываем. */
   overlayY?: () => number | null;
   /** false — наведение и клик по объектам выключены (инструмент рисования, рисунок под курсором). */
@@ -300,6 +305,9 @@ export class OverlayPrimitive implements ISeriesPrimitive<Time> {
     const drawn = bar ? (this.opts.displayed?.(bar.time) ?? bar) : null;
     const profile = this.profileFor(scene, proj.visible, r, last, moving);
     const external = this.external?.(this.measure) ?? [];
+    // свечи, как они нарисованы (Heikin Ashi): видимые — тем же срезом, что proj.visible
+    const drawnAll = this.opts.shownCandles?.() ?? null;
+    const drawnVisible = drawnAll && drawnAll.length === candles.length ? drawnAll.slice(proj.visibleFrom, proj.visibleFrom + proj.visible.length) : null;
     const opts = {
       view: this.view,
       theme: this.theme,
@@ -313,6 +321,7 @@ export class OverlayPrimitive implements ISeriesPrimitive<Time> {
       gesture,
       ...profile,
       ...(external.length ? { external, externalKey: externalKey(external) } : {}),
+      ...(drawnVisible ? { shown: drawnVisible } : {}),
     };
     const key = screenFrameKey(scene, proj, proj.visible, opts);
     if (this.screen && this.screen.frameKey === key) return;

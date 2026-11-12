@@ -34,6 +34,8 @@ export interface FrameProjector extends SceneProjector {
   firstIndex: number;
   /** Видимые свечи буфера (по видимому логическому диапазону). */
   visible: readonly Candle[];
+  /** Индекс первой видимой свечи в буфере. */
+  visibleFrom: number;
 }
 
 type ChartLike = Pick<IChartApiBase<Time>, "timeScale" | "paneSize">;
@@ -50,14 +52,17 @@ export function frameProjector(chart: ChartLike, series: SeriesLike, candles: re
   const x1 = lx(firstIndex + 1);
   const spacing = x0 !== null && x1 !== null ? x1 - x0 : 6;
   let visible: readonly Candle[] = [];
+  let visibleFrom = 0;
   if (r && n > 0) {
     const i0 = Math.max(0, Math.floor(r.from) - firstIndex);
     const i1 = Math.min(n - 1, Math.ceil(r.to) - firstIndex);
     visible = i1 >= i0 ? candles.slice(i0, i1 + 1) : [];
+    visibleFrom = i0;
   }
   return {
     firstIndex,
     visible,
+    visibleFrom,
     width: ts.width(),
     height: chart.paneSize(0).height,
     x: (time) => lx(firstIndex + timeToIndex(candles, time, step)),

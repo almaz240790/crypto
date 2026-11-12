@@ -5,6 +5,8 @@ import { barsForWidth, VIEW, type MarkupSettings } from "../presets";
 import { RU_TEXT } from "../scene/text";
 import { createChartStore } from "../store/chartStore";
 import type { Terminal } from "../terminal";
+import { heikinAshi } from "../heikin";
+import { deriveAnalytics } from "../scene/input";
 import type { Candle } from "../types";
 import { bars, FakeTerminal, fakeElement, H, makeTheme, T0 } from "./fakes/lwc";
 import { loadFixture } from "./fixtures/scene/load";
@@ -366,6 +368,46 @@ describe("ChartController: стадии сцены", () => {
     for (const k of keys) if (k !== "price" && k !== "selection") expect(onScreen.has(k), k).toBe(true);
     const last = fx.candles.at(-1)!;
     expect(store.getState().legend.find((l) => l.key === "price")?.tone).toBe(last.close >= last.open ? "up" : "down");
+  });
+
+  it("Heikin Ashi: значки разметки и препятствия подписей — у нарисованных HA-свечей, аналитика — по обычным (OVL-6)", () => {
+    const { ctrl, term, flush } = setup({ candles: fx.candles });
+    const raw = fx.candles;
+    const ha = heikinAshi(raw);
+    const n = raw.length;
+    term.env.chart.state.range = { from: n - 120, to: n - 1 };
+    const tail = ha.slice(n - 120);
+    term.env.priceState.top = Math.max(...tail.map((c) => c.high)) * 1.01;
+    term.env.priceState.bottom = Math.min(...tail.map((c) => c.low)) * 0.99;
+    // свеча, у которой HA-максимум выше обычного сильнее всего (после резкого движения)
+    let k = n - 120;
+    for (let i = n - 120; i < n; i++) if (ha[i]!.high - raw[i]!.high > ha[k]!.high - raw[k]!.high) k = i;
+    expect(ha[k]!.high - raw[k]!.high).toBeGreaterThan(0);
+    term.shown = ha;
+    ctrl.set({
+      text: RU_TEXT,
+      tf: "4h",
+      structure: fx.structure,
+      patterns: [{ id: 1, type: "engulfing", title: "Поглощение", direction: "down", significant: true, t: raw[k]!.time, price: String(raw[k]!.high) }],
+      markup: { preset: "clean", overrides: { patterns: true } },
+    });
+    flush();
+    ctrl.overlay.updateAllViews();
+    const y = (p: number) => term.env.series.priceToCoordinate(p);
+    const glyph = ctrl.overlay.debug().objects.find((o) => o.id === "pat:1")!.rect!;
+    // «▼ над максимумом» — над нарисованной HA-свечой, а не внутри её тела
+    expect(glyph.y + glyph.h).toBeLessThanOrEqual(y(ha[k]!.high));
+    // колонки свечей (препятствия подписей) — по HA-максимумам и минимумам
+    const cols = ctrl.overlay.debug().candles;
+    const i = k - (n - 120);
+    expect(cols[i]!.y).toBeCloseTo(y(ha[k]!.high), 3);
+    expect(cols[i]!.y + cols[i]!.h).toBeCloseTo(y(ha[k]!.low), 3);
+    // аналитика — по обычным закрытым свечам: уровни и расстояния «Найдено» — как без Heikin Ashi
+    const sr = ctrl.currentScene!.index.levels.filter((l) => l.layer === "sr");
+    const want = deriveAnalytics(raw, null, fx.structure).sr;
+    expect(sr.map((l) => l.price).sort()).toEqual(want.map((l) => l.price).sort());
+    const top = sr[0]!;
+    expect(top.distancePct).toBeCloseTo(((top.price - raw[n - 1]!.close) / raw[n - 1]!.close) * 100, 6);
   });
 
   it("процентная шкала: фильтр делений и в localization (деление под меткой — пустое)", () => {

@@ -12,7 +12,10 @@ import type { SceneText } from "./text";
  * «Ближайший» считается от закрытия последней закрытой свечи, поэтому подписи не дёргаются на тиках.
  */
 export interface Analytics {
-  /** `${lastClosed.time}|${oi}|${structure}` — ключ пересчёта; открытая свеча его не меняет. */
+  /**
+   * `${lastClosed.time:open:high:low:close}|${oi}|${structure}` — ключ пересчёта; открытая свеча его не меняет, а
+   * уточнение уже закрытой (то же время, окончательные цены: запоздавшая минута, догон истории) — меняет.
+   */
   key: string;
   lastClosed: Candle | null;
   /** По INDEX_LIMITS.srPerSide на сторону: каталог «Найдено», на графике — по лимиту пресета. */
@@ -93,6 +96,11 @@ function lastClosedOf(candles: readonly Candle[]): Candle | null {
   return null;
 }
 
+/** Последняя закрытая свеча целиком: её цены уточняются на месте с тем же временем. */
+function closedKey(c: Candle | null): string {
+  return c ? `${c.time}:${c.open}:${c.high}:${c.low}:${c.close}` : "none";
+}
+
 function oiKey(oi: readonly { t: number; v: number }[] | null): string {
   if (oi === null) return "none";
   const last = oi[oi.length - 1];
@@ -101,12 +109,13 @@ function oiKey(oi: readonly { t: number; v: number }[] | null): string {
 
 /**
  * Аналитика для сцены. Незакрытая свеча на вход не попадает: она отбрасывается здесь, и prev возвращается,
- * пока не закрылась новая свеча и не сменились OI или структура (тест на утечку будущего).
+ * пока не закрылась новая свеча, не уточнилась последняя закрытая и не сменились OI или структура (тест на утечку
+ * будущего).
  * oi = null — производные не загружены (тогда и «нет данных» не показываем).
  */
 export function deriveAnalytics(candles: readonly Candle[], oi: readonly { t: number; v: number }[] | null, structure: SceneStructure | null, prev?: Analytics): Analytics {
   const lastClosed = lastClosedOf(candles);
-  const key = `${lastClosed?.time ?? "none"}|${oiKey(oi)}|${identity(structure)}`;
+  const key = `${closedKey(lastClosed)}|${oiKey(oi)}|${identity(structure)}`;
   if (prev && prev.key === key) return prev;
   const closed = candles.filter((c) => !c.open_);
   if (!lastClosed || closed.length === 0) return { key, lastClosed: null, sr: [], liq: null, zones: [], atr: null, liqUnavailable: false };
