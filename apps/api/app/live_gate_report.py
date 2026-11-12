@@ -2173,6 +2173,60 @@ def _blocked_count(fwd: Forward) -> str:
     return f" (в этом форварде — {n})" if n else " (в этом форварде таких нет)"
 
 
+def _dec(x: Decimal | None, quant: Decimal = R_QUANT) -> str | None:
+    return None if x is None else str(_q(x, quant))
+
+
+def summary_json(report: Report, analysis: Analysis | None = None) -> dict[str, Any]:
+    """Короткая сводка отчёта для админки: параметры, итог форварда и бэктеста, критерии.
+    Числа — строками (``Decimal``); времена — ISO 8601 в UTC."""
+    a = analysis or analyze(report)
+    o = report.options
+    fwd = report.forward
+    m = a.backtest
+
+    def iso(t: datetime | None) -> str | None:
+        return None if t is None else t.isoformat()
+
+    return {
+        "version": o.version,
+        "symbols_label": o.symbols_label,
+        "symbols": list(o.symbols),
+        "backtest_from": iso(o.start),
+        "backtest_to": iso(o.end),
+        "now": iso(o.now),
+        "forward": {
+            "version": fwd.label,
+            "in_db": fwd.in_db,
+            "status": fwd.status,
+            "since": iso(fwd.since),
+            "end": iso(fwd.end),
+            "days": None
+            if fwd.period is None
+            else _dec(Decimal(fwd.period.total_seconds()) / 86400, SHARE_QUANT),
+            "signals": len(fwd.signals),
+            "counted": len(fwd.counted),
+            "closed_h4": a.forward_h4.closed,
+            "avg_r_h4": _dec(a.forward_h4.avg_r),
+            "closed_1m": a.forward_m1.closed,
+            "avg_r_1m": _dec(a.forward_m1.avg_r),
+        },
+        "backtest": {
+            "closed": m.closed,
+            "winrate": _dec(m.winrate, Decimal("0.001")),
+            "avg_r": _dec(m.avg_r),
+            "profit_factor": _dec(m.profit_factor, PF_QUANT),
+            "sum_r": _dec(m.sum_r) if m.closed else None,
+            "max_drawdown_r": _dec(m.max_drawdown_r) if m.closed else None,
+        },
+        "criteria": [
+            {"name": c.name, "source": c.source, "value": c.value, "status": c.status.value}
+            for c in a.criteria
+        ],
+        "counts": {s.name.lower(): sum(1 for c in a.criteria if c.status is s) for s in Status},
+    }
+
+
 def write_report(text_: str, path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(text_.encode("utf-8"))

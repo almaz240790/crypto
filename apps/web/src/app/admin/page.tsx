@@ -7,6 +7,7 @@ import { AdminShell, useAdminMe } from "@/components/admin/AdminShell";
 import t from "@/components/tools/tools.module.css";
 import { Badge, Button, EmptyState, Input, Panel, Select, StatusBadge, Table, Td, Th } from "@/components/ui";
 import * as A from "@/lib/admin";
+import { gateFileName, gateTone, type GateReport, type LiveGate } from "@/lib/liveGate";
 import { getAdminTickets, replyTicket, setTicketStatus, type Ticket } from "@/lib/support";
 import { formatTimeUTC } from "@/lib/format";
 import s from "./page.module.css";
@@ -45,6 +46,99 @@ function useToast() {
     [note],
   );
   return { msg, run };
+}
+
+function downloadReport(r: GateReport, at: string | null) {
+  if (!r.markdown) return;
+  const url = URL.createObjectURL(new Blob([r.markdown], { type: "text/markdown;charset=utf-8" }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = gateFileName(r, at);
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function GateReportView({ r, at }: { r: GateReport; at: string | null }) {
+  const sum = r.summary;
+  return (
+    <div className={s.gate}>
+      <div className={s.gateHead}>
+        <strong>{r.title}</strong>
+        {sum && (
+          <>
+            <Badge tone="up">выполнено {sum.counts.met}</Badge>
+            <Badge tone="down">не выполнено {sum.counts.not_met}</Badge>
+            <Badge tone="warn">нужно решение человека {sum.counts.human}</Badge>
+          </>
+        )}
+        {r.markdown && (
+          <Button size="sm" onClick={() => downloadReport(r, at)}>
+            Скачать отчёт (.md)
+          </Button>
+        )}
+      </div>
+      {r.error ? (
+        <p className="caption">Отчёт не построен: {r.error}</p>
+      ) : sum ? (
+        <>
+          <p className="caption">
+            Инструменты: {sum.symbols_label} ({sum.symbols.length}). Форвард {sum.forward.version}:{" "}
+            {sum.forward.since ? `с ${formatTimeUTC(sum.forward.since, { withYear: true })}` : "не начинался"}
+            {sum.forward.days ? `, ${sum.forward.days} дн.` : ""}, сигналов {sum.forward.counted}. Бэктест: закрытых сделок {sum.backtest.closed}, PF{" "}
+            {sum.backtest.profit_factor ?? "—"}, средний R {sum.backtest.avg_r ?? "—"}.
+          </p>
+          <Table compact stack={false}>
+            <thead>
+              <tr>
+                <Th num>№</Th>
+                <Th>Критерий</Th>
+                <Th>Значение</Th>
+                <Th>Статус</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {sum.criteria.map((c, i) => (
+                <tr key={c.name}>
+                  <Td num>{i + 1}</Td>
+                  <Td style={{ whiteSpace: "normal", maxWidth: 260 }}>
+                    {c.name}
+                    <div className="caption">{c.source}</div>
+                  </Td>
+                  <Td style={{ whiteSpace: "normal", maxWidth: 520 }}>{c.value}</Td>
+                  <Td>
+                    <Badge tone={gateTone(c.status)}>{c.status}</Badge>
+                  </Td>
+                </tr>
+              ))}
+            </tbody>
+          </Table>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+/** Отчёт «готовность к live» (задача 9 пакета «Сигналы»): строит сервер, здесь — только показ. */
+function LiveGatePanel() {
+  const [d, setD] = useState<LiveGate | null | undefined>(undefined);
+  useEffect(() => {
+    queueMicrotask(() => void A.getLiveGate().then(setD).catch(() => setD(null)));
+  }, []);
+  let body;
+  if (d === undefined) body = <EmptyState text="Загрузка…" />;
+  else if (d === null) body = <EmptyState text="Отчёт не загрузился." />;
+  else if (d.failed) body = <EmptyState text={`Отчёт не построен: ${d.failed}`} />;
+  else if (d.reports.length === 0)
+    body = <EmptyState text={d.at ? "Целей нет: ни одна версия не в форварде." : "Отчёт ещё не построен: первый строится после выкладки, дальше — по расписанию."} />;
+  else body = d.reports.map((r) => <GateReportView key={r.title} r={r} at={d.at} />);
+  return (
+    <Panel
+      title={d?.at ? `Готовность к live — ${formatTimeUTC(d.at, { withYear: true })}` : "Готовность к live"}
+      footer={`Отчёт строит сервер ${d?.schedule ?? "раз в неделю"}: форвард против бэктеста той же версии и критерии плана. Он ничего не решает — выпуск в live решает владелец заявкой выше. Числа — результаты на прошлых данных, не обещание результата.`}
+    >
+      {body}
+    </Panel>
+  );
 }
 
 function Strategies({ run }: { run: Run }) {
@@ -95,6 +189,7 @@ function Strategies({ run }: { run: Run }) {
           </tbody>
         </Table>
       </Panel>
+      <LiveGatePanel />
       <Panel
         title="Заявка на смену статуса"
         footer="Четырёхглазый принцип: заявку подтверждает другой админ. Владелец может подтвердить свою заявку только с письменным обоснованием, и это попадает в аудит. Перевод в live возможен только из forward."

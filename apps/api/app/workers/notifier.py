@@ -14,6 +14,10 @@
 сигналов». Письмо владельцам со списком расхождений уходит, когда изменился их набор (вид и
 сигнал), — не каждые сутки с тем же списком. Сбой сверки тоже записывается итогом и уходит
 письмом один раз — молча сверка не пропадает.
+
+Раз в неделю (понедельник после ``LIVE_GATE_HOUR_UTC``, при старте — если отчёта нет) — отчёт
+«готовность к live» (``app.live_gate_job``, задача 9): скрипт отчёта идёт отдельным процессом
+с пониженным приоритетом, итог — в Redis ``live_gate:last``, его показывает админка.
 """
 
 from __future__ import annotations
@@ -37,6 +41,15 @@ from sqlalchemy import func, select
 from app.coin_rank import refresh_if_due
 from app.config import settings
 from app.db import SessionLocal
+from app.live_gate_job import (
+    LIVE_GATE_KEY,
+    build_all,
+    gate_targets,
+    last_run_at,
+    live_gate_due,
+    load_statuses,
+    summary_line,
+)
 from app.mail import send_mail
 from app.models import Signal, SignalEvent
 from app.monitor import RECONCILE_KEY, run_monitor
@@ -228,6 +241,37 @@ def reconcile_once(now: datetime) -> str:
         r.close()
 
 
+def live_gate_statuses() -> list[tuple[str, str]]:
+    """Статусы версий в БД — только на чтение."""
+    with read_only_connection() as conn:
+        return load_statuses(conn)
+
+
+async def live_gate_once(r: Any, now: datetime) -> str:
+    """Отчёт «готовность к live» по всем целям, итог — в Redis ``live_gate:last``. Сбой одной
+    цели записывается в её отчёт; сбой целиком (не прочитались статусы) — итогом-сбоем, тогда
+    следующая проверка повторит попытку."""
+    try:
+        statuses = await asyncio.to_thread(live_gate_statuses)
+        state = await build_all(gate_targets(statuses), now)
+    except Exception as exc:
+        failed = {"at": now.isoformat(), "failed": f"{type(exc).__name__}: {exc}"[:300]}
+        await r.set(LIVE_GATE_KEY, json.dumps(failed, ensure_ascii=False))
+        raise
+    await r.set(LIVE_GATE_KEY, json.dumps(state, ensure_ascii=False))
+    return summary_line(state)
+
+
+def _live_gate_done(task: asyncio.Task[str]) -> None:
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        log.error("готовность к live: ошибка", exc_info=exc)
+    else:
+        log.info("%s", task.result())
+
+
 def _reconcile_done(task: asyncio.Task[str]) -> None:
     if task.cancelled():
         return
@@ -262,6 +306,8 @@ class Notifier:
         next_ranks = 0.0
         next_reconcile = 0.0
         reconcile_task: asyncio.Task[str] | None = None
+        next_live_gate = 0.0
+        live_gate_task: asyncio.Task[str] | None = None
         digest_logged = False
         while not self.stop.is_set():
             if time.monotonic() >= next_ranks:
@@ -300,6 +346,17 @@ class Notifier:
                         reconcile_task.add_done_callback(_reconcile_done)
                 except Exception:
                     log.exception("сверка сигналов: запуск")
+            if time.monotonic() >= next_live_gate and (
+                live_gate_task is None or live_gate_task.done()
+            ):
+                next_live_gate = time.monotonic() + RECONCILE_CHECK_EVERY
+                try:
+                    if live_gate_due(now, last_run_at(await self.redis.get(LIVE_GATE_KEY))):
+                        # в фоне: отчёт идёт отдельным процессом десятки минут
+                        live_gate_task = asyncio.create_task(live_gate_once(self.redis, now))
+                        live_gate_task.add_done_callback(_live_gate_done)
+                except Exception:
+                    log.exception("готовность к live: запуск")
             if time.monotonic() >= next_monitor:
                 next_monitor = time.monotonic() + MONITOR_EVERY
                 try:
@@ -331,6 +388,11 @@ class Notifier:
                 await asyncio.wait_for(self.stop.wait(), timeout=POLL)
         if reconcile_task is not None and not reconcile_task.done():
             reconcile_task.cancel()
+        if live_gate_task is not None and not live_gate_task.done():
+            # отмена убивает процесс отчёта (run_script), уведомитель его не ждёт
+            live_gate_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await live_gate_task
         await self.redis.aclose()
 
 

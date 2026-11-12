@@ -66,3 +66,17 @@
   display: grid;
   gap: 10px;
 }
+
+.gate + .gate {
+  margin-top: var(--gap-4);
+  padding-top: var(--gap-4);
+  border-top: 1px solid var(--border);
+}
+
+.gateHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--gap-2);
+  margin-bottom: var(--gap-2);
+}

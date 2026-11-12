@@ -62,6 +62,7 @@ from app.live_gate_report import (
     rolling_windows,
     run_backtests,
     same_rules,
+    summary_json,
     trades_needed,
     window_stats,
     write_report,
@@ -518,6 +519,25 @@ def test_reconcile_criterion(raw: dict[str, Any] | None, expected: Status, fragm
     assert fragment in criterion.value
     if raw is not None and raw.get("explained"):
         assert "насчитала 2 отличий записи от эталона H4" in render_markdown(report, a)
+
+
+def test_summary_json_for_admin(scenario: None) -> None:
+    bt = run_backtests(SYMBOLS, load_scenario, options())
+    report = Report(options(), no_forward(), bt)
+    a = analyze(report)
+    got = summary_json(report, a)
+    json.dumps(got)  # сериализуется как есть
+    assert got["version"] == VERSION and got["symbols"] == list(SYMBOLS)
+    assert got["backtest"]["closed"] == a.backtest.closed == 4
+    assert got["backtest"]["winrate"] == "0.500"
+    assert got["forward"]["in_db"] is False and got["forward"]["since"] is None
+    assert [c["name"] for c in got["criteria"]] == [c.name for c in a.criteria]
+    assert got["counts"] == {
+        "met": sum(1 for c in a.criteria if c.status is Status.MET),
+        "not_met": sum(1 for c in a.criteria if c.status is Status.NOT_MET),
+        "human": sum(1 for c in a.criteria if c.status is Status.HUMAN),
+    }
+    assert sum(got["counts"].values()) == 12
 
 
 def test_options_are_validated() -> None:
@@ -1363,8 +1383,12 @@ def test_cli_writes_identical_files(tmp_path: Path, capsys: pytest.CaptureFixtur
     args += ["--now", "2026-11-01", "--bootstrap", "200", "--reconcile-json", str(reconcile)]
     paths = [tmp_path / "one.md", tmp_path / "two.md"]
     for path in paths:
-        assert cli.main([*args, "--out", str(path)]) == 0
+        summary = path.with_suffix(".json")
+        assert cli.main([*args, "--out", str(path), "--json", str(summary)]) == 0
     assert paths[0].read_bytes() == paths[1].read_bytes()
+    assert paths[0].with_suffix(".json").read_bytes() == paths[1].with_suffix(".json").read_bytes()
+    summary = json.loads(paths[0].with_suffix(".json").read_text())
+    assert summary["version"] == "trend-ob-retest@1.2.1" and len(summary["criteria"]) == 12
     md = paths[0].read_text()
     assert "список версии, 20: BTCUSDT" in md
     assert "Правила версии | те же, что у `trend-ob-retest@1.2.0`" in md
@@ -1392,3 +1416,39 @@ def test_cli_symbol_lists(tmp_path: Path, capsys: pytest.CaptureFixture[str]) ->
     md = out.read_text()
     assert "файл `pairs.txt`, 1: BTCUSDT" in md and "Вне списка версии, отброшены | XLMUSDT" in md
     assert "пропущены: XLMUSDT" in capsys.readouterr().err
+
+
+@db_only
+def test_cli_auto_end_and_list_of_another_version(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import live_gate_report as cli
+
+    # --to auto без --now — ошибка; у версии нет форварда — ошибка с причиной
+    assert cli.main(["--version", "1.2.0", "--to", "auto"]) == 2
+    assert "нужен --now" in capsys.readouterr().err
+    assert cli.main(["--version", "9.9.9", "--to", "auto", "--now", "2026-11-01"]) == 2
+    capsys.readouterr()
+    # список версии без своего списка взять нельзя
+    assert cli.main(["--version", "1.2.0", "--symbols-of", "1.2.0", "--to", "2026-10-26"]) == 2
+    assert "нет своего списка" in capsys.readouterr().err
+
+    since = datetime(2026, 10, 26, 8, tzinfo=UTC)
+    real = cli.build_forward
+    seen: list[tuple[str, tuple[str, ...]]] = []
+
+    def started(conn: Any, label: str, symbols: Any, now: datetime, *a: Any) -> Forward:
+        seen.append((label, tuple(symbols)))
+        fwd = real(conn, "trend-ob-retest@9.9.9", symbols, now)  # версии нет — пустой форвард
+        return replace(fwd, label=label, in_db=True, status="forward", since=since)
+
+    monkeypatch.setattr(cli, "build_forward", started)
+    out = tmp_path / "auto.md"
+    args = ["--version", "1.2.0", "--symbols-of", "1.2.1", "--from", "2026-09-01"]
+    args += ["--to", "auto", "--now", "2026-11-01", "--bootstrap", "50", "--out", str(out)]
+    assert cli.main(args) == 0
+    md = out.read_text()
+    assert seen == [("trend-ob-retest@1.2.0", STRATEGIES["trend-ob-retest@1.2.1"].symbols)]
+    assert "список версии `trend-ob-retest@1.2.1`, 20: BTCUSDT" in md
+    assert "закрытия H4 с 01.09.2026 по 26.10.2026" in md  # бэктест — до дня начала форварда
+    assert "--symbols-of 1.2.1" in md and "--to 2026-10-26" in md
