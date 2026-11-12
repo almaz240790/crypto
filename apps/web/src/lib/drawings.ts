@@ -47,8 +47,21 @@ export const fromWire = (w: DrawingWire): Drawing =>
     deleted_at: w.deleted_at,
   });
 
-export const listDrawings = (symbol: string, since = 0) => api<{ symbol: string; items: DrawingWire[]; limit: number | null; sync: boolean }>(`/v1/drawings?symbol=${symbol}&since=${since}`);
-export const upsertDrawings = (items: DrawingWire[]) => api<{ items: DrawingWire[] }>("/v1/drawings", { method: "PUT", json: items });
+/**
+ * Отказ сервера одному рисунку пакета (аудит DTS-4): постоянный — рисунок убирается из очереди, остальные записаны.
+ * code: limit — лимит тарифа на инструмент; other_symbol — рисунок с этим id принадлежит другому инструменту (призрак
+ * копии); unknown_symbol и invalid — инструмента нет или рисунок негодный.
+ */
+export type DrawingRejected = { client_id: string | null; symbol: string | null; status: number; code: string; detail: string };
+
+/**
+ * Рисунки инструмента. cursor — курсор сервера из прошлого ответа (время записи на сервере, аудит DTS-3); без него —
+ * все рисунки. API прежней сборки параметр cursor не знает и отдаёт все рисунки без курсора в ответе.
+ */
+export const listDrawings = (symbol: string, cursor: number | null) =>
+  api<{ symbol: string; items: DrawingWire[]; limit: number | null; sync: boolean; cursor?: number }>(`/v1/drawings?symbol=${symbol}${cursor === null ? "" : `&cursor=${cursor}`}`);
+/** Пакетная запись; rejected нет у API прежней сборки (он отклонял весь пакет ошибкой). */
+export const upsertDrawings = (items: DrawingWire[]) => api<{ items: DrawingWire[]; rejected?: DrawingRejected[] }>("/v1/drawings", { method: "PUT", json: items });
 
 export type LayoutData = Record<string, unknown>;
 export const getLayout = (name?: string) => api<{ name: string | null; data: LayoutData | null; updated_at: number }>(`/v1/chart/layout${name ? `?name=${encodeURIComponent(name)}` : ""}`);
@@ -81,12 +94,17 @@ export function queueAdd(items: DrawingWire[]): void {
   queueWrite([...q.values()]);
 }
 
-/** Отправить очередь; при ошибке сети очередь остаётся. Возвращает ответы сервера. */
-export async function queueFlush(): Promise<DrawingWire[]> {
-  const q = queueRead();
-  if (q.length === 0) return [];
-  const r = await upsertDrawings(q.slice(0, 200));
-  const sent = new Set(q.slice(0, 200).map((x) => x.client_id));
-  queueWrite(q.filter((x) => !sent.has(x.client_id)));
-  return r.items;
+/**
+ * Отправить очередь (до 200 рисунков всех инструментов). Ошибка запроса (сеть, 5xx, отказ всего пакета) — исключение,
+ * очередь остаётся. Ответ — версии сервера и отказы по рисункам: принятые и отклонённые уходят из очереди (отказ
+ * постоянный — повтор его не изменит, а остальную очередь он не держит). Версия, поставленная в очередь заново, пока
+ * шёл запрос, остаётся до следующей отправки.
+ */
+export async function queueFlush(): Promise<{ items: DrawingWire[]; rejected: DrawingRejected[] }> {
+  const batch = queueRead().slice(0, 200);
+  if (batch.length === 0) return { items: [], rejected: [] };
+  const r = await upsertDrawings(batch);
+  const sent = new Map(batch.map((x) => [x.client_id, x.updated_at]));
+  queueWrite(queueRead().filter((x) => sent.get(x.client_id) !== x.updated_at));
+  return { items: r.items, rejected: r.rejected ?? [] };
 }
