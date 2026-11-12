@@ -4,7 +4,7 @@ import { monoMeasurer } from "../layout/measure";
 import { VIEW } from "../presets";
 import { AxisViewPool } from "../render/axisViews";
 import { OverlayPrimitive } from "../render/OverlayPrimitive";
-import { timeToIndex } from "../render/projector";
+import { frameProjector, timeToIndex } from "../render/projector";
 import type { GlyphObject, HeatObject, HLineObject, ProfileObject, Scene, SceneObject } from "../scene/types";
 import { bars, fakeElement, H, makeEnv, makeTheme, T0 } from "./fakes/lwc";
 
@@ -50,6 +50,16 @@ describe("timeToIndex", () => {
     expect(timeToIndex(c, T0 - 2 * H, H)).toBe(-2);
     expect(timeToIndex(c, T0 + 8 * H, H)).toBe(4 + 2);
     expect(timeToIndex([], T0, H)).toBe(0);
+  });
+
+  it("кадр: время между свечами — x между ними (LWC даёт x только целому индексу, дробный — 0)", () => {
+    const candles = bars(100);
+    const env = makeEnv(() => candles, { range: { from: 0, to: 114 }, width: 800 });
+    const proj = frameProjector(env.chart as never, env.series as never, candles, H);
+    const ts = env.chart.timeScale();
+    expect(proj.x(T0 + 20 * H)).toBe(ts.logicalToCoordinate(20));
+    expect(proj.x(T0 + 20.25 * H)).toBeCloseTo(ts.logicalToCoordinate(20) + 0.25 * (ts.logicalToCoordinate(21) - ts.logicalToCoordinate(20)), 9);
+    expect(proj.x(T0 + 101.5 * H)).toBeCloseTo(ts.logicalToCoordinate(101) + 0.5 * proj.barSpacing(), 9);
   });
 });
 

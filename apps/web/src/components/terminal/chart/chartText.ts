@@ -1,5 +1,6 @@
-import { fillTemplate, formatUtcDate, PATTERN_RU, ZONE_KIND_RU, type PanelKey, type SceneText, type TextKey } from "@platform/charts";
+import { fillTemplate, formatUtcDate, PATTERN_RU, ZONE_KIND_RU, type DrawingText, type PanelKey, type SceneText, type TextKey } from "@platform/charts";
 import type { T } from "@/i18n";
+import { plural } from "@/lib/format";
 
 /**
  * Все слова графика (план 2B.2, 5.2, 8; ADR-0005, ADR-0008): подписи на холсте, подсказки, легенда «?»,
@@ -145,4 +146,23 @@ export function chartText(t: T): SceneText {
   };
   cache.set(t, text);
   return text;
+}
+
+/**
+ * Подписи рисунков на холсте (DrawingText): плашки позиции, у измерителя — число свечей и единицы времени. Русский
+ * оригинал — DRAWING_TEXT пакета (chartText.test). «1 свеча» — свой ключ: по-русски «21 свеча» — та же форма, что у
+ * одной, а по-английски — «21 candles».
+ */
+export function drawingText(t: T): DrawingText {
+  return {
+    entry: t("Вход"),
+    stop: t("Стоп"),
+    target: t("Цель"),
+    risk: t("риск"),
+    size: t("объём"),
+    bars: (n) => t(n === 1 ? "1 свеча" : plural(n, "{n} свеча", "{n} свечи", "{n} свечей"), { n }),
+    day: t("д"),
+    hour: t("ч"),
+    minute: t("мин"),
+  };
 }

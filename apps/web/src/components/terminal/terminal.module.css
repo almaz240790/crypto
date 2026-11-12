@@ -627,6 +627,15 @@
 
   .fsBtn {
     display: inline-flex;
+    justify-content: center;
+    width: 32px;
+    padding: 0;
+  }
+
+  /* ⤢ стоит в левом верхнем углу (6 px): строка телефона начинается правее него, а не под ним — иначе кнопка
+     закрывала начало выбора инструмента (аудит TSA-5); панели спрятаны — кнопка над углом графика */
+  .page[data-layout="phone"] .top {
+    padding-left: calc(6px + 32px + var(--gap-2));
   }
 }
 
@@ -637,6 +646,28 @@
   place-items: center;
   color: var(--text-3);
   font-size: 13px;
+}
+
+/* объяснение вместо графика (ChartLoadError): сбой загрузки, «инструмент не найден», «1m–15m — Pro» */
+.loadError {
+  display: grid;
+  justify-items: center;
+  gap: var(--gap-3);
+  max-width: 360px;
+  padding: var(--gap-4);
+  color: var(--text-2);
+  text-align: center;
+}
+
+.loadError p {
+  margin: 0;
+}
+
+.loadErrorActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--gap-2);
 }
 
 @media (max-width: 639.98px) {

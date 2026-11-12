@@ -170,6 +170,8 @@ export class OverlayPrimitive implements ISeriesPrimitive<Time> {
   private lastRange = "";
   private lastMove = -Infinity;
   private settle: ReturnType<typeof setTimeout> | null = null;
+  /** Повторное применение формата делений, когда масштаб успокоится (полосы сменились вместе с ним). */
+  private axisSettle: ReturnType<typeof setTimeout> | null = null;
   private countdownRect: Rect | null = null;
   private layouts = 0;
   /** Кэш строк профиля объёма на устоявшийся видимый диапазон. */
@@ -200,6 +202,8 @@ export class OverlayPrimitive implements ISeriesPrimitive<Time> {
     this.screen = null;
     if (this.settle) clearTimeout(this.settle);
     this.settle = null;
+    if (this.axisSettle) clearTimeout(this.axisSettle);
+    this.axisSettle = null;
   }
 
   get sceneVersion(): number {
@@ -339,6 +343,10 @@ export class OverlayPrimitive implements ISeriesPrimitive<Time> {
       this.appliedBands = bk;
       const layout = screen.axis;
       if (sameScale && this.onAxisChanged) queueMicrotask(() => this.onAxisChanged?.(layout));
+      // масштаб сменился вместе с полосами (поле шкалы под карточку рисунка, жест): LWC перестраивает деления в том же
+      // кадре, но бывает — по полосам прошлого кадра, и деление остаётся под меткой; когда масштаб успокоится, формат
+      // применяется заново — один раз, а не в каждом кадре жеста
+      else if (this.onAxisChanged) this.scheduleAxis(layout);
     }
     this.scaleKey = scaleKey;
     this.onFrame?.(screen);
@@ -363,6 +371,14 @@ export class OverlayPrimitive implements ISeriesPrimitive<Time> {
     else if (this.vp.key !== want) this.scheduleSettle();
     const rows = this.vp.rows;
     return { profileRows: () => rows, profileKey: this.vp.key };
+  }
+
+  private scheduleAxis(layout: AxisLayout): void {
+    if (this.axisSettle) clearTimeout(this.axisSettle);
+    this.axisSettle = setTimeout(() => {
+      this.axisSettle = null;
+      this.onAxisChanged?.(layout);
+    }, GESTURE_SETTLE_MS + 10);
   }
 
   private scheduleSettle(): void {

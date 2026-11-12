@@ -110,13 +110,14 @@ def _last_prices(db: Session, instrument_ids: list[int]) -> dict[int, tuple[str,
 
 
 def optional_user(request: Request, db: Session = Depends(auth.get_db)) -> User | None:
+    """Необязательный вход: без токена — гость (None). Токен есть, но недействителен или истёк —
+    401, как у ``current_user``: клиент обновит токен и повторит запрос, а если сеанс кончился —
+    повторит без токена, как гость. Тихий гость вместо 401 отдавал платящему права Free
+    (минутные ТФ — 403, без слоя сигналов), и клиент токен не обновлял (аудит TSA-1)."""
     header = request.headers.get("authorization", "")
     if not header.lower().startswith("bearer "):
         return None
-    try:
-        payload = auth.decode_access_token(header[7:])
-    except HTTPException:
-        return None
+    payload = auth.decode_access_token(header[7:])
     return db.get(User, int(payload["sub"]))
 
 

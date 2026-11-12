@@ -54,14 +54,31 @@ export function alive(state: DrawingsState): Drawing[] {
   return state.items.filter((d) => !d.deleted_at);
 }
 
-/** Применить версии с сервера: последняя запись побеждает по updated_at, при равенстве — удаление. */
+/**
+ * Применить версии с сервера: последняя запись побеждает по updated_at, при равенстве — удаление. Победившая версия
+ * попадает и в снимки истории, где рисунок был тем же, что сейчас (или его не было): отмена своего шага не удаляет
+ * рисунок с другого устройства и не откатывает чужую правку или удаление (отмена — новая версия, см. restore).
+ */
 export function mergeRemote(state: DrawingsState, remote: Drawing[]): DrawingsState {
   const byId = new Map(state.items.map((d) => [d.id, d]));
+  const won = new Map<string, { was: Drawing | undefined; now: Drawing }>();
   for (const r of remote) {
     const local = byId.get(r.id);
-    byId.set(r.id, resolve(local, r));
+    const next = resolve(local, r);
+    if (next !== local) won.set(r.id, { was: local, now: next });
+    byId.set(r.id, next);
   }
-  return { ...state, items: [...byId.values()].sort((a, b) => a.updated_at - b.updated_at) };
+  const items = [...byId.values()].sort((a, b) => a.updated_at - b.updated_at);
+  if (won.size === 0) return { ...state, items };
+  const rebase = (snap: Drawing[]) => {
+    const out = snap.map((d) => {
+      const w = won.get(d.id);
+      return w && w.was === d ? w.now : d;
+    });
+    for (const [id, w] of won) if (!w.was && !snap.some((d) => d.id === id)) out.push(w.now);
+    return out;
+  };
+  return { ...state, items, past: state.past.map(rebase), future: state.future.map(rebase) };
 }
 
 export function resolve(local: Drawing | undefined, remote: Drawing): Drawing {
@@ -84,16 +101,41 @@ export function setHidden(state: DrawingsState, hidden: boolean): DrawingsState 
   return { ...state, hidden };
 }
 
+/**
+ * Снимок истории как новая версия рисунков (аудит FI-1, DTS-2). Синхронизация — последняя запись побеждает по
+ * updated_at: снимок со старыми метками сервер и слияние на клиенте откатили бы назад, а выброшенный рисунок (отмена
+ * создания) до сервера не дошёл бы вовсе. Поэтому рисунок, отличный от текущего, получает новый updated_at (позже
+ * текущей версии, даже в ту же миллисекунду); рисунок, которого в снимке нет, остаётся удалённым (deleted_at), а
+ * повтор возвращает его живым новой версией. Нетронутые рисунки (тот же объект в снимке и сейчас) остаются как есть:
+ * их синхронизировать не нужно.
+ */
+function restore(current: Drawing[], snapshot: Drawing[]): Drawing[] {
+  const now = Date.now();
+  const cur = new Map(current.map((d) => [d.id, d]));
+  const stamp = (was: Drawing | undefined) => Math.max(now, (was?.updated_at ?? 0) + 1);
+  const out = snapshot.map((d) => {
+    const c = cur.get(d.id);
+    return c === d ? c : { ...d, updated_at: stamp(c) };
+  });
+  const kept = new Set(snapshot.map((d) => d.id));
+  for (const c of current) {
+    if (kept.has(c.id)) continue;
+    const t = stamp(c);
+    out.push(c.deleted_at ? c : { ...c, deleted_at: t, updated_at: t });
+  }
+  return out;
+}
+
 export function undo(state: DrawingsState): DrawingsState {
   const prev = state.past[state.past.length - 1];
   if (!prev) return state;
-  return { ...state, items: prev, past: state.past.slice(0, -1), future: [state.items, ...state.future].slice(0, UNDO_STEPS), selectedId: null };
+  return { ...state, items: restore(state.items, prev), past: state.past.slice(0, -1), future: [state.items, ...state.future].slice(0, UNDO_STEPS), selectedId: null };
 }
 
 export function redo(state: DrawingsState): DrawingsState {
   const next = state.future[0];
   if (!next) return state;
-  return { ...state, items: next, past: [...state.past, state.items].slice(-UNDO_STEPS), future: state.future.slice(1), selectedId: null };
+  return { ...state, items: restore(state.items, next), past: [...state.past, state.items].slice(-UNDO_STEPS), future: state.future.slice(1), selectedId: null };
 }
 
 export const canUndo = (s: DrawingsState) => s.past.length > 0;

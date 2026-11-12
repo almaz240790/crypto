@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { H4, T0, mock, type MockServer } from "./helpers/chart";
+import { installStrokes, paneStrokes } from "./helpers/strokes";
 
 /**
  * Уровни Фибоначчи: настраиваемый набор и цели по движению (план 2A.5; ADR-0009, «Рисование», дополнение 2026-11-11).
@@ -107,6 +108,10 @@ function expectAtLine(l: Label, y: number) {
   const below = Math.abs(l.rect.y - 3 - y);
   expect(Math.min(above, below), `${l.text}: подпись у линии y=${y}, прямоугольник ${JSON.stringify(l.rect)}`).toBeLessThanOrEqual(1);
 }
+
+/** Заблокированный Фибоначчи на свечах 250…275, цены 99…103 — в памяти устройства до загрузки страницы. */
+const LOCKED_FIB = { id: "F1", type: "fib", points: [{ time: T0 + 250 * H4, price: 99 }, { time: T0 + 275 * H4, price: 103 }], style: { color: "text2", width: 1, dashed: false }, locked: true, timeframe: null, updated_at: 1 };
+const seedLocked = (page: Page) => page.addInitScript((d) => localStorage.setItem("pl-drawings:BTCUSDT", JSON.stringify([d])), LOCKED_FIB);
 
 test.describe("десктоп, мышь", () => {
   test("цель −0.618 выше максимума, выключение 0.236, отмена и повтор, перезагрузка, новый Фибоначчи с тем же набором, «стандартные»", async ({ page }) => {
@@ -388,6 +393,139 @@ async function finger(page: Page) {
   };
 }
 
+test.describe("заблокированный Фибоначчи, мышь", () => {
+  test("клик по телу, линии уровня и точке выбирает — в карточке «разблокировать»; протягивание по нему двигает график; после разблокировки правится", async ({ page }) => {
+    await seedLocked(page);
+    await open(page);
+    await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 1");
+    const [body, level, anchor] = await onScreen(page, [{ time: T0 + 262 * H4, price: 101 }, { time: T0 + 262 * H4, price: 103 - 4 * 1.272 }, LOCKED_FIB.points[0]!]);
+    for (const p of [body!, level!, anchor!]) {
+      await page.mouse.click(p.x, p.y);
+      await expect(card(page), `клик ${JSON.stringify(p)}`).toContainText("Фибоначчи");
+      await expect(card(page).getByRole("button", { name: "разблокировать" })).toBeVisible();
+      await expect(card(page).getByRole("button", { name: "удалить" })).toBeDisabled();
+      await card(page).getByRole("button", { name: "снять выделение" }).click();
+      await expect(card(page)).toHaveCount(0);
+    }
+    // протягивание из середины — сдвиг графика, рисунок на месте
+    const r0 = (await view(page)).time!;
+    await page.mouse.move(body!.x, body!.y);
+    await page.mouse.down();
+    await page.mouse.move(body!.x + 150, body!.y, { steps: 8 });
+    await page.mouse.up();
+    await expect.poll(async () => (await view(page)).time!.from).not.toBe(r0.from);
+    expect((await stored(page))[0]!.points).toEqual(LOCKED_FIB.points);
+    // разблокировать — снова правится и удаляется
+    const [b2] = await onScreen(page, [{ time: T0 + 262 * H4, price: 101 }]);
+    await page.mouse.click(b2!.x, b2!.y);
+    await card(page).getByRole("button", { name: "разблокировать" }).click();
+    await expect(card(page).getByRole("button", { name: "заблокировать" })).toBeVisible();
+    await card(page).getByRole("button", { name: "удалить" }).click();
+    await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 0");
+  });
+});
+
+/**
+ * Свечи по таймфрейму (1ч, 4ч, 1Д) из одной непрерывной цены: общая заглушка отдаёт свечи 4ч на любой таймфрейм, и
+ * рисунок с 1ч на 4ч в ней всегда стоит на свечах. Текущая свеча каждого таймфрейма — та, что содержит текущую свечу 4ч
+ * заглушки; истории левее первой порции нет.
+ */
+const TF_STEP: Record<string, number> = { "1h": 3600, "4h": H4, "1d": 86400 };
+async function candlesByTf(page: Page) {
+  const now = T0 + 300 * H4;
+  const price = (t: number) => 100 + Math.sin(t / (7 * H4)) * 5 + Math.sin(t / 5000) * 0.6;
+  await page.route("**/v1/chart/candles**", (route) => {
+    const u = new URL(route.request().url());
+    const tf = u.searchParams.get("tf") ?? "";
+    const step = TF_STEP[tf];
+    if (!step) return route.fallback();
+    const cur = Math.floor(now / step) * step;
+    const mk = (t: number, open: boolean) => {
+      const o = price(t), c = price(t + step);
+      return { t, o: o.toFixed(2), h: (Math.max(o, c) + 0.3).toFixed(2), l: (Math.min(o, c) - 0.3).toFixed(2), c: c.toFixed(2), v: "1000", open };
+    };
+    const older = u.searchParams.get("before") !== null;
+    const candles = older ? [] : Array.from({ length: 300 }, (_, i) => mk(cur - (300 - i) * step, false));
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ symbol: "BTCUSDT", tf, candles, current: older ? null : mk(cur, true), has_older: false, tick_size: "0.1", server_time: "" }) });
+  });
+}
+
+test.describe("рисунок с другого таймфрейма", () => {
+  test("Фибоначчи с 1ч на 4ч и 1Д: точки между свечами — линии уровней от A до B, подписи у рисунка, а не у левого края", async ({ page }) => {
+    await installStrokes(page);
+    await mock(page, []);
+    await candlesByTf(page);
+    await page.goto("/chart/BTCUSDT/1h");
+    const term = page.getByTestId("terminal");
+    await expect(term.locator("canvas").first()).toBeVisible();
+    await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 0");
+    const step = () => page.evaluate(() => { const d = (document.querySelector('[data-testid="terminal"]') as Term).__chart.panes()[0]!.getSeries()[0]!.data(); return d.length > 1 ? d[1]!.time - d[0]!.time : 0; });
+    await expect.poll(step).toBe(3600);
+    // свечи 1ч не на границе свечи 4ч: A — 3 ч после неё (около 30 % ширины), B — 1 ч после (около 60 %)
+    const pick = await page.evaluate((H4) => {
+      const el = document.querySelector('[data-testid="terminal"]') as Term;
+      const r = el.getBoundingClientRect();
+      const ts = el.__chart.timeScale();
+      const s = el.__chart.panes()[0]!.getSeries()[0]!;
+      const near = (frac: number, hour: number) => {
+        let best: { time: number; x: number; y: number } | null = null;
+        for (const c of s.data()) {
+          const x = ts.timeToCoordinate(c.time);
+          if (x === null || c.high === undefined || c.time % H4 !== hour * 3600) continue;
+          if (!best || Math.abs(x - ts.width() * frac) < Math.abs(best.x - r.left - ts.width() * frac)) best = { time: c.time, x: r.left + x, y: r.top + s.priceToCoordinate(c.high)! };
+        }
+        return best!;
+      };
+      return { a: near(0.3, 3), b: near(0.6, 1) };
+    }, H4);
+    await drawFib(page, pick.a, { x: pick.b.x, y: pick.b.y + 120 });
+    await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 1");
+    const d0 = (await stored(page))[0]!;
+    expect(d0.points.map((p) => p.time)).toEqual([pick.a.time, pick.b.time]);
+    await card(page).getByRole("button", { name: "снять выделение" }).click();
+
+    for (const [name, url, want] of [["4ч", "4h", H4], ["1Д", "1d", 86400]] as const) {
+      await page.getByRole("link", { name }).click();
+      await expect(page).toHaveURL(new RegExp(`/chart/BTCUSDT/${url}$`));
+      await expect.poll(step).toBe(want);
+      // где точки должны быть: между свечами — по доле интервала, правее последней — шагом таймфрейма
+      const at = await page.evaluate(
+        ({ pts, want }) => {
+          const el = document.querySelector('[data-testid="terminal"]') as Term;
+          const ts = el.__chart.timeScale();
+          const s = el.__chart.panes()[0]!.getSeries()[0]!;
+          const times = s.data().map((c) => c.time);
+          return pts.map((p) => {
+            let i = times.length - 1;
+            while (i > 0 && times[i]! > p.time) i--;
+            const x0 = ts.timeToCoordinate(times[i]!)!;
+            const next = times[i + 1];
+            const x1 = next !== undefined ? ts.timeToCoordinate(next)! : x0 + (x0 - ts.timeToCoordinate(times[i - 1]!)!);
+            return { x: x0 + ((p.time - times[i]!) / ((next ?? times[i]! + want) - times[i]!)) * (x1 - x0), y: s.priceToCoordinate(p.price)! };
+          });
+        },
+        { pts: d0.points, want },
+      );
+      const [a, b] = at as [{ x: number; y: number }, { x: number; y: number }];
+      expect(b.x - a.x, `${name}: B правее A`).toBeGreaterThan(2);
+      // подписи 0, 0.5, 0.618, 1 и остальные поместившиеся — вплотную к рисунку (справа, внутри или слева), не у левого края
+      await expect.poll(async () => (await levelLabels(page)).length, name).toBeGreaterThanOrEqual(4);
+      for (const l of await levelLabels(page)) {
+        expect(l.rect.x <= b.x + 4 && l.rect.x + l.rect.w >= a.x - 4, `${name}: ${l.text} у рисунка ${a.x.toFixed(1)}…${b.x.toFixed(1)}, прямоугольник ${JSON.stringify(l.rect)}`).toBe(true);
+      }
+      // линии уровней 0 (цена B) и 1 (цена A) — от x точки A до x точки B
+      const strokes = await paneStrokes(page, 2);
+      for (const y of [b.y, a.y]) {
+        const lvl = strokes.filter((st) => st.points.length === 2 && Math.abs(st.points[0]![1] - y) < 1 && Math.abs(st.points[1]![1] - y) < 1 && Math.abs(st.points[0]![0] - st.points[1]![0]) < 300);
+        expect(
+          lvl.some((st) => Math.abs(Math.min(st.points[0]![0], st.points[1]![0]) - a.x) < 1.5 && Math.abs(Math.max(st.points[0]![0], st.points[1]![0]) - b.x) < 1.5),
+          `${name}: линия уровня на y=${y.toFixed(1)} от ${a.x.toFixed(1)} до ${b.x.toFixed(1)}; найдено ${JSON.stringify(lvl.map((st) => st.points))}`,
+        ).toBe(true);
+      }
+    }
+  });
+});
+
 test.describe("телефон 390×844, палец", () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
 
@@ -475,5 +613,89 @@ test.describe("телефон 390×844, палец", () => {
     await page.getByRole("button", { name: "отменить", exact: true }).tap();
     await expect.poll(async () => (await stored(page))[0]!.levels).toEqual([-0.618, ...FIB, 2.618]);
     await expect.poll(() => remembered(page)).toEqual([-0.618, ...FIB, 2.618]);
+  });
+
+  test("Фибоначчи в нижней части области свечей (последний ход у текущей цены): раскрытые «уровни» его не закрывают — график над карточкой, переключение видно", async ({ page }) => {
+    const { X, Y } = await open(page);
+    const f = await finger(page);
+    const margin = () => page.evaluate(() => (document.querySelector('[data-testid="terminal"]') as HTMLElement & { __chart: { priceScale(id: string): { options(): { scaleMargins: { top: number; bottom: number } } } } }).__chart.priceScale("right").options().scaleMargins.bottom);
+    expect(await margin()).toBeCloseTo(0.2, 6);
+    await page.getByRole("button", { name: "Рисовать" }).tap();
+    await page.getByRole("dialog", { name: "Рисование" }).getByRole("button", { name: "Фибоначчи" }).tap();
+    // нижние 40 % колонки: там раскрытая карточка (234 px из ~600)
+    await f.tap(X(0.2), Y(0.55));
+    await f.tap(X(0.6), Y(0.8));
+    await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 1");
+    const d0 = (await stored(page))[0]!;
+    // свёрнутая карточка (одна строка) — в нижнем поле шкалы: график не сжимается
+    await expect(card(page)).toContainText("Фибоначчи");
+    expect(await margin()).toBeCloseTo(0.2, 6);
+
+    const more = card(page).getByRole("button", { name: /уровни/ });
+    await more.tap();
+    await expect(panel(page).locator("button[aria-pressed]")).toHaveCount(14);
+    // ручки и уровни коррекции — над карточкой (раньше ручка B и 0…0.5 — под ней): нижнее поле шкалы растёт
+    const opened = (await card(page).boundingBox())!;
+    await expect.poll(async () => Math.max(...(await onScreen(page, d0.points)).map((h) => h.y)), "ручки — над карточкой").toBeLessThanOrEqual(opened.y - 10);
+    expect(await margin()).toBeGreaterThan(0.25);
+    const t = (await page.getByTestId("terminal").boundingBox())!;
+    const retracement = [0, 0.236, 0.382, 0.5, 0.618, 1];
+    await expect
+      .poll(async () => {
+        const ls = await levelLabels(page);
+        return retracement.filter((l) => {
+          const x = ls.find((q) => q.id === `${d0.id}#L${l}`);
+          return x && t.y + x.rect.y + x.rect.h <= opened.y;
+        });
+      }, "подписи уровней коррекции — над карточкой")
+      .toEqual(retracement);
+    // переключение видно на графике: 0.382 выключили — его подписи нет, включили — снова есть
+    await toggle(page, "0.382").tap();
+    await expect(toggle(page, "0.382")).toHaveAttribute("aria-pressed", "false");
+    await expect.poll(() => labelOf(page, d0.id, 0.382)).toBeNull();
+    await toggle(page, "0.382").tap();
+    await expect.poll(async () => (await labelOf(page, d0.id, 0.382))?.text ?? null).toMatch(/^0\.382 · /);
+    // ручку B тянут пальцем вниз, к карточке: поле шкалы за ней не растёт — точка остаётся под пальцем, а не уезжает
+    const m0 = await margin();
+    const [, hb] = await onScreen(page, d0.points);
+    await f.drag(hb!.x, hb!.y, hb!.x - 20, hb!.y + 8);
+    await expect.poll(async () => (await stored(page))[0]!.points[1]!.time).not.toBe(d0.points[1]!.time);
+    expect(await margin()).toBeCloseTo(m0, 6);
+    const [, nb] = await onScreen(page, (await stored(page))[0]!.points);
+    expect(Math.abs(nb!.y - (hb!.y + 8)), "точка B — под пальцем").toBeLessThanOrEqual(13);
+    // свернули — поле шкалы прежнее; сняли выделение — тоже
+    await more.tap();
+    await expect(more).toHaveAttribute("aria-expanded", "false");
+    await expect.poll(margin).toBeCloseTo(0.2, 6);
+    await more.tap();
+    await expect.poll(margin).toBeGreaterThan(0.25);
+    await card(page).getByRole("button", { name: "снять выделение" }).tap();
+    await expect(card(page)).toHaveCount(0);
+    await expect.poll(margin).toBeCloseTo(0.2, 6);
+  });
+
+  test("заблокированный Фибоначчи: касание выбирает — в раскрытой карточке «разблокировать» и «удалить»; сдвиг по нему — графику", async ({ page }) => {
+    await seedLocked(page);
+    await open(page);
+    const f = await finger(page);
+    await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 1");
+    const [p] = await onScreen(page, [{ time: T0 + 262 * H4, price: 101 }]);
+    // сдвиг пальцем по нему — график едет, рисунок на месте, выбора нет
+    const r0 = (await view(page)).time!;
+    await f.drag(p!.x, p!.y, p!.x + 120, p!.y);
+    await expect.poll(async () => (await view(page)).time!.from).not.toBe(r0.from);
+    await page.waitForTimeout(500);
+    expect((await stored(page))[0]!.points).toEqual(LOCKED_FIB.points);
+    await expect(card(page)).toHaveCount(0);
+    // касание — выбор (раньше — ничего: на телефоне его нельзя было ни разблокировать, ни удалить)
+    const [q] = await onScreen(page, [{ time: T0 + 262 * H4, price: 101 }]);
+    await f.tap(q!.x, q!.y);
+    await expect(card(page)).toContainText("Фибоначчи");
+    await card(page).getByRole("button", { name: /уровни/ }).tap();
+    await expect(card(page).getByRole("button", { name: "удалить" })).toBeDisabled();
+    await card(page).getByRole("button", { name: "разблокировать" }).tap();
+    await expect(card(page).getByRole("button", { name: "заблокировать" })).toBeVisible();
+    await card(page).getByRole("button", { name: "удалить" }).tap();
+    await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 0");
   });
 });

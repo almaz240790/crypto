@@ -93,7 +93,12 @@ export function refresh(): Promise<string | null> {
   return refreshing;
 }
 
-/** fetch к API с токеном; при 401 — одна попытка обновить токен и повторить. */
+/**
+ * fetch к API с токеном. Токена в памяти нет — обновляем его, только если есть подсказка входа (pl_auth): гость
+ * не шлёт заведомо неудачный POST /v1/auth/refresh перед каждым запросом (аудит TSA-6). При 401 на запросе с
+ * токеном — одна попытка обновить токен и повторить; не обновился (сеанс закончился) — повтор без токена:
+ * публичные эндпоинты (свечи, слои, лента) ответят как гостю, закрытые — тем же 401 (аудит TSA-1).
+ */
 export async function api<T>(
   path: string,
   init: RequestInit & { json?: unknown; auth?: boolean } = {},
@@ -104,6 +109,7 @@ export async function api<T>(
   headers.set("accept", "application/json");
   const doFetch = async (token: string | null) => {
     if (auth && token) headers.set("authorization", `Bearer ${token}`);
+    else if (auth) headers.delete("authorization");
     return fetch(path, {
       ...rest,
       headers,
@@ -111,10 +117,12 @@ export async function api<T>(
       body: json !== undefined ? JSON.stringify(json) : rest.body,
     });
   };
-  let res = await doFetch(auth ? (accessToken ?? (await refresh())) : null);
-  if (res.status === 401 && auth) {
+  const first = auth ? (accessToken ?? (hasHint() ? await refresh() : null)) : null;
+  let res = await doFetch(first);
+  if (res.status === 401 && auth && (first || hasHint())) {
     const t = await refresh();
     if (t) res = await doFetch(t);
+    else if (first) res = await doFetch(null);
   }
   if (!res.ok) throw new ApiError(res.status, await readError(res));
   if (res.status === 204) return undefined as T;
