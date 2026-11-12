@@ -3,6 +3,8 @@ from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import (
+    Boolean,
+    Computed,
     DateTime,
     ForeignKey,
     Integer,
@@ -74,6 +76,13 @@ class StrategyVersion(Base):
     changelog: Mapped[str] = mapped_column(Text, default="")
 
 
+PUBLISHED_SQL = (
+    "coalesce((rationale_facts ->> 'publishable')::boolean, true) "
+    "AND NOT coalesce((rationale_facts ->> 'deferred')::boolean, false)"
+)
+"""Выражение столбца ``signals.published`` (миграция 0026 повторяет его дословно)."""
+
+
 class Signal(Base):
     """Торговые поля insert-only: UPDATE entry/sl/tp/score/grade запрещён триггером.
 
@@ -107,6 +116,11 @@ class Signal(Base):
     rationale_facts: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     status: Mapped[str] = mapped_column(String(16), default="pending")
     scope: Mapped[str] = mapped_column(String(8))  # forward / live, без значения по умолчанию
+    published: Mapped[bool] = mapped_column(Boolean, Computed(PUBLISHED_SQL, persisted=True))
+    """Опубликованный сигнал, а не кандидат для анализа (миграция 0026): вычисляется БД из
+    ``rationale_facts`` — ``publishable`` не false и ``deferred`` не true. Кандидат ниже порога
+    публикации и отложенный (новости) хранятся, но не показываются, не рассылаются, не ведутся
+    трекером и в статистику не входят — фильтр ``app.signal_scope.published_filter``."""
     input_hash: Mapped[str] = mapped_column(String(64))
     correlated_signal_id: Mapped[int | None] = mapped_column(ForeignKey("signals.id"))
     news_flag: Mapped[str | None] = mapped_column(String(64))

@@ -196,12 +196,17 @@ def load_signals(
     versions: Sequence[str] = (),
     scopes: Sequence[str] = ("forward",),
     include_open: bool = False,
+    published_only: bool = True,
 ) -> list[SignalRow]:
     """Записанные сигналы областей ``scopes`` с закрытием сигнальной свечи в [``since``; ``now``].
 
     ``include_open`` — добавить сигналы старше ``since``, у которых сделка ещё открыта или
     закрылась не раньше ``since`` (ежедневная сверка проверяет их сопровождение и итог: сделка
     могла жить дольше окна). Порядок и фильтр версий — как у ``load_forward_signals``.
+
+    ``published_only`` — только опубликованные сигналы (``signals.published``). ``False`` —
+    ещё и кандидаты ниже порога публикации и отложенные из окна [``since``; ``now``]: ежедневная
+    сверка пересчитывает их, чтобы заметить движок, который ошибочно скрыл сигнал.
     """
     rows = conn.execute(
         text(
@@ -217,7 +222,8 @@ def load_signals(
             "join instruments i on i.id = s.instrument_id "
             "left join signal_results r on r.signal_id = s.id "
             "where s.scope = any(:scopes) and s.candle_close_time <= :now "
-            "and (s.candle_close_time >= :since or (:open and (s.status = any(:open_statuses) "
+            "and ((s.candle_close_time >= :since and (s.published or not :published_only)) "
+            "or (s.published and :open and (s.status = any(:open_statuses) "
             "or r.closed_at >= :since)))"
         ),
         {
@@ -225,6 +231,7 @@ def load_signals(
             "now": now,
             "scopes": list(scopes),
             "open": include_open,
+            "published_only": published_only,
             "open_statuses": list(OPEN),
         },
     ).all()

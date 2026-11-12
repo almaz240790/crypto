@@ -73,6 +73,7 @@ from app.retrack import (
 from engine.candles import Candle, Timeframe
 from engine.derivatives import FundingRate, LongShortRatio, OpenInterest
 from engine.params import FilterParams, StrategyParams
+from engine.scoring import Grade
 from engine.signal import (
     MarketInputs,
     SignalCandidate,
@@ -741,7 +742,9 @@ def scenario(
     записать сигнал со сдвинутым стопом (как если бы боевой код посчитал его иначе);
     ``falls`` — пробивает ли цена стоп через полтора часа (иначе стоит у входа)."""
 
-    def build(status: str = "forward", stop_shift: str = "0", falls: bool = True) -> Scenario:
+    def build(
+        status: str = "forward", stop_shift: str = "0", falls: bool = True, hide: bool = False
+    ) -> Scenario:
         tag = secrets.token_hex(3)
         slug, ver = f"reconcile-{tag}", "9.8.7"
         monkeypatch.setitem(STRATEGIES, f"{slug}@{ver}", PARAMS)
@@ -771,6 +774,8 @@ def scenario(
         written = replace(
             cand, trade=replace(cand.trade, stop_loss=cand.trade.stop_loss + D(stop_shift))
         )
+        if hide:  # как если бы движок на сервере посчитал сигнал ниже порога публикации
+            written = replace(written, score=replace(cand.score, grade=Grade.NONE))
         assert write_candidate(db, version, inst, written, inputs)
         signal = db.query(Signal).filter(Signal.instrument_id == inst.id).one()
 
@@ -920,6 +925,21 @@ def test_trade_that_closes_after_the_window_is_still_checked(
     # сделка, закрывшаяся до окна, уже не сверяется
     with read_only_connection(sc.conn) as ro:
         assert run_reconcile(ro, AT + timedelta(days=2), days=1).checked == 0
+
+
+@db_only
+def test_signal_hidden_by_mistake_gives_a_logic_alert(scenario: Callable[..., Scenario]) -> None:
+    """Движок на сервере записал сигнал ниже порога публикации, а тот же код на том же входе
+    публикует его: подписчики сигнал не получили. Сверка пересчитывает и скрытых кандидатов окна;
+    сделкой такой кандидат не был, поэтому его сопровождение не проверяется."""
+    sc = scenario(hide=True)
+    sc.db.refresh(sc.signal)
+    assert sc.signal.published is False and sc.signal.grade == "C"
+    report = sc.reconcile()
+    (finding,) = report.findings
+    assert finding.kind is Kind.LOGIC and "выше порога публикации нет → да" in finding.message
+    assert report.hidden == 1 and report.checked == 1
+    assert "скрытых кандидатов 1" in report.summary()
 
 
 @db_only

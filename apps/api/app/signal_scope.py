@@ -10,6 +10,10 @@
   сигналы со ``scope = 'live'``, в том числе версий, которые потом ушли в forward или archived
   (план 2.11, правило 4 — публикуется полная история);
 - форвард по явной версии — вся её форвард-история, даже если версия уже archived или live.
+
+Читатели видят только опубликованные сигналы (``signals.published``, миграция 0026): кандидат
+ниже порога публикации и отложенный из-за новостей хранятся для анализа, но в область не входят —
+``scope_filter`` уже содержит ``published_filter``.
 """
 
 from __future__ import annotations
@@ -31,11 +35,20 @@ def scope_at_publication(version_status: str) -> str | None:
     return version_status if version_status in SIGNAL_SCOPES else None
 
 
+def published_filter() -> ColumnElement[bool]:
+    """Опубликованные сигналы — без кандидатов ниже порога публикации и отложенных."""
+    return Signal.published.is_(True)
+
+
+PUBLISHED_SQL_FILTER = "s.published"
+"""То же условие для текстовых запросов, где таблица ``signals`` названа ``s``."""
+
+
 def scope_filter(scope: str, strategy_version_id: int | None = None) -> ColumnElement[bool]:
-    """Условие на ``Signal`` для выборки области ``scope`` (ORM-запросы)."""
+    """Условие на ``Signal`` для выборки области ``scope`` (ORM-запросы): только опубликованные."""
     if scope not in SIGNAL_SCOPES:
         raise ValueError(f"неизвестная область сигнала: {scope}")
-    cond = Signal.scope == scope
+    cond = and_(Signal.scope == scope, published_filter())
     if strategy_version_id is not None:
         return and_(cond, Signal.strategy_version_id == strategy_version_id)
     if scope == "forward":

@@ -35,6 +35,7 @@ from app.models import (
 )
 from app.notify import send_test, settings_dict, settings_for, unsubscribe
 from app.routers.auth import UserOut, _user_out
+from app.signal_scope import published_filter, scope_filter
 from app.trade_import import (
     MATCH_WINDOW,
     MAX_SYMBOLS,
@@ -673,7 +674,9 @@ def journal_import(
     )
     live_signals = db.execute(
         select(Signal.id, Signal.instrument_id, Signal.direction, Signal.candle_close_time).where(
-            Signal.scope == "live", Signal.candle_close_time >= since - MATCH_WINDOW
+            # только опубликованные: кандидат ниже порога пользователь не видел (миграция 0026)
+            scope_filter("live"),
+            Signal.candle_close_time >= since - MATCH_WINDOW,
         )
     ).all()
     imported = skipped = matched = open_count = 0
@@ -777,7 +780,7 @@ def _vs_system(db: Session, user: User, entries: list[JournalEntry]) -> dict[str
         db.scalar(
             select(func.count())
             .select_from(Signal)
-            .where(Signal.scope == "live", Signal.candle_close_time >= since)
+            .where(scope_filter("live"), Signal.candle_close_time >= since)
         )
         or 0
     )
@@ -864,7 +867,9 @@ def _apply_journal(e: JournalEntry, body: JournalIn, db: Session) -> None:
     e.tags = body.tags
     e.note = body.note
     if body.signal_id:
-        sig = db.scalar(select(Signal).where(Signal.public_id == body.signal_id))
+        sig = db.scalar(
+            select(Signal).where(Signal.public_id == body.signal_id, published_filter())
+        )
         e.signal_id = sig.id if sig else None
         e.source = "signal" if sig else "manual"
     e.realized_r = _realized_r(e)

@@ -463,10 +463,9 @@ def open_trade_blocker(
     либо закрылась внутри сигнальной свечи — в обоих случаях инструмент занят.
 
     Как и в бэктесте, инструмент занимают только сигналы, которые там становятся сделками.
-    Кандидат ниже порога публикации или отложенный (``rationale_facts``: ``publishable`` = false
-    или ``deferred`` = true) в бэктесте сделкой не становится (``skipped['grade_none']``,
-    ``skipped['deferred']``) и инструмент не занимает — его строка сюда не читается. Строка без
-    этих пометок считается сделкой.
+    Кандидат ниже порога публикации или отложенный (``signals.published`` = false — вычисляется
+    из пометок ``rationale_facts``) в бэктесте сделкой не становится (``skipped['grade_none']``,
+    ``skipped['deferred']``) и инструмент не занимает — его строка сюда не читается.
 
     Строка, которую правило прочитать не может (закрытый статус без ``signal_results``, время
     закрытия раньше сигнальной свечи — так код не пишет), считается открытой сделкой и пишется
@@ -474,21 +473,16 @@ def open_trade_blocker(
     непонятной первой. Прогон при этом не падает, остальные пары оцениваются как обычно.
     """
     rows = session.execute(
-        select(
-            Signal.public_id,
-            Signal.candle_close_time,
-            Signal.status,
-            SignalResult.closed_at,
-            Signal.rationale_facts["publishable"],
-            Signal.rationale_facts["deferred"],
-        )
+        select(Signal.public_id, Signal.candle_close_time, Signal.status, SignalResult.closed_at)
         .outerjoin(SignalResult, SignalResult.signal_id == Signal.id)
-        .where(Signal.strategy_version_id == version.id, Signal.instrument_id == inst.id)
+        .where(
+            Signal.strategy_version_id == version.id,
+            Signal.instrument_id == inst.id,
+            Signal.published,  # в бэктесте кандидат ниже порога и отложенный сделкой не становятся
+        )
     ).all()
     signals: list[SignalLife] = []
-    for public_id, opened_at, status, closed_at, publishable, deferred in rows:
-        if publishable is False or deferred is True:
-            continue  # в бэктесте такой кандидат сделкой не становится
+    for public_id, opened_at, status, closed_at in rows:
         opened_at = opened_at.astimezone(UTC)
         try:
             life = SignalLife(
@@ -534,8 +528,9 @@ def write_candidate(
     блокировкой пары (``lock_signal_pair``), она держится до commit вызывающего.
 
     Правило касается кандидатов, которые в бэктесте становятся сделками. Кандидат ниже порога
-    публикации или отложенный пишется, как и раньше (с пометкой в ``rationale_facts``): в
-    бэктесте он не сделка, поэтому под правило не подпадает и инструмент не занимает.
+    публикации или отложенный пишется для анализа (с пометкой в ``rationale_facts``, по ней БД
+    считает ``signals.published`` = false): он не публикуется, не ведётся трекером, под правило
+    не подпадает и инструмент не занимает.
     """
     lock_signal_pair(session, version.id, inst.id)
     exists = session.scalar(
@@ -646,6 +641,7 @@ def track_open_signals(session: Session, versions: dict[str, StrategyVersion]) -
     open_rows = session.scalars(
         select(Signal).where(
             Signal.strategy_version_id.in_(version_ids),
+            Signal.published,
             Signal.status.in_(["pending", "active", "tp1_hit", "tp2_hit"]),
         )
     ).all()

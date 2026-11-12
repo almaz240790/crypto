@@ -12,6 +12,7 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.models import StrategyVersion
+from app.signal_scope import PUBLISHED_SQL_FILTER
 from engine.backtest import (
     BacktestTrade,
     Metrics,
@@ -65,7 +66,7 @@ def load_trades(
     """
     if scope == FORWARD and strategy_version_id is None:
         raise ValueError("форвард считается по одной версии стратегии: укажите версию")
-    where = ["s.scope = :scope"]
+    where = ["s.scope = :scope", PUBLISHED_SQL_FILTER]  # кандидаты ниже порога — не сделки
     params: dict[str, Any] = {"scope": scope}
     if grade:
         where.append("s.grade = :grade")
@@ -160,7 +161,8 @@ def forward_versions(session: Session) -> list[dict[str, Any]]:
             "select sv.id, st.slug, st.name, sv.version, sv.status from strategy_versions sv "
             "join strategies st on st.id = sv.strategy_id "
             "where sv.status = 'forward' or exists (select 1 from signals s "
-            "where s.strategy_version_id = sv.id and s.scope = 'forward') order by sv.id"
+            "where s.strategy_version_id = sv.id and s.scope = 'forward' and s.published) "
+            "order by sv.id"
         )
     ).all()
     return [

@@ -42,7 +42,7 @@ from app.models import (
 )
 from app.patterns import LOW_N
 from app.screener import CSV_COLUMNS, csv_rows, screener_cached
-from app.signal_scope import scope_filter
+from app.signal_scope import published_filter, scope_filter
 from app.snapshots import find as find_snapshot
 from app.stats import (
     FORWARD,
@@ -370,7 +370,7 @@ def signal_detail(
         select(Signal, Instrument.symbol, StrategyVersion.version)
         .join(Instrument, Instrument.id == Signal.instrument_id)
         .join(StrategyVersion, StrategyVersion.id == Signal.strategy_version_id)
-        .where(Signal.public_id == public_id)
+        .where(Signal.public_id == public_id, published_filter())
     ).first()
     if row is None:
         raise HTTPException(404)
@@ -423,7 +423,7 @@ def signal_analysis(
     row = db.execute(
         select(Signal, Instrument)
         .join(Instrument, Instrument.id == Signal.instrument_id)
-        .where(Signal.public_id == public_id)
+        .where(Signal.public_id == public_id, published_filter())
     ).first()
     if row is None:
         raise HTTPException(404)
@@ -445,7 +445,7 @@ def signal_candles(
     db: Session = Depends(auth.get_db),
 ) -> dict[str, Any]:
     """Свечи вокруг сигнальной — для графика в карточке."""
-    s = db.scalar(select(Signal).where(Signal.public_id == public_id))
+    s = db.scalar(select(Signal).where(Signal.public_id == public_id, published_filter()))
     if s is None or (s.scope == "forward" and _forward_hidden(db, user)):
         raise HTTPException(404)
     if user is None and s.status in OPEN_STATUSES:
