@@ -275,6 +275,9 @@ export async function mock(page: Page, calls: string[], authed = false, server: 
  * срабатывает через ~160 мс. Свечи в серии появляются раньше всего этого: координаты, прочитанные сразу, — от прежнего
  * вида (под нагрузкой — на сотни миллисекунд), и клик по ним попадает на соседнюю свечу, а подписи сравниваются с
  * прежними координатами рисунка. Проверяют то, что видит пользователь, — успокоившийся график.
+ *
+ * Без свечей в основной серии график не успокоился: пустой вид до ответа со свечами тоже не меняется, а под нагрузкой
+ * ответ приходит позже quietMs.
  */
 export async function chartSettled(page: Page, quietMs = 300): Promise<void> {
   await page.evaluate(
@@ -285,11 +288,13 @@ export async function chartSettled(page: Page, quietMs = 300): Promise<void> {
           timeScale(): { width(): number; getVisibleLogicalRange(): Range; options(): { barSpacing: number; rightOffset: number } };
           priceScale(id: string): { width(): number; getVisibleRange(): Range; options(): { scaleMargins: { top: number; bottom: number } } };
           paneSize(i: number): { height: number };
+          panes(): { getSeries(): { data(): readonly unknown[] }[] }[];
         };
         const el = document.querySelector('[data-testid="terminal"]') as (HTMLElement & { __chart?: Chart }) | null;
         const shot = () => {
           const c = el?.__chart;
           if (!c) return "нет графика";
+          if (!c.panes()[0]?.getSeries()[0]?.data().length) return "нет свечей";
           const ts = c.timeScale();
           const ps = c.priceScale("right");
           return JSON.stringify([ts.width(), ps.width(), c.paneSize(0).height, ts.options().barSpacing, ts.options().rightOffset, ts.getVisibleLogicalRange(), ps.options().scaleMargins, ps.getVisibleRange()]);
@@ -306,7 +311,7 @@ export async function chartSettled(page: Page, quietMs = 300): Promise<void> {
             since = now;
             frames = 0;
           } else frames++;
-          if (frames >= 3 && now - since >= quietMs && cur !== "нет графика") return resolve();
+          if (frames >= 3 && now - since >= quietMs && cur !== "нет графика" && cur !== "нет свечей") return resolve();
           if (now - t0 > 10_000) return reject(new Error(`график не успокоился за 10 с: ${cur}`));
           requestAnimationFrame(tick);
         };
@@ -314,4 +319,18 @@ export async function chartSettled(page: Page, quietMs = 300): Promise<void> {
       }),
     quietMs,
   );
+}
+
+/**
+ * Кадр графика после действия нарисован: два кадра анимации страницы.
+ *
+ * Места подписей рисунков (`__overlay().drawingLabels`) — из раскладки последнего нарисованного кадра: LWC рисует в
+ * requestAnimationFrame, запрошенном обработчиком события (рисунок или измерение изменились — requestUpdate), а DOM
+ * (aria-pressed кнопки инструмента) React меняет ещё в самом обработчике. Прочитанные сразу после клика, подписи — прошлого
+ * кадра: у измерителя — предпросмотр второй точки при наведении («… / 12 свечей» вместо 33, CI #164 и main после #166).
+ * Колбэк первого кадра выполняется после отрисовки, запрошенной до него; второй кадр — для отрисовки, которую запросил
+ * кадр стадий контроллера (наведение, выбор).
+ */
+export async function painted(page: Page): Promise<void> {
+  await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
 }
