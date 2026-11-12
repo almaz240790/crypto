@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 from app import admin_auth, auth, billing, ratelimit, twofactor
 from app.admin_rules import can_decide, transition_allowed
 from app.config import settings
+from app.live_gate_job import LIVE_GATE_HOUR_UTC, LIVE_GATE_KEY
 from app.models import (
     AdminAudit,
     BacktestRun,
@@ -537,6 +538,35 @@ def system(user: User = Depends(ADMIN), db: Session = Depends(auth.get_db)) -> d
         "notifications_sent_today": int(sent_today or 0),
         "reconcile": reconcile,
         "mail": "resend" if settings.resend_api_key else "лог (ключ не задан)",
+    }
+
+
+@router.get("/live-gate")
+def live_gate(user: User = Depends(ADMIN)) -> dict[str, Any]:
+    """Последний отчёт «готовность к live» (``app.live_gate_job``, задача 9 пакета «Сигналы»):
+    по каждой цели — сводка с критериями и Markdown целиком. Строит уведомитель раз в неделю,
+    цель, которая не построилась, — повтор через 12 часов. Отчёт ничего не решает: выпуск в live
+    решает владелец."""
+    schedule = f"раз в неделю, в понедельник после {LIVE_GATE_HOUR_UTC:02d}:00 UTC"
+    try:
+        r = redis_sync.Redis.from_url(settings.redis_url, decode_responses=True)
+        try:
+            raw = r.get(LIVE_GATE_KEY)
+        finally:
+            r.close()
+    except Exception as exc:
+        raise HTTPException(503, f"Redis недоступен: {type(exc).__name__}") from exc
+    if not raw:
+        return {"at": None, "reports": [], "failed": None, "schedule": schedule}
+    try:
+        state = json.loads(raw)
+    except ValueError:
+        return {"at": None, "reports": [], "failed": "итог не читается", "schedule": schedule}
+    return {
+        "at": state.get("at"),
+        "reports": state.get("reports", []),
+        "failed": state.get("failed"),
+        "schedule": schedule,
     }
 
 

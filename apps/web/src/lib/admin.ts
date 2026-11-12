@@ -1,6 +1,7 @@
 "use client";
 
 import { adminApi as api } from "./admin-auth";
+import type { LiveGate } from "./liveGate";
 
 export type AdminVersion = { id: number; strategy: string; name: string; version: string; status: string; params: Record<string, unknown>; created_by: string | null; approved_by: string | null; activated_at: string | null; signals: number };
 export type AdminRun = { id: number; strategy_version: string; period: [string, string]; instruments: number; note: string | null; metrics: Record<string, number | null> };
@@ -14,6 +15,7 @@ export type SystemStatus = { now: string; workers: Record<string, { heartbeat_ag
 export type AuditRow = { id: number; actor: string; action: string; target: string; payload: Record<string, unknown>; at: string | null };
 
 export const getStrategies = () => api<AdminStrategies>("/v1/admin/strategies");
+export const getLiveGate = () => api<LiveGate>("/v1/admin/live-gate");
 export const createStatusRequest = (strategy_version_id: number, to_status: string, reason: string) => api("/v1/admin/strategies/status-requests", { method: "POST", json: { strategy_version_id, to_status, reason } });
 export const decideStatusRequest = (id: number, approve: boolean, note: string | null) => api(`/v1/admin/strategies/status-requests/${id}/decide`, { method: "POST", json: { approve, note } });
 export const getInstruments = () => api<AdminInstrument[]>("/v1/admin/instruments");

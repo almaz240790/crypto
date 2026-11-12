@@ -13,13 +13,16 @@
 среднего R, скользящие окна, таблицу критериев плана и отличия форварда от бэктеста.
 
 Список инструментов (``--symbols``): ``mvp20`` — ``scripts/instruments_mvp.txt``; ``all`` —
-активные фьючерсы из БД; иначе — путь к файлу со списком. По умолчанию — список версии
-(``StrategyParams.symbols``), а у версии без списка — ``all``. У версии со своим списком из
-переданного отбрасывается всё, чего в её списке нет: вне списка версия сигналов не выпускает.
+активные фьючерсы из БД; иначе — путь к файлу со списком. ``--symbols-of 1.2.1`` — список другой
+версии: так форвард кандидата меряется сигналами версии с теми же правилами. По умолчанию —
+список версии (``StrategyParams.symbols``), а у версии без списка — ``all``. У версии со своим
+списком из переданного отбрасывается всё, чего в её списке нет: вне списка версия сигналов не
+выпускает.
 
 Время:
   --from   начало бэктеста (дата, UTC; по умолчанию 2022-06-01);
   --to     конец бэктеста — последнее закрытие H4, на котором ищется сигнал (обязателен);
+           ``auto`` — день начала форварда версии (нужен --now);
   --now    момент отчёта (по умолчанию равен --to): форвард-сигналы и свечи позже него не
            читаются, сделка, не закрывшаяся к нему, показана открытой. Если закрытые свечи H4
            в БД кончаются раньше, форвард считается до последней из них, и отчёт это пишет;
@@ -30,6 +33,8 @@
            Длина форварда — только время в статусе forward: выход из форварда его заканчивает.
 Текущее время не используется нигде, бутстреп идёт от зерна (``--seed``): при тех же данных и
 аргументах файл совпадает байт в байт.
+
+``--json`` — ещё и короткая сводка (параметры, итоги, критерии) для админки.
 
 Итог ежедневной сверки (задача 8) — необязательно: ``--reconcile-json`` (JSON из Redis
 ``reconcile:last`` или вывод ``scripts/reconcile.py --json``) или ``--reconcile-redis`` (читает
@@ -70,6 +75,7 @@ from app.live_gate_report import (
     report_name,
     resolve_version,
     run_backtests,
+    summary_json,
     write_report,
 )
 from app.retrack import DEFAULT_MAX_GAP_MINUTES, read_only_connection
@@ -119,6 +125,18 @@ def _day(value: str) -> datetime:
     return datetime(day.year, day.month, day.day, tzinfo=UTC)
 
 
+AUTO = "auto"
+
+
+def _end(value: str) -> datetime | str:
+    """``--to``: момент UTC или ``auto`` — день начала форварда."""
+    return AUTO if value == AUTO else _utc(value)
+
+
+def _floor_day(t: datetime) -> datetime:
+    return datetime(t.year, t.month, t.day, tzinfo=UTC)
+
+
 def _positive(value: str) -> int:
     n = int(value)
     if n < 1:
@@ -135,17 +153,26 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     p.add_argument("--version", required=True, help="версия: 1.2.0 или trend-ob-retest@1.2.0")
-    p.add_argument(
+    lists = p.add_mutually_exclusive_group()
+    lists.add_argument(
         "--symbols",
         help="mvp20, all или путь к файлу; по умолчанию — список версии, а без него — all",
     )
+    lists.add_argument("--symbols-of", help="список инструментов другой версии, например 1.2.1")
     p.add_argument("--from", dest="start", type=_day, default=_day(DEFAULT_START))
-    p.add_argument("--to", dest="end", type=_utc, required=True, help="конец бэктеста (UTC)")
+    p.add_argument(
+        "--to",
+        dest="end",
+        type=_end,
+        required=True,
+        help="конец бэктеста (UTC) или auto — день начала форварда",
+    )
     p.add_argument("--now", type=_utc, help="момент отчёта; по умолчанию --to")
     p.add_argument(
         "--since", type=_utc, help="начало форварда; по умолчанию — переход версии в форвард"
     )
     p.add_argument("--out", type=Path, help="файл отчёта; по умолчанию docs/backtests/...")
+    p.add_argument("--json", dest="json_out", type=Path, help="ещё и сводка JSON для админки")
     p.add_argument("--jobs", type=_positive, default=1, help="процессов для бэктеста (1)")
     p.add_argument("--bootstrap", type=_positive, default=DEFAULT_SAMPLES, help="выборок")
     p.add_argument("--seed", type=int, default=DEFAULT_SEED, help="зерно бутстрепа")
@@ -178,14 +205,18 @@ def load_reconcile(args: argparse.Namespace) -> tuple[dict[str, Any] | None, str
     return None, ""
 
 
-def command_line(args: argparse.Namespace, version: str, symbols_arg: str | None) -> str:
+def command_line(
+    args: argparse.Namespace, version: str, symbols_arg: str | None, end: datetime
+) -> str:
     parts = [
         "uv run python scripts/live_gate_report.py",
         f"--version {version.rsplit('@', 1)[-1]}",
     ]
     if symbols_arg:
         parts.append(f"--symbols {symbols_arg}")
-    parts += [f"--from {_arg_time(args.start)}", f"--to {_arg_time(args.end)}"]
+    if args.symbols_of:
+        parts.append(f"--symbols-of {args.symbols_of}")
+    parts += [f"--from {_arg_time(args.start)}", f"--to {_arg_time(end)}"]
     if args.now is not None:
         parts.append(f"--now {_arg_time(args.now)}")
     if args.since is not None:
@@ -211,10 +242,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"ошибка: {exc}", file=sys.stderr, flush=True)
         return 2
     params = STRATEGIES[version]
+    if args.end == AUTO and args.now is None:
+        print("ошибка: с --to auto нужен --now", file=sys.stderr, flush=True)
+        return 2
     now = args.now or args.end
+    other: str | None = None
+    if args.symbols_of:
+        try:
+            other = resolve_version(args.symbols_of)
+        except ValueError as exc:
+            print(f"ошибка: {exc}", file=sys.stderr, flush=True)
+            return 2
+        if STRATEGIES[other].symbols is None:
+            print(f"ошибка: у версии {other} нет своего списка инструментов", file=sys.stderr)
+            return 2
     raw_reconcile, reconcile_source = load_reconcile(args)
     with read_only_connection() as conn:
-        if args.symbols is None:
+        if other is not None:
+            label, symbols = f"список версии `{other}`", list(STRATEGIES[other].symbols or ())
+        elif args.symbols is None:
             label = "список версии" if params.symbols is not None else "all — активные в БД"
             symbols = list(params.symbols) if params.symbols is not None else active_symbols(conn)
         elif args.symbols == "mvp20":
@@ -226,22 +272,27 @@ def main(argv: Sequence[str] | None = None) -> int:
             label, symbols = f"файл `{path.name}`", read_symbols(path)
         symbols, dropped = backtest.version_symbols(params, list(dict.fromkeys(symbols)))
         try:
+            forward = build_forward(conn, version, symbols, now, args.since, args.max_gap_minutes)
+            if args.end == AUTO:
+                if forward.since is None:
+                    reason = forward.entered_note or f"версии {version} нет в БД"
+                    raise ValueError(f"--to auto: форвард не начинался ({reason})")
+                end = _floor_day(forward.since)
+            else:
+                end = args.end
             options = GateOptions(
                 version=version,
                 symbols=tuple(symbols),
                 symbols_label=label,
                 start=args.start,
-                end=args.end,
+                end=end,
                 now=now,
                 since=args.since,
                 samples=args.bootstrap,
                 seed=args.seed,
                 window=args.window,
                 max_gap_minutes=args.max_gap_minutes,
-                command=command_line(args, version, args.symbols),
-            )
-            forward = build_forward(
-                conn, version, options.symbols, now, args.since, args.max_gap_minutes
+                command=command_line(args, version, args.symbols, end),
             )
         except ValueError as exc:
             print(f"ошибка: {exc}", file=sys.stderr, flush=True)
@@ -263,6 +314,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     analysis = analyze(report)
     out = args.out or ROOT / "docs" / "backtests" / report_name(version, now)
     write_report(render_markdown(report, analysis), out)
+    if args.json_out is not None:
+        text_ = json.dumps(summary_json(report, analysis), ensure_ascii=False, indent=1)
+        write_report(text_ + "\n", args.json_out)
     m = analysis.backtest
     print(
         f"бэктест: инструментов {len(bt.runs)}, сделок {m.signals}, закрыто {m.closed}; "
