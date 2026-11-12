@@ -80,7 +80,8 @@ export function makeChart(o: { candles: () => readonly Candle[]; width?: number;
       const i = c.findIndex((x) => x.time >= time);
       return i < 0 ? (c.length ? c.length - 1 : null) : i;
     },
-    logicalToCoordinate: (l: number) => (l - state.range.from) * spacing() + spacing() / 2,
+    // как LWC 5.2.1 (indexToCoordinate): дробный логический индекс — 0, а не точка между свечами
+    logicalToCoordinate: (l: number) => (Number.isInteger(l) ? (l - state.range.from) * spacing() + spacing() / 2 : 0),
     coordinateToLogical: (x: number) => state.range.from + (x - spacing() / 2) / spacing(),
     getVisibleLogicalRange: () => ({ ...state.range }),
     setVisibleLogicalRange: (r: Range) => {

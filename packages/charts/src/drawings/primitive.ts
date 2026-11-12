@@ -2,9 +2,10 @@ import type { IChartApi, IPrimitivePaneRenderer, IPrimitivePaneView, ISeriesApi,
 import { layoutLabels } from "../layout/labels";
 import type { TextMeasurer } from "../layout/measure";
 import type { LabelCandidate, PlacedLabel, Rect } from "../layout/types";
+import { logicalX } from "../render/projector";
 import { alpha } from "../theme";
 import type { ThemeTokens } from "../types";
-import { channelOffset, extend, fibLevels, lineAt, positionKnobs, positionScreen, type Projector } from "./geometry";
+import { channelShift, extend, fibLevels, lineAt, positionKnobs, positionScreen, type Projector } from "./geometry";
 import { DRAWING_TEXT, drawingColor, drawingLabels, formatDrawingPrice, handleCandidate, handleRects, toCandidate, type DrawingLabel, type DrawingText, type MeasureText, type RiskProfile } from "./labels";
 import type { DrawProjector } from "./controller";
 import { FIB_KEY_LEVELS, FIB_MINOR_ALPHA, HANDLE_PX, POSITION_FILL_ALPHA, POSITION_KNOB_R, POSITION_KNOB_TOUCH_R, isPosition, type Drawing, type Point } from "./types";
@@ -56,8 +57,10 @@ export class TimeProjector {
     return t[i]! + (logical - i) * (t[i + 1]! - t[i]!);
   }
 
+  /** x времени: между свечами и за краями — по доле интервала (logicalX: LWC дробному индексу даёт 0). */
   x(time: number): number | null {
-    return this.chart.timeScale().logicalToCoordinate(this.timeToLogical(time) as never);
+    const ts = this.chart.timeScale();
+    return logicalX((l) => ts.logicalToCoordinate(l as never), this.timeToLogical(time));
   }
 
   y(price: number): number | null {
@@ -253,17 +256,16 @@ class Renderer implements IPrimitivePaneRenderer {
         if (!b) break;
         line(ctx, a!.x, a!.y, b.x, b.y);
         if (c) {
-          const off = channelOffset(d.points[0]!, d.points[1]!, d.points[2]!);
-          const yA = this.proj.y(d.points[0]!.price + off), yB = this.proj.y(d.points[1]!.price + off);
-          if (yA !== null && yB !== null) {
-            line(ctx, a!.x, yA, b.x, yB);
-            ctx.setLineDash([3, 3]);
-            line(ctx, a!.x, (a!.y + yA) / 2, b.x, (b.y + yB) / 2);
-            ctx.fillStyle = alpha(color, 0.06);
-            ctx.beginPath();
-            ctx.moveTo(a!.x, a!.y); ctx.lineTo(b.x, b.y); ctx.lineTo(b.x, yB); ctx.lineTo(a!.x, yA); ctx.closePath();
-            ctx.fill();
-          }
+          // сдвиг — на экране (channelShift): параллельна на любой шкале цены и проходит через третью точку
+          const off = channelShift(a!, b, c);
+          const yA = a!.y + off, yB = b.y + off;
+          line(ctx, a!.x, yA, b.x, yB);
+          ctx.setLineDash([3, 3]);
+          line(ctx, a!.x, (a!.y + yA) / 2, b.x, (b.y + yB) / 2);
+          ctx.fillStyle = alpha(color, 0.06);
+          ctx.beginPath();
+          ctx.moveTo(a!.x, a!.y); ctx.lineTo(b.x, b.y); ctx.lineTo(b.x, yB); ctx.lineTo(a!.x, yA); ctx.closePath();
+          ctx.fill();
         }
         break;
       }
@@ -401,7 +403,7 @@ export class DrawingsPrimitive implements ISeriesPrimitive<Time> {
   }
 
   private labels(proj: Projector, measure: MeasureText): DrawingLabel[] {
-    return drawingLabels({ drawings: this.drawings, draft: this.draft, selectedId: this.selectedId, proj, tokens: this.tokens, precision: this.precision, profile: this.profile, text: this.text, measure });
+    return drawingLabels({ drawings: this.drawings, draft: this.draft, selectedId: this.selectedId, proj, tokens: this.tokens, precision: this.precision, profile: this.profile, text: this.text, measure, touch: this.touch });
   }
 
   /**

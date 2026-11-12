@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { usePopover } from "@/components/ui";
+import { shortcutLetter } from "@/components/ui/keyboard";
 import { getAccessToken } from "@/lib/auth-client";
 import { MQ, useMediaQuery } from "@/lib/breakpoints";
 import { TF_LABEL, TIMEFRAMES, INTRADAY } from "@/lib/timeframes";
@@ -133,6 +134,8 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
     const onKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement | null)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      // буква — по клавише и на русской раскладке (Ctrl+Я — это Ctrl+Z)
+      const letter = shortcutLetter(e);
       if (e.key === "Escape") {
         // панель поверх графика (900–1279) закрывается после попапов и режима рисования
         if (overlayPanelOpen && !dr.tool) {
@@ -143,10 +146,10 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
         dr.setTool(null);
         dr.setDraft(null);
         dr.actions.select(null);
-      } else if (e.altKey && e.key.toLowerCase() === "h") {
+      } else if (e.altKey && letter === "h") {
         e.preventDefault();
         dr.setTool("hline");
-      } else if (e.altKey && e.key.toLowerCase() === "t") {
+      } else if (e.altKey && letter === "t") {
         e.preventDefault();
         dr.setTool("trend");
       } else if (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key === "+" || e.key === "=")) {
@@ -160,8 +163,8 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
         if (desktop && intradayLocked && INTRADAY.includes(x)) tfBar.current?.openLocked(x);
         else router.push(`/chart/${symbol}/${x}`);
       } else if ((e.key === "Delete" || e.key === "Backspace") && dr.selected && !dr.selected.locked) dr.actions.remove(dr.selected.id);
-      else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && !e.shiftKey) dr.actions.undo();
-      else if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === "y" || (e.key.toLowerCase() === "z" && e.shiftKey))) dr.actions.redo();
+      else if ((e.ctrlKey || e.metaKey) && letter === "z" && !e.shiftKey) dr.actions.undo();
+      else if ((e.ctrlKey || e.metaKey) && (letter === "y" || (letter === "z" && e.shiftKey))) dr.actions.redo();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
