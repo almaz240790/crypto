@@ -730,3 +730,50 @@
     border-color: var(--border);
   }
 }
+
+/* левый край истории (план 2A.7): загрузка порции слева и пометка «история ограничена» — у левого края панели цены */
+.historyEdge {
+  position: absolute;
+  left: 8px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  /* не заходит на шкалу цены (до 80 px) */
+  max-width: calc(100% - 96px);
+  margin: 0;
+  padding: 2px 8px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 18px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.historySpinner {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--border);
+  border-top-color: var(--text-2);
+  border-radius: 50%;
+  animation: history-spin 0.8s linear infinite;
+}
+
+@keyframes history-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .historySpinner {
+    animation: none;
+  }
+}

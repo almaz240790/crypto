@@ -461,3 +461,58 @@ test("панели данных фьючерсов и ATR: линии — ней
   await expect(atr.locator(".num")).toHaveCount(1);
   await expect(atr).toContainText(/^ATR 14/);
 });
+
+test("левый край истории (план 2A.7): порция грузится — «Загрузка истории…»; лимит 5 000 свечей — «История ограничена 5 000 свечами», запросов больше нет", async ({ page }) => {
+  test.setTimeout(60_000);
+  const calls: string[] = [];
+  await mock(page, calls);
+  // история на сервере не кончается (has_older всегда true); порцию можно придержать — индикатор успевают увидеть
+  let hold: Promise<void> | null = null;
+  let release = () => {};
+  const bar = (i: number) => ({ t: T0 + i * H4, o: "100.0", h: "101.0", l: "99.0", c: "100.5", v: "1000", open: false });
+  await page.route("**/v1/chart/candles?**", async (route) => {
+    const u = new URL(route.request().url());
+    const before = u.searchParams.get("before");
+    if (!before || u.searchParams.get("symbol") !== "BTCUSDT") return route.fallback();
+    calls.push(`/v1/chart/candles?${u.searchParams.toString()}`);
+    if (hold) await hold;
+    const end = Math.round((Number(before) - T0) / H4);
+    const candles = Array.from({ length: 500 }, (_, k) => bar(end - 500 + k));
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ symbol: "BTCUSDT", tf: "4h", candles, current: null, has_older: true, tick_size: "0.1", server_time: "" }) });
+  });
+  await page.goto("/chart/BTCUSDT/4h");
+  await ready(page);
+  await expect.poll(() => mainLen(page)).toBe(FIRST_PAGE + 1);
+  const note = page.getByTestId("chart-history-edge");
+  await expect(note).toHaveCount(0);
+  // порция в пути — индикатор на левом краю; пришла — его нет
+  hold = new Promise<void>((r) => (release = r));
+  await setLogical(page, { from: 5, to: 105 });
+  await expect(note).toHaveText("Загрузка истории…");
+  const box = (await note.boundingBox())!;
+  const chart = (await page.getByTestId("terminal").boundingBox())!;
+  expect(box.x - chart.x).toBeLessThan(20);
+  hold = null;
+  release();
+  await expect.poll(() => mainLen(page)).toBe(FIRST_PAGE + 1 + 500);
+  await expect(note).toHaveCount(0);
+  // к левому краю, пока буфер не полон: 5 000 свечей в памяти — дальше не грузим, у края — пометка
+  for (let i = 0; i < 12 && (await mainLen(page)) < 5000; i++) {
+    await setLogical(page, { from: 300, to: 400 });
+    await page.waitForTimeout(100);
+    const n = await mainLen(page);
+    await setLogical(page, { from: 5, to: 105 });
+    await expect.poll(() => mainLen(page)).toBeGreaterThan(n);
+  }
+  expect(await mainLen(page)).toBe(5000);
+  await setLogical(page, { from: 300, to: 400 });
+  await expect(note).toHaveCount(0);
+  await setLogical(page, { from: 5, to: 105 });
+  await expect(note).toHaveText("История ограничена 5 000 свечами");
+  const older = calls.filter((c) => c.includes("before=")).length;
+  await page.waitForTimeout(500);
+  expect(calls.filter((c) => c.includes("before=")).length).toBe(older);
+  // ушли от края — пометки нет
+  await setLogical(page, { from: 600, to: 700 });
+  await expect(note).toHaveCount(0);
+});

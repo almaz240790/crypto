@@ -1,3 +1,4 @@
+import type { HistoryEdge } from "../buffer";
 import type { HoverInfo, LegendEntry, SceneIndex } from "../scene/types";
 import type { Candle, Device, Tone } from "../types";
 
@@ -70,6 +71,8 @@ export interface ChartStatus {
    * или сменились инструмент либо таймфрейм. По нему линия сравнения догружает историю второго инструмента.
    */
   historyFrom: number | null;
+  /** Левый край истории (план 2A.7): идёт порция слева, подгрузку остановил лимит буфера (MAX_CANDLES) или ничего. */
+  historyEdge: HistoryEdge;
 }
 
 export interface ChartState {
@@ -106,7 +109,7 @@ export const INITIAL_STATE: ChartState = {
   crosshair: null,
   values: NO_VALUES,
   visible: { fromTime: null, toTime: null, atRightEdge: true, bars: 0 },
-  status: { ready: false, device: "desktop", theme: "light", themeVersion: 0, historyRev: 0, historyFrom: null },
+  status: { ready: false, device: "desktop", theme: "light", themeVersion: 0, historyRev: 0, historyFrom: null, historyEdge: null },
 };
 
 export function createChartStore(init?: Partial<ChartState>): ChartStore {

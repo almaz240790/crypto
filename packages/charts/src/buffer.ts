@@ -110,6 +110,18 @@ export function needsOlder(state: BufferState, visibleFrom: number): boolean {
   return state.hasOlder && state.candles.length < MAX_CANDLES && visibleFrom < EDGE;
 }
 
+/**
+ * Левый край истории в кадре (план 2A.7): «loading» — идёт порция слева; «capped» — вид у левого края, буфер полон
+ * (MAX_CANDLES), а на сервере есть старше: дальше не грузим (скользящее окно отложено, ADR-0003, дополнение от
+ * 2026-11-12) — пометка «история ограничена»; null — ничего.
+ */
+export type HistoryEdge = "loading" | "capped" | null;
+
+/** Вид у левого края полного буфера, а слева на сервере ещё есть история: подгрузку остановил лимит. */
+export function historyCapped(state: BufferState, visibleFrom: number): boolean {
+  return state.hasOlder && state.candles.length >= MAX_CANDLES && visibleFrom < EDGE;
+}
+
 /** Нужна ли перезагрузка правого края. */
 export function needsNewer(state: BufferState, visibleTo: number): boolean {
   return state.trimmedRight > 0 && visibleTo > state.candles.length - EDGE;

@@ -171,7 +171,10 @@ def test_load_candles_with_and_without_before() -> None:
             nxt = current_candle(s, inst.id, Timeframe.M5, at)
             assert nxt is not None and nxt.candle is None
             assert nxt.through == start + timedelta(minutes=129)
-            assert current_candle(s, inst.id, Timeframe.M1, now) is None
+            # 1m: свёртки нет — только through и интервал
+            m1 = current_candle(s, inst.id, Timeframe.M1, now)
+            assert m1.candle is None and m1.through == start + timedelta(minutes=129)
+            assert m1.start == start + timedelta(minutes=130)
         finally:
             s.rollback()
 
@@ -222,17 +225,19 @@ def test_candles_current_from_closed_minutes_and_through(monkeypatch: pytest.Mon
         stored = Candle(start, d(1), d(9), d(1), d(5), d(999), d(9990), 90)
         late_fold = Candle(start, d(1), d(3), d(1), d(2), d(7), d(70), 7)
         late = LiveBucket(late_fold, start + timedelta(minutes=30), start + timedelta(minutes=34))
-        seen: list[tuple[datetime, datetime]] = []
+        seen: list[tuple[datetime, datetime, datetime | None]] = []
 
-        def open_part(db: object, i: int, after: datetime, s: datetime) -> tuple:
-            seen.append((after, s))
+        def open_part(
+            db: object, i: int, after: datetime, s: datetime, e: datetime | None
+        ) -> tuple:
+            seen.append((after, s, e))
             return d(4), d(40), 3
 
         monkeypatch.setattr(chart, "open_minutes", open_part)
         body = get("4h", [stored], late)
         assert body["candles"][-1]["v"] == "995" and body["candles"][-1]["h"] == "9"
         assert body["through"] == int((start + timedelta(minutes=34)).timestamp())
-        assert seen == [(start + timedelta(minutes=34), start)]
+        assert seen == [(start + timedelta(minutes=34), start, start + Timeframe.H4.delta)]
         # 1h: закрытых минут в интервале нет — недописанная остаётся, through — последняя закрытая
         # перед интервалом
         h1 = bucket_start(Timeframe.H1, now)
@@ -251,6 +256,121 @@ def test_candles_current_from_closed_minutes_and_through(monkeypatch: pytest.Mon
         assert body["through"] is None
     finally:
         app.dependency_overrides.pop(auth.get_db, None)
+
+
+@db_only
+def test_candles_just_closed_bar_with_unclosed_last_minute_is_not_final(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """chart-data-live-2: через долю секунды после закрытия интервала его последняя минута в БД
+    ещё недописанная (запись раз в секунду, REST-опрос — до 15 с). Такая свеча не отдаётся
+    окончательной: она текущая — свёртка закрытых минут, through — последняя закрытая минута;
+    свечи новее неё (только недописанные минуты) не отдаются — их свернёт клиент. Раньше она
+    уходила закрытой со снимком недописанной минуты, и объём (а после догона и цены) навсегда
+    расходились с биржей."""
+    from types import SimpleNamespace
+
+    from fastapi.testclient import TestClient
+
+    from app import auth
+    from app.db import SessionLocal
+    from app.main import app
+    from app.models import Instrument
+    from app.models.market import Candle as CandleRow
+    from app.routers import chart
+
+    d = Decimal
+    now = datetime(2026, 11, 4, 8, 0, 0, 600_000, tzinfo=UTC)
+
+    class _Clock(datetime):
+        @classmethod
+        def now(cls, tz: object = None) -> datetime:  # type: ignore[override]
+            return now
+
+    monkeypatch.setattr(chart, "datetime", _Clock)
+    monkeypatch.setattr(chart, "entitlements_for", lambda *a, **k: SimpleNamespace(intraday=True))
+    minute = timedelta(minutes=1)
+    t0 = datetime(2026, 11, 4, 7, 50, tzinfo=UTC)
+    ts = lambda t: int(t.timestamp())  # noqa: E731
+
+    with SessionLocal() as s:
+        s.begin()
+        try:
+            inst = Instrument(
+                exchange="binance", symbol="CHARTLATEUSDT", base="CL", quote="USDT",
+                market_type="futures", tick_size=d("0.01"), lot_size=d("0.001"),
+            )  # fmt: skip
+            s.add(inst)
+            s.flush()
+
+            def m1(t: datetime, o: int, h: int, v: int, closed: bool = True) -> None:
+                s.add(
+                    CandleRow(
+                        instrument_id=inst.id, timeframe="1m", open_time=t, open=d(o),
+                        high=d(h), low=d(o - 1), close=d(o + 1), volume=d(v), is_closed=closed,
+                    )
+                )  # fmt: skip
+
+            for i in range(9):  # 07:50 … 07:58 — закрытые, объём 1
+                m1(t0 + i * minute, 100 + i, 102 + i, 1)
+            m1(t0 + 9 * minute, 109, 150, 7, closed=False)  # 07:59 закрылась, в БД ещё снимок
+            m1(t0 + 10 * minute, 110, 111, 3, closed=False)  # 08:00 — идущая
+            for k, (v, closed) in enumerate(((500, True), (999, False), (2, False))):
+                s.add(
+                    CandleRow(
+                        instrument_id=inst.id, timeframe="4h",
+                        open_time=datetime(2026, 11, 4, tzinfo=UTC) + timedelta(hours=4 * k),
+                        open=d(1), high=d(200), low=d(1), close=d(2), volume=d(v), is_closed=closed,
+                    )
+                )  # fmt: skip
+            s.flush()
+            app.dependency_overrides[auth.get_db] = lambda: s
+            client = TestClient(app)
+
+            def get(tf: str) -> dict:
+                r = client.get(f"/v1/chart/candles?symbol=CHARTLATEUSDT&tf={tf}")
+                assert r.status_code == 200, r.text
+                return r.json()
+
+            through = ts(t0 + 8 * minute)  # 07:58
+            # 5m: 07:55 — текущая из закрытых 07:55…07:58 (без снимка 07:59), 08:00 нет
+            body = get("5m")
+            last = body["candles"][-1]
+            assert last["t"] == ts(t0 + 5 * minute) and last["open"] is True
+            assert (last["v"], last["h"], last["c"]) == ("4", "110", "109")
+            assert body["candles"][-2]["open"] is False and body["candles"][-2]["v"] == "5"
+            assert body["through"] == through and body["current"] is None
+            # 1h: то же из минутной истории, начатой позже начала интервала
+            body = get("1h")
+            assert [(c["t"], c["v"], c["open"]) for c in body["candles"]] == [
+                (ts(datetime(2026, 11, 4, 7, tzinfo=UTC)), "9", True)
+            ]
+            assert body["through"] == through
+            # 4h: хранимая 04:00 недописана — без объёма недописанной 07:59 (но не идущей 08:00)
+            body = get("4h")
+            assert [(c["v"], c["open"]) for c in body["candles"]] == [("500", False), ("992", True)]
+            assert body["through"] == through
+            # 1m: 07:59 — текущая (снимок, её заменит закрытая минута потока), 08:00 нет
+            body = get("1m")
+            assert body["candles"][-1]["t"] == ts(t0 + 9 * minute)
+            assert body["candles"][-1]["open"] is True and body["candles"][-2]["open"] is False
+            assert body["through"] is None
+            # минута записана закрытой — свеча окончательна, текущая — идущий интервал
+            s.query(CandleRow).filter_by(instrument_id=inst.id, open_time=t0 + 9 * minute).update(
+                {"volume": d(8), "is_closed": True}
+            )
+            s.flush()
+            body = get("5m")
+            assert [(c["v"], c["open"]) for c in body["candles"][-2:]] == [
+                ("12", False),
+                ("3", True),
+            ]
+            assert body["through"] == ts(t0 + 9 * minute)
+            body = get("1m")
+            assert [c["open"] for c in body["candles"][-2:]] == [False, True]
+        finally:
+            app.dependency_overrides.pop(auth.get_db, None)
+            s.rollback()
 
 
 def test_without_open_minutes_not_below_closed_fold() -> None:

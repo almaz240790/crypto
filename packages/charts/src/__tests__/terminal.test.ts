@@ -291,6 +291,49 @@ describe("подгрузка истории слева", () => {
   });
 });
 
+describe("левый край истории (план 2A.7, chart-data-live-6)", () => {
+  it("«loading» — пока идёт порция слева; «capped» — вид у края, буфер полон (MAX_CANDLES), а на сервере есть старше; иначе null", () => {
+    const edges: (string | null)[] = [];
+    requests = [];
+    term = createTerminal(container(), { tokens, onNeedOlder: (b) => requests.push(b), onHistoryEdge: (e) => edges.push(e) });
+    chart = state.charts.at(-1) as FakeChart;
+    term.setCandles(bars(0, MAX_CANDLES - 100));
+    chart.ts.setVisibleLogicalRange({ from: 10, to: 160 });
+    expect(requests).toHaveLength(1);
+    expect(edges).toEqual(["loading"]);
+    // порция заполнила буфер; вид остался на тех же свечах — уже не у края
+    term.addOlder(bars(-500, 500), true);
+    expect(edges.at(-1)).toBeNull();
+    // снова к краю: дальше не грузим — пометка, а не бесконечное ожидание
+    chart.ts.setVisibleLogicalRange({ from: 0, to: 150 });
+    expect(requests).toHaveLength(1);
+    expect(edges.at(-1)).toBe("capped");
+    chart.ts.setVisibleLogicalRange({ from: 5, to: 155 });
+    expect(edges.filter((e) => e === "capped")).toHaveLength(1); // без повторов
+    chart.ts.setVisibleLogicalRange({ from: EDGE + 10, to: EDGE + 160 });
+    expect(edges.at(-1)).toBeNull();
+    // новая история (смена инструмента) — сброс
+    chart.ts.setVisibleLogicalRange({ from: 0, to: 150 });
+    expect(edges.at(-1)).toBe("capped");
+    term.setCandles(bars(0, 300));
+    expect(edges.at(-1)).toBeNull();
+  });
+
+  it("неудачная порция — «loading» снимается; история на сервере кончилась — у края пометки нет", () => {
+    const edges: (string | null)[] = [];
+    term = createTerminal(container(), { tokens, onNeedOlder: () => {}, onHistoryEdge: (e) => edges.push(e) });
+    chart = state.charts.at(-1) as FakeChart;
+    term.setCandles(bars(0, 500));
+    chart.ts.setVisibleLogicalRange({ from: 10, to: 160 });
+    expect(edges).toEqual(["loading"]);
+    term.olderFailed();
+    expect(edges).toEqual(["loading", null]);
+    term.setCandles(bars(0, MAX_CANDLES), false);
+    chart.ts.setVisibleLogicalRange({ from: 0, to: 150 });
+    expect(edges.at(-1)).toBeNull();
+  });
+});
+
 describe("закрытие свечи и живые обновления", () => {
   it("новая свеча добавляется инкрементально: без setData и без сброса вида", () => {
     make();

@@ -16,7 +16,7 @@ const TOP_MARGIN_EPS = 0.005;
  * иначе дальняя SMA 200 или VWAP на 1m сжимали свечи в полосу. Отдельные панели масштабируются сами.
  */
 const NO_AUTOSCALE = (): null => null;
-import { createBuffer, EDGE, needsNewer, needsOlder, prependOlder, pushLatest, replaceAt, replaceNewest, replaceTail, type BufferState } from "./buffer";
+import { createBuffer, EDGE, historyCapped, needsNewer, needsOlder, prependOlder, pushLatest, replaceAt, replaceNewest, replaceTail, type BufferState, type HistoryEdge } from "./buffer";
 import { heikinAshi } from "./heikin";
 import { LayerManager, type Layer, type LayerContext } from "./layers";
 import { INTERACTION, VIEW } from "./presets";
@@ -33,6 +33,8 @@ export type TerminalOptions = {
   /** Запрос свежих свечей после выгрузки правого края. Ответ — terminal.replaceNewest(). */
   onNeedNewer?: () => void;
   onVisibleRange?: (range: LogicalRange | null) => void;
+  /** Левый край истории сменился: идёт порция слева, подгрузку остановил лимит буфера или ничего (HistoryEdge). */
+  onHistoryEdge?: (edge: HistoryEdge) => void;
   /** Свободная зона справа от последней свечи, px (timeScale.rightOffsetPixels; VIEW[device].rightOffsetPx). */
   rightOffsetPx?: number;
   /** Шрифт шкал, px (VIEW[device].scaleFontPx). */
@@ -97,6 +99,9 @@ export class Terminal {
    * только когда левый край вида ушёл от края буфера дальше EDGE (сдвиг после вставки порции тоже считается).
    */
   private edgeArmed = true;
+  /** Запрошена порция слева, ответа ещё нет (индикатор загрузки на левом краю). */
+  private loadingOlder = false;
+  private historyEdge: HistoryEdge = null;
   private priceFormat: PriceFormat = DEFAULT_PRICE_FORMAT;
   /** Серии на шкале цены основной панели (наложенные индикаторы): у них формат цены инструмента. */
   private readonly priceSeries = new Set<ISeriesApi<SeriesType>>();
@@ -290,7 +295,9 @@ export class Terminal {
     this.buffer = createBuffer(candles, hasOlder);
     this.requesting = false;
     this.edgeArmed = true;
+    this.loadingOlder = false;
     this.render();
+    this.setHistoryEdge(null);
   }
 
   /**
@@ -302,12 +309,16 @@ export class Terminal {
     const anchor = this.buffer.candles[0]?.time;
     this.buffer = prependOlder(this.buffer, older, hasOlder);
     this.requesting = false;
+    this.loadingOlder = false;
     this.renderAnchored(anchor);
+    this.updateHistoryEdge();
   }
 
   /** Запрос старых свечей не удался или устарел: можно просить снова — после нового подхода к краю. */
   olderFailed(): void {
     this.requesting = false;
+    this.loadingOlder = false;
+    this.updateHistoryEdge();
   }
 
   replaceNewest(newest: Candle[]): void {
@@ -704,18 +715,38 @@ export class Terminal {
     const from = r.from - this.firstIndex();
     // ушли от левого края — следующий подход снова может подгрузить порцию
     if (from >= EDGE) this.edgeArmed = true;
-    if (this.requesting) return;
-    if (this.edgeArmed && needsOlder(this.buffer, from) && this.opts.onNeedOlder) {
-      const first = this.buffer.candles[0];
-      if (first) {
+    if (!this.requesting) {
+      if (this.edgeArmed && needsOlder(this.buffer, from) && this.opts.onNeedOlder) {
+        const first = this.buffer.candles[0];
+        if (first) {
+          this.requesting = true;
+          this.loadingOlder = true;
+          this.edgeArmed = false;
+          this.opts.onNeedOlder(first.time);
+        }
+      } else if (needsNewer(this.buffer, r.to) && this.opts.onNeedNewer) {
         this.requesting = true;
-        this.edgeArmed = false;
-        this.opts.onNeedOlder(first.time);
+        this.opts.onNeedNewer();
       }
-    } else if (needsNewer(this.buffer, r.to) && this.opts.onNeedNewer) {
-      this.requesting = true;
-      this.opts.onNeedNewer();
     }
+    this.updateHistoryEdge(from);
+  }
+
+  /** Левый край истории по виду (from — от первой свечи буфера; без него — по текущему виду). */
+  private updateHistoryEdge(from?: number): void {
+    const r = from ?? this.visibleFrom();
+    this.setHistoryEdge(this.loadingOlder ? "loading" : r !== null && historyCapped(this.buffer, r) ? "capped" : null);
+  }
+
+  private visibleFrom(): number | null {
+    const r = this.chart.timeScale().getVisibleLogicalRange();
+    return r ? r.from - this.firstIndex() : null;
+  }
+
+  private setHistoryEdge(edge: HistoryEdge): void {
+    if (edge === this.historyEdge) return;
+    this.historyEdge = edge;
+    this.opts.onHistoryEdge?.(edge);
   }
 
   /**

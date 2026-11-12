@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { liveSocket } from "./helpers/live";
 
 /** Лента сигналов (план 3.4): фильтры в URL, сортировка, действия. API — заглушка в браузере. */
 
@@ -77,4 +78,43 @@ test("лента: пометка об ограничениях тарифа Free
   await expect(note).toContainText("инструменты вотчлиста");
   await note.getByRole("link", { name: "Подписка" }).click();
   await expect(page).toHaveURL(/\/pricing$/);
+});
+
+test("лента: вкладка скрыта дольше 30 с — сокет закрыт (план 2A.7), сигналы за это время не теряются: при возврате лента перечитывается", async ({ page }) => {
+  const calls: string[] = [];
+  // часы страницы — подменяемые: фон в 30 с без ожидания
+  await page.clock.install();
+  await mock(page, calls);
+  const server = await liveSocket(page, { at: () => Date.now() / 1000 });
+  const feed = () => calls.filter((c) => c.startsWith("GET /v1/signals?") || c === "GET /v1/signals").length;
+  const setVisibility = (st: "hidden" | "visible") =>
+    page.evaluate((st) => {
+      Object.defineProperty(document, "visibilityState", { configurable: true, get: () => st });
+      Object.defineProperty(document, "hidden", { configurable: true, get: () => st === "hidden" });
+      document.dispatchEvent(new Event("visibilitychange"));
+    }, st);
+  try {
+    await page.goto("/signals");
+    await expect(page.getByText("2 сигналов")).toBeVisible();
+    // подписка на символы ленты — тики идут
+    await expect.poll(() => server.state.sent).toBeGreaterThan(0);
+    const loaded = feed();
+    const sockets = server.sockets.length;
+    await setVisibility("hidden");
+    await page.clock.fastForward(35_000);
+    // сокет закрыт: ни тиков, ни событий сигналов в фоне
+    await page.waitForTimeout(500);
+    const sent = server.state.sent;
+    await page.waitForTimeout(1000);
+    expect(server.state.sent).toBe(sent);
+    expect(feed()).toBe(loaded);
+    // возврат: новый сокет и одна свежая лента — пропущенные статусы и новые сигналы видны
+    await setVisibility("visible");
+    await expect.poll(() => server.sockets.length).toBe(sockets + 1);
+    await expect.poll(() => feed()).toBe(loaded + 1);
+    await page.waitForTimeout(500);
+    expect(feed()).toBe(loaded + 1);
+  } finally {
+    server.dispose();
+  }
 });

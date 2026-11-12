@@ -148,7 +148,7 @@ THROUGH_LOOKBACK = timedelta(hours=1)
 
 @dataclass(frozen=True)
 class LiveBucket:
-    """Идущий интервал tf, свёрнутый только из закрытых минут (план 2A.3).
+    """Текущая свеча tf, свёрнутая только из закрытых минут (план 2A.3).
 
     Идущую минуту market-data переписывает каждую секунду с ``is_closed = false``; она придёт по
     WebSocket закрытой, и клиент свернёт её сам. Взятая в текущую свечу, она считалась бы дважды
@@ -156,32 +156,32 @@ class LiveBucket:
     """
 
     candle: Candle | None
-    """Свёртка закрытых минут интервала; None — закрытых минут в интервале ещё нет."""
+    """Свёртка закрытых минут интервала; None — закрытых минут в интервале ещё нет (у 1m —
+    всегда)."""
     first: datetime | None
     """Первая учтённая минута (не начало интервала — у минутной истории пропуск)."""
     through: datetime | None
     """Последняя закрытая минута в БД на момент запроса (в интервале, иначе — перед ним): минуты
     WebSocket не позже неё уже учтены ответом. None — закрытых минут рядом нет."""
+    start: datetime | None = None
+    """Интервал текущей свечи: идущий, а сразу после закрытия — только что закрытый, пока его
+    последняя минута не записана закрытой (окончательным его отдавать нельзя). None — идущий."""
 
 
-def current_candle(
-    db: Session, instrument_id: int, tf: Timeframe, now: datetime
-) -> LiveBucket | None:
-    """Незакрытая свеча tf из закрытых минутных свечей текущего интервала (для tf ≥ 5m)."""
-    if tf is Timeframe.M1:
-        return None
+def current_candle(db: Session, instrument_id: int, tf: Timeframe, now: datetime) -> LiveBucket:
+    """Текущая свеча tf из закрытых минутных свечей и последняя закрытая минута (through).
+
+    Обычно это идущий интервал. Но закрытая минута пишется в БД не сразу (запись раз в секунду,
+    в режиме REST-опроса — до 15 с): сразу после закрытия интервала его последняя минута ещё
+    недописанная, и свеча с ней — не окончательная (chart-data-live-2). Тогда текущая — только что
+    закрытый по времени интервал из закрытых минут, а его последнюю минуту клиент свернёт сам.
+    Отставание больше одного интервала — сбой записи минут: там, как раньше, — идущий интервал.
+    У 1m свёртки нет (свеча — сама минута): только through и интервал."""
     start = bucket_start(tf, now)
-    rows = db.execute(
-        text(
-            "select open_time, open, high, low, close, volume, quote_volume, trades from candles "
-            "where instrument_id=:i and timeframe='1m' and open_time >= :s and is_closed "
-            "order by open_time"
-        ),
-        {"i": instrument_id, "s": start},
-    ).all()
-    if rows:
-        m1 = _rows_to_candles(list(rows))
-        return LiveBucket(fold(m1, start), m1[0].open_time, m1[-1].open_time)
+    if tf is not Timeframe.M1:
+        m1 = _closed_minutes(db, instrument_id, start, None)
+        if m1:
+            return LiveBucket(fold(m1, start), m1[0].open_time, m1[-1].open_time, start)
     last = db.execute(
         text(
             "select max(open_time) from candles where instrument_id=:i and timeframe='1m' "
@@ -189,22 +189,48 @@ def current_candle(
         ),
         {"i": instrument_id, "w": start - THROUGH_LOOKBACK, "s": start},
     ).scalar()
-    return LiveBucket(None, None, last.astimezone(UTC) if last is not None else None)
+    if last is None:
+        return LiveBucket(None, None, None, start)
+    through = last.astimezone(UTC)
+    prev = bucket_start(tf, start - timedelta(seconds=1))
+    if not prev <= through + timedelta(minutes=1) < start:
+        return LiveBucket(None, None, through, start)
+    m1 = [] if tf is Timeframe.M1 else _closed_minutes(db, instrument_id, prev, start)
+    if not m1:
+        return LiveBucket(None, None, through, prev)
+    return LiveBucket(fold(m1, prev), m1[0].open_time, through, prev)
+
+
+def _closed_minutes(
+    db: Session, instrument_id: int, start: datetime, end: datetime | None
+) -> list[Candle]:
+    """Закрытые минутные свечи с ``start`` (до ``end``, не включая) по времени."""
+    rows = db.execute(
+        text(
+            "select open_time, open, high, low, close, volume, quote_volume, trades from candles "
+            "where instrument_id=:i and timeframe='1m' and open_time >= :s and is_closed "
+            "and (CAST(:e AS timestamptz) is null or open_time < CAST(:e AS timestamptz)) "
+            "order by open_time"
+        ),
+        {"i": instrument_id, "s": start, "e": end},
+    ).all()
+    return _rows_to_candles(list(rows))
 
 
 def open_minutes(
-    db: Session, instrument_id: int, after: datetime, start: datetime
+    db: Session, instrument_id: int, after: datetime, start: datetime, end: datetime | None = None
 ) -> tuple[Decimal, Decimal, int]:
     """Объём, объём в котируемой и сделки недописанных минут интервала после ``after`` (идущая
     минута и закрытая на бирже, но ещё не записанная закрытой) — хранимая свеча Binance их
-    уже содержит."""
+    уже содержит. ``end`` — конец интервала: идущая минута следующего в свечу не входит."""
     row = db.execute(
         text(
             "select coalesce(sum(volume), 0), coalesce(sum(quote_volume), 0), "
             "coalesce(sum(trades), 0) from candles where instrument_id=:i and timeframe='1m' "
-            "and open_time > :a and open_time >= :s and not is_closed"
+            "and open_time > :a and open_time >= :s and not is_closed "
+            "and (CAST(:e AS timestamptz) is null or open_time < CAST(:e AS timestamptz))"
         ),
-        {"i": instrument_id, "a": after, "s": start},
+        {"i": instrument_id, "a": after, "s": start, "e": end},
     ).one()
     return Decimal(row[0]), Decimal(row[1]), int(row[2])
 

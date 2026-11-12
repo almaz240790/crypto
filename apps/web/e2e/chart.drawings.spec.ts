@@ -1,5 +1,5 @@
 import { devices, expect, test, type Page } from "@playwright/test";
-import { H4, T0, chartSettled, mock } from "./helpers/chart";
+import { H4, T0, chartSettled, mock, painted } from "./helpers/chart";
 import { census, installCensus, intersects, violations } from "./helpers/census";
 
 /**
@@ -435,6 +435,9 @@ test.describe("десктоп, мышь: шкалы, двойной клик, д
     const tools = page.getByRole("toolbar", { name: "панель рисования" });
     const count = page.getByTestId("drawings-count");
     const card = page.getByRole("region", { name: "выбранный рисунок" });
+    // координаты свечей A и B — с того вида, на который придутся клики: open() не ждёт ни свечей в серии, ни сброса вида
+    // по ширине шкалы цены (chartSettled)
+    await chartSettled(page);
     // от максимума свечи у 30 % ширины к минимуму свечи у 60 %: магнит ставит точки ровно на них; ATR(14) по Уайлдеру
     // на левой свече — по свечам графика (все до неё закрыты)
     const m = await page.evaluate(() => {
@@ -474,6 +477,8 @@ test.describe("десктоп, мышь: шкалы, двойной клик, д
     await expect.poll(() => rulerText(page), "при рисовании").toMatch(RULER);
     await page.mouse.click(m.b.x, m.b.y);
     await expect(ruler).toHaveAttribute("aria-pressed", "false");
+    // подпись — с кадра после клика: кнопка отжата ещё до отрисовки (painted), а прошлый кадр — предпросмотр B при наведении
+    await painted(page);
     const text = (await rulerText(page))!;
     const g = RULER.exec(text);
     expect(g, text).not.toBeNull();
@@ -492,6 +497,7 @@ test.describe("десктоп, мышь: шкалы, двойной клик, д
     expect(await stored(page)).toEqual([]);
     // наведение его не убирает, следующий клик — убирает
     await page.mouse.move(X(0.85), Y(0.15), { steps: 3 });
+    await painted(page);
     expect(await rulerText(page)).toBe(text);
     await page.mouse.click(X(0.85), Y(0.15));
     await expect.poll(() => rulerText(page)).toBeNull();

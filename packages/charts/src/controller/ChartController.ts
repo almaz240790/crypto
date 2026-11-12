@@ -16,7 +16,7 @@ import type { HoverInfo, LegendEntry, LegendKey, Scene, SceneObject } from "../s
 import type { SceneFigure, ScenePattern, SceneSignal, SceneStructure } from "../scene/wire";
 import type { ChartStore, HoverSnapshot } from "../store/chartStore";
 import { createTerminal, type Terminal, type TerminalOptions } from "../terminal";
-import { contrastText, readChartTheme, tokensFromElement, toneColor, type ChartTheme } from "../theme";
+import { contrastText, readChartTheme, seriesColors, tokensFromElement, toneColor, type ChartTheme } from "../theme";
 import { TF_SECONDS, type Candle, type ChartType, type Device, type Timeframe } from "../types";
 import { AxisCountdown } from "./axisCountdown";
 import { composeSnapshot } from "./snapshot";
@@ -190,6 +190,8 @@ export class ChartController {
       fontSize: this.view.scaleFontPx,
       onNeedOlder: (before) => this.needOlder(before),
       onVisibleRange: (r) => this.visibleChanged(r),
+      // левый край истории — поверхности: индикатор загрузки и пометка лимита (план 2A.7)
+      onHistoryEdge: (historyEdge) => this.store.patch({ status: { ...this.store.getState().status, historyEdge } }),
     });
     this.overlay = new OverlayPrimitive({
       view: this.view,
@@ -588,7 +590,8 @@ export class ChartController {
 
   /**
    * Отсчёт под меткой цены: ширина — шкалы цены, а если текст длиннее («6д 23:59» на узкой шкале телефона) —
-   * плашка растёт влево; фон — цвет свечи, текст — по правилу LWC для метки цены (contrastText).
+   * плашка растёт влево; фон — цвет метки цены LWC над ним: нарисованной свечи (в Heikin Ashi — HA-свечи, как у
+   * плашки цены), у линии — цвет линии; текст — по правилу LWC для метки цены (contrastText).
    */
   private placeCountdown(): void {
     const screen = this.lastScreen;
@@ -606,7 +609,8 @@ export class ChartController {
     const scaleW = chart.priceScale("right").width();
     const w = Math.max(scaleW, Math.ceil(this.overlay.textWidth(this.countdown.value, "mono", px, 400)) + COUNTDOWN_PAD_PX);
     const rect = { x: x + scaleW - w, y: Math.round(y - h / 2), w, h };
-    const bg = toneColor(this.theme, last.close >= last.open ? "up" : "down");
+    const drawn = this.terminal.displayedBar(last.time) ?? last;
+    const bg = this.terminal.chartType === "line" ? seriesColors(this.theme.tokens).line.color : toneColor(this.theme, drawn.close >= drawn.open ? "up" : "down");
     this.countdown.place(rect, { bg, fg: contrastText(this.theme, bg) }, px);
     this.overlay.setCountdownRect(this.countdown.shown);
   }

@@ -53,7 +53,8 @@ export function restThrough(serverTime: number): number {
  * page — закрытые свечи порции по возрастанию, current — незакрытая из того же ответа, through — последняя минута,
  * учтённая ответом целиком (поле through ответа, без него — restThrough(server_time)).
  *
- * Закрытые свечи порции заменяют свои времена (они окончательные); старее порции — остаются как были (те же
+ * Закрытые свечи порции заменяют свои времена (они окончательные), кроме свечей с минутами после through, которые
+ * поток уже подтвердил (streamedOver: его закрытая свеча полнее); старее порции — остаются как были (те же
  * объекты); новее последней закрытой порции — тоже остаются (их закрыл WebSocket уже после ответа). Текущая —
  * более новая из двух, при равном времени — та, где больше целых минут (при равенстве — из порции). Прежняя
  * текущая, которую порция не закрыла и не заменила, остаётся закрытой, а не пропадает.
@@ -76,7 +77,7 @@ export function mergeLive(s: LiveBars, page: readonly Candle[], current: Candle 
   const pageLast = page[page.length - 1]?.time;
   const head = pageLast === undefined ? s.closed.slice() : s.closed.filter((c) => c.time < first);
   const tail = pageLast === undefined ? [] : s.closed.filter((c) => c.time > pageLast);
-  const closed = [...head, ...page, ...tail];
+  const closed = [...head, ...streamedOver(s, page, through, tf), ...tail];
   const lastClosed = closed[closed.length - 1]?.time ?? -Infinity;
   const rest = current && current.time > lastClosed ? current : null;
   const live = s.current && s.current.time > lastClosed ? s.current : null;
@@ -84,6 +85,25 @@ export function mergeLive(s: LiveBars, page: readonly Candle[], current: Candle 
   const next = liveWins ? live : rest;
   if (live && next && live.time < next.time) closed.push({ ...live, open_: false });
   return { closed, current: next, through: Math.max(s.through, through) };
+}
+
+/**
+ * Свечи порции, где закрытая потоком свеча того же времени полнее (chart-data-live-2): в свече есть минуты после through
+ * порции, которые поток уже подтвердил, — (through, s.through]. Ответ прочитал БД до записи закрытой минуты, и его свеча
+ * без неё или со снимком недописанной; закрытая минута сервера придёт позже, но она не новее lastClosed — пропустится.
+ * through неизвестен — свечи порции как есть.
+ */
+function streamedOver(s: LiveBars, page: readonly Candle[], through: number, tf: Timeframe): readonly Candle[] {
+  if (!Number.isFinite(through) || !(through < s.through)) return page;
+  let out: Candle[] | null = null;
+  for (let i = page.length - 1; i >= 0; i--) {
+    const c = page[i]!;
+    if (c.time + TF_SECONDS[tf] - 60 <= through) break; // все минуты свечи (и старших) учтены ответом
+    if (c.time > s.through) continue;
+    const own = lastBefore(s.closed, c.time + 1);
+    if (own && own.time === c.time) (out ??= page.slice())[i] = own;
+  }
+  return out ?? page;
 }
 
 /** Последняя свеча раньше time в отсортированном массиве. */

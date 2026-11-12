@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Candle } from "@platform/charts";
-import { applyPage, mergeCandles, overlayNeed, type OverlayState } from "./useOverlayCandles";
+import { applyPage, mergeCandles, overlayNeed, tailPending, type OverlayState } from "./useOverlayCandles";
 
 const H = 14400;
 const c = (i: number, close = 100 + i): Candle => ({ time: i * H, open: close, high: close, low: close, close, volume: 1, open_: false });
@@ -60,5 +60,15 @@ describe("свечи наложенного инструмента следую�
     const eth = applyPage(null, "ETHUSDT:4h", { kind: "first" }, run(5, 10), true);
     const sol = applyPage(eth, "SOLUSDT:4h", { kind: "first" }, run(8, 9), false);
     expect(sol).toEqual({ key: "SOLUSDT:4h", candles: run(8, 9), hasOlder: false });
+  });
+
+  it("хвост без окончательной свечи, которую основной уже закрыл (сервер отдал её открытой), — повторить (chart-data-live-2)", () => {
+    const out = (i: number, open = false) => ({ t: i * H, open });
+    // основной закрыл свечу 10, а у цели её последняя минута ещё не записана: свеча 10 — текущая
+    expect(tailPending([out(9), out(10, true)], 10 * H)).toBe(true);
+    // свеча 10 окончательна, текущая — 11 (новее последней закрытой основного): повторять нечего
+    expect(tailPending([out(9), out(10), out(11, true)], 10 * H)).toBe(false);
+    expect(tailPending([out(9), out(10)], 10 * H)).toBe(false);
+    expect(tailPending([out(10, true)], null)).toBe(false);
   });
 });

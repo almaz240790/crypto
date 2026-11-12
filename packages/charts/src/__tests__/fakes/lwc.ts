@@ -1,6 +1,6 @@
 import { LayerManager } from "../../layers";
 import { DEFAULT_ALPHAS, PLAQUE, type ChartTheme } from "../../theme";
-import type { Candle, ThemeTokens } from "../../types";
+import type { Candle, ChartType, ThemeTokens } from "../../types";
 
 /**
  * Поддельный LWC для тестов отрисовки и контроллера: шкала времени — логический диапазон и ширина, шкала цены —
@@ -176,6 +176,8 @@ export class FakeTerminal {
   overlayLastCoordinate(): number | null {
     return null;
   }
+  /** Тип графика (основная серия): тест меняет его напрямую. */
+  chartType: ChartType = "candles";
   /** Нарисованная свеча, если она не та, что в буфере (Heikin Ashi): тест подставляет свою. */
   displayed: ((time: number) => { open: number; close: number } | null) | null = null;
   displayedBar(time: number): { open: number; close: number } | null {

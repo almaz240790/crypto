@@ -283,6 +283,59 @@ describe("LiveBar: поток с пропуском во время запрос
   });
 });
 
+/**
+ * Свеча, закрытая за доли секунды до ответа: последняя минута в БД ещё недописанная (chart-data-live-2). Сервер отдаёт
+ * такую свечу текущей — свёрткой закрытых минут с through перед недописанной; поток досворачивает её закрытую минуту.
+ */
+describe("LiveBar: свеча, закрытая перед самым ответом истории (chart-data-live-2)", () => {
+  const F = 5 * 60;
+  const msg = (t: number, o: number, h: number, l: number, c: number, v: number, at?: number) => ({ s: "BTCUSDT", tf: "1m" as const, c: { t, o: String(o), h: String(h), l: String(l), c: String(c), v: String(v), ...(at ? { at: iso(at) } : {}) } });
+  const C = (time: number, open: number, high: number, low: number, close: number, volume: number, open_ = false) => ({ time, open, high, low, close, volume, open_ });
+  const prev = C(T - F, 99, 100, 98, 100, 30);
+  const final = C(T, 100, 104, 99, 103.9, 50);
+  /** Поток 08:00–08:04 (5m): закрытые 08:02 и 08:03, снимок 08:04, закрытая 08:04 — свеча закрыта целиком. */
+  function streamed() {
+    const live = new LiveBar("BTCUSDT", "5m");
+    live.start(C(T, 100, 102, 99, 101, 20, true), [prev], T + 60, T + 180);
+    live.candle(msg(T + 120, 101, 103, 100.5, 102, 10));
+    live.candle(msg(T + 180, 102, 102.5, 101, 101.5, 10));
+    live.forming(msg(T + 240, 101.5, 103, 101, 102.8, 7, T + 299));
+    live.candle(msg(T + 240, 101.5, 104, 101, 103.9, 10));
+    live.tick({ s: "BTCUSDT", p: "104", at: iso(T + F + 0.3) });
+    return live;
+  }
+
+  it("догон: свеча ответа со снимком недописанной минуты не затирает закрытую потоком, поздняя минута сервера — не дубль", () => {
+    const live = streamed();
+    expect(live.closed.at(-1)).toEqual(final);
+    // ответ прочитал БД до записи закрытой 08:04: его 08:00 — со снимком (старый сервер или гонка), through — 08:03
+    live.catchUp([prev, C(T, 100, 103, 99, 102.8, 47)], C(T + F, 104, 104, 104, 104, 1, true), T + 180, T + F + 0.6, true);
+    expect(live.closed.at(-1)).toEqual(final);
+    live.candle(msg(T + 240, 101.5, 104, 101, 103.9, 10)); // закрытая 08:04 сервера — уже учтена потоком
+    expect(live.closed.at(-1)).toEqual(final);
+    expect(live.bar).toMatchObject({ time: T + F, close: 104 });
+  });
+
+  it("загрузка: 08:00 — текущая из закрытых минут, through 08:03; закрытая 08:04 до или после тика 08:05 — свеча целиком", () => {
+    const page = C(T, 100, 103, 99, 101.5, 40, true); // 08:00–08:03, без снимка 08:04
+    // закрытая 08:04 пришла раньше тика следующего интервала
+    const a = new LiveBar("BTCUSDT", "5m");
+    a.start(page, [prev], T + 180, T + F + 0.6);
+    a.candle(msg(T + 240, 101.5, 104, 101, 103.9, 10));
+    a.tick({ s: "BTCUSDT", p: "104", at: iso(T + F + 0.8) });
+    expect(a.closed.at(-1)).toEqual(final);
+    // REST-опрос: тик 08:05 раньше закрытой 08:04 — свеча закрыта тиком и уточняется минутой (amended)
+    const b = new LiveBar("BTCUSDT", "5m");
+    b.forming(msg(T + 240, 101.5, 103, 101, 102.8, 7, T + 299)); // снимок до ответа — в буфере ранних событий
+    b.start(page, [prev], T + 180, T + F + 0.6);
+    b.tick({ s: "BTCUSDT", p: "104", at: iso(T + F + 0.8) });
+    expect(b.closed.at(-1)).toMatchObject({ time: T, volume: 47 });
+    b.candle(msg(T + 240, 101.5, 104, 101, 103.9, 10));
+    expect(b.closed.at(-1)).toEqual(final);
+    expect(b.bar).toMatchObject({ time: T + F, close: 104 });
+  });
+});
+
 /** Очередь догона: никогда не два запроса сразу; поводы во время запроса — по правилам (ADR-0003, ADR-0010). */
 describe("CatchUpGate", () => {
   function gate(late = false) {

@@ -11,6 +11,7 @@ import { useT } from "@/i18n/client";
 import { chartText, drawingText } from "./chartText";
 import { useChartStore } from "./useChartStore";
 import { LegendChip, LiqUnavailableNote } from "./LegendChip";
+import { HistoryEdgeNote } from "./HistoryEdgeNote";
 import { ObjectTooltip } from "./ObjectTooltip";
 import { PaneChrome, type ChartGeo, type PaneGeo, type PaneSep, type ResizePhase } from "./PaneChrome";
 import { autoBox } from "./paneGeo";
@@ -873,7 +874,10 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     const dctrl = drawCtrlRef.current;
     if (!prim || !dctrl) return;
     prim.update({ drawings: drawings ? visibleOn(drawings.state, tf) : [], draft: drawings?.draft ?? null, selectedId: drawings?.state.selectedId ?? null });
-    if (dctrl.tool !== (drawings?.tool ?? null)) dctrl.setTool(drawings?.tool ?? null);
+    // инструмент — только смена его в состоянии: эффект прежней отрисовки (начатый рисунок под курсором) выполняется и
+    // после того, как контроллер закончил рисунок и снял инструмент сам, — он не возвращает инструмент и не убирает
+    // готовое измерение (DrawingController.syncTool)
+    dctrl.syncTool(drawings?.tool ?? null);
     dctrl.setMagnet(drawings?.magnet ?? true);
     dctrl.setSeries(drawings?.series ?? false);
   }, [drawings, tf]);
@@ -1213,6 +1217,7 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
         </div>
       )}
       <ObjectTooltip store={store} coarse={coarse} />
+      {mainBox && !maximized && <HistoryEdgeNote store={store} h={mainBox.h} />}
       {legend ? (
         // «развернуть» другую панель: основная — заголовок, легенда скрыта (иначе она легла бы на развёрнутую панель)
         <div ref={legendRef} className={c.legendHost} hidden={maximized !== null}>

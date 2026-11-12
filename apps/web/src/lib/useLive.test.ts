@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { dispatchLive, isNewer, LiveSocket, mergePrices, ONLINE_MS, PONG_TIMEOUT_MS, PriceBatch, PRICE_STATE_MS, RECONNECT_WAIT_MS, RETRY_JITTER_MS, RETRY_MS, SILENCE_MS, type LiveMsg, type LivePrice, type LiveTick } from "./useLive";
+import { BACKGROUND_MS, dispatchLive, isNewer, LiveSocket, mergePrices, ONLINE_MS, PONG_TIMEOUT_MS, PriceBatch, PRICE_STATE_MS, RECONNECT_WAIT_MS, RETRY_JITTER_MS, RETRY_MS, SILENCE_MS, type LiveMsg, type LivePrice, type LiveTick } from "./useLive";
 
 /** Цена в шапке (ADR-0010): тики копятся и попадают в состояние React не чаще раза в секунду. */
 
@@ -349,6 +349,108 @@ describe("соединение /v1/ws (LiveSocket)", () => {
     expect(log).not.toContain("wake");
     FakeWS.all[1]!.open();
     expect(log.filter((e) => e === "reconnect")).toHaveLength(1);
+    sock.stop();
+  });
+
+  it("фон дольше BACKGROUND_MS — сокет закрывается без переподключения (план 2A.7); возврат — новый сокет и один догон по его открытию", async () => {
+    vi.useFakeTimers();
+    const doc = fakeDoc();
+    const win = fakeWin();
+    const log: string[] = [];
+    const sock = socket(log, doc, win);
+    sock.start();
+    await flush();
+    const a = FakeWS.all[0]!;
+    a.open();
+    tick(a);
+    /** Время идёт, сервер шлёт тики раз в секунду. */
+    const live = async (ms: number) => {
+      for (let t = 0; t < ms; t += 1000) {
+        if (!a.closed) tick(a);
+        await vi.advanceTimersByTimeAsync(1000);
+      }
+    };
+    const hide = (st: DocumentVisibilityState) => {
+      doc.visibilityState = st;
+      doc.fire();
+    };
+    // скрыта меньше BACKGROUND_MS — тот же сокет; таймер фона заново с каждым уходом в фон
+    hide("hidden");
+    await live(BACKGROUND_MS - 5000);
+    hide("visible");
+    hide("hidden");
+    await live(BACKGROUND_MS - 2000);
+    expect(a.closed).toBe(false);
+    await live(3000);
+    expect(a.closed).toBe(true);
+    expect(log.slice(-2)).toEqual(["online:false", "connected:false"]);
+    expect(sock.resyncPending).toBe(false);
+    // в фоне не переподключаемся: ни по таймеру, ни по online
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    win.fire("online");
+    await flush();
+    expect(FakeWS.all).toHaveLength(1);
+    // возврат: новый сокет сразу; история — один раз, по его открытию (как после полуоткрытого сокета)
+    hide("visible");
+    await flush();
+    expect(FakeWS.all).toHaveLength(2);
+    expect(sock.resyncPending).toBe(true);
+    FakeWS.all[1]!.open();
+    expect(log.filter((e) => e === "reconnect")).toHaveLength(1);
+    expect(log).not.toContain("wake");
+    sock.stop();
+  });
+
+  it("фон, а сокет ещё ни разу не открывался: возврат — история сразу (onWake), открытие нового — не повтор", async () => {
+    vi.useFakeTimers();
+    const doc = fakeDoc();
+    const log: string[] = [];
+    const sock = socket(log, doc);
+    sock.start();
+    await flush();
+    doc.visibilityState = "hidden";
+    doc.fire();
+    await vi.advanceTimersByTimeAsync(BACKGROUND_MS + 1000);
+    expect(FakeWS.all[0]!.closed).toBe(true);
+    doc.visibilityState = "visible";
+    doc.fire();
+    await flush();
+    expect(log).toContain("wake");
+    expect(FakeWS.all).toHaveLength(2);
+    FakeWS.all[1]!.open();
+    expect(log).not.toContain("reconnect");
+    sock.stop();
+  });
+
+  it("вкладка открыта в фоне (скрыта с самого начала, visibilitychange не было): сокет закрывается через BACKGROUND_MS; возврат — новый и один догон", async () => {
+    vi.useFakeTimers();
+    const doc = fakeDoc();
+    doc.visibilityState = "hidden";
+    const log: string[] = [];
+    const sock = socket(log, doc);
+    sock.start();
+    await flush();
+    const a = FakeWS.all[0]!;
+    a.open();
+    // сервер шлёт тики раз в секунду, пока сокет открыт
+    for (let t = 0; t < BACKGROUND_MS - 1000; t += 1000) {
+      tick(a);
+      await vi.advanceTimersByTimeAsync(1000);
+    }
+    expect(a.closed).toBe(false);
+    tick(a);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(a.closed).toBe(true);
+    expect(log.slice(-2)).toEqual(["online:false", "connected:false"]);
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(FakeWS.all).toHaveLength(1);
+    doc.visibilityState = "visible";
+    doc.fire();
+    await flush();
+    expect(FakeWS.all).toHaveLength(2);
+    FakeWS.all[1]!.open();
+    expect(log.filter((e) => e === "reconnect")).toHaveLength(1);
+    expect(log).not.toContain("wake");
     sock.stop();
   });
 

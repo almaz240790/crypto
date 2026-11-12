@@ -289,6 +289,46 @@ describe("один рисунок на выбор инструмента и «с
     expect(s.log.created).toHaveLength(0);
   });
 
+  it("инструмент хозяина (syncTool): запоздавший эффект с прежним инструментом не возвращает его и не убирает измерение", () => {
+    const s = setup();
+    s.ctrl.syncTool("ruler");
+    expect(s.ctrl.tool).toBe("ruler");
+    s.mouse.tap(...at(10, 120));
+    s.mouse.move(...at(15, 115));
+    // отрисовка хозяина с начатым рисунком (тот же инструмент) — ничего не сбрасывает
+    s.ctrl.syncTool("ruler");
+    expect(s.log.drafts.at(-1)?.points).toHaveLength(2);
+    s.mouse.tap(...at(20, 110));
+    const measured = s.log.rulers.at(-1);
+    expect(measured?.points).toHaveLength(2);
+    expect(s.ctrl.tool).toBeNull();
+    // эффект отрисовки, зафиксированной до отпускания, выполняется после него — с прежним инструментом (React перед
+    // отрисовкой отпускания): раньше контроллер получал setTool("ruler"), и измерение пропадало
+    s.ctrl.syncTool("ruler");
+    expect(s.ctrl.tool).toBeNull();
+    expect(s.log.rulers.at(-1)).toBe(measured);
+    // отрисовка после onDone: инструмент снят и у хозяина
+    s.ctrl.syncTool(null);
+    expect(s.ctrl.tool).toBeNull();
+    expect(s.log.rulers.at(-1)).toBe(measured);
+    // хозяин выбрал инструмент снова — применяется (выбор инструмента убирает измерение)
+    s.ctrl.syncTool("ruler");
+    expect(s.ctrl.tool).toBe("ruler");
+    expect(s.log.rulers.at(-1)).toBeNull();
+    // и у рисунков: запоздавший эффект не взводит инструмент снова (следующий клик не начал бы второй рисунок)
+    s.ctrl.syncTool("trend");
+    s.mouse.tap(...at(30, 120));
+    s.mouse.tap(...at(40, 130));
+    expect(s.log.created).toHaveLength(1);
+    expect(s.ctrl.tool).toBeNull();
+    s.ctrl.syncTool("trend");
+    expect(s.ctrl.tool).toBeNull();
+    s.ctrl.syncTool(null);
+    s.mouse.tap(...at(50, 120));
+    s.mouse.tap(...at(60, 130));
+    expect(s.log.created).toHaveLength(1);
+  });
+
   it("измеритель пальцем: касание — A, касание — B, измерение; сдвиг графика следующим пальцем его убирает и двигает график", () => {
     const s = setup({ coarse: true });
     s.ctrl.setTool("ruler");

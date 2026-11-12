@@ -1,6 +1,6 @@
 /** Пакет графика (план 2B): обёртка LWC v5, буфер свечей, тема, слои, Heikin Ashi. */
-export { createBuffer, EDGE, firstChange, MAX_CANDLES, needsNewer, needsOlder, PAGE, prependOlder, pushLatest, replaceAt, replaceNewest, replaceTail } from "./buffer";
-export type { BufferState } from "./buffer";
+export { createBuffer, EDGE, firstChange, historyCapped, MAX_CANDLES, needsNewer, needsOlder, PAGE, prependOlder, pushLatest, replaceAt, replaceNewest, replaceTail } from "./buffer";
+export type { BufferState, HistoryEdge } from "./buffer";
 export { heikinAshi, heikinNext } from "./heikin";
 export { LayerManager } from "./layers";
 export type { Layer, LayerContext } from "./layers";

@@ -28,7 +28,9 @@
  * без ответа биржи — биржа, похоже, закрыта для пользователя: дальше попытка раз в COOL_MS. Пауза хранится в
  * sessionStorage и переживает и уход со страницы графика, и перезагрузку вкладки. Любое сообщение биржи сбрасывает паузу.
  * Вкладка снова видна, страница из кэша, сеть вернулась (online) — попытка сразу, не дожидаясь паузы (кроме долгой паузы
- * COOL_MS: её прерывает только online); вкладка скрыта — без попыток до возврата, закрытие в скрытой вкладке — не отказ.
+ * COOL_MS: её прерывает только online); вкладка скрыта — без попыток до возврата, закрытие в скрытой вкладке — не отказ;
+ * скрыта дольше BACKGROUND_MS — соединение закрывается само (план 2A.7, «фон — отключение сокета через 30 с»), тоже не
+ * отказ: новое — при возврате.
  * Таймеры спали (тишина дольше SLEPT_MS без проверки, проверка просрочена намного) — открытое соединение заменяется сразу,
  * в каком бы порядке ни пришли таймер проверки и visibilitychange (Chrome размораживает страницу скрытой: просроченный
  * таймер срабатывает раньше возврата вкладки).
@@ -38,7 +40,7 @@
  * Модуль только для браузера: экземпляр на страницу — binanceFeed() (на сервере null). В движок, на сервер и в БД ничего
  * не уходит.
  */
-import type { LiveCandle, LiveTick } from "./useLive";
+import { BACKGROUND_MS, type LiveCandle, type LiveTick } from "./useLive";
 
 /**
  * Combined stream рыночных потоков USDⓈ-M Futures (kline, aggTrade, markPrice — категория «market»). Старый адрес
@@ -192,6 +194,8 @@ export class BinanceFeed {
   private watch: ReturnType<typeof setInterval> | null = null;
   private batch: Timer | null = null;
   private linger: Timer | null = null;
+  /** Таймер фона: вкладка скрыта BACKGROUND_MS — соединение закрыть (sleep). */
+  private background: Timer | null = null;
   private controlTimer: Timer | null = null;
   private lastControl = -Infinity;
   private id = 0;
@@ -276,8 +280,8 @@ export class BinanceFeed {
   /** Остановить всё (тесты, смена страницы не требует: соединение закроется само через LINGER_MS). */
   dispose(): void {
     this.listeners.clear();
-    for (const t of [this.retry, this.batch, this.linger]) if (t) clearTimeout(t);
-    this.retry = this.batch = this.linger = null;
+    for (const t of [this.retry, this.batch, this.linger, this.background]) if (t) clearTimeout(t);
+    this.retry = this.batch = this.linger = this.background = null;
     this.stopWatch();
     this.doc?.removeEventListener("visibilitychange", this.onVisibility);
     this.win?.removeEventListener("pageshow", this.onPageShow as EventListener);
@@ -722,7 +726,23 @@ export class BinanceFeed {
     }
   }
 
+  /**
+   * Вкладка скрыта BACKGROUND_MS (план 2A.7): соединение закрывается — как закрытие в скрытой вкладке (fail), отказом не
+   * считается и попыток до возврата нет; символы — с сервера (его сокет закрывается так же — LiveSocket), догон истории
+   * при возврате — по открытию сокета сервера.
+   */
+  private sleep(): void {
+    this.background = null;
+    if (this.hidden() && (this.ws || this.next)) this.fail(false);
+  }
+
   private readonly onVisibility = (): void => {
+    if (this.hidden()) {
+      this.background ??= setTimeout(() => this.sleep(), BACKGROUND_MS);
+      return;
+    }
+    if (this.background) clearTimeout(this.background);
+    this.background = null;
     if (this.doc?.visibilityState === "visible") this.wake();
   };
 
