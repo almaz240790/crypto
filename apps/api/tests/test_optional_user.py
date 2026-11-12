@@ -68,18 +68,29 @@ def test_no_token_is_guest_valid_token_is_user() -> None:
 
 @pytest.mark.parametrize(
     ("user_id", "status"),
-    [(8, 401), (10, 401), (9, 403)],
-    ids=["deleted", "missing", "blocked"],
+    [(8, 401), (10, 401)],
+    ids=["deleted", "missing"],
 )
 def test_token_of_inactive_account_is_error_not_user(user_id: int, status: int) -> None:
-    """Токен действителен, но аккаунт удалён или не найден — 401, заблокирован — 403, как у
-    ``current_user``. Было: удалённый и заблокированный получали данные своего тарифа, а токен
-    несуществующего пользователя — ответ гостя."""
+    """Токен действителен, но аккаунт удалён или не найден — 401, как у ``current_user``. Было:
+    удалённый получал данные своего тарифа, а токен несуществующего пользователя — ответ гостя."""
     db: Any = _Db({7: ADMIN, 8: DELETED, 9: BLOCKED})
     fresh = _token(user_id, datetime.now(tz=UTC) + timedelta(minutes=10))
     with pytest.raises(HTTPException) as e:
         optional_user(_request(f"Bearer {fresh}"), db)
     assert e.value.status_code == status
+
+
+def test_token_of_blocked_account_is_guest() -> None:
+    """Заблокированный по токену сайта на открытых страницах — гость: без данных тарифа (было —
+    данные тарифа) и без 403 (вход и обновление токена блокировку не проверяют, 403 ломал бы
+    график и ленту). На закрытых эндпоинтах — 403, как раньше."""
+    db: Any = _Db({7: ADMIN, 8: DELETED, 9: BLOCKED})
+    fresh = _token(9, datetime.now(tz=UTC) + timedelta(minutes=10))
+    assert optional_user(_request(f"Bearer {fresh}"), db) is None
+    with pytest.raises(HTTPException) as e:
+        auth.current_user(_request(f"Bearer {fresh}"), db, None)
+    assert e.value.status_code == 403
 
 
 @pytest.mark.parametrize(

@@ -334,8 +334,9 @@ def test_key_rate_limit_on_optional_and_open_endpoints(
 
 
 def test_bearer_account_state_on_optional_endpoints(db: Session, client: TestClient) -> None:
-    """Удалённый (или не найденный) по токену — 401, заблокированный — 403, как у
-    ``current_user``; было — данные тарифа. Без входа — гость, истёкший токен — 401 (TSA-1)."""
+    """Удалённый (или не найденный) по токену — 401, как у ``current_user``; заблокированный —
+    ответ гостя (без данных тарифа и без 403); было — данные тарифа. Без входа — гость, истёкший
+    токен — 401 (TSA-1)."""
     inst, active, closed = _world(db)
     feed = f"/v1/signals?symbol={inst.symbol}"
     deleted = _user(db, "premium", deleted_at=datetime.now(tz=UTC))
@@ -343,8 +344,11 @@ def test_bearer_account_state_on_optional_endpoints(db: Session, client: TestCli
     for path in (feed, f"/v1/chart/candles?symbol={inst.symbol}&tf=1m"):
         r = client.get(path, headers=_bearer(deleted))
         assert r.status_code == 401 and r.json()["detail"] == "пользователь не найден", path
-        r = client.get(path, headers=_bearer(blocked))
-        assert r.status_code == 403 and r.json()["detail"] == "аккаунт заблокирован", path
+    # заблокированный — как гость: лента без активного сигнала, минутные ТФ — 403 тарифа
+    assert _ids(client.get(feed, headers=_bearer(blocked))) == {closed.public_id}
+    r = client.get(f"/v1/chart/candles?symbol={inst.symbol}&tf=1m", headers=_bearer(blocked))
+    assert r.status_code == 403 and r.json()["detail"] != "аккаунт заблокирован"
+    assert client.get("/v1/journal", headers=_bearer(blocked)).status_code == 403
     missing = User(id=2_000_000_000, email="gone@example.test", role="user")
     assert client.get(feed, headers=_bearer(missing)).status_code == 401
 

@@ -268,8 +268,13 @@ def api_key_user(request: Request, db: Session = Depends(get_db)) -> User | None
     return _api_key_user(request, db, raw.strip())
 
 
-def _bearer_user(request: Request, db: Session) -> User | None:
-    """Пользователь по ``Authorization: Bearer``; заголовка нет — ``None``."""
+def _bearer_user(request: Request, db: Session, *, blocked_is_guest: bool = False) -> User | None:
+    """Пользователь по ``Authorization: Bearer``; заголовка нет — ``None``.
+
+    ``blocked_is_guest`` — для открытых страниц: заблокированный аккаунт получает ответ гостя, а не
+    403. Вход и обновление токена блокировку не проверяют, поэтому сайт заблокированного шлёт его
+    токен и на открытые страницы; 403 там ломал бы график и ленту, а данные тарифа ему не
+    положены."""
     header = request.headers.get("authorization", "")
     if not header.lower().startswith("bearer "):
         return None
@@ -278,7 +283,10 @@ def _bearer_user(request: Request, db: Session) -> User | None:
         user_id = int(payload["sub"])
     except (KeyError, TypeError, ValueError) as exc:
         raise HTTPException(401, "недействительный токен") from exc
-    return _active(db.get(User, user_id))
+    user = db.get(User, user_id)
+    if blocked_is_guest and user is not None and user.deleted_at is None and user.blocked_at:
+        return None
+    return _active(user)
 
 
 def current_user(
@@ -302,8 +310,9 @@ def optional_user(
     подходит, — ошибка, как у ``current_user``: 401 (клиент обновит токен и повторит запрос, а если
     сеанс кончился — повторит без токена, как гость), 403, 429. Тихий гость вместо ошибки отдавал
     платящему права Free (минутные ТФ — 403, без слоя сигналов, лента с задержкой) — аудит TSA-1
-    для токена и ревью PR #162 для ключа."""
-    return key_user or _bearer_user(request, db)
+    для токена и ревью PR #162 для ключа. Исключение — заблокированный аккаунт по токену сайта:
+    ответ гостя, без данных тарифа (по ключу — 403)."""
+    return key_user or _bearer_user(request, db, blocked_is_guest=True)
 
 
 def promote_owner(user: User, owner_emails: set[str]) -> bool:
