@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Iterator
-from datetime import UTC, datetime
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -278,3 +279,38 @@ def test_forward_run_does_not_evaluate_backtest_version(
     assert stats["instruments"] == 1 and stats["signals"] == 0
     assert evaluated == [PARAMS_OLD]
     assert f"версия {KEY_NEW} в статусе backtest — не оценивается" in capsys.readouterr().out
+
+
+@db_only
+def test_version_with_a_symbol_list_is_evaluated_only_on_its_instruments(
+    monkeypatch: pytest.MonkeyPatch,
+    make_session: Callable[[], Session],
+    code_versions: dict[str, StrategyParams],
+) -> None:
+    """Версия со своим списком инструментов (``StrategyParams.symbols``, задача 11) — scheduler и
+    форвард не оценивают её по инструменту вне списка; инструменты из списка — как обычно."""
+    with make_session() as s:
+        _, inst = _seed(s)
+        symbol = inst.symbol
+    elsewhere = replace(PARAMS_OLD, symbols=("BTCUSDT", "ETHUSDT"))
+    here = replace(PARAMS_OLD, symbols=(symbol, "ETHUSDT"))
+    evaluated: list[StrategyParams] = []
+
+    def fake_evaluate(inputs: MarketInputs, at: datetime, params: StrategyParams) -> NoSignal:
+        evaluated.append(params)
+        return NoSignal("trigger", "нет слома структуры")
+
+    for module in (scheduler, forward):
+        monkeypatch.setattr(module, "SessionLocal", make_session)
+        monkeypatch.setattr(module, "load_inputs", lambda *_: None)
+        monkeypatch.setattr(module, "evaluate", fake_evaluate)
+
+    code_versions[KEY_OLD] = elsewhere
+    assert scheduler.process_symbol(symbol, AT) == {"signals": 0, "no_signal": 0}
+    assert forward.run_forward([symbol], refresh=False, now=AT, track=False)["signals"] == 0
+    assert evaluated == []  # инструмента нет в списке версии — не оценивается нигде
+
+    code_versions[KEY_OLD] = here
+    scheduler.process_symbol(symbol, AT + timedelta(hours=4))
+    forward.run_forward([symbol], refresh=False, now=AT + timedelta(hours=4), track=False)
+    assert evaluated == [here, here]

@@ -628,7 +628,8 @@ def test_scheduler_logs_one_summary_line_per_version(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     monkeypatch.setattr(scheduler, "_summaries", {})
-    monkeypatch.setattr(scheduler, "active_instruments", lambda: 4)
+    active = frozenset({"BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"})
+    monkeypatch.setattr(scheduler, "active_instruments", lambda: active)
     caplog.set_level(logging.INFO, logger="scheduler")
     a, b = "trend-ob-retest@1.1.0", "trend-ob-retest@1.2.0"
     scheduler.record_evaluation(AT, "BTCUSDT", {a: "bias", b: "trigger"})
@@ -660,6 +661,25 @@ def test_scheduler_logs_one_summary_line_per_version(
     (line,) = [r.getMessage() for r in caplog.records]
     assert "оценено инструментов 1 из 4" in line
     assert not scheduler.log_close_summary(AT + H4 * 5, force=True)  # закрытия без оценок нет
+
+
+def test_scheduler_summary_keeps_a_line_for_a_list_version_with_nothing_evaluated(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Версия со своим списком инструментов (1.2.1) получает строку сводки и тогда, когда к сроку
+    не оценена ни одна её пара: «оценено 0 из N», а не пропавшая строка (задача 11)."""
+    monkeypatch.setattr(scheduler, "_summaries", {})
+    active = frozenset({"BTCUSDT", "ETHUSDT", "XLMUSDT"})  # BTC и ETH — в списке 1.2.1, XLM — нет
+    monkeypatch.setattr(scheduler, "active_instruments", lambda: active)
+    caplog.set_level(logging.INFO, logger="scheduler")
+    wide, narrow = "trend-ob-retest@1.2.0", "trend-ob-retest@1.2.1"
+    scheduler.record_evaluation(AT, "XLMUSDT", {wide: "bias"}, [wide, narrow])
+    assert scheduler.log_close_summary(AT, force=True)
+    messages = [r.getMessage() for r in caplog.records]
+    assert len(messages) == 2
+    by_version = {key: next(m for m in messages if f" {key}:" in m) for key in (wide, narrow)}
+    assert "оценено инструментов 1 из 3" in by_version[wide]
+    assert "оценено инструментов 0 из 2" in by_version[narrow]
 
 
 # --- сценарий на БД ----------------------------------------------------------------------------

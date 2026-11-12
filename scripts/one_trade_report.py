@@ -166,9 +166,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             for s in args.symbols_file.read_text().splitlines()
             if s.strip() and not s.startswith("#")
         ]
-    if not symbols:
-        print("ошибка: укажите --symbols или --symbols-file", file=sys.stderr, flush=True)
-        return 2
     try:
         options = ReportOptions(
             version=args.strategy,
@@ -181,6 +178,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     except ValueError as exc:
         print(f"ошибка: {exc}", file=sys.stderr, flush=True)
+        return 2
+    # у версии со своим списком инструментов (StrategyParams.symbols) — только её пары, как у
+    # scripts/backtest.py: вне списка версия сигналов не выпускает
+    symbols, dropped = backtest.version_symbols(options.params, symbols)
+    if dropped:
+        print(
+            f"нет в списке версии {options.version}, пропущены: {', '.join(dropped)}",
+            file=sys.stderr,
+            flush=True,
+        )
+    if not symbols:
+        print("ошибка: укажите --symbols или --symbols-file", file=sys.stderr, flush=True)
         return 2
     load = partial(
         load_symbol, options=options, derivatives=not args.no_derivatives, data_dir=args.data_dir
