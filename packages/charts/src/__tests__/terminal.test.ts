@@ -574,6 +574,30 @@ describe("верхнее поле шкалы цены под легенду (п�
     term.setTopMargin(0.3);
     expect(topOf("overlay")?.top).toBe(0.3);
   });
+
+  it("нижнее поле — под карточку выбранного рисунка (ADR-0009): не меньше 0.2, свечам — не меньше 25 % панели; переживает смену темы", () => {
+    make();
+    term.setCandles(bars(0, 50), false);
+    term.setBottomMargin(0.4);
+    expect(topOf("right")).toEqual({ top: 0.08, bottom: 0.4 });
+    expect(term.bottomMarginShare).toBe(0.4);
+    term.setOverlay(bars(0, 50), "#999999");
+    expect(topOf("overlay")?.bottom).toBe(0.4);
+    term.setTheme({ ...tokens, surface: "#ffffff" });
+    expect(topOf("right")?.bottom).toBe(0.4);
+    // меньше поля по умолчанию (свёрнутая карточка) и мусор — поле по умолчанию
+    term.setBottomMargin(0.1);
+    expect(topOf("right")).toEqual({ top: 0.08, bottom: 0.2 });
+    term.setBottomMargin(Number.NaN);
+    expect(term.bottomMarginShare).toBe(0.2);
+    // свечам остаётся не меньше 25 %: и когда поле под легенду выросло потом
+    term.setBottomMargin(0.9);
+    expect(term.bottomMarginShare).toBeCloseTo(0.67, 9);
+    term.setTopMargin(0.35);
+    expect(topOf("right")!.bottom).toBeCloseTo(0.4, 9);
+    term.setBottomMargin(0);
+    expect(topOf("right")).toEqual({ top: 0.35, bottom: 0.2 });
+  });
 });
 
 describe("сброс вида и масштаб у правого края", () => {

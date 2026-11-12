@@ -24,7 +24,13 @@ const subcent = (i: number) => {
 /** Шаг цены — как у /v1/instruments ниже: у BTCUSDT 0.1 (как на бирже), у монеты дешевле цента — старый формат API. */
 const TICKS: Record<string, string> = { BTCUSDT: "0.1", ETHUSDT: "0.01", [SUBCENT]: "1.000E-7" };
 
+/**
+ * Данные заглушки API на одного пользователя (несколько страниц — несколько устройств). drawings — строки сервера:
+ * рисунок в формате API (client_id, symbol, …) и порядковый номер записи __seq — курсор чтения, как synced_at у API.
+ */
 export type MockServer = { drawings: Record<string, unknown>[]; layout: Record<string, unknown> | null; layouts?: Record<string, Record<string, unknown>>; alerts?: Record<string, unknown>[]; plan?: "free" | "pro" | "premium" };
+/** Лимит рисунков на инструмент по тарифу — как ENTITLEMENTS у API. */
+const DRAWINGS_LIMIT = { free: 10, pro: 100, premium: null } as const;
 /** rich — насыщенная разметка для переписи подписей (план 2B.2, §14.3): уровни вокруг текущей цены. */
 export type MockOptions = { fixture?: "default" | "rich" };
 
@@ -126,17 +132,54 @@ export async function mock(page: Page, calls: string[], authed = false, server: 
       const tick = TICKS[symbol] ?? "0.01";
       return json(200, { symbol, tf, candles: items, current: before ? null : { ...mk(end), open: true }, has_older: start > HISTORY_FROM, tick_size: tick, server_time: "" });
     }
-    if (p === "/v1/drawings" && route.request().method() === "GET") return json(200, { symbol: "BTCUSDT", items: server.drawings, limit: 100, sync: true });
+    // рисунки — по правилам API (routers/drawings.py): чтение по инструменту и курсору (прежние клиенты — since по
+    // updated_at), запись — каждый рисунок отдельно, последняя запись побеждает (при равенстве — удаление), рисунок не
+    // переходит на другой инструмент, лимит тарифа — новым рисункам; отказы — по рисунку в rejected
+    const plan = server.plan ?? "premium";
+    const seq = () => Math.max(0, ...server.drawings.map((d) => (d.__seq as number | undefined) ?? 0));
+    const wire = (d: Record<string, unknown>) => Object.fromEntries(Object.entries(d).filter(([k]) => k !== "__seq"));
+    if (p === "/v1/drawings" && route.request().method() === "GET") {
+      const symbol = (u.searchParams.get("symbol") ?? "").toUpperCase();
+      const cursor = u.searchParams.get("cursor");
+      const since = Number(u.searchParams.get("since") ?? 0);
+      const changed = (d: Record<string, unknown>) => (cursor !== null ? ((d.__seq as number | undefined) ?? 0) > Number(cursor) : (d.updated_at as number) > since);
+      const items = server.drawings.filter((d) => d.symbol === symbol && changed(d)).map(wire);
+      return json(200, { symbol, items, limit: DRAWINGS_LIMIT[plan], sync: plan !== "free", cursor: seq() });
+    }
     if (p === "/v1/drawings" && route.request().method() === "PUT") {
+      if (plan === "free") return json(403, { detail: "синхронизация рисунков доступна на тарифе Pro" });
       const items = route.request().postDataJSON() as Record<string, unknown>[];
+      const out: Record<string, unknown>[] = [];
+      const rejected: Record<string, unknown>[] = [];
+      const limit = DRAWINGS_LIMIT[plan];
       for (const it of items) {
+        const symbol = String(it.symbol).toUpperCase();
+        const reject = (status: number, code: string, detail: string) => rejected.push({ client_id: it.client_id, symbol, status, code, detail: `${it.client_id}: ${detail}` });
+        if (!(symbol in TICKS)) {
+          reject(404, "unknown_symbol", `инструмент не найден: ${symbol}`);
+          continue;
+        }
         const i = server.drawings.findIndex((d) => d.client_id === it.client_id);
         const cur = i >= 0 ? server.drawings[i]! : null;
-        const win = !cur || (it.updated_at as number) >= (cur.updated_at as number) ? it : cur;
-        if (i >= 0) server.drawings[i] = win;
-        else server.drawings.push(win);
+        if (cur && cur.symbol !== symbol) {
+          reject(409, "other_symbol", "рисунок принадлежит другому инструменту");
+          continue;
+        }
+        if (!cur && !it.deleted_at && limit !== null && server.drawings.filter((d) => d.symbol === symbol && !d.deleted_at).length >= limit) {
+          reject(403, "limit", `лимит рисунков на инструмент: ${limit} (тариф ${plan})`);
+          continue;
+        }
+        const iu = it.updated_at as number;
+        const su = (cur?.updated_at as number | undefined) ?? -1;
+        // та же удалённая версия ещё раз — без записи (курсор её заново не отдаёт)
+        if (!cur || iu > su || (iu === su && it.deleted_at && !cur.deleted_at)) {
+          const row = { ...it, symbol, __seq: seq() + 1 };
+          if (i >= 0) server.drawings[i] = row;
+          else server.drawings.push(row);
+        }
+        out.push(wire(server.drawings.find((d) => d.client_id === it.client_id)!));
       }
-      return json(200, { items: items.map((it) => server.drawings.find((d) => d.client_id === it.client_id)) });
+      return json(200, { items: out, rejected });
     }
     if (p === "/v1/chart/layouts") return json(200, Object.keys(server.layouts!).map((name) => ({ name, updated_at: 0 })));
     if (p === "/v1/chart/layout" && route.request().method() === "GET") {
@@ -222,3 +265,53 @@ export async function mock(page: Page, calls: string[], authed = false, server: 
   });
 }
 
+/**
+ * График успокоился: видимый диапазон, шаг свечей, ширина области свечей и шкалы цены, высота панели, поля шкалы и
+ * диапазон цен не менялись `quietMs` и не меньше трёх кадров подряд (ошибка — если не успокоился за 10 с).
+ *
+ * Зачем: после загрузки и смены таймфрейма вид ещё перестраивается — LWC размечает шкалу цены по первым делениям, область
+ * свечей меняет ширину, и контроллер сбрасывает вид заново по новой ширине (ChartController, «ширина области
+ * сменилась»); заданный диапазон LWC применяет только при отрисовке, а таймер шкалы (OverlayPrimitive.scheduleAxis)
+ * срабатывает через ~160 мс. Свечи в серии появляются раньше всего этого: координаты, прочитанные сразу, — от прежнего
+ * вида (под нагрузкой — на сотни миллисекунд), и клик по ним попадает на соседнюю свечу, а подписи сравниваются с
+ * прежними координатами рисунка. Проверяют то, что видит пользователь, — успокоившийся график.
+ */
+export async function chartSettled(page: Page, quietMs = 300): Promise<void> {
+  await page.evaluate(
+    (quietMs) =>
+      new Promise<void>((resolve, reject) => {
+        type Range = { from: number; to: number } | null;
+        type Chart = {
+          timeScale(): { width(): number; getVisibleLogicalRange(): Range; options(): { barSpacing: number; rightOffset: number } };
+          priceScale(id: string): { width(): number; getVisibleRange(): Range; options(): { scaleMargins: { top: number; bottom: number } } };
+          paneSize(i: number): { height: number };
+        };
+        const el = document.querySelector('[data-testid="terminal"]') as (HTMLElement & { __chart?: Chart }) | null;
+        const shot = () => {
+          const c = el?.__chart;
+          if (!c) return "нет графика";
+          const ts = c.timeScale();
+          const ps = c.priceScale("right");
+          return JSON.stringify([ts.width(), ps.width(), c.paneSize(0).height, ts.options().barSpacing, ts.options().rightOffset, ts.getVisibleLogicalRange(), ps.options().scaleMargins, ps.getVisibleRange()]);
+        };
+        const t0 = performance.now();
+        let prev = shot();
+        let since = t0;
+        let frames = 0;
+        const tick = () => {
+          const now = performance.now();
+          const cur = shot();
+          if (cur !== prev) {
+            prev = cur;
+            since = now;
+            frames = 0;
+          } else frames++;
+          if (frames >= 3 && now - since >= quietMs && cur !== "нет графика") return resolve();
+          if (now - t0 > 10_000) return reject(new Error(`график не успокоился за 10 с: ${cur}`));
+          requestAnimationFrame(tick);
+        };
+        requestAnimationFrame(tick);
+      }),
+    quietMs,
+  );
+}

@@ -39,7 +39,9 @@ export type TextKey =
   | "figure.invalidated"
   | "signal.entry"
   | "signal.stop"
+  | "signal.stop.be"
   | "signal.tp"
+  | "signal.tp.hit"
   | "alert.up"
   | "alert.down"
   | "alert.range"
@@ -78,6 +80,8 @@ export type TextKey =
   | "hover.patternFound"
   | "hover.signal.long"
   | "hover.signal.short"
+  | "hover.signal.be"
+  | "hover.signal.tpHit"
   | "hover.alert.up"
   | "hover.alert.down"
   | "hover.alert.range"
@@ -205,7 +209,9 @@ export const RU_STRINGS: { readonly [K in TextKey]: string } = {
   "figure.invalidated": "отменена",
   "signal.entry": "Вход",
   "signal.stop": "Стоп",
+  "signal.stop.be": "Стоп → б/у",
   "signal.tp": "Цель {n}",
+  "signal.tp.hit": "Цель {n} ✓",
   "alert.up": "Алерт ↑",
   "alert.down": "Алерт ↓",
   "alert.range": "Алерт ↔",
@@ -244,6 +250,8 @@ export const RU_STRINGS: { readonly [K in TextKey]: string } = {
   "hover.patternFound": "найден",
   "hover.signal.long": "сигнал {grade}, лонг",
   "hover.signal.short": "сигнал {grade}, шорт",
+  "hover.signal.be": "после цели 1 стоп перенесён на цену входа",
+  "hover.signal.tpHit": "цель достигнута",
   "hover.alert.up": "Алерт: пересечение вверх",
   "hover.alert.down": "Алерт: пересечение вниз",
   "hover.alert.range": "Алерт: вход в диапазон",

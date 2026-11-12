@@ -19,6 +19,7 @@ from sqlalchemy import or_, select, text
 from sqlalchemy.orm import Session
 
 from app.analysis import params_for_version
+from app.entitlements import Entitlements, apply_signal_entitlements
 from app.models import Instrument, Signal, SignalEvent, StrategyVersion
 from app.signal_scope import scope_filter
 from engine.bias import context_at
@@ -274,16 +275,49 @@ def latest_version(db: Session) -> StrategyVersion | None:
     )
 
 
+def _written_open(db: Session, instrument_id: int, tf: Timeframe, c: Candle) -> bool:
+    """Свеча закрыта по времени, но в БД — ещё снимок формирующейся (``is_closed = false``).
+
+    market-data переписывает идущую 4h/1d/1w раз в ``FORMING_HTF_EVERY`` секунд и записывает
+    закрытой, когда приходит закрытие с биржи: в первые секунды после закрытия последняя строка —
+    последний снимок, без сделок последних секунд. У 5m/15m/1h — последняя минута корзины.
+    Строки нет (пропуск в истории) — свеча как есть."""
+    if tf in STORED:
+        tf_db, at = tf.value, c.open_time
+    else:
+        tf_db, at = Timeframe.M1.value, c.open_time + tf.delta - Timeframe.M1.delta
+    closed = db.execute(
+        text(
+            "select is_closed from candles "
+            "where instrument_id=:i and timeframe=:tf and open_time=:t"
+        ),
+        {"i": instrument_id, "tf": tf_db, "t": at},
+    ).scalar()
+    return closed is False
+
+
 def compute_layers(db: Session, inst: Instrument, tf: Timeframe, now: datetime) -> dict[str, Any]:
-    """Структура, зоны, уровни, равные уровни, снятия по закрытым свечам tf (параметры движка)."""
+    """Структура, зоны, уровни, равные уровни, снятия по закрытым свечам tf (параметры движка).
+
+    ``last_t`` — начало последней закрытой свечи, по которой построен ответ (клиент сверяет её со
+    своей последней закрытой и, если сервер отстал, перечитывает слои). Последняя строка, ещё не
+    записанная закрытой, в расчёт не входит; ``complete = false`` — ответ построен без неё или по
+    снимку незакрытой дневной/недельной свечи, такой ответ не кэшируется."""
     ver = latest_version(db)
     params = params_for_version(ver.version if ver else None)
     candles, _ = load_candles(db, inst.id, tf, None, PAGE)
     candles = closed_only(candles, tf, now)
+    complete = True
+    if candles and _written_open(db, inst.id, tf, candles[-1]):
+        candles = candles[:-1]
+        complete = False
+    last_t = int(candles[-1].open_time.timestamp()) if candles else None
     if len(candles) < 50:
         return {
             "tf": tf.value,
             "at": now.isoformat(),
+            "last_t": last_t,
+            "complete": complete,
             "swings": [],
             "events": [],
             "zones": [],
@@ -301,6 +335,11 @@ def compute_layers(db: Session, inst: Instrument, tf: Timeframe, now: datetime) 
     w1, _ = load_candles(db, inst.id, Timeframe.W1, None, 120)
     d1 = closed_only(d1, Timeframe.D1, now)
     w1 = closed_only(w1, Timeframe.W1, now)
+    # снимок незакрытой дневной/недельной не отбрасывается (иначе «вчера» стало бы позавчера), но
+    # такой ответ не кэшируется: через секунды строка будет закрытой
+    for period, rows in ((Timeframe.D1, d1), (Timeframe.W1, w1)):
+        if rows and _written_open(db, inst.id, period, rows[-1]):
+            complete = False
     levels = period_levels(now, d1, w1)
     bias = context_at(now, d1, w1, params.bias, params.structure) if d1 and w1 else None
 
@@ -310,6 +349,8 @@ def compute_layers(db: Session, inst: Instrument, tf: Timeframe, now: datetime) 
     return {
         "tf": tf.value,
         "at": now.isoformat(),
+        "last_t": last_t,
+        "complete": complete,
         "strategy_version": ver.version if ver else None,
         "swings": [
             {"t": int(s.time.timestamp()), "p": _dec(s.price), "kind": s.kind.value}
@@ -363,10 +404,21 @@ def compute_layers(db: Session, inst: Instrument, tf: Timeframe, now: datetime) 
     }
 
 
+def layers_key(instrument_id: int, tf: Timeframe, now: datetime) -> str:
+    """Ключ кэша слоёв: последняя закрытая свеча tf и день (макс./мин. вчера и прошлой недели
+    сменяются в 00:00 UTC). Ответ, посчитанный до закрытия, после закрытия не отдаётся."""
+    last = bucket_start(tf, now) - tf.delta
+    return (
+        f"chart:layers:{instrument_id}:{tf.value}:{int(last.timestamp())}:{now.date().isoformat()}"
+    )
+
+
 def layers_cached(
     db: Session, r: Any | None, inst: Instrument, tf: Timeframe, now: datetime
 ) -> dict[str, Any]:
-    key = f"chart:layers:{inst.id}:{tf.value}"
+    """Слои с кэшем ``LAYERS_TTL`` на последнюю закрытую свечу; неполный ответ (``complete``) —
+    без кэша."""
+    key = layers_key(inst.id, tf, now)
     if r is not None:
         try:
             cached = r.get(key)
@@ -375,27 +427,39 @@ def layers_cached(
         except Exception:
             pass
     out = compute_layers(db, inst, tf, now)
-    if r is not None:
+    if r is not None and out.get("complete", True):
         with contextlib.suppress(Exception):
             r.set(key, json.dumps(out, ensure_ascii=False), ex=LAYERS_TTL)
     return out
 
 
+BE_STATUSES = ("tp1_hit", "tp2_hit")
+"""Открытые статусы после цели 1: стоп на цене входа, если версия переносит его (be_after_tp1)."""
+
+
 def signal_layer(
-    db: Session, inst: Instrument, scopes: list[str], limit: int = 50
+    db: Session,
+    inst: Instrument,
+    scopes: list[str],
+    limit: int = 50,
+    plan: tuple[Entitlements, list[int] | None, datetime] | None = None,
 ) -> list[dict[str, Any]]:
     """Сигналы инструмента для слоя: вход, стоп, цели, статус, события на шкале времени.
 
     ``scopes`` — области сигналов (``signals.scope`` на момент публикации, ``app.signal_scope``):
     live — все live-сигналы, forward — форвард-сигналы версий, которые сейчас в forward или live.
+    ``plan`` — права пользователя, разрешённые инструменты и момент запроса: те же ограничения
+    тарифа, что у ленты (градации, задержка, инструменты; ``apply_signal_entitlements``).
+    ``be`` — стоп сейчас на цене входа: цель 1 взята, и версия переносит стоп в безубыток.
     """
-    rows = db.execute(
+    q = (
         select(Signal, StrategyVersion.version)
         .join(StrategyVersion, StrategyVersion.id == Signal.strategy_version_id)
         .where(Signal.instrument_id == inst.id, or_(*(scope_filter(s) for s in scopes)))
-        .order_by(Signal.candle_close_time.desc())
-        .limit(limit)
-    ).all()
+    )
+    if plan is not None:
+        q = apply_signal_entitlements(q, *plan)
+    rows = db.execute(q.order_by(Signal.candle_close_time.desc()).limit(limit)).all()
     ids = [s.id for s, _ in rows]
     events: dict[int, list[dict[str, Any]]] = {}
     if ids:
@@ -420,6 +484,7 @@ def signal_layer(
             "tp": [_dec(s.tp1), _dec(s.tp2), _dec(s.tp3)],
             "zone": (s.rationale_facts or {}).get("zone"),
             "events": events.get(s.id, []),
+            "be": s.status in BE_STATUSES and params_for_version(ver).trade.be_after_tp1,
         }
         for s, ver in rows
     ]

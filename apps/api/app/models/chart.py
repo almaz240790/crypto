@@ -24,7 +24,8 @@ from app.db import Base
 class Drawing(Base):
     """Рисунок пользователя. ``client_id`` — id, выданный клиентом (офлайн-очередь); удаление
     мягкое (``deleted_at``); конфликт двух устройств решается по ``updated_at`` — последняя запись
-    побеждает. ``updated_at`` — unix-миллисекунды клиента, одинаковые для всех устройств."""
+    побеждает. ``updated_at`` — unix-миллисекунды клиента, одинаковые для всех устройств;
+    ``synced_at`` — время записи версии на сервере, курсор чтения (GET /v1/drawings?cursor=)."""
 
     __tablename__ = "drawings"
     __table_args__ = (UniqueConstraint("user_id", "client_id"),)

@@ -10,7 +10,8 @@ export type CandlesResponse = { symbol: string; tf: Timeframe; candles: CandleOu
 
 /** Типы ответов слоёв живут в пакете графика (scene/wire.ts) — сцена читает их без копий. */
 export type { FigureOnChart, PatternOnChart, SignalOnChart, Structure } from "@platform/charts";
-export type LayersResponse = { symbol: string; tf: string; structure: Structure | null; signals: SignalOnChart[]; server_time: string };
+/** instrument_id — для событий сигналов WebSocket (они приходят с id инструмента, не с символом). */
+export type LayersResponse = { symbol: string; instrument_id?: number; tf: string; structure: Structure | null; signals: SignalOnChart[]; server_time: string };
 
 export { TIMEFRAMES } from "./timeframes";
 

@@ -1,5 +1,6 @@
-import { fillTemplate, formatUtcDate, PATTERN_RU, ZONE_KIND_RU, type PanelKey, type SceneText, type TextKey } from "@platform/charts";
+import { fillTemplate, formatUtcDate, PATTERN_RU, ZONE_KIND_RU, type DrawingText, type PanelKey, type SceneText, type TextKey } from "@platform/charts";
 import type { T } from "@/i18n";
+import { plural } from "@/lib/format";
 
 /**
  * Все слова графика (план 2B.2, 5.2, 8; ADR-0005, ADR-0008): подписи на холсте, подсказки, легенда «?»,
@@ -39,7 +40,9 @@ function strings(t: T): { readonly [K in TextKey]: string } {
     "figure.invalidated": t("отменена"),
     "signal.entry": t("Вход"),
     "signal.stop": t("Стоп"),
+    "signal.stop.be": t("Стоп → б/у"),
     "signal.tp": t("Цель {n}"),
+    "signal.tp.hit": t("Цель {n} ✓"),
     "alert.up": t("Алерт ↑"),
     "alert.down": t("Алерт ↓"),
     "alert.range": t("Алерт ↔"),
@@ -77,6 +80,8 @@ function strings(t: T): { readonly [K in TextKey]: string } {
     "hover.patternFound": t("найден"),
     "hover.signal.long": t("сигнал {grade}, лонг"),
     "hover.signal.short": t("сигнал {grade}, шорт"),
+    "hover.signal.be": t("после цели 1 стоп перенесён на цену входа"),
+    "hover.signal.tpHit": t("цель достигнута"),
     "hover.alert.up": t("Алерт: пересечение вверх"),
     "hover.alert.down": t("Алерт: пересечение вниз"),
     "hover.alert.range": t("Алерт: вход в диапазон"),
@@ -141,4 +146,23 @@ export function chartText(t: T): SceneText {
   };
   cache.set(t, text);
   return text;
+}
+
+/**
+ * Подписи рисунков на холсте (DrawingText): плашки позиции, у измерителя — число свечей и единицы времени. Русский
+ * оригинал — DRAWING_TEXT пакета (chartText.test). «1 свеча» — свой ключ: по-русски «21 свеча» — та же форма, что у
+ * одной, а по-английски — «21 candles».
+ */
+export function drawingText(t: T): DrawingText {
+  return {
+    entry: t("Вход"),
+    stop: t("Стоп"),
+    target: t("Цель"),
+    risk: t("риск"),
+    size: t("объём"),
+    bars: (n) => t(n === 1 ? "1 свеча" : plural(n, "{n} свеча", "{n} свечи", "{n} свечей"), { n }),
+    day: t("д"),
+    hour: t("ч"),
+    minute: t("мин"),
+  };
 }

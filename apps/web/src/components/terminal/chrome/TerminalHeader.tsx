@@ -65,7 +65,9 @@ type Props = HeaderFacts & {
  */
 export function SymbolPicker({ symbol, instruments, onSymbol, compact = false }: { symbol: string; instruments: readonly Instrument[]; onSymbol: (s: string) => void; compact?: boolean }) {
   const t = useT();
-  const list = instruments.length ? instruments : [{ symbol } as Instrument];
+  // символа из адреса нет в списке (неизвестный или переименованный): он первым — значение выбора совпадает с
+  // подписью, и выбор BTCUSDT — настоящая смена (аудит TSA-2)
+  const list = instruments.some((i) => i.symbol === symbol) ? instruments : [{ symbol } as Instrument, ...instruments];
   return (
     <div className={c.symbol} data-overflow-item={compact ? undefined : "symbol"} data-compact={compact || undefined}>
       <span className={c.symbolName} aria-hidden="true">

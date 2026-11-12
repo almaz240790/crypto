@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { FIRST_PAGE, H4, SUBCENT, T0, mock } from "./helpers/chart";
+import { FIRST_PAGE, H4, SUBCENT, T0, chartSettled, mock } from "./helpers/chart";
 import { liveSocket } from "./helpers/live";
 import { VIEW, barsForWidth } from "../../../packages/charts/src/presets";
 
@@ -367,6 +367,40 @@ test("ширина области графика через 640 px: шрифт �
   await page.setViewportSize({ width: 1600, height: 900 });
   await expect.poll(() => fontSize(page)).toBe(12);
   await expect.poll(() => formatWith(page, 0, 0, 80723.7)).toBe("80 723.7");
+});
+
+test("формат цены инструмента — с первого кадра со свечами, и после смены таймфрейма: шкала не размечается прежним форматом", async ({ page }) => {
+  // в каждом кадре, где у основной серии есть свечи, — как её формат пишет цену (шаг BTCUSDT 0.1: «104.4»). Раньше формат
+  // применялся кадром позже свечей: первый кадр размечал шкалу двумя знаками («104.40», шкала на 8 px шире), следующий —
+  // одним, и вид перестраивался по каждой ширине — свечи после загрузки сами съезжали на 5–7 px
+  await page.addInitScript(() => {
+    type S = { data(): unknown[]; priceFormatter(): { format(p: number): string } };
+    const w = window as unknown as { __fmt: string[] };
+    w.__fmt = [];
+    const frame = () => {
+      const el = document.querySelector('[data-testid="terminal"]') as (HTMLElement & { __chart?: { panes(): { getSeries(): S[] }[] } }) | null;
+      const s = el?.__chart?.panes()[0]?.getSeries()[0];
+      if (s && s.data().length > 0) {
+        const f = s.priceFormatter().format(104.4);
+        if (w.__fmt.at(-1) !== f) w.__fmt.push(f);
+      }
+      requestAnimationFrame(frame);
+    };
+    requestAnimationFrame(frame);
+  });
+  const calls: string[] = [];
+  await mock(page, calls);
+  const formats = () => page.evaluate(() => (window as unknown as { __fmt: string[] }).__fmt);
+  await page.goto("/chart/BTCUSDT/4h");
+  await ready(page);
+  await chartSettled(page);
+  expect(await formats()).toEqual(["104.4"]);
+  await page.getByRole("link", { name: "1Д" }).click();
+  await expect(page).toHaveURL(/\/chart\/BTCUSDT\/1d$/);
+  await expect.poll(() => calls.some((c) => c.includes("tf=1d"))).toBe(true);
+  await ready(page);
+  await chartSettled(page);
+  expect(await formats()).toEqual(["104.4"]);
 });
 
 test("подпись горизонтальной линии — с точностью инструмента (шаг 1e-7), как на шкале", async ({ page }) => {

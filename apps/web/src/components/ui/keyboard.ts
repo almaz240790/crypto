@@ -54,3 +54,14 @@ export function typeaheadIndex(labels: readonly string[], query: string, current
   }
   return -1;
 }
+
+/**
+ * Буква сочетания клавиш (Ctrl+Z, Alt+H): латинская буква e.key — она (так работают и другие латинские раскладки,
+ * AZERTY и Dvorak); иначе — буква клавиши по e.code. На русской раскладке Chrome отдаёт в e.key «я» для Ctrl+Z, на
+ * Mac Option+H — «˙»: по одной e.key такие сочетания не срабатывали. Не буква — null.
+ */
+export function shortcutLetter(e: Pick<KeyboardEvent, "key" | "code">): string | null {
+  if (/^[a-z]$/i.test(e.key)) return e.key.toLowerCase();
+  const m = /^Key([A-Z])$/.exec(e.code);
+  return m ? m[1]!.toLowerCase() : null;
+}

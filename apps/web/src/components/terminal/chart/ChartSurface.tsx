@@ -8,7 +8,7 @@ import type { Derivatives, FigureOnChart, LayersResponse, PatternOnChart } from 
 import type { LiveSource } from "@/lib/liveBar";
 import s from "../terminal.module.css";
 import { useT } from "@/i18n/client";
-import { chartText } from "./chartText";
+import { chartText, drawingText } from "./chartText";
 import { useChartStore } from "./useChartStore";
 import { LegendChip, LiqUnavailableNote } from "./LegendChip";
 import { HistoryEdgeNote } from "./HistoryEdgeNote";
@@ -16,6 +16,7 @@ import { ObjectTooltip } from "./ObjectTooltip";
 import { PaneChrome, type ChartGeo, type PaneGeo, type PaneSep, type ResizePhase } from "./PaneChrome";
 import { autoBox } from "./paneGeo";
 import { legendFit, legendTopMargin } from "./legendFit";
+import { cardBottomMargin, drawingExtent } from "./cardInset";
 import { LegendFitContext } from "./legendFitContext";
 import { MQ } from "@/lib/breakpoints";
 import c from "./chart.module.css";
@@ -205,6 +206,12 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
   const cryptoRef = useRef<Map<PanelKey, { paneIndex: number; series: ISeriesApi<"Line" | "Histogram">[] }>>(new Map());
   const drawPrimRef = useRef<DrawingsPrimitive | null>(null);
   const drawCtrlRef = useRef<DrawingController | null>(null);
+  /**
+   * Поле шкалы под карточку выбранного рисунка отложено: рисунок правят (мышью нажатие и выбирает, и тянет) — пересчёт
+   * после отпускания (marginRev), а не под курсором.
+   */
+  const marginWaitRef = useRef(false);
+  const [marginRev, setMarginRev] = useState(0);
   /** Шаг цены инструмента: стоп и цель новой позиции — по нему. */
   const tickRef = useRef<number | null>(null);
   const drawingsRef = useRef(drawings);
@@ -609,6 +616,8 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     onReadyRef.current?.({ zoom: ctrl.handle.zoom, reset: ctrl.handle.reset, clearCrosshair, focus: ctrl.handle.focus, snapshot: ctrl.handle.snapshot });
     const prim = new DrawingsPrimitive(tokensFromElement(el));
     prim.touch = typeof window !== "undefined" && window.matchMedia(MQ.coarse).matches;
+    // измеритель: ход в ATR(14) — по закрытым свечам графика
+    prim.candles = () => term.candles;
     drawPrimRef.current = prim;
     term.layers.add(new PrimitiveLayer("drawings", prim));
     const dctrl = new DrawingController(
@@ -638,6 +647,13 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
         onDraft: (d) => drawingsRef.current?.onDraft(d),
         onStep: (n) => drawingsRef.current?.onStep(n),
         onDone: (ended) => drawingsRef.current?.onToolDone(ended),
+        // измеритель временный (план 2A.5): не рисунок — только на графике, без состояния рисунков и синхронизации
+        onRuler: (d) => prim.update({ ruler: d }),
+        onEditEnd: () => {
+          if (!marginWaitRef.current) return;
+          marginWaitRef.current = false;
+          setMarginRev((r) => r + 1);
+        },
       },
     );
     drawCtrlRef.current = dctrl;
@@ -765,6 +781,8 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     if (!term || !ctrl) return;
     const prev = loadedRef.current;
     const same = prev !== null && prev.key === dataKey && prev.tf === tf;
+    // другой инструмент или таймфрейм — измерение прежнего убрано
+    if (!same) drawCtrlRef.current?.clearRuler();
     if (same && prev.candles.length === 0 && candles.length === 0) return;
     if (same && prev.live === live && prev.filled) {
       loadedRef.current = { ...prev, candles };
@@ -775,12 +793,14 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     const all = snap.bar ? [...snap.closed, snap.bar] : snap.closed.slice();
     if (same && prev.live === live && all.length === 0) return;
     loadedRef.current = { key: dataKey, tf, candles, live, filled: all.length > 0 };
-    // таймфрейм — до данных: сброс вида считает число свечей по лимиту таймфрейма
-    ctrl.set({ tf });
+    // таймфрейм — до данных: сброс вида считает число свечей по лимиту таймфрейма. Шаг цены приходит в том же ответе,
+    // что и свечи: формат шкалы — тоже до них (замена применяет его сразу), иначе первый кадр с новыми свечами
+    // размечен прежним форматом, шкала цены кадром позже меняет ширину, и вид перестраивается ещё раз
+    ctrl.set({ tf, tick });
     term.setCandles(all, true);
     ctrl.notifyCandles("replace");
     syncModel();
-  }, [candles, tf, dataKey, syncModel, live]);
+  }, [candles, tf, tick, dataKey, syncModel, live]);
 
   // живая свеча — единственный путь живых изменений графика (ADR-0010): закрытые — дописать, уточнённую — заменить
   // (Terminal.amend), текущую — обновить; догон — хвост с первой изменённой свечи (Terminal.replaceTail: устаревшая
@@ -820,8 +840,8 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
     tickRef.current = n > 0 ? n : null;
   }, [tick]);
 
-  // тексты плашек позиции на холсте — на языке интерфейса
-  const drawText: DrawingText = useMemo(() => ({ entry: t("Вход"), stop: t("Стоп"), target: t("Цель"), risk: t("риск"), size: t("объём") }), [t]);
+  // тексты плашек позиции и измерителя на холсте — на языке интерфейса
+  const drawText: DrawingText = useMemo(() => drawingText(t), [t]);
   const drawProfile = drawings?.profile ?? null;
   useEffect(() => {
     drawPrimRef.current?.update({ text: drawText, profile: drawProfile });
@@ -1130,6 +1150,32 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
       mo.disconnect();
     };
   }, [cards, mainBox]);
+
+  // выбранный рисунок не прячется под карточкой (ADR-0009, «Рисование», дополнение 2026-11-12): нижняя точка рисунка
+  // под карточкой (на телефоне — раскрытые «уровни» Фибоначчи, «параметры» позиции) — нижнее поле шкалы цены растёт
+  // настолько, чтобы рисунок был над ней; свернули карточку или сняли выбор — поле прежнее. Пересчёт — при выборе,
+  // раскрытии карточки и правке уровней, но не при перетаскивании точки: поле, растущее за точкой, уводило бы её из-под
+  // пальца. Мышью нажатие по рисунку и выбирает его, и сразу тянет: появившаяся карточка не меняет шкалу под курсором —
+  // пересчёт после отпускания
+  const drawState = drawings?.state;
+  const selected = useMemo(() => (drawState?.selectedId ? (visibleOn(drawState, tf).find((d) => d.id === drawState.selectedId) ?? null) : null), [drawState, tf]);
+  const selectedRef = useRef(selected);
+  useLayoutEffect(() => {
+    selectedRef.current = selected;
+  });
+  const selectedKey = selected ? `${selected.id} ${selected.levels?.join(",") ?? ""}` : null;
+  useLayoutEffect(() => {
+    const term = termRef.current;
+    const pr = drawPrimRef.current?.projector;
+    const cur = selectedRef.current;
+    if (!term || !mainBox || mainBox.h <= 0) return;
+    if (drawCtrlRef.current?.editing) {
+      marginWaitRef.current = true;
+      return;
+    }
+    const sel = selectedKey && cur && pr ? drawingExtent(cur, pr.projector()) : null;
+    term.setBottomMargin(cardBottomMargin(cardBoxes, mainBox, sel, { top: term.topMarginShare, bottom: term.bottomMarginShare }));
+  }, [selectedKey, cardBoxes, mainBox, scale, marginRev]);
 
   // угол графика, чип справа сверху, легенда, «A» и карточки — препятствия для подписей разметки и рисунков (координаты
   // основной панели, CSS px)

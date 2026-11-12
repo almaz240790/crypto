@@ -4,9 +4,11 @@ import type { Candle, LiveStep, Timeframe } from "@platform/charts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FIGURE_TFS, getCandles, getDerivatives, getFigures, getLayers, getPatterns, toCandle, type CandlesResponse, type Derivatives, type FiguresResponse, type LayersResponse, type PatternsResponse } from "@/lib/chart";
 import { binanceFeed } from "@/lib/binanceFeed";
+import { DelayedRefresh } from "@/lib/delayedRefresh";
 import { CatchUpGate, LiveBar, type CatchUpResult } from "@/lib/liveBar";
 import { HeaderPrice, LiveMux, type PriceSource } from "@/lib/liveSource";
-import { useLive, type ResyncReason } from "@/lib/useLive";
+import { useLive, type LiveSignal, type ResyncReason } from "@/lib/useLive";
+import { loadError, retryable, retryDelayMs, type LoadError } from "./loadError";
 
 /**
  * Текущая свеча в состоянии React (индикаторы, отсчёт) — не чаще этого; график получает каждое событие
@@ -15,6 +17,26 @@ import { useLive, type ResyncReason } from "@/lib/useLive";
 export const CURRENT_STATE_MS = 5000;
 /** Запас к закрытию свечи, после которого она просрочена и история догружается, с (запись и доставка минуты — 1–2 с). */
 export const LIVE_GRACE_S = 8;
+/**
+ * Пауза после закрытия свечи потоком до перечитывания слоёв, производных, паттернов и фигур, мс: сервер записывает
+ * закрытую свечу (секунды), по её закрытию отрабатывают детекторы паттернов и фигур и планировщик сигналов.
+ */
+export const DERIVED_AFTER_CLOSE_MS = 20_000;
+/**
+ * Разброс к паузе, мс (случайный, свой у каждого ожидания): свеча закрывается у всех открытых графиков в одну секунду —
+ * без разброса все они пришли бы на сервер разом, и слои по новой закрытой свече (новый ключ кэша) считались бы
+ * параллельно по многу раз.
+ */
+export const DERIVED_JITTER_MS = 10_000;
+/** Пауза перечитывания после закрытия: DERIVED_AFTER_CLOSE_MS и случайный разброс до DERIVED_JITTER_MS. */
+const afterCloseDelay = () => DERIVED_AFTER_CLOSE_MS + Math.random() * DERIVED_JITTER_MS;
+/**
+ * Структура сервера ещё без закрытой свечи (last_t старее) или ответ неполный (complete: false — снимок незакрытой
+ * свечи) — повтор через ту же паузу, не больше стольких раз.
+ */
+export const DERIVED_RETRIES = 3;
+/** События сигналов этого инструмента пачкой (догон трекера) — одно перечитывание слоёв через столько, мс. */
+export const SIGNAL_REFRESH_MS = 1000;
 
 /** Время сервера из ответа (unix с); нет или не разобрать — undefined (часы клиента не подставляются). */
 function serverTime(r: CandlesResponse): number | undefined {
@@ -39,7 +61,10 @@ const mergePatterns = (prev: PatternsResponse | null, next: PatternsResponse): P
  * (CatchUpGate) на все поводы: сокет открыт заново, вкладка видна при неоткрытом сокете (useLive), пропуск в
  * событиях (gap автомата), просрочка (новой свечи нет дольше закрытия + LIVE_GRACE_S — продовый баг: после фона на
  * iPhone график стоял на свече получасовой давности при «онлайн»). Новая закрытая свеча после догона — слои,
- * производные, паттерны и фигуры заново.
+ * производные, паттерны и фигуры заново; свеча, закрытая потоком, — они же через DERIVED_AFTER_CLOSE_MS с разбросом
+ * (повтор, пока структура сервера без неё или ответ неполный); событие сигнала этого инструмента — слои. Сбой первой
+ * порции (error — статус и текст) повторяется сам с паузами и сразу — по «Повторить» (retry), возврату сети, видимой
+ * вкладке и новому сокету; объяснение на экране — ChartLoadError.
  */
 export function useTerminalData(symbol: string, tf: Timeframe, token: string | null) {
   const [candles, setCandles] = useState<Candle[] | null>(null);
@@ -49,11 +74,20 @@ export function useTerminalData(symbol: string, tf: Timeframe, token: string | n
   const [derivatives, setDerivatives] = useState<Derivatives | null>(null);
   const [patterns, setPatterns] = useState<PatternsResponse | null>(null);
   const [figures, setFigures] = useState<FiguresResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  /** Сбой первой порции свечей (статус и текст); пока он есть, загрузка повторяется сама с паузами. */
+  const [error, setError] = useState<LoadError | null>(null);
+  /** Повтор первой порции в пути (кнопка «Повторить» — «Загрузка…»). */
+  const [retrying, setRetrying] = useState(false);
   const [tick, setTick] = useState<string | null>(null);
   /** Биржа — основной источник цены символа (данные за последние 5 с). */
   const [binanceOn, setBinanceOn] = useState(false);
-  const loadingOlder = useRef(false);
+  /** Поколение загрузки, чья порция истории слева в пути (null — нет): запрос прошлого символа не запирает новый. */
+  const loadingOlder = useRef<number | null>(null);
+  /**
+   * Загрузить первую порцию заново сейчас (сбой, свечи ещё не пришли): «Повторить» (force — при любом сбое), сеть
+   * вернулась, вкладка видна, сокет открыт заново (только сбой, который повторяем сами). true — запрос ушёл.
+   */
+  const reloadRef = useRef<((force?: boolean) => boolean) | null>(null);
   // живая свеча — своя на инструмент и таймфрейм; события до загрузки свечей копятся в ней
   const live = useMemo(() => new LiveBar(symbol, tf), [symbol, tf]);
   // цена шапки — своя у каждой живой свечи; время сервера последней порции истории (restAt) — цена не новее его в шапке
@@ -67,12 +101,16 @@ export function useTerminalData(symbol: string, tf: Timeframe, token: string | n
   const sinceRef = useRef<number | undefined>(undefined);
   const currentTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  /** Слои, производные, паттерны и фигуры — под новую последнюю закрытую свечу. */
+  /** Слои, производные, паттерны и фигуры — под новую последнюю закрытую свечу; onLayers — ответ слоёв (живой). */
   const refreshDerived = useCallback(
-    (gen: number, replace: boolean) => {
+    (gen: number, replace: boolean, onLayers?: (r: LayersResponse) => void) => {
       const alive = () => gen === genRef.current;
       getLayers(symbol, tf)
-        .then((r) => alive() && setLayers(r))
+        .then((r) => {
+          if (!alive()) return;
+          setLayers(r);
+          onLayers?.(r);
+        })
         .catch(() => {});
       getDerivatives(symbol, tf)
         .then((r) => alive() && setDerivatives(r))
@@ -132,70 +170,170 @@ export function useTerminalData(symbol: string, tf: Timeframe, token: string | n
       setPatterns(null);
       setFigures(null);
       setError(null);
+      setRetrying(false);
     });
-    getCandles(symbol, tf)
-      .then((r) => {
-        if (dead || gen !== genRef.current) return;
-        const { closed, current: cur } = splitPage(r);
-        const at = serverTime(r);
-        // тики, пришедшие раньше свечей, уже в свече и истории; минуты не новее through ответ уже учёл
-        const history = live.start(cur, closed, r.through, at);
-        setCandles(history);
-        setHasOlder(r.has_older);
-        setTick(r.tick_size);
-        prices.setRestAt(at ?? 0);
-        sinceRef.current = closed[0]?.time;
-        setCurrent(live.bar);
-        getPatterns(symbol, tf, closed[0]?.time)
-          .then((pr) => !dead && setPatterns(pr))
-          .catch(() => {});
-        if (FIGURE_TFS.includes(tf))
-          getFigures(symbol, tf, closed[0]?.time)
-            .then((fr) => !dead && setFigures(fr))
+    // первая порция не пришла — повторы с паузами 2, 5, 15, 30 с и сразу по reloadRef (аудит chart-data-live-1:
+    // после сбоя график оставался мёртвым при «онлайн» в шапке до перезагрузки страницы)
+    let tries = 0;
+    let failed: LoadError | null = null;
+    let pending = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const loadSide = () => {
+      getLayers(symbol, tf)
+        .then((r) => !dead && setLayers(r))
+        .catch(() => {});
+      getDerivatives(symbol, tf)
+        .then((r) => !dead && setDerivatives(r))
+        .catch(() => {});
+    };
+    const load = () => {
+      pending = true;
+      getCandles(symbol, tf)
+        .then((r) => {
+          if (dead || gen !== genRef.current) return;
+          pending = false;
+          failed = null;
+          setError(null);
+          setRetrying(false);
+          // слои и производные могли не загрузиться вместе со свечами
+          if (tries) loadSide();
+          const { closed, current: cur } = splitPage(r);
+          const at = serverTime(r);
+          // тики, пришедшие раньше свечей, уже в свече и истории; минуты не новее through ответ уже учёл
+          const history = live.start(cur, closed, r.through, at);
+          setCandles(history);
+          setHasOlder(r.has_older);
+          setTick(r.tick_size);
+          prices.setRestAt(at ?? 0);
+          sinceRef.current = closed[0]?.time;
+          setCurrent(live.bar);
+          getPatterns(symbol, tf, closed[0]?.time)
+            .then((pr) => !dead && setPatterns(pr))
             .catch(() => {});
-        // пропуск в событиях до загрузки, переподключение или возврат вкладки до неё — догон сразу
-        if (live.takeResync()) gate.request("gap", catchUp);
-      })
-      .catch((e: Error) => !dead && setError(e.message));
-    getLayers(symbol, tf)
-      .then((r) => !dead && setLayers(r))
-      .catch(() => {});
-    getDerivatives(symbol, tf)
-      .then((r) => !dead && setDerivatives(r))
-      .catch(() => {});
+          if (FIGURE_TFS.includes(tf))
+            getFigures(symbol, tf, closed[0]?.time)
+              .then((fr) => !dead && setFigures(fr))
+              .catch(() => {});
+          // пропуск в событиях до загрузки, переподключение или возврат вкладки до неё — догон сразу
+          if (live.takeResync()) gate.request("gap", catchUp);
+        })
+        .catch((e: unknown) => {
+          if (dead) return;
+          pending = false;
+          failed = loadError(e);
+          setError(failed);
+          setRetrying(false);
+          if (retryable(failed)) timer = setTimeout(() => reload(), retryDelayMs(tries));
+        });
+    };
+    const reload = (force = false) => {
+      if (dead || pending || !failed || !(force || retryable(failed))) return false;
+      clearTimeout(timer);
+      tries++;
+      setRetrying(true);
+      load();
+      return true;
+    };
+    load();
+    loadSide();
+    reloadRef.current = reload;
     return () => {
       dead = true;
+      clearTimeout(timer);
+      reloadRef.current = null;
       if (currentTimer.current) clearTimeout(currentTimer.current);
       currentTimer.current = null;
     };
   }, [symbol, tf, live, gate, catchUp, prices]);
 
+  // ячейка мультичарта меняет символ без перемонтирования: ответ для прошлого символа (поколения) в состояние нового
+  // не попадает — has_older и паттерны остаются свои, а его запрос не занимает очередь нового (аудит chart-data-live-3)
   const loadOlder = useCallback(
     async (before: number) => {
-      if (loadingOlder.current || !hasOlder) return null;
-      loadingOlder.current = true;
+      const gen = genRef.current;
+      if (loadingOlder.current === gen || !hasOlder) return null;
+      loadingOlder.current = gen;
+      const alive = () => gen === genRef.current;
       try {
         const r = await getCandles(symbol, tf, before);
+        if (!alive()) return null;
         setHasOlder(r.has_older);
         const older = r.candles.filter((c) => !c.open).map(toCandle);
         if (older.length)
           getPatterns(symbol, tf, older[0]!.time, before)
-            .then((pr) => setPatterns((prev) => (prev ? { ...prev, items: [...pr.items.filter((x) => !prev.items.some((y) => y.id === x.id)), ...prev.items], stats: { ...pr.stats, ...prev.stats } } : pr)))
+            .then((pr) => alive() && setPatterns((prev) => (prev ? { ...prev, items: [...pr.items.filter((x) => !prev.items.some((y) => y.id === x.id)), ...prev.items], stats: { ...pr.stats, ...prev.stats } } : pr)))
             .catch(() => {});
         return { candles: older, hasOlder: r.has_older };
       } finally {
-        loadingOlder.current = false;
+        if (loadingOlder.current === gen) loadingOlder.current = null;
       }
     },
     [symbol, tf, hasOlder],
+  );
+  /** «Повторить» под объяснением сбоя первой порции. */
+  const retry = useCallback(() => void reloadRef.current?.(true), []);
+  // сеть вернулась или вкладка снова видна, а первой порции нет из-за сбоя — загрузка сразу, не дожидаясь паузы
+  useEffect(() => {
+    const wake = () => {
+      if (document.visibilityState === "visible") reloadRef.current?.();
+    };
+    window.addEventListener("online", wake);
+    document.addEventListener("visibilitychange", wake);
+    return () => {
+      window.removeEventListener("online", wake);
+      document.removeEventListener("visibilitychange", wake);
+    };
+  }, []);
+
+  // свеча закрыта потоком — слои, производные, паттерны и фигуры через паузу (сервер записывает свечу, детекторы и
+  // сигналы отрабатывают по её закрытию); структура сервера ещё без неё или ответ неполный — повтор (кэш слоёв — по
+  // закрытой свече)
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- новая очередь вместе с live
+  const afterClose = useMemo(() => new DelayedRefresh(afterCloseDelay, DERIVED_RETRIES), [live]);
+  useEffect(() => () => afterClose.dispose(), [afterClose]);
+  const refreshAfterClose = useCallback(
+    (done: (stale: boolean) => void) => {
+      const closed = live.closed.at(-1)?.time;
+      refreshDerived(genRef.current, false, (r) => {
+        const s = r.structure;
+        done(!!s && (s.complete === false || (closed !== undefined && s.last_t != null && s.last_t < closed)));
+      });
+    },
+    [live, refreshDerived],
+  );
+  // событие сигнала (статус, цель, стоп) этого инструмента — слои; пачка событий — одно перечитывание
+  const layersRef = useRef<LayersResponse | null>(null);
+  useEffect(() => {
+    layersRef.current = layers;
+  }, [layers]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- новая очередь вместе с live
+  const signalRefresh = useMemo(() => new DelayedRefresh(SIGNAL_REFRESH_MS), [live]);
+  useEffect(() => () => signalRefresh.dispose(), [signalRefresh]);
+  const onSignal = useCallback(
+    (s: LiveSignal) => {
+      const l = layersRef.current;
+      if (!l || (l.instrument_id !== s.instrument_id && !l.signals.some((x) => x.id === s.id))) return;
+      signalRefresh.request((done) => {
+        const gen = genRef.current;
+        getLayers(symbol, tf)
+          .then((r) => gen === genRef.current && setLayers(r))
+          .catch(() => {})
+          .finally(() => done(false));
+      });
+    },
+    [signalRefresh, symbol, tf],
   );
 
   // график уже обновлён подписчиком live; здесь — история и текущая свеча для React
   const onStep = useCallback(
     (step: LiveStep | null) => {
       if (!step) return;
-      // закрытые и уточнённая закрытая (запоздавшая минута, свеча истории) — в истории LiveBar
-      if (step.closed.length || step.amended) setCandles(live.closed);
+      // закрытые и уточнённая закрытая (запоздавшая минута, свеча истории) — в истории LiveBar; слои с сервера под
+      // них — через паузу (тики открытой свечи — нет)
+      if (step.closed.length || step.amended) {
+        setCandles(live.closed);
+        afterClose.request(refreshAfterClose);
+      }
       if (step.closed.length) {
         if (currentTimer.current) clearTimeout(currentTimer.current);
         currentTimer.current = null;
@@ -208,7 +346,7 @@ export function useTerminalData(symbol: string, tf: Timeframe, token: string | n
       // пропущенные свечи или минуты (сон, обрыв) — свежая история с сервера
       if (step.gap) gate.request("gap", catchUp);
     },
-    [live, gate, catchUp],
+    [live, gate, catchUp, afterClose, refreshAfterClose],
   );
 
   // источник событий символа: биржа, пока свежа, иначе сервер — в тот же LiveBar (ADR-0010, дополнение)
@@ -221,17 +359,17 @@ export function useTerminalData(symbol: string, tf: Timeframe, token: string | n
   // одно соединение с биржей на страницу: символ терминала и ячеек мультичарта; смена символа — SUBSCRIBE/UNSUBSCRIBE
   useEffect(() => binanceFeed()?.subscribe(symbol, mux.binance), [symbol, mux]);
   // сокет открыт заново или вкладка видна при неоткрытом сокете (решает LiveSocket.wake) — догон; до загрузки свечей —
-  // сразу после неё (ответ мог быть прочитан до обрыва)
+  // сразу после неё (ответ мог быть прочитан до обрыва), а после сбоя первой порции — её загрузка заново
   const onResync = useCallback(
     (reason: ResyncReason) => {
       if (live.started) gate.request(reason, catchUp);
-      else live.resyncLater();
+      else if (!reloadRef.current?.()) live.resyncLater();
     },
     [live, gate, catchUp],
   );
 
   // сокет сервера — всегда: сигналы, статусы и запасной источник цены; цены в состояние React не копит (шапка — prices)
-  const { connected, online: serverOnline, resyncPending } = useLive([symbol], token, { onTick: mux.serverTick, onForming: mux.serverForming, onCandle: mux.serverCandle, onPrice: mux.serverPrice, onResync }, { prices: false });
+  const { connected, online: serverOnline, resyncPending } = useLive([symbol], token, { onTick: mux.serverTick, onForming: mux.serverForming, onCandle: mux.serverCandle, onPrice: mux.serverPrice, onResync, onSignal }, { prices: false });
 
   // просрочка: новой свечи нет дольше закрытия текущей (или следующей минуты на 1m) — догон, пока вкладка видна; пока
   // открывается сокет, сменивший прежний (возврат с полуоткрытым сокетом), — ждём: его открытие и есть догон
@@ -247,5 +385,5 @@ export function useTerminalData(symbol: string, tf: Timeframe, token: string | n
   // «онлайн» — цена живая из любого источника; подсказка говорит, из какого
   const online = serverOnline || binanceOn;
   const source: PriceSource = binanceOn ? "binance" : "server";
-  return { candles, current, hasOlder, layers, derivatives, patterns, figures, error, tick, loadOlder, prices, connected, online, source, live };
+  return { candles, current, hasOlder, layers, derivatives, patterns, figures, error, retrying, retry, tick, loadOlder, prices, connected, online, source, live };
 }

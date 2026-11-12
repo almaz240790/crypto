@@ -25,10 +25,10 @@ from app.config import settings
 from app.entitlements import (
     Entitlements,
     allowed_instrument_ids,
+    apply_signal_entitlements,
     entitlements_for,
     restrictions_dict,
     signal_visible,
-    visible_since,
 )
 from app.models import (
     BacktestRun,
@@ -75,20 +75,6 @@ def _scope(scope: str, user: User | None, ent: Entitlements | None = None) -> st
     return scope
 
 
-def _apply_entitlements(
-    q: Any, ent: Entitlements, allowed_ids: list[int] | None, now: datetime
-) -> Any:
-    """Ограничения тарифа на выборку сигналов: градации, задержка, инструменты."""
-    if ent.signal_grades is not None:
-        q = q.where(Signal.grade.in_(list(ent.signal_grades)))
-    vs = visible_since(ent, now)
-    if vs is not None:
-        q = q.where(Signal.candle_close_time <= vs)
-    if allowed_ids is not None:
-        q = q.where(Signal.instrument_id.in_(allowed_ids))
-    return q
-
-
 def _sparklines(db: Session, instrument_ids: list[int]) -> dict[int, list[str]]:
     """Последние 24 закрытия H4 по инструменту — для мини-графика в ленте (план 3.4)."""
     if not instrument_ids:
@@ -124,13 +110,14 @@ def _last_prices(db: Session, instrument_ids: list[int]) -> dict[int, tuple[str,
 
 
 def optional_user(request: Request, db: Session = Depends(auth.get_db)) -> User | None:
+    """Необязательный вход: без токена — гость (None). Токен есть, но недействителен или истёк —
+    401, как у ``current_user``: клиент обновит токен и повторит запрос, а если сеанс кончился —
+    повторит без токена, как гость. Тихий гость вместо 401 отдавал платящему права Free
+    (минутные ТФ — 403, без слоя сигналов), и клиент токен не обновлял (аудит TSA-1)."""
     header = request.headers.get("authorization", "")
     if not header.lower().startswith("bearer "):
         return None
-    try:
-        payload = auth.decode_access_token(header[7:])
-    except HTTPException:
-        return None
+    payload = auth.decode_access_token(header[7:])
     return db.get(User, int(payload["sub"]))
 
 
@@ -248,7 +235,7 @@ def signals(
     if user is None:
         q = q.where(Signal.status.not_in(OPEN_STATUSES))  # без логина — только закрытые
     else:
-        q = _apply_entitlements(q, ent, allowed_instrument_ids(db, user, ent), now)
+        q = apply_signal_entitlements(q, ent, allowed_instrument_ids(db, user, ent), now)
     if user is not None and status == "open":
         q = q.where(Signal.status.in_(OPEN_STATUSES))
     elif user is not None and status == "closed":
