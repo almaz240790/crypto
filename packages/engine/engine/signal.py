@@ -15,14 +15,18 @@
 5. параметры сделки — вход, стоп, тейки, R:R;
 6. скоринг и градация;
 7. ``input_hash`` по последним ``hash_candles`` свечам H4 и версии параметров.
+
+``inputs_fingerprint(inputs, at)`` — отпечаток всех рядов, которые ``evaluate`` видит на момент
+``at``: по нему сверка (план, раздел 11) отличает «входные данные изменились после публикации»
+от «тот же вход дал другой сигнал».
 """
 
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Sequence
-from dataclasses import dataclass, field
-from datetime import datetime
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from engine.bias import Bias, BiasContext, context_at
@@ -33,7 +37,9 @@ from engine.derivatives import (
     LiquidationBucket,
     LongShortRatio,
     OpenInterest,
+    Timed,
     TokenEvent,
+    upto,
 )
 from engine.filters import (
     ActiveSignalRef,
@@ -117,6 +123,108 @@ def input_hash(candles: Sequence[Candle], version: str, n: int) -> str:
             f"{c.open_time.isoformat()}|{c.open}|{c.high}|{c.low}|{c.close}|{c.volume}\n".encode()
         )
     return h.hexdigest()
+
+
+FINGERPRINT_HEX = 16
+"""Знаков sha256 в отпечатке одного ряда: 64 бита хватает, чтобы отличить изменившийся ряд."""
+
+
+def _cell(x: object) -> str:
+    """Значение для отпечатка: равные числа и моменты времени дают одну и ту же строку."""
+    if isinstance(x, Decimal):
+        return format(x.normalize(), "f")
+    if isinstance(x, datetime):
+        return x.astimezone(UTC).isoformat()
+    return str(x)
+
+
+def _digest(rows: Iterable[Sequence[object]]) -> str:
+    h = hashlib.sha256()
+    for row in rows:
+        h.update("|".join(_cell(x) for x in row).encode())
+        h.update(b"\n")
+    return h.hexdigest()[:FINGERPRINT_HEX]
+
+
+def _candle_rows(candles: Sequence[Candle], tf: Timeframe, at: datetime) -> list[Sequence[object]]:
+    return [
+        (c.open_time, c.open, c.high, c.low, c.close, c.volume)
+        for c in closed_only(candles, tf, at)
+    ]
+
+
+def inputs_fingerprint(inputs: MarketInputs, at: datetime) -> dict[str, str]:
+    """Отпечаток входов ``evaluate`` на момент ``at`` — по одному короткому хэшу на ряд.
+
+    В отпечаток входит ровно то, что видит ``evaluate``: свечи H4, D1 и W1, закрытые к ``at``
+    (цены и объём), записи funding, OI, ликвидаций и long/short не позже ``at``, а в ``other`` —
+    всё остальное (календарь и события токена целиком: фильтры смотрят в них вперёд; активные
+    сигналы, bias BTC, средний оборот). Данные позже ``at`` на отпечаток не влияют, как и на
+    сигнал. Версия параметров сюда не входит — это отпечаток данных, а не расчёта.
+
+    Если два вызова дали одинаковый отпечаток, ``evaluate`` на этих входах обязан дать один и
+    тот же сигнал. Разный отпечаток показывает, какой именно ряд изменился.
+    """
+    return {
+        "h4": _digest(_candle_rows(inputs.h4, Timeframe.H4, at)),
+        "d1": _digest(_candle_rows(inputs.d1, Timeframe.D1, at)),
+        "w1": _digest(_candle_rows(inputs.w1, Timeframe.W1, at)),
+        "funding": _digest((r.time, r.rate) for r in upto(inputs.funding, at)),
+        "open_interest": _digest((r.time, r.value) for r in upto(inputs.open_interest, at)),
+        "liquidations": _digest(
+            (r.time, r.long_usd, r.short_usd) for r in upto(inputs.liquidations, at)
+        ),
+        "long_short": _digest((r.time, r.long_pct) for r in upto(inputs.long_short, at)),
+        "other": _digest(
+            [
+                *(("calendar", e.time, e.title, e.importance) for e in inputs.calendar),
+                *(("token", e.time, e.kind, e.pct_supply) for e in inputs.token_events),
+                *(("active", s.symbol, s.direction, s.correlation) for s in inputs.active_signals),
+                ("btc_bias", inputs.btc_bias_direction),
+                ("turnover", inputs.avg_daily_turnover),
+            ]
+        ),
+    }
+
+
+DERIVATIVE_SERIES = ("funding", "open_interest", "liquidations", "long_short")
+"""Ряды деривативов ``MarketInputs``: записи с временем, которые приходят в БД с задержкой."""
+
+
+def inputs_upto(inputs: MarketInputs, at: datetime) -> dict[str, str | None]:
+    """Время последней записи каждого ряда деривативов, видимой ``evaluate`` в момент ``at``
+    (ISO, UTC); ``None`` — записей нет.
+
+    Запись с временем ``at`` (funding, начисленный в ``at``; OI и long/short за час, кончившийся
+    в ``at``) приходит в БД по REST уже после оценки, а при пересчёте она есть. Чтобы пересчёт
+    видел то же, что видел живой прогон, вместе с сигналом хранится эта отметка, а пересчёт
+    обрезает ряды по ней (``trim_inputs``).
+    """
+    out: dict[str, str | None] = {}
+    for name in DERIVATIVE_SERIES:
+        rows = upto(getattr(inputs, name), at)
+        out[name] = rows[-1].time.astimezone(UTC).isoformat() if rows else None
+    return out
+
+
+def trim_inputs(inputs: MarketInputs, marks: Mapping[str, str | None]) -> MarketInputs:
+    """Вход, обрезанный по отметкам ``inputs_upto``: в каждом ряду деривативов — только записи не
+    позже отмеченной (``None`` — ни одной). Ряд без отметки не меняется. Свечи не обрезаются:
+    их окно и так ограничено закрытием к моменту сигнала."""
+
+    def cut[T: Timed](name: str, rows: Sequence[T]) -> Sequence[T]:
+        if name not in marks:
+            return rows
+        mark = marks[name]
+        return [] if mark is None else upto(rows, datetime.fromisoformat(mark))
+
+    return replace(
+        inputs,
+        funding=cut("funding", inputs.funding),
+        open_interest=cut("open_interest", inputs.open_interest),
+        liquidations=cut("liquidations", inputs.liquidations),
+        long_short=cut("long_short", inputs.long_short),
+    )
 
 
 def _bos_for_zone(structure: MarketStructure, zone: Zone) -> int | None:

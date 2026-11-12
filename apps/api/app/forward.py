@@ -51,7 +51,14 @@ from engine.data.binance import BinanceHistory
 from engine.derivatives import FundingRate, LongShortRatio, OpenInterest
 from engine.lifecycle import SignalLife, SignalStatus, blocking_signal
 from engine.params import StrategyParams
-from engine.signal import MarketInputs, NoSignal, SignalCandidate, evaluate
+from engine.signal import (
+    MarketInputs,
+    NoSignal,
+    SignalCandidate,
+    evaluate,
+    inputs_fingerprint,
+    inputs_upto,
+)
 from engine.strategies import STRATEGIES
 from engine.structure import Direction
 from engine.trade import TradeSetup
@@ -65,8 +72,18 @@ NEW_VERSION_STATUS = "backtest"
 EVALUATED_STATUSES = ("forward", "live")
 SKIPPED_VERSION_LOG = "версия %s в статусе %s — не оценивается"
 H4_WINDOW = 700
+D1_WINDOW = 400
+W1_WINDOW = 120
+"""Сколько последних закрытых свечей каждого таймфрейма подаётся в ``evaluate``."""
+DERIVATIVES_LOOKBACK = timedelta(days=95)
+"""За сколько дней до момента расчёта читаются funding, OI и long/short."""
 PAIR_LOCK_SQL = "select pg_advisory_xact_lock(hashtextextended(:key, 0))"
 """Блокировка пары (версия, инструмент) до конца транзакции — см. ``lock_signal_pair``."""
+INPUTS_FACT = "inputs"
+"""Ключ ``signals.rationale_facts``, под которым лежит отпечаток входа ``evaluate``."""
+INPUTS_UPTO_FACT = "inputs_upto"
+"""Ключ ``signals.rationale_facts``: время последней записи каждого ряда деривативов, которую
+видел прогон (``engine.signal.inputs_upto``) — по нему сверка обрезает ряды при пересчёте."""
 BUSY_LOG = "%s %s %s: кандидат не записан — по инструменту у версии уже есть сделка: сигнал %s (%s)"
 """Пропуск по правилу одной открытой сделки: время сигнальной свечи, инструмент, версия,
 ``public_id`` мешающего сигнала и его состояние."""
@@ -248,13 +265,62 @@ def _refresh_derivatives(
         print(f"{inst.symbol}: деривативы не обновлены: {type(exc).__name__}: {exc}", flush=True)
 
 
-def _candles(session: Session, instrument_id: int, tf: Timeframe, limit: int) -> list[Candle]:
+def context_candles_due(at: datetime) -> list[tuple[Timeframe, datetime]]:
+    """Свечи старших таймфреймов, которые закрываются ровно в момент ``at`` — закрытие сигнальной
+    свечи H4: ``(таймфрейм, open_time)``. В 00:00 UTC это дневная свеча, в понедельник 00:00 UTC —
+    ещё и недельная (неделя Binance открывается в понедельник). Bias на таком закрытии считается
+    уже с ними, как в бэктесте, поэтому к моменту оценки они должны быть записаны закрытыми."""
+    at = at.astimezone(UTC)
+    if at != at.replace(hour=0, minute=0, second=0, microsecond=0):
+        return []
+    due = [(Timeframe.D1, at - Timeframe.D1.delta)]
+    if at.weekday() == 0:
+        due.append((Timeframe.W1, at - Timeframe.W1.delta))
+    return due
+
+
+def closed_candle_exists(
+    session: Session, instrument_id: int, tf: Timeframe, open_time: datetime
+) -> bool:
+    return (
+        session.execute(
+            text(
+                "select 1 from candles where instrument_id=:i and timeframe=:tf "
+                "and open_time=:t and is_closed"
+            ),
+            {"i": instrument_id, "tf": tf.value, "t": open_time},
+        ).first()
+        is not None
+    )
+
+
+def missing_context_candles(
+    session: Session, instrument_id: int, at: datetime
+) -> list[tuple[Timeframe, datetime]]:
+    """Какие из ``context_candles_due(at)`` ещё не записаны в БД закрытыми."""
+    return [
+        (tf, open_time)
+        for tf, open_time in context_candles_due(at)
+        if not closed_candle_exists(session, instrument_id, tf, open_time)
+    ]
+
+
+def _candles(
+    session: Session, instrument_id: int, tf: Timeframe, limit: int, at: datetime
+) -> list[Candle]:
+    """Последние ``limit`` свечей ``tf``, закрытых к моменту ``at``, по возрастанию времени.
+
+    Свеча берётся, только если её интервал закончился не позже ``at`` и строка записана
+    закрытой (``is_closed``): идущую свечу market-data хранит с ``is_closed = false`` и
+    переписывает, её цены ещё не окончательные.
+    """
     rows = session.execute(
         text(
             "select open_time, open, high, low, close, volume, quote_volume, trades from candles "
-            "where instrument_id = :i and timeframe = :tf order by open_time desc limit :n"
+            "where instrument_id = :i and timeframe = :tf and is_closed and open_time <= :last "
+            "order by open_time desc limit :n"
         ),
-        {"i": instrument_id, "tf": tf.value, "n": limit},
+        {"i": instrument_id, "tf": tf.value, "last": at - tf.delta, "n": limit},
     ).all()
     return [
         Candle(r[0].astimezone(UTC), r[1], r[2], r[3], r[4], r[5], r[6], r[7])
@@ -263,33 +329,44 @@ def _candles(session: Session, instrument_id: int, tf: Timeframe, limit: int) ->
 
 
 def load_inputs(session: Session, inst: Instrument, at: datetime) -> MarketInputs:
-    since = at - timedelta(days=95)
+    """Вход ``evaluate`` на момент ``at`` (закрытие сигнальной свечи) из БД.
+
+    Берётся только то, что известно к ``at``: свечи, закрытые к этому моменту (ровно
+    ``H4_WINDOW`` / ``D1_WINDOW`` / ``W1_WINDOW`` последних), и записи funding, OI и long/short
+    не позже ``at``. Поэтому вызов с тем же ``at`` позже — при сверке, в разборе сигнала —
+    читает то же окно, что и прогон на закрытии свечи, пока сами данные в БД не изменились.
+    Раньше окно бралось «последние N строк» без верхней границы: в него попадала идущая свеча
+    (движок её отбрасывал, и закрытых оставалось на одну меньше), а при повторном вызове оно
+    съезжало вперёд.
+    """
+    since = at - DERIVATIVES_LOOKBACK
+    span = {"i": inst.id, "s": since, "at": at}
     f = session.execute(
         text(
             "select funding_time, rate from funding_rates "
-            "where instrument_id=:i and funding_time>=:s order by 1"
+            "where instrument_id=:i and funding_time>=:s and funding_time<=:at order by 1"
         ),
-        {"i": inst.id, "s": since},
+        span,
     ).all()
     oi = session.execute(
         text(
             "select time, oi_quote from open_interest "
-            "where instrument_id=:i and time>=:s order by 1"
+            "where instrument_id=:i and time>=:s and time<=:at order by 1"
         ),
-        {"i": inst.id, "s": since},
+        span,
     ).all()
     ls = session.execute(
         text(
             "select time, top_traders_ratio from long_short_ratios "
-            "where instrument_id=:i and time>=:s order by 1"
+            "where instrument_id=:i and time>=:s and time<=:at order by 1"
         ),
-        {"i": inst.id, "s": since},
+        span,
     ).all()
     return MarketInputs(
         symbol=inst.symbol,
-        h4=_candles(session, inst.id, Timeframe.H4, H4_WINDOW),
-        d1=_candles(session, inst.id, Timeframe.D1, 400),
-        w1=_candles(session, inst.id, Timeframe.W1, 120),
+        h4=_candles(session, inst.id, Timeframe.H4, H4_WINDOW, at),
+        d1=_candles(session, inst.id, Timeframe.D1, D1_WINDOW, at),
+        w1=_candles(session, inst.id, Timeframe.W1, W1_WINDOW, at),
         funding=[FundingRate(r[0].astimezone(UTC), r[1]) for r in f],
         open_interest=[OpenInterest(r[0].astimezone(UTC), r[1]) for r in oi],
         long_short=[LongShortRatio(r[0].astimezone(UTC), r[1] / (1 + r[1])) for r in ls],
@@ -436,11 +513,20 @@ def _blocker_state(blocker: SignalLife) -> str:
 
 
 def write_candidate(
-    session: Session, version: StrategyVersion, inst: Instrument, cand: SignalCandidate
+    session: Session,
+    version: StrategyVersion,
+    inst: Instrument,
+    cand: SignalCandidate,
+    inputs: MarketInputs | None = None,
 ) -> bool:
     """Пишет кандидата в ``signals`` (pending + событие created). Область сигнала (``scope``)
     берётся из статуса версии, прочитанного из БД в момент записи, и дальше не меняется
     (план 2.11, правило 5). Если версия к этому моменту ушла из forward/live, сигнал не пишется.
+
+    ``inputs`` — вход, на котором ``evaluate`` дал этого кандидата. Если он передан, вместе с
+    сигналом в ``rationale_facts['inputs']`` пишется отпечаток входа
+    (``engine.signal.inputs_fingerprint``): по нему ежедневная сверка отличает «данные в БД
+    изменились после публикации» от «тот же вход теперь даёт другой сигнал».
 
     Не пишется и кандидат по занятому инструменту — правило «одна открытая сделка на инструмент
     и версию», как в бэктесте (``open_trade_blocker``): пропуск идёт в журнал на уровне INFO с
@@ -485,6 +571,20 @@ def write_candidate(
         )
         return False
     t = cand.trade
+    facts: dict[str, Any] = {
+        "facts": list(cand.facts),
+        "publishable": cand.score.publishable,
+        "deferred": cand.deferred,
+        "zone": {
+            "kind": cand.zone.kind,
+            "top": str(cand.zone.top),
+            "bottom": str(cand.zone.bottom),
+        },
+        "flags": cand.filters.flags,
+    }
+    if inputs is not None:
+        facts[INPUTS_FACT] = inputs_fingerprint(inputs, cand.candle_close_time)
+        facts[INPUTS_UPTO_FACT] = inputs_upto(inputs, cand.candle_close_time)
     sig = Signal(
         public_id=secrets.token_hex(5),
         strategy_version_id=version.id,
@@ -501,17 +601,7 @@ def write_candidate(
         score=cand.score.total,
         grade=cand.score.grade.value if cand.score.publishable else "C",
         score_breakdown=dict(cand.score.components),
-        rationale_facts={
-            "facts": list(cand.facts),
-            "publishable": cand.score.publishable,
-            "deferred": cand.deferred,
-            "zone": {
-                "kind": cand.zone.kind,
-                "top": str(cand.zone.top),
-                "bottom": str(cand.zone.bottom),
-            },
-            "flags": cand.filters.flags,
-        },
+        rationale_facts=facts,
         status="pending",
         scope=scope,
         input_hash=cand.input_hash,
@@ -652,7 +742,7 @@ def run_forward(
                 params: StrategyParams = STRATEGIES[key]
                 res = evaluate(inputs, at, params)
                 if isinstance(res, SignalCandidate):
-                    if write_candidate(session, version, inst, res):
+                    if write_candidate(session, version, inst, res, inputs):
                         stats["signals"] += 1
                         print(
                             f"{at:%d.%m %H:%M} {inst.symbol} {key}: {res.direction} "
