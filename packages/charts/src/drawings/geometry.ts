@@ -96,6 +96,16 @@ export function channelOffset(p1: Point, p2: Point, p3: Point): number {
   return p3.price - lineAt(p1, p2, p3.time);
 }
 
+/**
+ * Канал на экране: сдвиг параллельной линии по вертикали, px — от линии A–B до третьей точки. Считается на экране, а не
+ * в ценах: на логарифмической шкале одна разница цен — разный сдвиг в пикселях, и линия с ценовым сдвигом не
+ * параллельна первой и не проходит через третью точку. На линейной и процентной шкале — то же, что сдвиг цены. Им
+ * рисуется канал и по нему же выбирается (hitTest): нарисованное и выбираемое совпадают на любой шкале.
+ */
+export function channelShift(a: { x: number; y: number }, b: { x: number; y: number }, c: { x: number; y: number }): number {
+  return c.y - (a.y + ((b.y - a.y) * (c.x - a.x)) / (b.x - a.x || 1));
+}
+
 /** Расстояние от точки до отрезка (в пикселях). */
 export function distToSegment(px: number, py: number, x1: number, y1: number, x2: number, y2: number): number {
   const dx = x2 - x1, dy = y2 - y1;
@@ -218,7 +228,7 @@ function bodyHit(d: Drawing, pts: { x: number | null; y: number | null }[], px: 
       }
       if (distToSegment(px, py, x1, y1, x2, y2) <= tol) return true;
       if (d.type === "channel" && c && c.x !== null && c.y !== null) {
-        const off = c.y - (a.y + ((b.y - a.y) * (c.x - a.x)) / (b.x - a.x || 1));
+        const off = channelShift({ x: a.x, y: a.y }, { x: b.x, y: b.y }, { x: c.x, y: c.y });
         return distToSegment(px, py, a.x, a.y + off, b.x, b.y + off) <= tol;
       }
       if (d.type === "fib") {

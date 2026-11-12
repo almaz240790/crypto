@@ -20,8 +20,9 @@ import { CLICK_SLOP_PX, DBLCLICK_MS, DBLCLICK_SLOP_PX, DEFAULT_STYLE, HANDLE_PX,
  * - точки ставятся только в области свечей основной панели: нажатие на шкалу цены или времени, в другой панели —
  *   жест графика (масштаб шкалы, прокрутка);
  * - правка рисунка (хэндлы, тело) рисунков не создаёт. Мышь правит любой рисунок под курсором; палец — только
- *   выбранный: по невыбранному касание выбирает, сдвиг и щипок принадлежат графику. Касание мимо снимает выбор,
- *   сдвиг графика — нет;
+ *   выбранный: по невыбранному касание выбирает, сдвиг и щипок принадлежат графику. Тело выбранного палец тянет, только
+ *   если по рисунку коснулись: только что нарисованный выбран сам, и сдвиг из его середины — графику (ручки — сразу).
+ *   Касание мимо снимает выбор, сдвиг графика — нет. Заблокированный выбирается кликом и касанием, но не правится;
  * - позиция Long/Short — одним нажатием на цену входа: стоп по ATR(14), цель 1:2, ширина ~30 свечей (position.ts).
  *   Правка: ручки входа, стопа и цели двигают свою цену (по вертикали, не за вход), правый край — длительность,
  *   тело — всю позицию.
@@ -104,6 +105,11 @@ export class DrawingController {
   private atrCache: { candles: readonly Candle[]; n: number; last: number; time: number; atr: number | null } | null = null;
   /** Касания (touch*) не доходят до LWC: палец двигает точку или рисунок, а не график. */
   private blockTouch = false;
+  /**
+   * Рисунок, по которому коснулись (выбран касанием): только его тело палец тянет. Только что нарисованный хозяин
+   * выбирает сам — до касания по нему сдвиг из его середины принадлежит графику (ADR-0009, «Правка»).
+   */
+  private touched: string | null = null;
   private readonly handlers: Array<[EventTarget, string, (e: Event) => void]> = [];
 
   constructor(
@@ -321,15 +327,23 @@ export class DrawingController {
     DrawingController.consume(e);
     const d = this.opts.getDrawings().find((q) => q.id === hit.id)!;
     this.drag = { hit, type: d.type, start, origin: d.points.map((p) => ({ ...p })), last: null };
+    // нажатие мышью по рисунку — выбор им самим (на устройстве с мышью и экраном тело потом тянется и пальцем)
+    if (!touch) this.touched = hit.id;
     this.ev.onSelect(hit.id);
     this.capture(e);
   }
 
-  /** Незаблокированные рисунки под точкой: мышью правится любой, пальцем и пером — только выбранный. */
+  /**
+   * Незаблокированные рисунки под точкой: мышью правится любой, пальцем и пером — только выбранный, а его тело — только
+   * после касания по нему (ручки — сразу).
+   */
   private editHit(p: Xy, touch: boolean): Hit | null {
     const selected = this.opts.getSelectedId?.() ?? null;
+    // выбор ушёл с рисунка, по которому коснулись (снят, выбран другой): снова выбранный — уже без касания
+    if (this.touched !== selected) this.touched = null;
     const ds = this.opts.getDrawings().filter((d) => !d.locked && (!touch || d.id === selected));
-    return hitTest(ds, p.x, p.y, this.proj.projector(), this.tolerance, this.knobTolerance);
+    const hit = hitTest(ds, p.x, p.y, this.proj.projector(), this.tolerance, this.knobTolerance);
+    return touch && hit?.part === "body" && hit.id !== this.touched ? null : hit;
   }
 
   private move(e: PointerLike): void {
@@ -388,8 +402,10 @@ export class DrawingController {
       this.markPlace(at);
       return this.addPoint(at.x, at.y, g.touch);
     }
-    // касание по невыбранному рисунку выбирает его (правится пальцем, когда выбран); мимо — снять выбор
-    const hit = g.touch && g.plot ? hitTest(this.opts.getDrawings().filter((d) => !d.locked), at.x, at.y, this.proj.projector(), this.tolerance, this.knobTolerance) : null;
+    // касание по невыбранному рисунку выбирает его (правится пальцем, когда выбран); клик и касание по заблокированному —
+    // тоже (карточка с «разблокировать» и «удалить»; на телефоне другого пути к ним нет), но правки нет; мимо — снять выбор
+    const hit = g.plot ? hitTest(this.opts.getDrawings(), at.x, at.y, this.proj.projector(), this.tolerance, this.knobTolerance) : null;
+    this.touched = hit?.id ?? null;
     this.ev.onSelect(hit?.id ?? null);
   }
 
@@ -430,7 +446,11 @@ export class DrawingController {
       }
     } else if (hit.part === "point") {
       const np = this.toPoint(x, y);
-      if (np) pts[hit.index] = np;
+      // Фибоначчи и прямоугольник: ручка на свече другой точки — рисунок нулевой ширины (линии уровней — 0 px). Как и
+      // при постановке второй точки (sameAsLast), такое положение не принимается: ручка — на последнем по пути
+      const other = WIDE_TYPES.includes(type) ? origin[1 - hit.index] : undefined;
+      if (np && other && np.time === other.time) pts = this.drag!.last ?? pts;
+      else if (np) pts[hit.index] = np;
     } else {
       const t0 = this.proj.timeAt(start.x), t1 = this.proj.timeAt(x);
       const p0 = this.proj.priceAt(start.y), p1 = this.proj.priceAt(y);
@@ -479,7 +499,11 @@ export class DrawingController {
     const d = this.opts.getDrawings().find((q) => q.id === drag.hit.id);
     const points = drag.last ?? d?.points;
     if (g.moved && d && points) this.ev.onMove(drag.hit.id, points, true, drag.origin);
-    else if (!g.moved) this.ev.onSelect(drag.hit.id);
+    else if (!g.moved) {
+      // касание по ручке выбранного — тоже касание по рисунку
+      this.touched = drag.hit.id;
+      this.ev.onSelect(drag.hit.id);
+    }
   }
 
   /** Правка прервана (второй палец — щипок графика): рисунок — на место, без шага отмены. */

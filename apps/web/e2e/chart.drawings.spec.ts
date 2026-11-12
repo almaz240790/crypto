@@ -338,6 +338,67 @@ test.describe("десктоп, мышь: шкалы, двойной клик, д
     await page.keyboard.press("Control+z");
     await expect.poll(async () => (await stored(page)).find((d) => d.type === "trend")?.points).toEqual(trend.points);
   });
+
+  test("русская раскладка: Alt+Р и Alt+Е — горизонтальная и трендовая, Ctrl+Я и Ctrl+Н — отмена и повтор", async ({ page }) => {
+    const { X, Y } = await open(page);
+    const count = page.getByTestId("drawings-count");
+    const chip = page.getByTestId("draw-chip");
+    // клавиша при русской раскладке: символ (key) — кириллица, клавиша (code) — латинская, как шлёт Chrome
+    const cdp = await page.context().newCDPSession(page);
+    const press = async (key: string, code: string, modifiers: number) => {
+      const vk = code.charCodeAt(3);
+      await cdp.send("Input.dispatchKeyEvent", { type: "rawKeyDown", modifiers, key, code, windowsVirtualKeyCode: vk });
+      await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", modifiers, key, code, windowsVirtualKeyCode: vk });
+    };
+    const ALT = 1, CTRL = 2;
+    await press("р", "KeyH", ALT);
+    await expect(chip).toContainText("Нажмите на график");
+    await page.mouse.click(X(0.5), Y(0.3));
+    await expect(count).toHaveText("рисунков: 1");
+    await press("я", "KeyZ", CTRL);
+    await expect(count).toHaveText("рисунков: 0");
+    await press("н", "KeyY", CTRL);
+    await expect(count).toHaveText("рисунков: 1");
+    await press("е", "KeyT", ALT);
+    await expect(chip).toContainText("Нажмите первую точку");
+    await expect(page.getByRole("toolbar", { name: "панель рисования" }).getByRole("button", { name: "Трендовая линия", exact: true })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  test("процент трендовой и измерителя виден, пока рисунок выбран: при рисовании, сразу после и при перетаскивании конца", async ({ page }) => {
+    const { X, Y } = await open(page);
+    const tools = page.getByRole("toolbar", { name: "панель рисования" });
+    const card = page.getByRole("region", { name: "выбранный рисунок" });
+    const pct = () => page.evaluate(() => (document.querySelector('[data-testid="terminal"]') as HTMLElement & { __overlay: () => { drawingLabels: { id: string; text: string }[] } }).__overlay().drawingLabels.filter((l) => l.id.endsWith("#pct")).map((l) => l.text));
+    const PCT = /^[+−-]\d+\.\d\d %$/;
+    for (const tool of ["Измеритель", "Трендовая линия"]) {
+      await tools.getByRole("button", { name: tool, exact: true }).click();
+      await page.mouse.click(X(0.3), Y(0.3));
+      // начатый: ручка A и предпросмотр B под курсором
+      await page.mouse.move(X(0.45), Y(0.4), { steps: 4 });
+      await expect.poll(pct, `${tool}: при рисовании`).toEqual([expect.stringMatching(PCT)]);
+      await page.mouse.click(X(0.5), Y(0.45));
+      await expect(card).toContainText(tool);
+      // выбран сразу после рисунка — ручки на A и B, процент рядом с B (раньше — пропадал до снятия выделения)
+      await expect.poll(pct, `${tool}: выбран`).toEqual([expect.stringMatching(PCT)]);
+      if (tool === "Измеритель") {
+        await page.keyboard.press("Delete");
+        await expect.poll(pct).toEqual([]);
+        continue;
+      }
+      // конец B тянут: процент виден и меняется вместе с ним
+      const before = (await pct())[0];
+      const trend = (await stored(page)).find((d) => d.type === "trend")!;
+      const [, b] = await onScreen(page, trend.points);
+      await page.mouse.move(b!.x, b!.y);
+      await page.mouse.down();
+      await page.mouse.move(b!.x + 40, b!.y + 60, { steps: 6 });
+      await expect.poll(pct, `${tool}: тянут конец`).toEqual([expect.stringMatching(PCT)]);
+      expect((await pct())[0]).not.toBe(before);
+      await page.mouse.up();
+      await card.getByRole("button", { name: "снять выделение" }).click();
+      await expect.poll(pct, `${tool}: без выделения`).toEqual([expect.stringMatching(PCT)]);
+    }
+  });
 });
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -519,6 +580,47 @@ test.describe("телефон, палец", () => {
     await f.drag(X(0.7), Y(0.55), X(0.35), Y(0.55));
     await expect.poll(async () => (await range(page))!.from).not.toBe(r.from);
     await expect(page.getByTestId("ohlc")).toHaveCount(0);
+    await expect(count).toHaveText("рисунков: 1");
+  });
+
+  test("только что нарисованный Фибоначчи выбран, но сдвиг из его середины двигает график; ручка тянется сразу, тело — после касания", async ({ page }) => {
+    const { X, Y } = await open(page);
+    const f = await finger(page);
+    const count = page.getByTestId("drawings-count");
+    const card = page.getByRole("region", { name: "выбранный рисунок" });
+    await page.getByRole("button", { name: "Рисовать" }).tap();
+    await page.getByRole("dialog", { name: "Рисование" }).getByRole("button", { name: "Фибоначчи" }).tap();
+    await f.tap(X(0.15), Y(0.3));
+    await f.tap(X(0.6), Y(0.55));
+    await expect(count).toHaveText("рисунков: 1");
+    await expect(card).toContainText("Фибоначчи");
+    const fib = (await stored(page))[0]!;
+    // сдвиг влево из середины рисунка — листают историю: график едет, рисунок на месте, карточка остаётся
+    let r = (await range(page))!;
+    await f.drag(X(0.4), Y(0.42), X(0.1), Y(0.42));
+    await expect.poll(async () => (await range(page))!.from).not.toBe(r.from);
+    await settle(page);
+    expect((await stored(page))[0]!.points).toEqual(fib.points);
+    await expect(card).toContainText("Фибоначчи");
+    // ручка B — сразу: тянется пальцем, график стоит
+    let [, b] = await onScreen(page, fib.points);
+    r = (await range(page))!;
+    await f.drag(b!.x, b!.y, b!.x - 25, b!.y + 30);
+    await expect.poll(async () => (await stored(page))[0]!.points[1]).not.toEqual(fib.points[1]);
+    expect(await range(page)).toEqual(r);
+    const edited = (await stored(page))[0]!.points;
+    // касание по рисунку — теперь тело тянется: рисунок едет целиком, график стоит
+    let [a] = await onScreen(page, edited);
+    [, b] = await onScreen(page, edited);
+    const mid = { x: (a!.x + b!.x) / 2, y: (a!.y + b!.y) / 2 };
+    await f.tap(mid.x, mid.y);
+    await expect(card).toContainText("Фибоначчи");
+    r = (await range(page))!;
+    await f.drag(mid.x, mid.y, mid.x - 40, mid.y);
+    await expect.poll(async () => (await stored(page))[0]!.points[0]!.time).toBeLessThan(edited[0]!.time);
+    expect(await range(page)).toEqual(r);
+    [a] = await onScreen(page, (await stored(page))[0]!.points);
+    expect(a!.x).toBeLessThan(mid.x);
     await expect(count).toHaveText("рисунков: 1");
   });
 });

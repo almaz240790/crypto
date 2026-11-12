@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { navKey, rovingIndex, typeaheadIndex } from "./keyboard";
+import { navKey, rovingIndex, shortcutLetter, typeaheadIndex } from "./keyboard";
 
 describe("navKey", () => {
   it("стрелки по ориентации группы, Home/End — в обеих", () => {
@@ -53,5 +53,29 @@ describe("typeaheadIndex", () => {
     expect(typeaheadIndex(labels, "с", 0, (i) => i === 1)).toBe(6);
     expect(typeaheadIndex(labels, "я", 0)).toBe(-1);
     expect(typeaheadIndex(labels, " ", 0)).toBe(-1);
+  });
+});
+
+describe("shortcutLetter", () => {
+  it("латинская буква — как есть, в нижнем регистре (Shift, Caps Lock)", () => {
+    expect(shortcutLetter({ key: "z", code: "KeyZ" })).toBe("z");
+    expect(shortcutLetter({ key: "Z", code: "KeyZ" })).toBe("z");
+  });
+  it("русская раскладка: Ctrl+Я, Ctrl+Н, Alt+Р, Alt+Е — клавиши Z, Y, H, T", () => {
+    expect(shortcutLetter({ key: "я", code: "KeyZ" })).toBe("z");
+    expect(shortcutLetter({ key: "Н", code: "KeyY" })).toBe("y");
+    expect(shortcutLetter({ key: "р", code: "KeyH" })).toBe("h");
+    expect(shortcutLetter({ key: "е", code: "KeyT" })).toBe("t");
+  });
+  it("Option на Mac даёт символ («˙» на H) — тоже по клавише", () => {
+    expect(shortcutLetter({ key: "˙", code: "KeyH" })).toBe("h");
+  });
+  it("другая латинская раскладка (AZERTY, Dvorak) — по букве, а не по месту клавиши", () => {
+    expect(shortcutLetter({ key: "z", code: "KeyW" })).toBe("z");
+  });
+  it("не буква — null", () => {
+    expect(shortcutLetter({ key: "1", code: "Digit1" })).toBeNull();
+    expect(shortcutLetter({ key: "Escape", code: "Escape" })).toBeNull();
+    expect(shortcutLetter({ key: "+", code: "Equal" })).toBeNull();
   });
 });

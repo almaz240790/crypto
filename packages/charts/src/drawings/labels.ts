@@ -1,5 +1,5 @@
 import { formatPriceLabel, formatQuantity } from "../format";
-import type { LabelCandidate, Slot } from "../layout/types";
+import { LABEL_GAP, type LabelCandidate, type Slot } from "../layout/types";
 import type { ThemeTokens } from "../types";
 import { fibLevelText } from "./fib";
 import { fibLevels, positionKnobs, positionScreen, type Projector } from "./geometry";
@@ -88,6 +88,8 @@ export interface DrawingLabelInput {
   profile: RiskProfile | null;
   text: DrawingText;
   measure: MeasureText;
+  /** Ручки под палец (крупнее): подписи у точек выбранного и начатого рисунка обходят ручку этого размера. */
+  touch?: boolean;
 }
 
 /** Цвет рисунка из токена темы ("accent" — прежний цвет по умолчанию, рисуется нейтральным). */
@@ -204,7 +206,11 @@ function labelsOf(d: Drawing, base: number, o: DrawingLabelInput, out: DrawingLa
       const pct = p1.price ? ((p2.price - p1.price) / p1.price) * 100 : 0;
       const text = `${pct >= 0 ? "+" : ""}${pct.toFixed(2)} %${d.text ? " · " + d.text : ""}`;
       const w = measure(text, "mono", LABEL_PX, 400) + 2 * TEXT_DX;
-      line("pct", text, [b.x, b.x - w - 2 * TEXT_DX], b.y);
+      // у выбранного и начатого на B — ручка (занятое место раскладки, handleRects): над и под линией у самой точки
+      // подпись задевала её и пропадала — именно когда измеряют или тянут конец. Тогда — правее или левее ручки
+      // (прямоугольник подписи — на TEXT_DX от x, раскладка раздувает его на LABEL_GAP; 1 px — запас на округление).
+      const r = (o.touch ? HANDLE_TOUCH_R : HANDLE_R) + LABEL_GAP - TEXT_DX + 1;
+      line("pct", text, [b.x, b.x - w - 2 * TEXT_DX, b.x + r, b.x - w - 2 * TEXT_DX - r], b.y);
       return;
     }
     case "rect": {

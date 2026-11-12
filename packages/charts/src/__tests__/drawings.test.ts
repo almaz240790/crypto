@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { channelOffset, distToSegment, extend, fibLevels, hitTest, lineAt, magnetSnap, positionStats, rulerInfo, type Projector } from "../drawings/geometry";
 import { addDrawing, alive, canRedo, canUndo, clearDrawings, commitMove, createState, mergeRemote, redo, removeDrawing, resolve, toggleLock, undo, updateDrawing, visibleOn } from "../drawings/store";
-import { HANDLE_TOUCH_PX, UNDO_STEPS, pointsNeeded, type Drawing } from "../drawings/types";
+import { HANDLE_TOUCH_PX, UNDO_STEPS, pointsNeeded, type Drawing, type Point } from "../drawings/types";
 import { DrawingsPrimitive, formatDrawingPrice } from "../drawings/primitive";
-import { fibXs } from "../drawings/labels";
+import { fibXs, handleRects } from "../drawings/labels";
+import { intersects } from "../layout/labels";
 import type { Candle } from "../types";
 import { H, T0, TOKENS, bars, makeEnv } from "./fakes/lwc";
 import { alpha } from "../theme";
@@ -161,7 +162,7 @@ describe("автомасштаб цены", () => {
 
 /** Холст-подделка: записывает линии (цвет, прозрачность, толщина, пунктир), подписи и плашки. */
 function canvas() {
-  const strokes: { style: string; alpha: number; width: number; dash: number[]; y0: number; y1: number }[] = [];
+  const strokes: { style: string; alpha: number; width: number; dash: number[]; x0: number; x1: number; y0: number; y1: number }[] = [];
   const texts: { text: string; fill: string; font: string; x: number; w: number }[] = [];
   const rects: string[] = [];
   const boxes: { fill: string; x: number; w: number }[] = [];
@@ -180,7 +181,7 @@ function canvas() {
     beginPath: () => (path = []),
     moveTo: (x: number, y: number) => path.push({ x, y }),
     lineTo: (x: number, y: number) => path.push({ x, y }),
-    stroke: () => strokes.push({ style: st.strokeStyle, alpha: st.globalAlpha, width: st.lineWidth, dash: [...dash], y0: path[0]?.y ?? NaN, y1: path[1]?.y ?? NaN }),
+    stroke: () => strokes.push({ style: st.strokeStyle, alpha: st.globalAlpha, width: st.lineWidth, dash: [...dash], x0: path[0]?.x ?? NaN, x1: path[1]?.x ?? NaN, y0: path[0]?.y ?? NaN, y1: path[1]?.y ?? NaN }),
     fillText: (text: string, x: number) => texts.push({ text, fill: st.fillStyle, font: st.font, x, w: text.length * 6 }),
     fillRect: (x: number, _y: number, w: number) => {
       rects.push(st.fillStyle);
@@ -270,6 +271,113 @@ describe("Фибоначчи и цвет рисунков по умолчани�
     const line = { ...d("t", "trend", [{ time: T0 + 10 * H, price: 120 }, { time: T0 + 40 * H, price: 80 }]), style: { color: "down" as const, width: 1 as const, dashed: false } };
     expect(render([line]).strokes[0]!.style).toBe(TOKENS.down);
   });
+});
+
+describe("рисунок «на всех таймфреймах» с точками между свечами текущего таймфрейма", () => {
+  // шкала подделки — как у render(): 0…110 логических на 800 px; LWC даёт x только целому индексу (дробный — 0)
+  const spacing = PANE_W / 110;
+  const xAt = (logical: number) => logical * spacing + spacing / 2;
+  const HOUR = 3600;
+  /** Фибоначчи, нарисованный на 1ч: 15:00 и 17:00 — между свечами 4ч (12:00 + 3 ч, 16:00 + 1 ч). */
+  const fib: Drawing = { ...d("h", "fib", [{ time: T0 + 10 * H + 3 * HOUR, price: 120 }, { time: T0 + 40 * H + HOUR, price: 80 }]), levels: [0, 0.5, 0.618, 1] };
+
+  it("проекция — между свечами по доле интервала, а не у левого края (x = 0); за краями — шагом таймфрейма", () => {
+    const candles = bars(60);
+    const env = makeEnv(() => candles, { top: 150, bottom: 70 });
+    const prim = new DrawingsPrimitive(TOKENS);
+    prim.attached({ chart: env.chart, series: env.series, requestUpdate: () => undefined } as never);
+    prim.projector!.setBars(candles.map((c) => c.time), H);
+    const proj = prim.projector!;
+    expect(proj.x(T0 + 10 * H)).toBeCloseTo(xAt(10), 9);
+    expect(proj.x(T0 + 10 * H + 3 * HOUR)).toBeCloseTo(xAt(10.75), 9);
+    expect(proj.x(T0 + 40 * H + HOUR)).toBeCloseTo(xAt(40.25), 9);
+    // правее последней свечи (1Д с утра, 1Н со среды) и левее первой
+    expect(proj.x(T0 + 59 * H + 1.5 * H)).toBeCloseTo(xAt(60.5), 9);
+    expect(proj.x(T0 - 2.5 * H)).toBeCloseTo(xAt(-2.5), 9);
+  });
+
+  it("линии уровней — от A до B, подписи — у правого конца, а не стопкой у левого края панели", () => {
+    const c = render([fib]);
+    const levels = c.strokes.filter((s) => s.y0 === s.y1);
+    expect(levels).toHaveLength(4);
+    for (const s of levels) {
+      expect(s.x0).toBeCloseTo(xAt(10.75), 6);
+      expect(s.x1).toBeCloseTo(xAt(40.25), 6);
+    }
+    const labels = c.texts.filter((t) => / · /.test(t.text));
+    expect(labels).toHaveLength(4);
+    for (const t of labels) expect(t.x, t.text).toBeGreaterThan(xAt(40.25));
+  });
+});
+
+describe("процент трендовой и измерителя у выбранного рисунка", () => {
+  const candles = bars(60);
+  /** Своя раскладка примитива (без разметки): подписи и их места, ручки — занятые места. */
+  const layout = (drawing: Drawing, o: { selected?: boolean; draft?: boolean; touch?: boolean }) => {
+    const env = makeEnv(() => candles, { top: 150, bottom: 70 });
+    const prim = new DrawingsPrimitive(TOKENS);
+    prim.attached({ chart: env.chart, series: env.series, requestUpdate: () => undefined } as never);
+    prim.projector!.setBars(candles.map((c) => c.time), H);
+    prim.update({ drawings: o.draft ? [] : [drawing], draft: o.draft ? drawing : null, selectedId: o.selected ? drawing.id : null, touch: o.touch ?? false });
+    const proj = prim.projector!.projector();
+    const { placed } = prim.paintLabels(canvas().ctx as never, proj);
+    const handles = handleRects({ drawings: o.draft ? [] : [drawing], draft: o.draft ? drawing : null, selectedId: o.selected ? drawing.id : null, proj }, o.touch ?? false);
+    return { pct: placed.get(`${drawing.id}#pct`) ?? null, handles, b: { x: proj.x(drawing.points[1]!.time)!, y: proj.y(drawing.points[1]!.price)! } };
+  };
+  const down: Point[] = [{ time: T0 + 10 * H, price: 120 }, { time: T0 + 30 * H, price: 100 }];
+  const up: Point[] = [{ time: T0 + 10 * H, price: 100 }, { time: T0 + 30 * H, price: 120 }];
+
+  for (const type of ["trend", "ruler"] as const)
+    for (const pts of [down, up])
+      for (const touch of [false, true])
+        it(`${type}, ${pts === down ? "вниз" : "вверх"}, ${touch ? "палец" : "мышь"}: выбранный и начатый — с процентом рядом с точкой B, не под ручкой`, () => {
+          const dr = d("R", type, pts);
+          const free = layout(dr, {});
+          expect(free.pct, "без выбора").not.toBeNull();
+          for (const o of [{ selected: true, touch }, { draft: true, touch }]) {
+            const { pct, handles, b } = layout(dr, o);
+            expect(pct, JSON.stringify(o)).not.toBeNull();
+            for (const h of handles) expect(intersects(pct!, h.rect), `${JSON.stringify(o)}: подпись ${JSON.stringify(pct)} на ручке ${h.id}`).toBe(false);
+            // рядом с B: не дальше ручки и зазора по горизонтали, по вертикали — у самой линии
+            const dx = Math.min(Math.abs(pct!.x - b.x), Math.abs(pct!.x + pct!.w - b.x));
+            expect(dx, JSON.stringify(o)).toBeLessThanOrEqual(16);
+            expect(Math.min(Math.abs(pct!.y + pct!.h - b.y), Math.abs(pct!.y - b.y)), JSON.stringify(o)).toBeLessThanOrEqual(3);
+          }
+        });
+});
+
+describe("параллельный канал на любой шкале цены", () => {
+  /** Линия через две точки (x, y) — y в точке x. */
+  const yOn = (s: { x0: number; y0: number; x1: number; y1: number }, x: number) => s.y0 + ((s.y1 - s.y0) * (x - s.x0)) / (s.x1 - s.x0);
+  const slope = (s: { x0: number; y0: number; x1: number; y1: number }) => (s.y1 - s.y0) / (s.x1 - s.x0);
+  const channel: Drawing = d("C", "channel", [{ time: 100, price: 100 }, { time: 500, price: 400 }, { time: 300, price: 200 }]);
+  /** Рисует канал примитивом с заданной проекцией; линии: основная, параллельная, середина. */
+  const draw = (proj: Projector) => {
+    const prim = new DrawingsPrimitive(TOKENS);
+    prim.projector = { projector: () => proj } as never;
+    prim.update({ drawings: [channel] });
+    const c = canvas();
+    prim.paneViews()[0]!.renderer()!.draw({ useMediaCoordinateSpace: (cb: (s: unknown) => void) => cb({ context: c.ctx, mediaSize: { width: proj.width, height: proj.height } }) } as never);
+    return c.strokes;
+  };
+  const scales: [string, (p: number) => number | null][] = [
+    ["логарифмическая (300 px на порядок)", (p) => (p > 0 ? (3 - Math.log10(p)) * 300 : null)],
+    ["линейная", (p) => 600 - p],
+  ];
+  for (const [name, y] of scales) {
+    it(`${name}: вторая линия параллельна первой на экране и проходит через третью точку; нажатие по ней выбирает канал`, () => {
+      const proj: Projector = { x: (t) => t, y, width: 800, height: 600 };
+      const [main, par, mid] = draw(proj);
+      expect(slope(par!)).toBeCloseTo(slope(main!), 9);
+      expect(yOn(par!, 300)).toBeCloseTo(y(200)!, 6);
+      // середина — посередине между линиями
+      expect(slope(mid!)).toBeCloseTo(slope(main!), 9);
+      expect(yOn(mid!, 300)).toBeCloseTo((yOn(main!, 300) + y(200)!) / 2, 6);
+      // что нарисовано, то и выбирается: по второй линии — канал, в стороне от неё (дальше допуска) — ничего
+      expect(hitTest([channel], 200, yOn(par!, 200), proj, 8)).toEqual({ id: "C", part: "body", index: -1 });
+      expect(hitTest([channel], 200, yOn(par!, 200) + 20, proj, 8)).toBeNull();
+    });
+  }
 });
 
 describe("Фибоначчи: уровни за пределами A–B, подписи небольшого рисунка, проекция после смены серии", () => {

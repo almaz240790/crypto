@@ -29,6 +29,20 @@ export function timeToIndex(candles: readonly Candle[], time: number, step: numb
   return lo - 1 + (time - a) / (b - a);
 }
 
+/**
+ * x логического индекса на шкале времени (lx — logicalToCoordinate шкалы LWC). LWC 5 даёт координату только целому
+ * индексу, дробному — 0 (левый край панели). Дробный индекс — время между свечами (рисунок с другого таймфрейма:
+ * 15:00 на 4ч, 04:00 на 1Д) или правее последней свечи не кратно шагу, поэтому x — от целой части с долей до
+ * следующего индекса (на шкале времени индексы равноотстоящие).
+ */
+export function logicalX(lx: (logical: number) => number | null, logical: number): number | null {
+  const i = Math.floor(logical);
+  const x0 = lx(i);
+  if (x0 === null || i === logical) return x0;
+  const x1 = lx(i + 1);
+  return x1 === null ? x0 : x0 + (logical - i) * (x1 - x0);
+}
+
 export interface FrameProjector extends SceneProjector {
   /** Логический индекс первой свечи буфера на шкале времени. */
   firstIndex: number;
@@ -43,7 +57,7 @@ export function frameProjector(chart: ChartLike, series: SeriesLike, candles: re
   const ts = chart.timeScale();
   const n = candles.length;
   const firstIndex = n > 0 ? ((ts.timeToIndex(candles[0]!.time as Time, true) as number | null) ?? 0) : 0;
-  const lx = (logical: number): number | null => ts.logicalToCoordinate(logical as never) as number | null;
+  const lx = (logical: number): number | null => logicalX((l) => ts.logicalToCoordinate(l as never) as number | null, logical);
   const range = ts.getVisibleLogicalRange();
   const r = range ? { from: range.from as number, to: range.to as number } : null;
   const x0 = lx(firstIndex);
