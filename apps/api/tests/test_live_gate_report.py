@@ -51,6 +51,7 @@ from app.live_gate_report import (
     bootstrap_means,
     build_forward,
     forward_trades,
+    last_close,
     mean_interval,
     parse_reconcile,
     percentile,
@@ -65,8 +66,17 @@ from app.live_gate_report import (
     window_stats,
     write_report,
 )
+from app.models import (
+    AdminAudit,
+    Instrument,
+    Signal,
+    SignalEvent,
+    StatusChangeRequest,
+    Strategy,
+    StrategyVersion,
+    User,
+)
 from app.models import Candle as CandleRow
-from app.models import Instrument, Signal, StatusChangeRequest, Strategy, StrategyVersion, User
 from app.retrack import (
     Completeness,
     H4Retrack,
@@ -554,12 +564,15 @@ def row(
 GAP = Completeness(START, START, 0, ())
 
 
-def fsig(signal: SignalRow, outcome: Outcome | None) -> ForwardSignal:
+def fsig(
+    signal: SignalRow, outcome: Outcome | None, cancelled_at: datetime | None = None
+) -> ForwardSignal:
     """Сигнал с одинаковым пересчётом по 1m и H4; ``None`` — не пересчитан ни так, ни так."""
     return ForwardSignal(
         signal,
         MinuteRetrack(outcome, GAP, (), None if outcome else "нет 1m"),
         H4Retrack(outcome, None, None if outcome else "нет H4"),
+        cancelled_at=cancelled_at,
     )
 
 
@@ -619,6 +632,9 @@ def _forward(
     entered: datetime | None = None,
     note: str = "создание версии в статусе forward",
     signals: tuple[ForwardSignal, ...] = (),
+    intervals: tuple[tuple[datetime, datetime | None], ...] = (),
+    exit_note: str = "",
+    extra: tuple[tuple[str, datetime | None], ...] = (),
 ) -> Forward:
     return Forward(
         VERSION,
@@ -630,7 +646,9 @@ def _forward(
         signals,
         entered=entered,
         entered_note=note,
-        data_end=data_end,
+        intervals=intervals,
+        exit_note=exit_note,
+        closes=(("AAAUSDT", data_end), *extra),
     )
 
 
@@ -654,9 +672,9 @@ def test_forward_length_ends_at_data_boundary() -> None:
     assert stale.period == timedelta(days=30) and stale.stale
     c = _criterion(stale, LENGTH_CRITERION)
     assert c.status is Status.NOT_MET
-    assert "30 дн.; данные H4 только до 01.12.2026 00:00 UTC — раньше момента отчёта" in c.value
+    assert "30 дн.; данные H4 только до 01.12.2026 00:00 UTC — раньше конца форварда" in c.value
     md = render_markdown(Report(options(now=now), stale, Backtest((), ())))
-    assert "до 01.12.2026 00:00 UTC — **раньше момента отчёта**" in md
+    assert "до 01.12.2026 00:00 UTC — **раньше конца форварда**" in md
     # момент отчёта внутри свечи H4: граница — последнее закрытие, это не обрыв данных
     inside = _forward(since=since, now=now + H4 / 2, data_end=now, entered=since)
     assert not inside.stale
@@ -690,8 +708,12 @@ def test_forward_length_needs_forward_status() -> None:
 def test_cancelled_signal_is_zero_r_in_1m() -> None:
     since = datetime(2026, 11, 1, tzinfo=UTC)
     now = since + timedelta(days=10)
-    cancelled = fsig(row("cancelled", None, "p1", since + H4), closed_at(since + H4 * 3, "2.5"))
+    cancelled = fsig(
+        row("cancelled", None, "p1", since + H4), closed_at(since + H4 * 3, "2.5"), since + H4 * 2
+    )
     assert cancelled.cancelled
+    # статус cancelled без события отмены к моменту отчёта — не отмена
+    assert not fsig(row("cancelled", None, "p0", since), closed_at(since + H4)).cancelled
     (m1,) = forward_trades([cancelled], "1m")
     (h4,) = forward_trades([cancelled], "h4")
     assert (m1.result.status, m1.realized_r) == (TradeStatus.CLOSED_TIME, D(0))
@@ -703,6 +725,133 @@ def test_cancelled_signal_is_zero_r_in_1m() -> None:
     assert c.status is Status.HUMAN and "отменено вручную: 1" in c.value
     md = render_markdown(report, a)
     assert "отменён вручную: в 1m — 0 R, H4 — справочно" in md
+
+
+def test_cancelled_signal_frees_instrument_from_cancel_time() -> None:
+    """Как в ``engine.lifecycle``: отменённый сигнал с момента отмены инструмент не занимает."""
+    a_open = closed_at(START + H4 * 15)  # пересчёт без отмены: сделка до 60-го часа
+    b = fsig(row("closed_sl", None, "pB", START + H4 * 3), closed_at(START + H4 * 5))
+    early = fsig(row("cancelled", None, "pA", START), a_open, cancelled_at=START + H4 * 2)
+    by_id = {x.signal.public_id: x for x in apply_one_trade_rule([early, b])}
+    assert by_id["pB"].counted
+    late = fsig(row("cancelled", None, "pA", START), a_open, cancelled_at=START + H4 * 4)
+    by_id = {x.signal.public_id: x for x in apply_one_trade_rule([late, b])}
+    assert by_id["pB"].blocked_by == "pA"  # на закрытии свечи pB сигнал pA ещё не отменён
+
+
+def test_forward_timeline_ends_on_exit() -> None:
+    from app.live_gate_report import (
+        HOW_DELEGATED,
+        HOW_REPLACED,
+        HOW_REQUEST,
+        StatusChange,
+        VersionRow,
+        forward_timeline,
+    )
+
+    t0 = datetime(2026, 10, 1, tzinfo=UTC)
+    day = timedelta(days=1)
+    now = t0 + 200 * day
+
+    def go(*changes: tuple[str, str, int, str], status: str = "forward") -> Any:
+        rows = tuple(StatusChange(a, b, t0 + d * day, how) for a, b, d, how in changes)
+        return forward_timeline(VersionRow(t0, status, rows), now)
+
+    # создана в backtest, переведена в форвард, затем в архив
+    tl = go(("backtest", "forward", 10, HOW_REQUEST), ("forward", "archived", 40, HOW_REQUEST))
+    assert tl.intervals == ((t0 + 10 * day, t0 + 40 * day),)
+    assert tl.note == "решение по заявке на переход в форвард"
+    assert "вышла из форварда 10.11.2026 00:00 UTC в статус archived" in tl.exit_note
+    # форвард → live: форвард-сигналов больше нет, отрезок кончается
+    tl = go(("backtest", "forward", 10, HOW_REQUEST), ("forward", "live", 30, HOW_REQUEST))
+    assert tl.intervals == ((t0 + 10 * day, t0 + 30 * day),)
+    # live-версию заменили — она вернулась в форвард (запись аудит-лога без заявки)
+    tl = go(
+        ("backtest", "forward", 10, HOW_REQUEST),
+        ("forward", "live", 30, HOW_REQUEST),
+        ("live", "forward", 50, HOW_REPLACED),
+    )
+    assert tl.intervals == ((t0 + 10 * day, t0 + 30 * day), (t0 + 50 * day, None))
+    assert tl.exit_note == ""
+    # создана сразу в форварде и заархивирована миграцией (как 1.0.0)
+    tl = go(("forward", "archived", 15, HOW_DELEGATED), status="archived")
+    assert tl.intervals == ((t0, t0 + 15 * day),)
+    assert tl.note == "создание версии в статусе forward"
+    # смены после момента отчёта не видны
+    tl = forward_timeline(
+        VersionRow(t0, "archived", (StatusChange("forward", "archived", now + day, HOW_REQUEST),)),
+        now,
+    )
+    assert tl.intervals == ((t0, None),)
+
+
+def test_forward_length_counts_only_time_in_forward() -> None:
+    since = datetime(2026, 11, 1, tzinfo=UTC)
+    day = timedelta(days=1)
+    now = since + 120 * day
+    left = _forward(
+        since=since,
+        now=now,
+        data_end=now,
+        entered=since,
+        intervals=((since, since + 25 * day),),
+        exit_note="версия вышла из форварда 26.11.2026 00:00 UTC в статус archived (заявка)",
+    )
+    assert left.end == since + 25 * day and left.period == 25 * day and not left.stale
+    c = _criterion(left, LENGTH_CRITERION)
+    assert c.status is Status.NOT_MET
+    assert c.value.startswith("01.11.2026 — 26.11.2026, 25 дн.; версия вышла из форварда")
+    # выходила и вернулась: перерыв в длину не входит, решение — за человеком
+    back = replace(
+        left, intervals=((since, since + 50 * day), (since + 60 * day, None)), exit_note=""
+    )
+    assert back.period == 110 * day and back.interrupted
+    c = _criterion(back, LENGTH_CRITERION)
+    assert c.status is Status.HUMAN and "версия выходила из форварда" in c.value
+    short_back = replace(back, now=since + 80 * day, closes=(("AAAUSDT", since + 80 * day),))
+    assert _criterion(short_back, LENGTH_CRITERION).status is Status.NOT_MET
+
+
+def test_lagging_instruments_are_flagged() -> None:
+    since = datetime(2026, 11, 1, tzinfo=UTC)
+    now = since + timedelta(days=100)
+    signal = fsig(row("closed_sl", None, "p1", since + H4), closed_at(since + H4 * 3))
+    fwd = _forward(
+        since=since,
+        now=now,
+        data_end=now,
+        entered=since,
+        signals=(signal,),
+        extra=(("BBBUSDT", since + timedelta(days=30)), ("CCCUSDT", None)),
+    )
+    assert not fwd.stale and fwd.data_end == now
+    assert fwd.lagging == (("BBBUSDT", since + timedelta(days=30)), ("CCCUSDT", None))
+    report = Report(options(now=now), fwd, _backtest_with([_trade(START, "1.0")], "AAAUSDT"))
+    a = analyze(report)
+    (c,) = [c for c in a.criteria if c.name.startswith("Форвард в пределах")]
+    assert c.status is Status.HUMAN and "у 2 инструм. свечи H4 кончаются раньше" in c.value
+    md = render_markdown(report, a)
+    assert "кончаются** у BBBUSDT (01.12.2026 00:00), CCCUSDT (нет свечей)" in md
+
+
+def test_suppressed_trade_running_past_rule_start_is_flagged() -> None:
+    """Подавленный сигнал, сделка которого шла и после включения правила: живой режим мог не
+    записать сигналы, которые бэктест взял бы — пункт интервала уходит человеку."""
+    t = ONE_TRADE_RULE_FROM - H4 * 6
+    first = fsig(row("closed_sl", None, "p1", t), closed_at(t + H4 * 3))
+    busy = fsig(row("closed_sl", None, "p2", t + H4), closed_at(ONE_TRADE_RULE_FROM + H4 * 2))
+    signals = tuple(apply_one_trade_rule([first, busy]))
+    now = ONE_TRADE_RULE_FROM + timedelta(days=5)
+    fwd = _forward(since=t, now=now, data_end=last_close(now), entered=t, signals=signals)
+    assert [s.signal.public_id for s in fwd.rule_gaps] == ["p2"]
+    report = Report(options(now=now), fwd, _backtest_with([_trade(START, "1.0")], "AAAUSDT"))
+    a = analyze(report)
+    (c,) = [c for c in a.criteria if c.name.startswith("Форвард в пределах")]
+    assert c.status is Status.HUMAN and "живой режим мог не записать сигналы" in c.value
+    assert "AAAUSDT `p2` (до 12.11.2026 12:39 UTC)" in c.value
+    # отчёт на момент до включения правила — пометки нет
+    early = replace(fwd, now=ONE_TRADE_RULE_FROM - H4, closes=(("AAAUSDT", t + H4 * 4),))
+    assert early.rule_gaps == ()
 
 
 # --- на БД: раздел «Форвард» -------------------------------------------------------------------
@@ -934,8 +1083,9 @@ def forward_fixture(db: Session) -> SimpleNamespace:
     ver, label = _version(db)
     a, b, c, other = (_instrument(db, n) for n in ("A", "B", "C", "X"))
     _market(db, a, F0, 96, _flat)  # до момента отчёта: граница данных = FNOW
-    _market(db, b, F0 + H4, 12, _stop_long_at_300)
-    _market(db, c, F0 + H4 * 2, 12, _short_three_targets)
+    # рынок всех инструментов списка — до момента отчёта: ни один не отстаёт
+    _market(db, b, F0 + H4, 92, _stop_long_at_300)
+    _market(db, c, F0 + H4 * 2, 88, _short_three_targets)
     _market(db, other, F0, 12, _long_three_targets)
     sig_a = _publish(db, ver, a, F0, grade="A")
     sig_b = _publish(db, ver, b, F0 + H4, grade="B")
@@ -1113,6 +1263,57 @@ def test_forward_start_of_version_created_in_backtest(db: Session) -> None:
 
 
 @db_only
+def test_status_changes_without_request_come_from_audit(db: Session) -> None:
+    """Смены статуса без заявки — из аудит-лога: архивирование миграцией (``status.delegated``)
+    и возврат заменённой live-версии в форвард (``version.status``, ``reason = replaced``)."""
+    from app.live_gate_report import HOW_DELEGATED, HOW_REPLACED, load_version
+
+    ver, label = _version(db, status="archived", created_at=F0 - timedelta(days=30))
+    other, other_label = _version(db, status="forward", created_at=F0 - timedelta(days=30))
+    owner = User(email=f"live-gate-{secrets.token_hex(4)}@example.com", role="owner")
+    db.add(owner)
+    db.flush()
+
+    def audit(v: StrategyVersion, action: str, payload: dict[str, Any], at: datetime) -> None:
+        db.add(
+            AdminAudit(
+                actor_id=owner.id,
+                action=action,
+                target=f"strategy_version:{v.id}",
+                payload=payload,
+                created_at=at,
+            )
+        )
+
+    audit(ver, "status.delegated", {"from": "forward", "to": "archived"}, F0)
+    # смена по заявке пишет и заявку, и аудит: аудит без reason=replaced не читается
+    audit(ver, "version.status", {"from": "forward", "to": "live", "request": 1}, F0 - H4)
+    _status_change(db, other, "forward", "live", F0 - timedelta(days=20))
+    audit(other, "version.status", {"from": "live", "to": "forward", "reason": "replaced"}, F0)
+    db.flush()
+    inst = _instrument(db, "U")
+    _market(db, inst, F0, 8, _flat)
+    with read_only_connection(db.connection()) as conn:
+        archived = load_version(conn, label)
+        assert archived is not None
+        assert [(c.from_status, c.to_status, c.how) for c in archived.changes] == [
+            ("forward", "archived", HOW_DELEGATED)
+        ]
+        fwd = build_forward(conn, label, (inst.symbol,), FNOW)
+        assert fwd.intervals == ((F0 - timedelta(days=30), F0),)
+        assert fwd.since_source == "создание версии в статусе forward"
+        assert fwd.end == F0 and fwd.period == timedelta(days=30)
+        assert "в статус archived (миграция по поручению владельца)" in fwd.exit_note
+        back = build_forward(conn, other_label, (inst.symbol,), FNOW)
+        assert back.intervals == (
+            (F0 - timedelta(days=30), F0 - timedelta(days=20)),
+            (F0, None),
+        )
+        assert back.interrupted and back.period == timedelta(days=10) + H4 * 2
+        assert any(c.how == HOW_REPLACED for c in load_version(conn, other_label).changes)  # type: ignore[union-attr]
+
+
+@db_only
 def test_forward_signals_before_one_trade_rule(
     db: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1130,6 +1331,8 @@ def test_forward_signals_before_one_trade_rule(
     # сделка first закрывается по времени в F0 + 60 ч; busy подавлен и инструмент не занимает
     late = _publish(db, ver, inst, F0 + timedelta(hours=64))
     db.execute(update(Signal).where(Signal.id == late.id).values(status="cancelled"))
+    cancel_at = F0 + timedelta(hours=70)
+    db.add(SignalEvent(signal_id=late.id, type="cancelled", occurred_at=cancel_at, source="admin"))
     db.commit()
     with read_only_connection(db.connection()) as conn:
         fwd = build_forward(conn, label, (inst.symbol,), FNOW)

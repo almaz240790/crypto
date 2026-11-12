@@ -125,9 +125,6 @@ ONE_TRADE_DOC = "docs/backtests/2026-11-11-one-open-trade.md"
 ONE_TRADE_RULE_FROM = datetime(2026, 11, 12, 4, 39, tzinfo=UTC)
 """Когда правило одной открытой сделки заработало при записи кандидата (задача 6, PR #153).
 Только для текста отчёта: форвард-сигналы проверяются правилом все, с любой датой."""
-FORWARD_STATUSES = ("forward", "live")
-"""Статусы версии, в которых она публикует сигналы (``signal_scope.SIGNAL_SCOPES``)."""
-CANCELLED = "cancelled"
 DIRECTION_LABEL = {Direction.DOWN: "шорт", Direction.UP: "лонг"}
 DIRECTION_TITLE = {Direction.DOWN: "Шорт", Direction.UP: "Лонг"}
 GRADES = (Grade.A, Grade.B, Grade.C)
@@ -182,8 +179,8 @@ class GateOptions:
     """Момент отчёта (UTC): форвард-сигналы и свечи позже него не читаются; свеча, не закрытая
     к этому моменту, не попадает ни в форвард, ни в бэктест."""
     since: datetime | None = None
-    """Начало форварда (UTC). ``None`` — переход версии в форвард по журналу заявок на смену
-    статуса (``forward_entry``)."""
+    """Начало форварда (UTC). ``None`` — переход версии в форвард по журналу смен статуса
+    (``forward_timeline``)."""
     samples: int = DEFAULT_SAMPLES
     seed: int = DEFAULT_SEED
     window: int = DEFAULT_WINDOW
@@ -246,6 +243,9 @@ class ForwardSignal:
     overlap_unknown: str | None = None
     """``public_id`` более раннего сигнала, сделку которого пересчитать не удалось: занят ли был
     инструмент, неизвестно. Сигнал входит в метрики."""
+    cancelled_at: datetime | None = None
+    """Момент ручной отмены (``admin.cancel_signal``, событие ``cancelled``) не позже момента
+    отчёта; ``None`` — к моменту отчёта сигнал не отменён."""
 
     @property
     def counted(self) -> bool:
@@ -254,8 +254,13 @@ class ForwardSignal:
 
     @property
     def cancelled(self) -> bool:
-        """Сигнал отменён вручную (``admin.cancel_signal``)."""
-        return self.signal.recorded.status == CANCELLED
+        """Сигнал отменён вручную к моменту отчёта."""
+        return self.cancelled_at is not None
+
+    @property
+    def span(self) -> TradeSpan:
+        """Жизнь сделки для правила одной сделки: по 1m, а без него по H4."""
+        return trade_span(self.signal, self.minutes, self.h4)
 
     @property
     def m1(self) -> Outcome | None:
@@ -285,30 +290,89 @@ class Forward:
     """Инструменты форвард-сигналов версии вне списка (такие сигналы не учитываются)."""
     outside_count: int = 0
     entered: datetime | None = None
-    """Переход версии в форвард по журналу заявок (``forward_entry``); ``None`` — к моменту
-    отчёта версия в форвард не переходила или перехода в журнале нет."""
+    """Первый переход версии в форвард (``forward_timeline``); ``None`` — к моменту отчёта
+    версия в форвард не переходила или перехода в журнале нет."""
     entered_note: str = ""
     """Откуда взят переход или почему его нет — для отчёта."""
-    data_end: datetime | None = None
-    """Последнее закрытие H4 по инструментам списка, не позже ``now`` (``data_boundary``);
-    ``None`` — закрытых свечей H4 нет."""
+    intervals: tuple[tuple[datetime, datetime | None], ...] = ()
+    """Когда версия была в статусе forward (``forward_timeline``); пусто — отрезков в журнале
+    нет, и форвардом считается всё от ``since``."""
+    exit_note: str = ""
+    """Как версия вышла из форварда, если вышла и больше не вернулась."""
+    closes: tuple[tuple[str, datetime | None], ...] = ()
+    """Последнее закрытие H4 не позже ``now`` по каждому инструменту списка (``data_boundary``);
+    ``None`` — закрытых свечей нет."""
+
+    @property
+    def data_end(self) -> datetime | None:
+        """Граница данных: последнее закрытие H4 хотя бы по одному инструменту списка."""
+        return max((t for _, t in self.closes if t is not None), default=None)
+
+    @property
+    def exit(self) -> datetime | None:
+        """Выход из форварда, после которого версия в него не вернулась (к моменту отчёта)."""
+        return self.intervals[-1][1] if self.intervals else None
 
     @property
     def end(self) -> datetime | None:
-        """Конец форварда: момент отчёта, но не позже границы данных."""
-        return None if self.data_end is None else min(self.now, self.data_end)
+        """Конец форварда: момент отчёта, но не позже границы данных и выхода из форварда."""
+        if self.data_end is None:
+            return None
+        return min(t for t in (self.now, self.data_end, self.exit) if t is not None)
+
+    @property
+    def spans(self) -> tuple[tuple[datetime, datetime], ...]:
+        """Отрезки в статусе forward внутри [начало форварда; конец]."""
+        if self.since is None or self.end is None:
+            return ()
+        out = []
+        for a, b in self.intervals or ((self.since, None),):
+            lo, hi = max(a, self.since), min(b or self.end, self.end)
+            if hi > lo:
+                out.append((lo, hi))
+        return tuple(out)
 
     @property
     def period(self) -> timedelta | None:
-        """Длина форварда — от начала до границы данных."""
+        """Длина форварда — время в статусе forward от начала до конца."""
         if self.since is None or self.end is None:
             return None
-        return max(timedelta(0), self.end - self.since)
+        return sum((hi - lo for lo, hi in self.spans), timedelta(0))
+
+    @property
+    def interrupted(self) -> bool:
+        """Версия выходила из форварда и возвращалась: в длину перерывы не входят."""
+        return len(self.spans) > 1
 
     @property
     def stale(self) -> bool:
-        """Данные H4 обрываются раньше последнего закрытия H4 к моменту отчёта."""
-        return self.data_end is None or self.data_end < last_close(self.now)
+        """Данные H4 обрываются раньше последнего закрытия H4 к концу форварда."""
+        target = self.now if self.exit is None else min(self.now, self.exit)
+        return self.data_end is None or self.data_end < last_close(target)
+
+    @property
+    def lagging(self) -> tuple[tuple[str, datetime | None], ...]:
+        """Инструменты, у которых свечи H4 кончаются раньше конца форварда: сигналы по ним
+        после этой даты не могли появиться."""
+        end = self.end
+        if end is None:
+            return ()
+        return tuple((sym, t) for sym, t in self.closes if t is None or t < last_close(end))
+
+    @property
+    def rule_gaps(self) -> tuple[ForwardSignal, ...]:
+        """Подавленные сигналы, сделка которых шла и после включения правила одной сделки: пока
+        она шла, живой режим считал инструмент занятым и мог не записать сигналы, которые
+        бэктест взял бы."""
+        if self.end is None or self.end <= ONE_TRADE_RULE_FROM:
+            return ()
+        return tuple(
+            s
+            for s in self.blocked
+            if not s.span.known
+            or s.span.closed_at is None
+            or s.span.closed_at > ONE_TRADE_RULE_FROM
+        )
 
     @property
     def counted(self) -> tuple[ForwardSignal, ...]:
@@ -327,17 +391,42 @@ def last_close(now: datetime) -> datetime:
 
 
 @dataclass(frozen=True, slots=True)
+class StatusChange:
+    """Смена статуса версии: из заявки (``status_change_requests``) или из аудит-лога, если
+    статус сменили без заявки (замена live-версии, миграция по поручению владельца)."""
+
+    from_status: str
+    to_status: str
+    at: datetime
+    how: str
+    """Откуда известно — для текста отчёта."""
+
+
+HOW_REQUEST = "решение по заявке"
+HOW_REPLACED = "замена live-версии"
+HOW_DELEGATED = "миграция по поручению владельца"
+ENTRY_NOTE = {
+    HOW_REQUEST: "решение по заявке на переход в форвард",
+    HOW_REPLACED: "возврат в форвард при замене live-версии",
+    HOW_DELEGATED: "переход в форвард миграцией по поручению владельца",
+}
+
+
+@dataclass(frozen=True, slots=True)
 class VersionRow:
-    """Строка версии в ``strategy_versions`` и применённые заявки на смену её статуса."""
+    """Строка версии в ``strategy_versions`` и все известные смены её статуса."""
 
     created_at: datetime
     status: str
-    changes: tuple[tuple[str, str, datetime], ...] = ()
-    """Применённые заявки ``(from_status, to_status, decided_at)`` по времени решения."""
+    changes: tuple[StatusChange, ...] = ()
+    """По времени."""
 
 
 def load_version(conn: Connection, label: str) -> VersionRow | None:
-    """Строка версии ``стратегия@номер`` и журнал применённых заявок на смену статуса."""
+    """Строка версии ``стратегия@номер`` и смены её статуса: применённые заявки и записи
+    аудит-лога о сменах без заявки — понижение заменённой live-версии в форвард
+    (``version.status`` с ``reason = replaced``) и архивирование миграцией
+    (``status.delegated``)."""
     slug, _, number = label.rpartition("@")
     row = conn.execute(
         text(
@@ -349,60 +438,110 @@ def load_version(conn: Connection, label: str) -> VersionRow | None:
     ).first()
     if row is None:
         return None
-    changes = conn.execute(
+    changes = [
+        StatusChange(str(c[0]), str(c[1]), c[2].astimezone(UTC), HOW_REQUEST)
+        for c in conn.execute(
+            text(
+                "select from_status, to_status, decided_at from status_change_requests "
+                "where strategy_version_id = :id and decision = 'applied' "
+                "and decided_at is not null"
+            ),
+            {"id": row[0]},
+        ).all()
+    ]
+    audit = conn.execute(
         text(
-            "select from_status, to_status, decided_at from status_change_requests "
-            "where strategy_version_id = :id and decision = 'applied' and decided_at is not null "
-            "order by decided_at, id"
+            "select action, payload ->> 'from', payload ->> 'to', created_at from admin_audit "
+            "where target = :target and payload ? 'from' and payload ? 'to' and ("
+            "(action = 'version.status' and payload ->> 'reason' = 'replaced') "
+            "or action = 'status.delegated')"
         ),
-        {"id": row[0]},
+        {"target": f"strategy_version:{row[0]}"},
     ).all()
-    return VersionRow(
-        row[1].astimezone(UTC),
-        str(row[2]),
-        tuple((str(c[0]), str(c[1]), c[2].astimezone(UTC)) for c in changes),
-    )
+    for action, frm, to, at in audit:
+        how = HOW_REPLACED if action == "version.status" else HOW_DELEGATED
+        changes.append(StatusChange(str(frm), str(to), at.astimezone(UTC), how))
+    changes.sort(key=lambda c: (c.at, c.from_status, c.to_status))
+    return VersionRow(row[1].astimezone(UTC), str(row[2]), tuple(changes))
 
 
-def forward_entry(version: VersionRow, now: datetime) -> tuple[datetime | None, str]:
-    """Когда версия начала публиковать сигналы (статус forward или live) — по журналу заявок.
+@dataclass(frozen=True, slots=True)
+class ForwardTimeline:
+    """Когда версия была в статусе forward (только тогда она пишет форвард-сигналы)."""
 
-    Начальный статус версии — ``from_status`` первой применённой заявки, а без заявок — статус
-    сейчас. До задачи 4 версии создавались сразу в форварде: тогда начало — создание строки.
-    С задачи 4 версия создаётся в статусе backtest, и начало — решение по первой заявке на
-    переход в forward или live. Переход позже ``now`` — к моменту отчёта форварда не было.
-    """
-    initial = version.changes[0][0] if version.changes else version.status
-    if initial in FORWARD_STATUSES:
-        entry = version.created_at
-        note = f"создание версии в статусе {initial}"
-    else:
-        found = next((t for _, to, t in version.changes if to in FORWARD_STATUSES), None)
-        if found is None:
-            return None, f"версия в форвард не переходила (статус в БД — {version.status})"
-        entry, note = found, "решение по заявке на переход в форвард"
-    if entry > now:
-        return None, f"версия перешла в форвард {_when(entry)} UTC — позже момента отчёта"
-    return entry, note
+    intervals: tuple[tuple[datetime, datetime | None], ...]
+    """Отрезки ``[начало; конец)`` в статусе forward до ``now``; ``None`` — ещё в форварде."""
+    note: str
+    """Откуда начало или почему форварда нет."""
+    exit_note: str = ""
+    """Как и когда версия вышла из форварда (последний выход), если вышла."""
+
+    @property
+    def entered(self) -> datetime | None:
+        return self.intervals[0][0] if self.intervals else None
 
 
-def data_boundary(conn: Connection, symbols: Sequence[str], now: datetime) -> datetime | None:
-    """Последнее закрытие H4 по инструментам списка, не позже ``now``: до него в БД есть
-    закрытые свечи хотя бы одного инструмента. Граница ограничена ``now`` — поэтому повторный
-    отчёт с теми же аргументами на пополнившейся базе даёт тот же результат."""
+def forward_timeline(version: VersionRow, now: datetime) -> ForwardTimeline:
+    """Отрезки, когда версия была в статусе forward, по сменам статуса до ``now``.
+
+    Начальный статус — ``from_status`` первой смены, а без смен — статус сейчас; с ним версия
+    живёт от создания строки. До задачи 4 версии создавались сразу в форварде, с задачи 4 — в
+    статусе backtest. Выход из форварда (в archived, backtest или live) отрезок заканчивает:
+    live-версия пишет сигналы с областью live, а отчёт читает только форвард."""
+    state = version.changes[0].from_status if version.changes else version.status
+    start: datetime | None = version.created_at if state == "forward" else None
+    note = f"создание версии в статусе {state}" if start is not None else ""
+    exit_note = ""
+    intervals: list[tuple[datetime, datetime | None]] = []
+    for c in version.changes:
+        if c.at > now:
+            break
+        if c.to_status == "forward" and start is None:
+            start = c.at
+            if not intervals:
+                note = ENTRY_NOTE.get(c.how, c.how)
+        elif c.to_status != "forward" and start is not None:
+            intervals.append((start, c.at))
+            start = None
+            exit_note = (
+                f"версия вышла из форварда {_when(c.at)} UTC в статус {c.to_status} ({c.how})"
+            )
+        state = c.to_status
+    if start is not None:
+        if start > now:
+            start = None
+        else:
+            intervals.append((start, None))
+            exit_note = ""
+    if not intervals:
+        first = next((c for c in version.changes if c.to_status == "forward"), None)
+        if version.created_at > now or (first is not None and first.at > now):
+            when = version.created_at if first is None else first.at
+            return ForwardTimeline(
+                (), f"версия перешла в форвард {_when(when)} UTC — позже момента отчёта"
+            )
+        return ForwardTimeline(
+            (), f"версия в форвард не переходила (статус в БД — {version.status})"
+        )
+    return ForwardTimeline(tuple(intervals), note, exit_note)
+
+
+def data_boundary(conn: Connection, symbols: Sequence[str], now: datetime) -> dict[str, datetime]:
+    """Последнее закрытие H4 не позже ``now`` по каждому инструменту списка; инструментов без
+    закрытых свечей в ответе нет. Граница ограничена ``now`` — поэтому повторный отчёт с теми
+    же аргументами на пополнившейся базе даёт тот же результат."""
     tf = SIGNAL_TIMEFRAME
-    row = conn.execute(
+    rows = conn.execute(
         text(
-            "select max(x.open_time) from instruments i cross join lateral ("
+            "select i.symbol, x.open_time from instruments i cross join lateral ("
             "select c.open_time from candles c where c.instrument_id = i.id "
             "and c.timeframe = :tf and c.is_closed and c.open_time <= :last "
             "order by c.open_time desc limit 1) x "
             "where i.symbol = any(:symbols) and i.market_type = 'futures'"
         ),
         {"tf": tf.value, "last": now - tf.delta, "symbols": list(symbols)},
-    ).first()
-    last: datetime | None = None if row is None else row[0]
-    return None if last is None else last.astimezone(UTC) + tf.delta
+    ).all()
+    return {str(r[0]): r[1].astimezone(UTC) + tf.delta for r in rows}
 
 
 def apply_one_trade_rule(signals: Sequence[ForwardSignal]) -> list[ForwardSignal]:
@@ -412,22 +551,42 @@ def apply_one_trade_rule(signals: Sequence[ForwardSignal]) -> list[ForwardSignal
     которых бэктест не взял бы. Каждому сигналу правило движка (``open_trade_overlap`` →
     ``engine.lifecycle.blocking_signal``) задаёт вопрос: занят ли инструмент сделкой более
     раннего **неподавленного** сигнала той же версии — так же, как в ``run_backtest``. Сделка —
-    по 1m-пересчёту, а без него по H4 (``retrack_report.trade_span``), как у правила в живом
-    режиме. Сигналы до начала форварда не учитываются."""
-    taken: dict[int, list[TradeSpan]] = {}
+    по 1m-пересчёту, а без него по H4 (``ForwardSignal.span``), как у правила в живом режиме.
+    Сигнал, отменённый вручную, с момента отмены инструмент не занимает — как в
+    ``engine.lifecycle``. Сигналы до начала форварда не учитываются."""
+    taken: dict[int, list[tuple[TradeSpan, datetime | None]]] = {}
     out: list[ForwardSignal] = []
     for s in sorted(signals, key=lambda x: (x.signal.candle_close_time, x.signal.public_id)):
         sig = s.signal
+        at = sig.candle_close_time
         spans = taken.setdefault(sig.instrument_id, [])
-        overlap = open_trade_overlap(spans, sig.candle_close_time)
+        live = [span for span, cancelled in spans if cancelled is None or cancelled > at]
+        overlap = open_trade_overlap(live, at)
         if overlap.flag is True:
             out.append(replace(s, blocked_by=overlap.with_public_id))
             continue
-        spans.append(trade_span(sig, s.minutes, s.h4))
+        spans.append((s.span, s.cancelled_at))
         unknown = overlap.with_public_id if overlap.flag is None else None
         out.append(replace(s, overlap_unknown=unknown))
     order = {id(s.signal): i for i, s in enumerate(signals)}
     return sorted(out, key=lambda x: order[id(x.signal)])
+
+
+def load_cancellations(
+    conn: Connection, signal_ids: Sequence[int], now: datetime
+) -> dict[int, datetime]:
+    """Момент ручной отмены сигнала (событие ``cancelled``) — только отмены не позже ``now``."""
+    if not signal_ids:
+        return {}
+    rows = conn.execute(
+        text(
+            "select signal_id, min(occurred_at) from signal_events "
+            "where type = 'cancelled' and signal_id = any(:ids) and occurred_at <= :now "
+            "group by signal_id"
+        ),
+        {"ids": list(signal_ids), "now": now},
+    ).all()
+    return {int(r[0]): r[1].astimezone(UTC) for r in rows}
 
 
 def build_forward(
@@ -441,17 +600,20 @@ def build_forward(
     """Форвард версии ``label`` по инструментам ``symbols``: сигналы и их пересчёты. Только
     ``SELECT``; ``conn`` — соединение только на чтение.
 
-    Начало форварда — переход версии в форвард по журналу заявок (``forward_entry``); ``since``
-    раньше перехода не уводит, а без перехода в журнале — задаёт начало сам. Сигналы —
-    опубликованные (``signals.published``) форвард-сигналы с закрытием сигнальной свечи в
-    [начало; ``now``]; live-сигналы, кандидаты ниже порога публикации и отложенные не читаются.
-    Конец форварда — ``now``, но не позже границы данных H4 (``data_boundary``).
+    Начало форварда — первый переход версии в форвард по журналу смен статуса
+    (``forward_timeline``); ``since`` раньше перехода не уводит, а без перехода в журнале —
+    задаёт начало сам. Длина — время в статусе forward до ``now``, границы данных H4
+    (``data_boundary``) и выхода из форварда. Сигналы — опубликованные (``signals.published``)
+    форвард-сигналы с закрытием сигнальной свечи в [начало; ``now``]; live-сигналы, кандидаты
+    ниже порога публикации и отложенные не читаются.
     """
-    boundary = data_boundary(conn, symbols, now)
+    found = data_boundary(conn, symbols, now)
+    closes = tuple((sym, found.get(sym)) for sym in dict.fromkeys(symbols))
     version = load_version(conn, label)
     if version is None:
-        return Forward(label, False, None, None, "", now, (), data_end=boundary)
-    entered, note = forward_entry(version, now)
+        return Forward(label, False, None, None, "", now, (), closes=closes)
+    timeline = forward_timeline(version, now)
+    entered, note = timeline.entered, timeline.note
     if since is not None and (entered is None or since >= entered):
         start: datetime | None = since
         source = "--since"
@@ -470,17 +632,19 @@ def build_forward(
         (),
         entered=entered,
         entered_note=note,
-        data_end=boundary,
+        intervals=timeline.intervals,
+        exit_note=timeline.exit_note,
+        closes=closes,
     )
     if start is None:
         return base
     wanted = set(symbols)
     rows = load_signals(conn, start, now, versions=(label,), scopes=("forward",))
     outside = [s for s in rows if s.symbol not in wanted]
+    inside = [s for s in rows if s.symbol in wanted]
+    cancelled = load_cancellations(conn, [s.id for s in inside], now)
     out: list[ForwardSignal] = []
-    for signal in rows:
-        if signal.symbol not in wanted:
-            continue
+    for signal in inside:
         at = signal.candle_close_time
         minutes = retrack_minutes(
             signal, iter_candles(conn, signal.instrument_id, MINUTE, at, now), now, max_gap_minutes
@@ -491,7 +655,7 @@ def build_forward(
             )
         except (ValueError, ArithmeticError) as exc:
             h4 = H4Retrack(None, None, f"ошибка данных H4: {exc}")
-        out.append(ForwardSignal(signal, minutes, h4))
+        out.append(ForwardSignal(signal, minutes, h4, cancelled_at=cancelled.get(signal.id)))
     return replace(
         base,
         signals=tuple(apply_one_trade_rule(out)),
@@ -1125,10 +1289,16 @@ def _forward_length(fwd: Forward) -> Criterion:
     period = fwd.period or timedelta(0)
     value = f"{_date(fwd.since)} — {_date(fwd.end)}, {_days(period)}"
     if fwd.stale:
-        value += f"; данные H4 только до {_when(fwd.end)} UTC — раньше момента отчёта"
+        value += f"; данные H4 только до {_when(fwd.data_end)} UTC — раньше конца форварда"
+    if fwd.exit_note:
+        value += f"; {fwd.exit_note}"
     status = Status.MET if period >= THREE_MONTHS else Status.NOT_MET
+    if fwd.interrupted:
+        gaps = ", ".join(f"{_date(lo)} — {_date(hi)}" for lo, hi in fwd.spans)
+        value += f"; версия выходила из форварда, в длину вошли только отрезки в форварде: {gaps}"
+        status = Status.HUMAN if status is Status.MET else status
     if fwd.entered is None:
-        # начало задано --since, а перехода в форвард в журнале заявок нет
+        # начало задано --since, а перехода в форвард в журнале нет
         value += f"; {fwd.entered_note}"
         has_signals = bool(fwd.signals) or fwd.outside_count > 0
         status = Status.HUMAN if has_signals and status is Status.MET else Status.NOT_MET
@@ -1171,9 +1341,35 @@ def _forward_in_interval(fwd: Forward, a: Analysis) -> Criterion:
         doubts.append(
             f"занятость инструмента не проверить (нет пересчёта более раннего): {unknown}"
         )
+    if fwd.rule_gaps:
+        doubts.append(
+            f"после включения правила одной сделки ({_date(ONE_TRADE_RULE_FROM)}) живой режим "
+            "мог не записать сигналы, которые бэктест взял бы: инструмент занимал подавленный "
+            f"сигнал — {_gap_list(fwd)}"
+        )
+    if fwd.lagging:
+        doubts.append(
+            f"у {len(fwd.lagging)} инструм. свечи H4 кончаются раньше конца форварда — сигналы "
+            "по ним могли не появиться"
+        )
     if doubts:
         return Criterion(name, source, f"{value}; {'; '.join(doubts)}", Status.HUMAN)
     return Criterion(name, source, value, Status.MET if interval.contains(mean) else Status.NOT_MET)
+
+
+def _gap_list(fwd: Forward) -> str:
+    parts = []
+    for s in fwd.rule_gaps:
+        span = s.span
+        until = (
+            "сделку не пересчитать"
+            if not span.known
+            else "сделка не закрыта"
+            if span.closed_at is None
+            else f"до {_when(span.closed_at)} UTC"
+        )
+        parts.append(f"{s.signal.symbol} `{s.signal.public_id}` ({until})")
+    return ", ".join(parts)
 
 
 def _reconcile_criterion(state: ReconcileState | None, now: datetime) -> Criterion:
@@ -1389,12 +1585,24 @@ def _render_parameters(report: Report) -> list[str]:
             forward += f"; переход в форвард — {_when(fwd.entered)} UTC ({fwd.entered_note})"
         elif fwd.entered is None:
             forward += f"; {fwd.entered_note}"
+        if fwd.exit_note:
+            forward += f"; {fwd.exit_note}"
+        if fwd.interrupted:
+            forward += "; отрезки в форварде: " + ", ".join(
+                f"{_when(lo)} — {_when(hi)}" for lo, hi in fwd.spans
+            )
     if fwd.data_end is None:
         boundary = "закрытых свечей H4 по инструментам списка до момента отчёта нет"
     else:
-        boundary = f"закрытые свечи H4 по инструментам списка — до {_when(fwd.data_end)} UTC"
+        boundary = (
+            f"закрытые свечи H4 хотя бы по одному инструменту списка — до {_when(fwd.data_end)} UTC"
+        )
         if fwd.stale:
-            boundary += " — **раньше момента отчёта**: форвард считается до этой границы"
+            boundary += " — **раньше конца форварда**: форвард считается до этой границы"
+        if fwd.lagging:
+            boundary += "; **раньше конца форварда кончаются** у " + ", ".join(
+                f"{sym} ({'нет свечей' if t is None else _when(t)})" for sym, t in fwd.lagging
+            )
     rows = [
         ("Версия", f"`{o.version}`"),
         ("Инструменты", f"{o.symbols_label}, {len(o.symbols)}: {', '.join(o.symbols)}"),
@@ -1568,6 +1776,13 @@ def _render_forward(report: Report, a: Analysis) -> list[str]:
             "проверяла. Бэктест таких сигналов не берёт, поэтому в метрики форварда они не "
             "входят; в таблице сигналов они помечены. Сделка — по 1m-пересчёту, как у правила "
             "в живом режиме; сигналы до начала форварда не учитываются.",
+            "",
+        ]
+    if fwd.rule_gaps:
+        out += [
+            f"После включения правила ({_date(ONE_TRADE_RULE_FROM)}) живой режим считал "
+            "инструмент занятым, пока шла сделка подавленного сигнала, и мог не записать "
+            f"сигналы, которые бэктест взял бы: {_gap_list(fwd)}.",
             "",
         ]
     rows = []
