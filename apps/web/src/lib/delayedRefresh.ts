@@ -1,7 +1,9 @@
 /**
  * Перечитывание данных с паузой (слои терминала, план 2A.4; ADR-0010): просьбы, пришедшие, пока ждём, сливаются в
  * одно перечитывание (с run последней просьбы, как у CatchUpGate); run сообщает (done(true)), что сервер ещё
- * отстаёт, — повтор через ту же паузу, не больше retries раз подряд. Таймер — подменяемый (vitest).
+ * отстаёт, — повтор через ту же паузу, не больше retries раз подряд. Пауза — число или функция (своя у каждого
+ * ожидания: разброс, чтобы графики всех пользователей не шли на сервер в одну и ту же секунду после закрытия).
+ * Таймер — подменяемый (vitest).
  */
 export type RefreshRun = (done: (stale: boolean) => void) => void;
 
@@ -11,10 +13,11 @@ const REAL: Timers = { set: (fn, ms) => setTimeout(fn, ms), clear: (t) => clearT
 export class DelayedRefresh {
   private timer: unknown = null;
   private run: RefreshRun | null = null;
-  private disposed = false;
+  /** Номер очереди: dispose его меняет — ответ, начатый до dispose, повтора не ставит. */
+  private epoch = 0;
 
   constructor(
-    private readonly delayMs: number,
+    private readonly delayMs: number | (() => number),
     private readonly retries = 0,
     private readonly timers: Timers = REAL,
   ) {}
@@ -25,20 +28,28 @@ export class DelayedRefresh {
     this.schedule(0);
   }
 
+  /**
+   * Отменить ожидание и повторы (смена инструмента или таймфрейма, размонтирование). Объект остаётся рабочим, как
+   * HeaderPrice: в разработке StrictMode снимает и заново ставит эффекты, а объект из useMemo — тот же, и просьбы
+   * после этого должны перечитывать.
+   */
   dispose(): void {
-    this.disposed = true;
     if (this.timer !== null) this.timers.clear(this.timer);
     this.timer = null;
+    this.run = null;
+    this.epoch++;
   }
 
   private schedule(attempt: number): void {
-    if (this.disposed || this.timer !== null) return;
+    if (this.timer !== null) return;
+    const epoch = this.epoch;
+    const ms = typeof this.delayMs === "function" ? this.delayMs() : this.delayMs;
     this.timer = this.timers.set(() => {
       this.timer = null;
-      if (this.disposed || !this.run) return;
+      if (epoch !== this.epoch || !this.run) return;
       this.run((stale) => {
-        if (stale && attempt < this.retries) this.schedule(attempt + 1);
+        if (stale && attempt < this.retries && epoch === this.epoch) this.schedule(attempt + 1);
       });
-    }, this.delayMs);
+    }, ms);
   }
 }

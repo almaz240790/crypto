@@ -32,6 +32,7 @@ function fakeTimers() {
       now = end;
     },
     pending: () => queue.length,
+    time: () => now,
   };
 }
 
@@ -87,16 +88,44 @@ describe("DelayedRefresh", () => {
     expect(silent).toBe(1);
   });
 
-  it("dispose (смена инструмента, таймфрейма) — ожидающее перечитывание отменено, новые просьбы не принимаются", () => {
+  it("dispose (смена инструмента, таймфрейма) — ожидающее перечитывание и его повтор отменены", () => {
     const t = fakeTimers();
     let runs = 0;
+    let finish: ((stale: boolean) => void) | null = null;
     const r = new DelayedRefresh(1000, 3, t.timers);
-    const run = (done: (stale: boolean) => void) => (runs++, done(true));
-    r.request(run);
+    r.request(() => void runs++);
     r.dispose();
-    r.request(run);
     t.advance(10_000);
     expect(runs).toBe(0);
     expect(t.pending()).toBe(0);
+    // ответ, пришедший после dispose, повтора не ставит
+    r.request((done) => (runs++, (finish = done)));
+    t.advance(1000);
+    expect(runs).toBe(1);
+    r.dispose();
+    finish!(true);
+    t.advance(10_000);
+    expect(runs).toBe(1);
+    expect(t.pending()).toBe(0);
+  });
+
+  it("после dispose тот же объект снова принимает просьбы: StrictMode снимает и заново ставит эффекты, объект из useMemo — прежний", () => {
+    const t = fakeTimers();
+    let runs = 0;
+    const r = new DelayedRefresh(1000, 0, t.timers);
+    r.dispose(); // разработка: эффект снят и поставлен заново до первой просьбы
+    r.request((done) => (runs++, done(false)));
+    t.advance(1000);
+    expect(runs).toBe(1);
+  });
+
+  it("пауза — функцией: у каждого ожидания своя (разброс, чтобы графики всех пользователей не шли на сервер в одну секунду)", () => {
+    const t = fakeTimers();
+    const pauses = [25_000, 21_000];
+    const at: number[] = [];
+    const r = new DelayedRefresh(() => pauses.shift() ?? 20_000, 1, t.timers);
+    r.request((done) => (at.push(t.time()), done(true)));
+    t.advance(60_000);
+    expect(at).toEqual([25_000, 46_000]);
   });
 });

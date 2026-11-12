@@ -21,7 +21,18 @@ export const LIVE_GRACE_S = 8;
  * закрытую свечу (секунды), по её закрытию отрабатывают детекторы паттернов и фигур и планировщик сигналов.
  */
 export const DERIVED_AFTER_CLOSE_MS = 20_000;
-/** Структура сервера ещё без закрытой свечи (last_t старее) — повтор через ту же паузу, не больше стольких раз. */
+/**
+ * Разброс к паузе, мс (случайный, свой у каждого ожидания): свеча закрывается у всех открытых графиков в одну секунду —
+ * без разброса все они пришли бы на сервер разом, и слои по новой закрытой свече (новый ключ кэша) считались бы
+ * параллельно по многу раз.
+ */
+export const DERIVED_JITTER_MS = 10_000;
+/** Пауза перечитывания после закрытия: DERIVED_AFTER_CLOSE_MS и случайный разброс до DERIVED_JITTER_MS. */
+const afterCloseDelay = () => DERIVED_AFTER_CLOSE_MS + Math.random() * DERIVED_JITTER_MS;
+/**
+ * Структура сервера ещё без закрытой свечи (last_t старее) или ответ неполный (complete: false — снимок незакрытой
+ * свечи) — повтор через ту же паузу, не больше стольких раз.
+ */
 export const DERIVED_RETRIES = 3;
 /** События сигналов этого инструмента пачкой (догон трекера) — одно перечитывание слоёв через столько, мс. */
 export const SIGNAL_REFRESH_MS = 1000;
@@ -49,8 +60,8 @@ const mergePatterns = (prev: PatternsResponse | null, next: PatternsResponse): P
  * (CatchUpGate) на все поводы: сокет открыт заново, вкладка видна при неоткрытом сокете (useLive), пропуск в
  * событиях (gap автомата), просрочка (новой свечи нет дольше закрытия + LIVE_GRACE_S — продовый баг: после фона на
  * iPhone график стоял на свече получасовой давности при «онлайн»). Новая закрытая свеча после догона — слои,
- * производные, паттерны и фигуры заново; свеча, закрытая потоком, — они же через DERIVED_AFTER_CLOSE_MS (повтор, пока
- * структура сервера без неё); событие сигнала этого инструмента — слои.
+ * производные, паттерны и фигуры заново; свеча, закрытая потоком, — они же через DERIVED_AFTER_CLOSE_MS с разбросом
+ * (повтор, пока структура сервера без неё или ответ неполный); событие сигнала этого инструмента — слои.
  */
 export function useTerminalData(symbol: string, tf: Timeframe, token: string | null) {
   const [candles, setCandles] = useState<Candle[] | null>(null);
@@ -206,16 +217,17 @@ export function useTerminalData(symbol: string, tf: Timeframe, token: string | n
   );
 
   // свеча закрыта потоком — слои, производные, паттерны и фигуры через паузу (сервер записывает свечу, детекторы и
-  // сигналы отрабатывают по её закрытию); структура сервера ещё без неё — повтор (кэш слоёв — по закрытой свече)
+  // сигналы отрабатывают по её закрытию); структура сервера ещё без неё или ответ неполный — повтор (кэш слоёв — по
+  // закрытой свече)
   // eslint-disable-next-line react-hooks/exhaustive-deps -- новая очередь вместе с live
-  const afterClose = useMemo(() => new DelayedRefresh(DERIVED_AFTER_CLOSE_MS, DERIVED_RETRIES), [live]);
+  const afterClose = useMemo(() => new DelayedRefresh(afterCloseDelay, DERIVED_RETRIES), [live]);
   useEffect(() => () => afterClose.dispose(), [afterClose]);
   const refreshAfterClose = useCallback(
     (done: (stale: boolean) => void) => {
       const closed = live.closed.at(-1)?.time;
       refreshDerived(genRef.current, false, (r) => {
-        const t = r.structure?.last_t;
-        done(closed !== undefined && t != null && t < closed);
+        const s = r.structure;
+        done(!!s && (s.complete === false || (closed !== undefined && s.last_t != null && s.last_t < closed)));
       });
     },
     [live, refreshDerived],

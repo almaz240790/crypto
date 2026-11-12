@@ -4,8 +4,9 @@ import { liveSocket, type LiveMock } from "./helpers/live";
 
 /**
  * Слои с сервера (план 2A.4, 2A.10; ADR-0010): структура, зоны, уровни дня, сигналы, паттерны, фигуры и производные
- * перечитываются, когда свеча закрылась потоком, — через паузу, за которую сервер записывает закрытую свечу, а детекторы
- * и планировщик сигналов отрабатывают; сервер ещё без неё (last_t структуры старее) — повтор. Событие сигнала этого
+ * перечитываются, когда свеча закрылась потоком, — через паузу (20 с и разброс до 10 с), за которую сервер записывает
+ * закрытую свечу, а детекторы и планировщик сигналов отрабатывают; сервер ещё без неё (last_t структуры старее) или ответ
+ * неполный (complete: false) — повтор. Событие сигнала этого
  * инструмента — слои сразу (после короткой склейки пачки событий). Тики открытой свечи ничего не перечитывают.
  */
 
@@ -14,6 +15,8 @@ const iso = (sec: number) => new Date(sec * 1000).toISOString();
 const NOW = T0 + (FIRST_PAGE + 1) * H4 - 30;
 const INSTRUMENT_ID = 1;
 const json = (route: Route, body: unknown) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+/** Пауза перечитывания после закрытия с наибольшим разбросом, мс. */
+const AFTER_CLOSE_MAX = 31_000;
 const count = (calls: string[], path: string) => calls.filter((c) => c.startsWith(path) && !c.includes("before=") && !c.includes("until=")).length;
 
 type El = HTMLElement & { __chart: { panes(): { getSeries(): { data(): unknown[] }[] }[] } };
@@ -34,8 +37,11 @@ async function candlesRoute(page: Page, n: number) {
   return bar;
 }
 
-/** Слои с instrument_id; lastT — начало последней закрытой свечи, по которой «сервер» построил структуру. */
-async function layersRoute(page: Page, calls: string[], lastT: () => number) {
+/**
+ * Слои с instrument_id; lastT — начало последней закрытой свечи, по которой «сервер» построил структуру, complete — false,
+ * пока сервер дописывает закрытую свечу (снимок незакрытой дневной или недельной).
+ */
+async function layersRoute(page: Page, calls: string[], lastT: () => number, complete: () => boolean) {
   await page.route("**/v1/chart/layers?**", (route) => {
     const u = new URL(route.request().url());
     calls.push(`${u.pathname}?${u.searchParams.toString()}`);
@@ -43,20 +49,20 @@ async function layersRoute(page: Page, calls: string[], lastT: () => number) {
       symbol: "BTCUSDT",
       instrument_id: INSTRUMENT_ID,
       tf: "4h",
-      structure: { tf: "4h", strategy_version: "1.2.0", last_t: lastT(), complete: true, swings: [], events: [], zones: [], levels: {}, equal_levels: [], sweeps: [], bias: null, atr: "1.8" },
+      structure: { tf: "4h", strategy_version: "1.2.0", last_t: lastT(), complete: complete(), swings: [], events: [], zones: [], levels: {}, equal_levels: [], sweeps: [], bias: null, atr: "1.8" },
       signals: [{ id: "s1", version: "1.2.0", dir: "long", t: T0 + 250 * H4, status: "active", grade: "A", entry: "100", sl: "95", tp: ["105", "110", "120"], zone: null, events: [], be: false }],
       server_time: "",
     });
   });
 }
 
-async function open(page: Page, calls: string[], lastT: () => number): Promise<{ live: LiveMock; bar: (i: number) => { c: string } }> {
+async function open(page: Page, calls: string[], lastT: () => number, complete: () => boolean = () => true): Promise<{ live: LiveMock; bar: (i: number) => { c: string } }> {
   await page.clock.install({ time: new Date(NOW * 1000) });
   await page.clock.resume();
   const live = await liveSocket(page, { ticks: false, at: () => NOW });
   await mock(page, calls, true);
   const bar = await candlesRoute(page, FIRST_PAGE);
-  await layersRoute(page, calls, lastT);
+  await layersRoute(page, calls, lastT, complete);
   await page.goto("/chart/BTCUSDT/4h");
   await expect(page.getByTestId("terminal").locator("canvas").first()).toBeVisible();
   await expect.poll(() => live.subs.length).toBe(1);
@@ -88,13 +94,13 @@ test("свеча закрылась потоком — слои, паттерн�
     // сразу после закрытия — не раньше, чем сервер запишет свечу и детекторы отработают
     await page.waitForTimeout(500);
     expect(count(calls, "/v1/chart/layers")).toBe(1);
-    await page.clock.fastForward(21_000);
+    await page.clock.fastForward(AFTER_CLOSE_MAX);
     await expect.poll(() => count(calls, "/v1/chart/layers")).toBe(2);
     await expect.poll(() => count(calls, "/v1/chart/patterns")).toBe(2);
     await expect.poll(() => count(calls, "/v1/chart/figures")).toBe(2);
     await expect.poll(() => count(calls, "/v1/chart/derivatives")).toBe(2);
     // структура сервера уже по закрытой свече — повторов нет
-    await page.clock.fastForward(45_000);
+    await page.clock.fastForward(2 * AFTER_CLOSE_MAX);
     await page.waitForTimeout(500);
     expect(count(calls, "/v1/chart/layers")).toBe(2);
   } finally {
@@ -110,11 +116,35 @@ test("сервер ещё без закрытой свечи (last_t старе�
   try {
     closeCurrent(live, bar(FIRST_PAGE).c);
     await expect.poll(() => mainBars(page)).toBe(FIRST_PAGE + 2);
-    await page.clock.fastForward(21_000);
+    await page.clock.fastForward(AFTER_CLOSE_MAX);
     await expect.poll(() => count(calls, "/v1/chart/layers")).toBe(2);
-    await page.clock.fastForward(21_000);
+    await page.clock.fastForward(AFTER_CLOSE_MAX);
     await expect.poll(() => count(calls, "/v1/chart/layers")).toBe(3);
-    await page.clock.fastForward(45_000);
+    await page.clock.fastForward(2 * AFTER_CLOSE_MAX);
+    await page.waitForTimeout(500);
+    expect(count(calls, "/v1/chart/layers")).toBe(3);
+  } finally {
+    live.dispose();
+  }
+});
+
+test("ответ сервера неполный (complete: false — снимок незакрытой дневной свечи) — слои перечитываются ещё раз", async ({ page }) => {
+  const calls: string[] = [];
+  // структура уже по закрытой свече, но первый ответ после закрытия — неполный (уровни вчерашнего дня по снимку)
+  const { live, bar } = await open(
+    page,
+    calls,
+    () => (count(calls, "/v1/chart/layers") <= 1 ? T0 + (FIRST_PAGE - 1) * H4 : T0 + FIRST_PAGE * H4),
+    () => count(calls, "/v1/chart/layers") !== 2,
+  );
+  try {
+    closeCurrent(live, bar(FIRST_PAGE).c);
+    await expect.poll(() => mainBars(page)).toBe(FIRST_PAGE + 2);
+    await page.clock.fastForward(AFTER_CLOSE_MAX);
+    await expect.poll(() => count(calls, "/v1/chart/layers")).toBe(2);
+    await page.clock.fastForward(AFTER_CLOSE_MAX);
+    await expect.poll(() => count(calls, "/v1/chart/layers")).toBe(3);
+    await page.clock.fastForward(2 * AFTER_CLOSE_MAX);
     await page.waitForTimeout(500);
     expect(count(calls, "/v1/chart/layers")).toBe(3);
   } finally {
