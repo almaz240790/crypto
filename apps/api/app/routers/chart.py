@@ -28,7 +28,7 @@ from app.chart_data import (
     without_open_minutes,
 )
 from app.config import settings
-from app.entitlements import entitlements_for
+from app.entitlements import allowed_instrument_ids, entitlements_for
 from app.models import Instrument, User
 from app.routers.public import optional_user
 from engine.candles import Timeframe
@@ -116,12 +116,13 @@ def layers(
     user: User | None = Depends(optional_user),
     db: Session = Depends(auth.get_db),
 ) -> dict[str, Any]:
-    """Слои: структура (swing, BOS/CHoCH), зоны, уровни, равные уровни, снятия, bias — по tf ≥ 1h;
-    сигналы инструмента (live; forward — по правам). Кэш 60 с."""
+    """Слои: структура (swing, BOS/CHoCH), зоны, уровни, равные уровни, снятия, bias — по tf ≥ 1h,
+    кэш 60 с на последнюю закрытую свечу; сигналы инструмента (live; forward — по правам) с
+    ограничениями тарифа, как в ленте. ``instrument_id`` — для событий сигналов WebSocket."""
     timeframe = _tf(tf)
     inst = _instrument(db, symbol)
     now = datetime.now(tz=UTC)
-    ent = entitlements_for(db, user)
+    ent = entitlements_for(db, user, now)
     r: Any | None
     try:
         r = redis.from_url(settings.redis_url, socket_timeout=2)
@@ -131,9 +132,14 @@ def layers(
     scopes = ["live"]
     if user is not None and (user.role in ("admin", "owner") or ent.forward_scope):
         scopes.append("forward")
-    signals = signal_layer(db, inst, scopes) if user is not None else []
+    signals: list[dict[str, Any]] = []
+    if user is not None:
+        # ограничения тарифа — те же, что у ленты: Free видит на графике только то, что в ленте
+        plan = (ent, allowed_instrument_ids(db, user, ent), now)
+        signals = signal_layer(db, inst, scopes, plan=plan)
     return {
         "symbol": inst.symbol,
+        "instrument_id": inst.id,
         "tf": timeframe.value,
         "structure": structure,
         "signals": signals,

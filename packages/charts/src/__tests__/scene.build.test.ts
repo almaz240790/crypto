@@ -5,6 +5,7 @@ import { buildScene, sceneHover, sceneKey, selectionId } from "../scene/build";
 import { deriveAnalytics, NO_SELECTION, type AlertLine, type ExternalObject, type SceneInput } from "../scene/input";
 import { PATTERN_RU, RU_STRINGS, RU_TEXT } from "../scene/text";
 import type { Scene, SceneObject } from "../scene/types";
+import type { SceneSignal } from "../scene/wire";
 import { LAYER_KEYS, type Candle, type Device, type LayerKey } from "../types";
 import { FIXTURES, loadFixture, type FixtureName, type SceneFixture } from "./fixtures/scene/load";
 
@@ -105,6 +106,24 @@ describe("buildScene: инварианты", () => {
     expect(fresh.key).toBe(input.analytics.key);
     expect(fresh.sr).toEqual(input.analytics.sr);
     expect(fresh.liq).toEqual(input.analytics.liq);
+  });
+
+  it("уточнённая закрытая свеча (то же время, другие цены) пересчитывает аналитику, тики открытой — нет (OVL-4)", () => {
+    const fx = loadFixture("btc-4h-rich");
+    const before = deriveAnalytics(fx.candles, fx.oi, fx.structure);
+    const last = fx.candles[fx.candles.length - 1]!;
+    // запоздавшая закрытая минута уточнила закрытие уже закрытой свечи (LiveBar: amended; догон: replaceTail)
+    const close = last.close * 1.0005;
+    const amended: Candle = { ...last, close, high: Math.max(last.high, close) };
+    const candles = [...fx.candles.slice(0, -1), amended];
+    const after = deriveAnalytics(candles, fx.oi, fx.structure, before);
+    expect(after).not.toBe(before);
+    expect(after.lastClosed).toBe(amended);
+    expect(after).toEqual(deriveAnalytics(candles, fx.oi, fx.structure));
+    // тики открытой свечи по-прежнему ничего не пересчитывают
+    const open: Candle = { time: last.time + 14400, open: close, high: close * 1.2, low: close * 0.7, close: close * 1.1, volume: 1e9, open_: true };
+    expect(deriveAnalytics([...candles, open], fx.oi, fx.structure, after)).toBe(after);
+    expect(deriveAnalytics([...candles, { ...open, close: close * 0.9 }], fx.oi, fx.structure, after)).toBe(after);
   });
 
   it("id стабильны: после новой закрытой свечи неизменные объекты сохраняют id", () => {
@@ -360,6 +379,37 @@ describe("buildScene: инварианты", () => {
     expect(tp2.axis?.priority).toBe(88);
     expect(sceneHover(s, "sig:s-open")?.title).toBe("Сигнал A, лонг");
     expect(byLayer(scene("btc-4h-rich", { preset: "clean", overrides: { signals: true } }, { authed: false }), "signals")).toHaveLength(0);
+  });
+
+  it("сигналы после цели 1: стоп на цене входа «Стоп → б/у», взятые цели приглушены с «✓» (OVL-5)", () => {
+    const fx = loadFixture("btc-4h-rich");
+    const r = resolvePreset({ preset: "clean", overrides: { signals: true } }, "desktop", { authed: true });
+    const t = fx.candles[fx.candles.length - 10]!.time;
+    const base: SceneSignal = { id: "x1", dir: "long", t, status: "tp1_hit", grade: "A", entry: "76000", sl: "74000", tp: ["78000", "80000", "82000"] };
+    const build = (s: SceneSignal) => buildScene({ ...makeInput(fx), signals: [s] }, r);
+    // трекер перенёс стоп на цену входа (be_after_tp1 версии): одна линия стопа на входе вместо «Вход» и старого стопа
+    const tp1 = build({ ...base, be: true });
+    const lines = byLayer(tp1, "signals").filter((o) => o.kind === "hline");
+    expect(lines.map((o) => o.id)).toEqual(["sig:x1:stop", "sig:x1:tp1", "sig:x1:tp2", "sig:x1:tp3"]);
+    const stop = tp1.byId.get("sig:x1:stop")!;
+    expect(stop).toMatchObject({ price: 76000, tone: "position", label: { text: "Стоп → б/у" }, axis: { tone: "position" } });
+    expect(sceneHover(tp1, "sig:x1:stop")).toMatchObject({ title: "Стоп → б/у", price: 76000, note: "после цели 1 стоп перенесён на цену входа" });
+    const hit = tp1.byId.get("sig:x1:tp1")!;
+    expect(hit).toMatchObject({ price: 78000, tone: "muted", style: "dotted", label: { text: "Цель 1 ✓", tone: "muted" } });
+    expect(hit.axis).toBeUndefined();
+    expect(sceneHover(tp1, "sig:x1:tp1")?.note).toBe("цель достигнута");
+    expect(tp1.byId.get("sig:x1:tp2")).toMatchObject({ tone: "position", label: { text: "Цель 2" }, axis: { tone: "position" } });
+    // после цели 2 взяты обе
+    const tp2 = build({ ...base, status: "tp2_hit", be: true });
+    expect(["tp1", "tp2", "tp3"].map((k) => tp2.byId.get(`sig:x1:${k}`)!.label!.text)).toEqual(["Цель 1 ✓", "Цель 2 ✓", "Цель 3"]);
+    // версия без переноса в безубыток: стоп прежний, взятая цель — всё равно взятая
+    const keep = build({ ...base, be: false });
+    expect(keep.byId.get("sig:x1:entry")).toMatchObject({ price: 76000, label: { text: "Вход" } });
+    expect(keep.byId.get("sig:x1:stop")).toMatchObject({ price: 74000, label: { text: "Стоп" } });
+    expect(keep.byId.get("sig:x1:tp1")!.label!.text).toBe("Цель 1 ✓");
+    // до цели 1 — как раньше
+    const active = build({ ...base, status: "active" });
+    expect(byLayer(active, "signals").filter((o) => o.kind === "hline").map((o) => `${o.label!.text}@${(o as { price: number }).price}`)).toEqual(["Вход@76000", "Стоп@74000", "Цель 1@78000", "Цель 2@80000", "Цель 3@82000"]);
   });
 
   it("«Разбор»: внешние линии и зоны с группой шкалы topdown", () => {

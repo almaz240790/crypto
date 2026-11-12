@@ -25,10 +25,10 @@ from app.config import settings
 from app.entitlements import (
     Entitlements,
     allowed_instrument_ids,
+    apply_signal_entitlements,
     entitlements_for,
     restrictions_dict,
     signal_visible,
-    visible_since,
 )
 from app.models import (
     BacktestRun,
@@ -73,20 +73,6 @@ def _scope(scope: str, user: User | None, ent: Entitlements | None = None) -> st
         if not allowed:
             raise HTTPException(403, "форвард-сигналы доступны на тарифе Premium")
     return scope
-
-
-def _apply_entitlements(
-    q: Any, ent: Entitlements, allowed_ids: list[int] | None, now: datetime
-) -> Any:
-    """Ограничения тарифа на выборку сигналов: градации, задержка, инструменты."""
-    if ent.signal_grades is not None:
-        q = q.where(Signal.grade.in_(list(ent.signal_grades)))
-    vs = visible_since(ent, now)
-    if vs is not None:
-        q = q.where(Signal.candle_close_time <= vs)
-    if allowed_ids is not None:
-        q = q.where(Signal.instrument_id.in_(allowed_ids))
-    return q
 
 
 def _sparklines(db: Session, instrument_ids: list[int]) -> dict[int, list[str]]:
@@ -249,7 +235,7 @@ def signals(
     if user is None:
         q = q.where(Signal.status.not_in(OPEN_STATUSES))  # без логина — только закрытые
     else:
-        q = _apply_entitlements(q, ent, allowed_instrument_ids(db, user, ent), now)
+        q = apply_signal_entitlements(q, ent, allowed_instrument_ids(db, user, ent), now)
     if user is not None and status == "open":
         q = q.where(Signal.status.in_(OPEN_STATUSES))
     elif user is not None and status == "closed":

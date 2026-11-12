@@ -181,6 +181,11 @@ export class FakeTerminal {
   displayedBar(time: number): { open: number; close: number } | null {
     return this.displayed?.(time) ?? null;
   }
+  /** Свечи, как их рисует серия (Heikin Ashi): тест подставляет свои; null — свечи буфера. */
+  shown: readonly Candle[] | null = null;
+  get displayedCandles(): readonly Candle[] | null {
+    return this.shown;
+  }
   destroy(): void {
     this.calls.push("destroy");
   }
