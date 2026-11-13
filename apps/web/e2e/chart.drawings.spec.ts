@@ -5,7 +5,7 @@ import { census, installCensus, intersects, violations } from "./helpers/census"
 /**
  * Рисование как в TradingView (ADR-0009, «Рисование»; замечание владельца: «Фибоначчи спамится, как только хочешь
  * натянуть»): один рисунок на выбор инструмента, точки нажатиями, жест графика не рисует, «рисовать серию»,
- * «Отменить» и Esc, нейтральный цвет Фибоначчи. Ревью: палец над готовым рисунком (сдвиг и щипок — графику, правится
+ * «Отменить» и Esc, разноцветный Фибоначчи. Ревью: палец над готовым рисунком (сдвиг и щипок — графику, правится
  * выбранный), шкалы — жесты графика, долгое касание, двойной клик, дрожь руки, отмена перетаскивания, подписи у края.
  */
 
@@ -235,17 +235,21 @@ test.describe("десктоп, мышь", () => {
     await expect(count).toHaveText("рисунков: 0");
   });
 
-  test("Фибоначчи — нейтральный цвет: линии и подписи уровней --text-2, не салатовый и не охра; 0.618 выделен", async ({ page }) => {
-    // линии и подписи рисунков — в canvas: записываем цвет каждой горизонтальной линии и подписи
+  test("Фибоначчи — разноцветный: у уровня свой цвет --fib-* (0 и 1 — --text-2), линия и подпись одного цвета, не салатовый и не охра; 0.618 выделен; полосы залиты в пределах A–B", async ({ page }) => {
+    // линии, подписи и заливки рисунков — в canvas: записываем цвет каждой горизонтальной линии, подписи и заливки
     await page.addInitScript(() => {
-      type Rec = { texts: { t: string; x: number; y: number; fill: string; font: string }[]; strokes: { x0: number; y0: number; x1: number; y1: number; style: string; width: number; alpha: number }[] };
-      const log: Rec = { texts: [], strokes: [] };
+      type Rec = { texts: { t: string; x: number; y: number; fill: string; font: string }[]; strokes: { x0: number; y0: number; x1: number; y1: number; style: string; width: number; alpha: number }[]; fills: { x: number; w: number; fill: string; alpha: number }[] };
+      const log: Rec = { texts: [], strokes: [], fills: [] };
       (window as unknown as { __draw: Rec }).__draw = log;
       const P = CanvasRenderingContext2D.prototype as CanvasRenderingContext2D & { __m?: number[]; __l?: number[] };
-      const { fillText, moveTo, lineTo, stroke } = P;
+      const { fillText, fillRect, moveTo, lineTo, stroke } = P;
       P.fillText = function (t: string, x: number, y: number, w?: number) {
         log.texts.push({ t: String(t), x, y, fill: String(this.fillStyle), font: this.font });
         return fillText.call(this, t, x, y, w);
+      };
+      P.fillRect = function (x: number, y: number, w: number, h: number) {
+        if (this.globalAlpha < 1) log.fills.push({ x, w, fill: String(this.fillStyle), alpha: this.globalAlpha });
+        return fillRect.call(this, x, y, w, h);
       };
       P.moveTo = function (this: typeof P, x: number, y: number) {
         this.__m = [x, y];
@@ -270,26 +274,43 @@ test.describe("десктоп, мышь", () => {
     await page.waitForTimeout(300);
     const tokens = await page.getByTestId("terminal").evaluate((el) => {
       const cs = getComputedStyle(el);
-      return { text2: cs.getPropertyValue("--text-2").trim().toLowerCase(), accent: cs.getPropertyValue("--accent").trim().toLowerCase(), warn: cs.getPropertyValue("--warn").trim().toLowerCase() };
+      const v = (n: string) => cs.getPropertyValue(n).trim().toLowerCase();
+      return { text2: v("--text-2"), accent: v("--accent"), warn: v("--warn"), fib: [1, 2, 3, 4, 5, 6, 7, 8].map((i) => v(`--fib-${i}`)) };
     });
+    // цвет уровня — как в packages/charts (drawings/fib.ts, fibHue): 0 и 1 нейтральные, коррекция от тёплых к холодным
+    const hue: Record<string, number | null> = { "0": null, "0.236": 0, "0.382": 1, "0.5": 2, "0.618": 4, "0.705": 3, "0.786": 5, "1": null, "1.272": 6, "1.618": 5 };
+    const want = (level: string) => (hue[level] === null ? tokens.text2 : tokens.fib[hue[level]!]!);
     const drawn = await page.evaluate(() => {
       const log = (window as unknown as { __draw: { texts: { t: string; x: number; y: number; fill: string; font: string }[]; strokes: { x0: number; y0: number; x1: number; y1: number; style: string; width: number; alpha: number }[] } }).__draw;
-      // подпись уровня — над линией (y − 3; у края панели — внутри рисунка): по ней находим линию этого уровня
+      // подпись уровня — над линией (низ строки на 3 px выше) или под ней (верх на 3 px ниже; плашка 14 px): по ней
+      // находим линию этого уровня; из двух обводок (в пределах A–B и продление до края) — левая, в пределах A–B
       const labels = log.texts.filter((t) => /^\d+(\.\d+)? · /.test(t.t)).slice(-10);
-      return labels.map((l) => ({ label: l, line: [...log.strokes].reverse().find((s) => s.y0 === s.y1 && s.x1 > s.x0 && Math.abs(s.y0 - (l.y + 3)) < 0.01) ?? null }));
+      const lineOf = (l: { y: number }) =>
+        log.strokes.filter((s) => s.y0 === s.y1 && s.x1 > s.x0 && (Math.abs(s.y0 - (l.y + 3)) < 0.01 || Math.abs(s.y0 - (l.y - 17)) < 0.01)).sort((a, b) => a.x0 - b.x0)[0] ?? null;
+      return labels.map((l) => ({ label: l, line: lineOf(l) }));
     });
     expect(drawn).toHaveLength(10);
+    for (const t of tokens.fib) expect(t).toMatch(/^#[0-9a-f]{6}$/);
     for (const { label, line } of drawn) {
-      expect(label.fill.toLowerCase(), label.t).toBe(tokens.text2);
+      const level = label.t.split(" · ")[0]!;
+      expect(label.fill.toLowerCase(), label.t).toBe(want(level));
       expect(line, label.t).not.toBeNull();
-      expect(line!.style.toLowerCase(), label.t).toBe(tokens.text2);
+      expect(line!.style.toLowerCase(), label.t).toBe(want(level));
       expect([tokens.accent, tokens.warn]).not.toContain(line!.style.toLowerCase());
     }
+    expect(new Set(drawn.map((d) => d.line!.style.toLowerCase())).size).toBeGreaterThanOrEqual(7);
     const key = drawn.find((d) => d.label.t.startsWith("0.618 · "))!;
     const minor = drawn.find((d) => d.label.t.startsWith("0.236 · "))!;
     expect(key.line!.width).toBeGreaterThan(minor.line!.width);
     expect(key.line!.alpha).toBeGreaterThan(minor.line!.alpha);
     expect(key.label.font).toMatch(/^600 /);
+    // полосы между уровнями — цветом уровня, слабо (0.08) и только в пределах A–B (за B — только линии)
+    const ab = key.line!;
+    const bands = await page.evaluate(() => (window as unknown as { __draw: { fills: { x: number; w: number; fill: string; alpha: number }[] } }).__draw.fills.filter((f) => Math.abs(f.alpha - 0.08) < 1e-9));
+    const palette = [tokens.text2, ...tokens.fib];
+    const own = bands.filter((f) => palette.includes(f.fill.toLowerCase()));
+    expect(own.filter((f) => Math.abs(f.x - ab.x0) < 0.5 && Math.abs(f.x + f.w - ab.x1) < 0.5).length).toBeGreaterThanOrEqual(9);
+    for (const f of own.filter((f) => Math.abs(f.x - ab.x0) < 0.5)) expect(f.x + f.w, "заливка не правее B").toBeLessThanOrEqual(ab.x1 + 0.5);
   });
 });
 

@@ -201,7 +201,7 @@ type FakeChart = {
 const H = 14400;
 const T0 = 1_790_000_000 - (1_790_000_000 % H);
 const bars = (from: number, n: number): Candle[] => Array.from({ length: n }, (_, i) => ({ time: T0 + (from + i) * H, open: 1, high: 2, low: 0.5, close: 1.5, volume: 1, open_: false }));
-const tokens = { bg: "#000000", surface: "#000000", border: "#111111", text: "#ffffff", text2: "#eeeeee", text3: "#dddddd", up: "#00ff00", down: "#ff0000", accent: "#c6f432", warn: "#f0b429", ind: ["#123456"], fontSans: "x", fontMono: "y" };
+const tokens = { bg: "#000000", surface: "#000000", border: "#111111", text: "#ffffff", text2: "#eeeeee", text3: "#dddddd", up: "#00ff00", down: "#ff0000", accent: "#c6f432", warn: "#f0b429", ind: ["#123456"], fib: ["#654321"], fontSans: "x", fontMono: "y" };
 const container = () => ({ addEventListener: () => {}, removeEventListener: () => {}, getBoundingClientRect: () => ({ left: 0 }), clientWidth: 860 }) as unknown as HTMLElement;
 
 let chart: FakeChart;

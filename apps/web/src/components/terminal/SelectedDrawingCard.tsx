@@ -1,6 +1,6 @@
 "use client";
 
-import { FIB_LEVELS, FIB_LEVEL_GROUPS, FIB_PRESET_LEVELS, NOTE_MAX, TOOL_TITLES, fibLevelGroup, fibLevelText, flipPosition, isPosition, normalizeFibLevels, positionParts, positionRiskText, roundToTick, tickPrecision, toggleFibLevel, type Drawing, type FibLevelGroup, type Point, type PositionStats } from "@platform/charts";
+import { FIB_LEVELS, FIB_LEVEL_GROUPS, FIB_PRESET_LEVELS, NOTE_MAX, TOOL_TITLES, fibExtended, fibLevelGroup, fibLevelText, flipPosition, isPosition, normalizeFibLevels, positionParts, positionRiskText, roundToTick, tickPrecision, toggleFibLevel, type Drawing, type FibLevelGroup, type Point, type PositionStats } from "@platform/charts";
 import Link from "next/link";
 import { useEffect, useId, useRef, useState } from "react";
 import { Button, IconButton, Input, Select } from "@/components/ui";
@@ -92,7 +92,7 @@ export function SelectedDrawingCard({ drawing: d, symbol, tf, instruments, pos, 
     <div className={fib ? `${s.card} ${s.cardFib}` : s.card} role="region" aria-label={t("выбранный рисунок")}>
       <strong className={s.cardTitle}>{t(TOOL_TITLES[d.type])}</strong>
       {toggle}
-      {fib && open && <FibLevels id={levelsId} levels={d.levels} locked={d.locked} onChange={(levels) => onPatch(d.id, { levels })} />}
+      {fib && open && <FibLevels id={levelsId} levels={d.levels} locked={d.locked} extend={fibExtended(d)} onChange={(levels) => onPatch(d.id, { levels })} onExtend={(extend) => onPatch(d.id, { style: { ...d.style, extend } })} />}
       {WITH_TEXT.has(d.type) && (
         <span className={s.cardText}>
           <Input aria-label={t("текст рисунка")} placeholder={t("подпись (до 140 символов)")} maxLength={NOTE_MAX} value={d.text ?? ""} onChange={(e) => onPatch(d.id, { text: e.target.value })} />
@@ -171,13 +171,20 @@ const FIB_GROUP_LABEL: Readonly<Record<FibLevelGroup, string>> = { targets: "ц�
  * предложенных (рисунок с другого клиента), показан в своей группе и выключается так же. Последний включённый уровень
  * не выключается; «стандартные» — набор по умолчанию. Каждое нажатие — одна правка рисунка (шаг отмены): onChange
  * получает новый приведённый набор. У заблокированного рисунка переключатели недоступны.
+ * «Линии до края» (дополнение 2026-11-13) — флажок первым в строке (на телефоне виден без прокрутки): включён — линии
+ * уровней до правого края графика, подписи у шкалы цены; выключен — линии от A до B, подписи у рисунка (style.extend,
+ * шаг отмены, синхронизация — как у любой правки).
  */
-export function FibLevels({ id, levels, locked, onChange }: { id?: string; levels: readonly number[] | undefined; locked: boolean; onChange: (levels: number[]) => void }) {
+export function FibLevels({ id, levels, locked, extend, onChange, onExtend }: { id?: string; levels: readonly number[] | undefined; locked: boolean; extend: boolean; onChange: (levels: number[]) => void; onExtend: (extend: boolean) => void }) {
   const t = useT();
   const shown = normalizeFibLevels(levels);
   const all = [...new Set([...FIB_PRESET_LEVELS, ...shown])].sort((a, b) => a - b);
   return (
     <div id={id} className={s.fibLevels} role="group" aria-label={t("уровни Фибоначчи")}>
+      <label className={`${s.cardCheck} ${s.fibExtend}`} title={t("линии уровней — до правого края графика, подписи — у шкалы цены")}>
+        <input type="checkbox" checked={extend} disabled={locked} onChange={(e) => onExtend(e.target.checked)} />
+        {t("Линии до края")}
+      </label>
       {FIB_LEVEL_GROUPS.map((g) => (
         <div key={g} className={s.fibGroup} role="group" aria-label={t(FIB_GROUP_LABEL[g])}>
           <span className={s.fibCaption} aria-hidden="true">

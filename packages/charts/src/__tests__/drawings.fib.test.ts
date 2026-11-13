@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { FIB_LEVEL_GROUPS, changedFibLevels, cleanDrawingLevels, fibLevelGroup, fibLevelText, normalizeFibLevels, sameFibLevels, toggleFibLevel } from "../drawings/fib";
 import { fibLevels, hitTest, type Projector } from "../drawings/geometry";
-import { DRAWING_TEXT, drawingLabels, formatDrawingPrice, toCandidate } from "../drawings/labels";
+import { DRAWING_TEXT, drawingLabels, fibLevelColor, formatDrawingPrice, toCandidate } from "../drawings/labels";
 import { DrawingsPrimitive } from "../drawings/primitive";
 import { addDrawing, createState, redo, undo, updateDrawing } from "../drawings/store";
-import { FIB_LEVELS, FIB_LEVELS_MAX, FIB_PRESET_LEVELS, type Drawing } from "../drawings/types";
+import { FIB_LABEL_EDGE_PX, FIB_LEVELS, FIB_LEVELS_MAX, FIB_PRESET_LEVELS, type Drawing } from "../drawings/types";
 import { layoutLabels } from "../layout/labels";
 import type { Viewport } from "../layout/types";
 import { bars, H, makeEnv, T0, TOKENS } from "./fakes/lwc";
@@ -145,9 +145,12 @@ describe("подписи уровней", () => {
     expect(ls.map((l) => l.lines[0])).toEqual(["−0.618 · 132.36", "0 · 120.00", "0.5 · 110.00", "1 · 100.00"]);
     expect(ls.map((l) => l.id)).toEqual(["F#L-0.618", "F#L0", "F#L0.5", "F#L1"]);
     expect(new Set(ls.map((l) => l.id)).size).toBe(4);
-    // первое место — справа от рисунка (x правого конца + 2), над линией: низ строки на 3 px выше неё
+    // первое место — у шкалы цены (линии продлены до края панели; правый край плашки — край минус зазор), над линией:
+    // низ строки на 3 px выше неё; у не продлённого — справа от рисунка (x правого конца + 2)
     const y = (price: number) => (200 - price) * 4;
-    expect(ls.map((l) => l.slots[0])).toEqual([132.36, 120, 110, 100].map((p) => ({ x: 602, y: y(p) - 3 - 14 })));
+    expect(ls.map((l) => ({ right: l.slots[0]!.x + l.w, y: l.slots[0]!.y }))).toEqual([132.36, 120, 110, 100].map((p) => ({ right: 1000 - FIB_LABEL_EDGE_PX, y: y(p) - 3 - 14 })));
+    const old = labelsOf([{ ...d, style: { ...d.style, extend: false } }]);
+    expect(old.map((l) => l.slots[0])).toEqual([132.36, 120, 110, 100].map((p) => ({ x: 602, y: y(p) - 3 - 14 })));
     const placed = place([d]);
     expect([...placed.keys()].sort()).toEqual(["F#L-0.618", "F#L0", "F#L0.5", "F#L1"]);
     for (const [id, r] of placed) expect(r.y + r.h + 3, id).toBeCloseTo(y(Number(ls.find((l) => l.id === id)!.lines[0]!.split(" · ")[1])), 6);
@@ -159,7 +162,7 @@ describe("подписи уровней", () => {
     const by = (level: number) => ls.find((l) => l.id === `F#L${level}`)!;
     for (const key of [0.5, 0.618]) expect(by(key)).toMatchObject({ weight: 600, mode: "soft", rank: 0 });
     for (const edge of [0, 1]) expect(by(edge)).toMatchObject({ weight: 400, mode: "soft", rank: 0 });
-    for (const minor of [-1, -0.618, -0.272, 0.236, 0.786, 1.272, 2.618]) expect(by(minor)).toMatchObject({ weight: 400, mode: "drop", rank: 1, style: "plaque" });
+    for (const minor of [-1, -0.618, -0.272, 0.236, 0.786, 1.272, 2.618]) expect(by(minor)).toMatchObject({ weight: 400, mode: "drop", rank: 1, style: "fib" });
     expect(by(-1).lines[0]).toBe("−1 · 140.00");
     expect(by(2.618).lines[0]).toBe("2.618 · 67.64");
   });
@@ -253,16 +256,17 @@ describe("линии и выбор уровней за пределами A–B"
     expect(logY(200)! - logY(300)!).toBeLessThan(logY(100)! - logY(200)!);
   });
 
-  it("отрисовка: −1 и 2.618 — пунктир второстепенного уровня тем же цветом; подпись цели — с минусом", () => {
+  it("отрисовка: −1 и 2.618 — пунктир второстепенного уровня своим цветом; подпись цели — с минусом", () => {
     const candles = bars(60);
     const env = makeEnv(() => candles, { top: 170, bottom: 30 });
     const prim = new DrawingsPrimitive(TOKENS);
     prim.attached({ chart: env.chart, series: env.series, requestUpdate: () => undefined } as never);
     prim.projector!.setBars(candles.map((c) => c.time), H);
-    prim.update({ drawings: [fib([-1, 0, 0.618, 1, 2.618], [{ time: T0 + 10 * H, price: 80 }, { time: T0 + 40 * H, price: 120 }])] });
-    const strokes: { style: string; alpha: number; width: number; dash: number[]; y: number }[] = [];
+    const d = fib([-1, 0, 0.618, 1, 2.618], [{ time: T0 + 10 * H, price: 80 }, { time: T0 + 40 * H, price: 120 }]);
+    prim.update({ drawings: [d] });
+    const strokes: { style: string; alpha: number; width: number; dash: number[]; y: number; x: number }[] = [];
     const texts: string[] = [];
-    let path: number[] = [];
+    let path: { x: number; y: number }[] = [];
     let dash: number[] = [];
     const st = { strokeStyle: "", fillStyle: "", lineWidth: 1, globalAlpha: 1, font: "", textBaseline: "" };
     const stack: (typeof st & { dash: number[] })[] = [];
@@ -275,9 +279,9 @@ describe("линии и выбор уровней за пределами A–B"
       },
       setLineDash: (d: number[]) => (dash = d),
       beginPath: () => (path = []),
-      moveTo: (_x: number, y: number) => path.push(y),
-      lineTo: (_x: number, y: number) => path.push(y),
-      stroke: () => strokes.push({ style: st.strokeStyle, alpha: st.globalAlpha, width: st.lineWidth, dash: [...dash], y: path[0] ?? Number.NaN }),
+      moveTo: (x: number, y: number) => path.push({ x, y }),
+      lineTo: (x: number, y: number) => path.push({ x, y }),
+      stroke: () => strokes.push({ style: st.strokeStyle, alpha: st.globalAlpha, width: st.lineWidth, dash: [...dash], y: path[0]?.y ?? Number.NaN, x: path[0]?.x ?? Number.NaN }),
       fillText: (text: string) => texts.push(text),
       fillRect: () => undefined,
       strokeRect: () => undefined,
@@ -288,11 +292,13 @@ describe("линии и выбор уровней за пределами A–B"
     });
     prim.paneViews()[0]!.renderer()!.draw({ useMediaCoordinateSpace: (cb: (s: unknown) => void) => cb({ context: ctx, mediaSize: { width: 800, height: 400 } }) } as never);
     const yOf = (price: number) => env.series.priceToCoordinate(price);
-    const at = (price: number) => strokes.find((s) => Math.abs(s.y - yOf(price)) < 1e-6)!;
+    // линия уровня в пределах A–B — первая из двух (вторая — продление до края, бледнее)
+    const at = (price: number) => strokes.filter((s) => Math.abs(s.y - yOf(price)) < 1e-6).sort((p, q) => p.x - q.x)[0]!;
     // −1 → 120 + 40 = 160, 2.618 → 120 − 40 × 2.618 = 15.28 (ниже панели — линия есть, подписи нет)
-    expect(strokes).toHaveLength(5);
-    expect(at(160)).toMatchObject({ style: TOKENS.text2, alpha: 0.6, width: 1, dash: [4, 3] });
-    expect(at(15.28)).toMatchObject({ style: TOKENS.text2, alpha: 0.6, width: 1, dash: [4, 3] });
+    expect(strokes).toHaveLength(10);
+    expect(at(160)).toMatchObject({ style: fibLevelColor(TOKENS, d, -1), alpha: 0.6, width: 1, dash: [4, 3] });
+    expect(at(15.28)).toMatchObject({ style: fibLevelColor(TOKENS, d, 2.618), alpha: 0.6, width: 1, dash: [4, 3] });
+    expect(fibLevelColor(TOKENS, d, -1)).not.toBe(fibLevelColor(TOKENS, d, 2.618));
     expect(at(120)).toMatchObject({ alpha: 1, width: 1, dash: [] });
     expect(at(80)).toMatchObject({ alpha: 1, width: 1, dash: [] });
     expect(at(95.28)).toMatchObject({ alpha: 1, width: 1.5, dash: [] });

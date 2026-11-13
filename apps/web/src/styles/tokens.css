@@ -68,6 +68,19 @@
   --ind-5: #3e7f85;
   --ind-6: #8a5a44;
 
+  /* Уровни Фибоначчи на графике (ADR-0009, «Рисование», дополнение 2026-11-13) — 8 оттенков, как у TradingView:
+     розовый, оранжевый, золотой, зелёный, бирюзовый, синий, фиолетовый, пурпурный (какой уровень каким —
+     packages/charts, drawings/fib.ts). Не --up и --down: ключевые 0.5 и 0.618 не похожи на сигнал. Подпись цветом
+     уровня на полупрозрачной плашке читается и над свечой (chartTokens.test) */
+  --fib-1: #bd3049;
+  --fib-2: #a65108;
+  --fib-3: #7f6400;
+  --fib-4: #3a7520;
+  --fib-5: #0c6d87;
+  --fib-6: #3157c9;
+  --fib-7: #7444c4;
+  --fib-8: #a8328f;
+
   /* Производные */
   --accent-fill: color-mix(in srgb, var(--accent) 12%, transparent);
   --up-fill: color-mix(in srgb, var(--up) 12%, transparent);
@@ -165,6 +178,14 @@
   --ind-4: #b08bb0;
   --ind-5: #6fb3b8;
   --ind-6: #c98b72;
+  --fib-1: #f0708a;
+  --fib-2: #f39a4c;
+  --fib-3: #e3c04a;
+  --fib-4: #7dc95e;
+  --fib-5: #3dbfdc;
+  --fib-6: #7d9cf5;
+  --fib-7: #b48cf2;
+  --fib-8: #e57ad0;
   --shadow: 0 1px 2px rgb(0 0 0 / 40%);
   --shadow-lg: 0 24px 64px rgb(0 0 0 / 45%);
   --glow: rgb(22 199 154 / 30%);
@@ -201,6 +222,14 @@
     --ind-4: #b08bb0;
     --ind-5: #6fb3b8;
     --ind-6: #c98b72;
+    --fib-1: #f0708a;
+    --fib-2: #f39a4c;
+    --fib-3: #e3c04a;
+    --fib-4: #7dc95e;
+    --fib-5: #3dbfdc;
+    --fib-6: #7d9cf5;
+    --fib-7: #b48cf2;
+    --fib-8: #e57ad0;
     --shadow: 0 1px 2px rgb(0 0 0 / 40%);
     --shadow-lg: 0 24px 64px rgb(0 0 0 / 45%);
     --glow: rgb(22 199 154 / 30%);

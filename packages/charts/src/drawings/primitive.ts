@@ -6,10 +6,11 @@ import { logicalX } from "../render/projector";
 import { alpha } from "../theme";
 import type { Candle, ThemeTokens } from "../types";
 import { channelShift, extend, fibLevels, lineAt, positionKnobs, positionScreen, rulerInfo, type Projector, type RulerInfo } from "./geometry";
-import { DRAWING_TEXT, drawingColor, drawingLabels, formatDrawingPrice, handleCandidate, handleRects, toCandidate, type DrawingLabel, type DrawingText, type MeasureText, type RiskProfile } from "./labels";
+import { DRAWING_TEXT, drawingColor, drawingLabels, fibLevelColor, formatDrawingPrice, handleCandidate, handleRects, toCandidate, type DrawingLabel, type DrawingText, type MeasureText, type RiskProfile } from "./labels";
 import type { DrawProjector } from "./controller";
 import { atrAt } from "./position";
-import { FIB_KEY_LEVELS, FIB_MINOR_ALPHA, HANDLE_PX, POSITION_FILL_ALPHA, POSITION_KNOB_R, POSITION_KNOB_TOUCH_R, isPosition, type Drawing, type Point } from "./types";
+import { fibExtended, fibMulticolor } from "./fib";
+import { FIB_EXTEND_ALPHA, FIB_FILL_ALPHA, FIB_KEY_LEVELS, FIB_MINOR_ALPHA, FIB_PLAQUE_ALPHA, HANDLE_PX, POSITION_FILL_ALPHA, POSITION_KNOB_R, POSITION_KNOB_TOUCH_R, isPosition, type Drawing, type Point } from "./types";
 
 /**
  * Примитив LWC, рисующий все рисунки поверх основной серии (план 2A.5): линии, каналы, зоны,
@@ -87,7 +88,7 @@ const DETACHED: Projector = { x: () => null, y: () => null, width: 0, height: 0 
 
 type Ctx = CanvasRenderingContext2D;
 
-/** Плашка под подписью уровня: непрозрачность фона (читается поверх свечей в обеих темах). */
+/** Плашка под подписью измерителя: непрозрачность фона (читается поверх свечей в обеих темах). */
 const LABEL_PLAQUE_ALPHA = 0.85;
 /** Плашка позиции: фон — та же непрозрачность, что у плашек разметки (--chart-plaque-alpha). */
 const POSITION_PLAQUE_ALPHA = 0.88;
@@ -171,8 +172,9 @@ class Renderer implements IPrimitivePaneRenderer {
         break;
       }
       default: {
-        if (l.style === "plaque") {
-          ctx.fillStyle = alpha(t.surface, LABEL_PLAQUE_ALPHA);
+        // плашка измерителя — почти непрозрачная; уровня Фибоначчи — полупрозрачная: свечи под подписью видны
+        if (l.style === "plaque" || l.style === "fib") {
+          ctx.fillStyle = alpha(t.surface, l.style === "fib" ? FIB_PLAQUE_ALPHA : LABEL_PLAQUE_ALPHA);
           ctx.fillRect(r.x, r.y, r.w, r.h);
         }
         ctx.fillStyle = l.color;
@@ -283,18 +285,45 @@ class Renderer implements IPrimitivePaneRenderer {
       }
       case "fib": {
         if (!b) break;
-        // нейтральные уровни одного цвета, без заливки: 0 и 1 — сплошные, 0.5 и 0.618 — сплошные и толще,
-        // остальные — пунктир полупрозрачный; подписи — на плашке, ключевые — полужирные (drawLabel)
+        // разноцветный (цвет по умолчанию): у каждого уровня свой оттенок (0 и 1 — нейтральные), полосы между соседними
+        // уровнями залиты слабо и только в пределах A–B; цвет выбран — все уровни им, без заливки. 0 и 1 — сплошные,
+        // 0.5 и 0.618 — сплошные и толще, остальные — пунктир полупрозрачный. Продлённый (по умолчанию) — линии до
+        // правого края панели, за B бледнее (FIB_EXTEND_ALPHA): размах выделен, а уровни видны на старшем таймфрейме.
+        // Подписи — на полупрозрачной плашке цветом уровня, ключевые — полужирные (drawLabel)
         const left = Math.min(a!.x, b.x), right = Math.max(a!.x, b.x);
-        for (const { level, price } of fibLevels(d.points[0]!, d.points[1]!, d.levels)) {
+        const t = this.src.tokens;
+        const levels = fibLevels(d.points[0]!, d.points[1]!, d.levels);
+        if (fibMulticolor(d)) {
+          // уровни по возрастанию — и по высоте: соседние в наборе — соседние на экране; полоса — цветом дальнего от 0
+          ctx.globalAlpha = FIB_FILL_ALPHA;
+          let prevY: number | null = null, prevLevel = 0;
+          for (const { level, price } of levels) {
+            const y = this.proj.y(price);
+            if (y !== null && prevY !== null) {
+              ctx.fillStyle = fibLevelColor(t, d, Math.abs(level) >= Math.abs(prevLevel) ? level : prevLevel);
+              ctx.fillRect(left, Math.min(prevY, y), right - left, Math.abs(y - prevY));
+            }
+            prevY = y;
+            prevLevel = level;
+          }
+          ctx.globalAlpha = 1;
+        }
+        const ext = fibExtended(d) && right < width;
+        for (const { level, price } of levels) {
           const y = this.proj.y(price);
           if (y === null) continue;
           const key = FIB_KEY_LEVELS.includes(level);
           const solid = key || level === 0 || level === 1;
-          ctx.globalAlpha = solid ? 1 : FIB_MINOR_ALPHA;
+          const a0 = solid ? 1 : FIB_MINOR_ALPHA;
+          ctx.strokeStyle = fibLevelColor(t, d, level);
+          ctx.globalAlpha = a0;
           ctx.lineWidth = key ? d.style.width + 0.5 : d.style.width;
           ctx.setLineDash(solid ? [] : [4, 3]);
           line(ctx, left, y, right, y);
+          if (ext) {
+            ctx.globalAlpha = a0 * FIB_EXTEND_ALPHA;
+            line(ctx, Math.max(right, 0), y, width, y);
+          }
           ctx.globalAlpha = 1;
         }
         break;

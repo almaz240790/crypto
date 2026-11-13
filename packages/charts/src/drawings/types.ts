@@ -24,7 +24,12 @@ export type Point = { time: number; price: number };
  */
 export type StyleColor = "accent" | "up" | "down" | "warn" | "text2" | "text3";
 
-export type DrawingStyle = { color: StyleColor; width: 1 | 2; dashed: boolean };
+/**
+ * extend — у Фибоначчи: линии уровней до правого края панели (ADR-0009, «Рисование», дополнение 2026-11-13). Поля нет
+ * (рисунки до 11.2026, другие клиенты) — продлены, как и true; false — линии только от A до B, как раньше. Хранится в
+ * style: сервер держит style словарём (/v1/drawings), поле проходит синхронизацию без миграции.
+ */
+export type DrawingStyle = { color: StyleColor; width: 1 | 2; dashed: boolean; extend?: boolean };
 
 export type Drawing = {
   id: string;
@@ -74,6 +79,17 @@ export const WIDE_TYPES: readonly DrawingType[] = ["fib", "rect"];
 export const FIB_KEY_LEVELS: readonly number[] = [0.5, 0.618];
 /** Непрозрачность промежуточных уровней Фибоначчи (0 и 1 и выделенные — непрозрачные). */
 export const FIB_MINOR_ALPHA = 0.6;
+/**
+ * Продлённые уровни Фибоначчи (ADR-0009, «Рисование», дополнение 2026-11-13): за правой точкой линия та же, но
+ * бледнее — доля непрозрачности линии внутри A–B; размах A–B выделяется, а линия видна до края панели.
+ */
+export const FIB_EXTEND_ALPHA = 0.55;
+/** Заливка полосы между соседними уровнями разноцветного Фибоначчи (в пределах A–B): доля цвета уровня. */
+export const FIB_FILL_ALPHA = 0.08;
+/** Плашка подписи уровня: фон цвета области с этой непрозрачностью — свечи под подписью видны. */
+export const FIB_PLAQUE_ALPHA = 0.7;
+/** Подписи продлённого Фибоначчи — столбцом у шкалы цены: правый край плашки на столько px левее края панели. */
+export const FIB_LABEL_EDGE_PX = 4;
 
 /**
  * Позиция Long/Short — как в TradingView (ADR-0009, «Рисование», дополнение «Позиция»): одно нажатие на цену входа

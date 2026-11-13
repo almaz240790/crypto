@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { FIB_PLAQUE_ALPHA } from "@platform/charts";
 import { describe, expect, it } from "vitest";
 
 /**
@@ -146,6 +147,42 @@ describe("токены графика --chart-*", () => {
           expect(line).toBeGreaterThanOrEqual(3);
         });
       }
+    });
+  }
+});
+
+/**
+ * Палитра уровней Фибоначчи --fib-1…--fib-8 (ADR-0009, «Рисование», дополнение 2026-11-13): hex в каждой теме, две
+ * тёмные — одинаковые; подпись цветом уровня на полупрозрачной плашке (FIB_PLAQUE_ALPHA) — не меньше 4.5:1 над фоном и
+ * 3:1 над телом свечи (рост и падение), линия уровня — не меньше 3:1 к фону; оттенки различимы и не совпадают с цветами
+ * роста, падения и выбора.
+ */
+describe("палитра уровней Фибоначчи --fib-*", () => {
+  const FIB = Array.from({ length: 8 }, (_, i) => `--fib-${i + 1}`);
+
+  it("8 оттенков в каждой теме, hex; в двух тёмных блоках одинаковые", () => {
+    for (const [mode, theme] of Object.entries(THEMES)) for (const name of FIB) expect(resolve(theme, name), `${mode} ${name}`).toMatch(HEX);
+    for (const name of FIB) {
+      expect(dark[name], name).toBeDefined();
+      expect(media[name], name).toBe(dark[name]);
+      expect(dark[name], name).not.toBe(root[name]);
+    }
+  });
+
+  for (const [mode, theme] of Object.entries(THEMES)) {
+    it(`${mode}: подпись ≥ 4.5 над фоном и ≥ 3 над свечой, линия ≥ 3; оттенки разные и не цвета роста, падения, выбора`, () => {
+      const c = (name: string) => toRgb(resolve(theme, name));
+      const surface = c("--surface");
+      const plaqueOver = (under: Rgb) => mix(surface, under, FIB_PLAQUE_ALPHA);
+      for (const name of FIB) {
+        const fg = c(name);
+        expect(contrast(fg, plaqueOver(surface)), `${name} над фоном`).toBeGreaterThanOrEqual(4.5);
+        for (const candle of ["--up", "--down"]) expect(contrast(fg, plaqueOver(c(candle))), `${name} над свечой ${candle}`).toBeGreaterThanOrEqual(3);
+        expect(contrast(fg, surface), `${name}: линия`).toBeGreaterThanOrEqual(3);
+      }
+      const values = FIB.map((n) => resolve(theme, n).toLowerCase());
+      expect(new Set(values).size).toBe(8);
+      for (const other of ["--up", "--down", "--accent", "--text-2"]) expect(values).not.toContain(resolve(theme, other).toLowerCase());
     });
   }
 });
