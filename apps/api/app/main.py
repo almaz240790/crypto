@@ -6,10 +6,11 @@ from typing import Any
 
 import redis
 import sentry_sdk
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
+from app.apikeys import key_scope
 from app.config import settings
 from app.db import SessionLocal, engine
 from app.debug import router as debug_router
@@ -45,7 +46,13 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     await hub.stop()
 
 
-app = FastAPI(title="Platform API", version="0.1.0", lifespan=lifespan)
+# API-ключ — только GET эндпоинтов /api-docs (ADR-0017): проверка на каждом эндпоинте, и на новом
+app = FastAPI(
+    title="Platform API",
+    version="0.1.0",
+    lifespan=lifespan,
+    dependencies=[Depends(key_scope)],
+)
 app.include_router(live_router)
 app.include_router(debug_router)
 app.include_router(auth_router)

@@ -7,12 +7,16 @@
 своего тарифа. Теперь ``current_user`` и ``optional_user`` решают одинаково (``auth.py``), а
 роутеры ``/v1`` и ``/v1/chart`` проверяют ключ и там, где пользователь не нужен.
 
+Ключ открывает только эндпоинты со страницы /api-docs (ADR-0017): личные разделы (выгрузка
+данных, ключи, сессии, платежи…) и всё остальное по ключу — 403, по токену сайта — как раньше.
+
 Тесты на БД (нужен DATABASE_URL с миграциями до head; без БД пропускаются) идут во внешней
 транзакции и откатываются в конце.
 """
 
 from __future__ import annotations
 
+import re
 import secrets
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
@@ -171,7 +175,8 @@ def _ids(r: Any) -> set[str]:
 
 def test_premium_key_gets_premium_feed_card_and_chart(db: Session, client: TestClient) -> None:
     inst, active, closed = _world(db)
-    key = _key_header(_key(db, _user(db, "premium")))
+    premium = _user(db, "premium")
+    key = _key_header(_key(db, premium))
 
     feed = client.get(f"/v1/signals?symbol={inst.symbol}", headers=key)
     assert _ids(feed) == {active.public_id, closed.public_id}  # без задержки и градаций гостя
@@ -182,7 +187,11 @@ def test_premium_key_gets_premium_feed_card_and_chart(db: Session, client: TestC
     # карточка и свечи активного сигнала — гостю 403
     assert client.get(f"/v1/signals/{active.public_id}", headers=key).status_code == 200
     assert client.get(f"/v1/signals/{active.public_id}/candles", headers=key).status_code == 200
-    assert client.get(f"/v1/signals/{active.public_id}/analysis", headers=key).status_code == 200
+    # структура на момент сигнала — не в /api-docs: по ключу закрыта (ADR-0017), по токену — открыта
+    analysis = f"/v1/signals/{active.public_id}/analysis"
+    r = client.get(analysis, headers=key)
+    assert r.status_code == 403 and r.json()["detail"] == apikeys.OUT_OF_SCOPE, r.text
+    assert client.get(analysis, headers=_bearer(premium)).status_code == 200
     # форвард-лента — право Premium
     assert client.get("/v1/signals?scope=forward", headers=key).status_code == 200
     # график: 1m открыт, слой сигналов есть
@@ -213,31 +222,34 @@ def test_key_wins_over_bearer(db: Session, client: TestClient) -> None:
 # --- ключ, который не подходит, — ошибка, а не гость --------------------------------------------
 
 
-# все эндпоинты со страницы /api-docs (apps/web/src/app/api-docs/page.tsx), с параметрами
+# все эндпоинты со страницы /api-docs (apps/web/src/lib/apiDocs.ts) — запрос с параметрами
 def _docs_paths(inst: Instrument, sig: Signal) -> list[str]:
-    s = inst.symbol
-    return [
-        f"/v1/signals?symbol={s}&status=closed&limit=50",
-        f"/v1/signals/{sig.public_id}",
-        f"/v1/signals/{sig.public_id}/candles?tf=4h&before=20&after=0",
-        "/v1/stats?scope=live",
-        "/v1/stats/trades?scope=live&limit=5",
-        "/v1/stats/export.csv?scope=live",
-        "/v1/stats/patterns?tf=4h",
-        "/v1/stats/figures?tf=4h",
-        f"/v1/chart/candles?symbol={s}&tf=4h&limit=20",
-        f"/v1/chart/layers?symbol={s}&tf=1m",
-        f"/v1/chart/patterns?symbol={s}&tf=4h",
-        f"/v1/chart/figures?symbol={s}&tf=4h",
-        f"/v1/chart/derivatives?symbol={s}&tf=4h&limit=20",
-        f"/v1/screener?symbols={s}",
-        f"/v1/screener/export.csv?symbols={s}",
-        "/v1/instruments",
-        f"/v1/prices?symbols={s}",
-        "/v1/journal?limit=5",
-        "/v1/journal/analytics",
-        "/v1/alerts",
-    ]
+    s, sid = inst.symbol, sig.public_id
+    by_endpoint = {
+        "/v1/signals": f"/v1/signals?symbol={s}&status=closed&limit=50",
+        "/v1/signals/{public_id}": f"/v1/signals/{sid}",
+        "/v1/signals/{public_id}/candles": f"/v1/signals/{sid}/candles?tf=4h&before=20&after=0",
+        "/v1/stats": "/v1/stats?scope=live",
+        "/v1/stats/trades": "/v1/stats/trades?scope=live&limit=5",
+        "/v1/stats/export.csv": "/v1/stats/export.csv?scope=live",
+        "/v1/stats/patterns": "/v1/stats/patterns?tf=4h",
+        "/v1/stats/figures": "/v1/stats/figures?tf=4h",
+        "/v1/chart/candles": f"/v1/chart/candles?symbol={s}&tf=4h&limit=20",
+        "/v1/chart/layers": f"/v1/chart/layers?symbol={s}&tf=1m",
+        "/v1/chart/patterns": f"/v1/chart/patterns?symbol={s}&tf=4h",
+        "/v1/chart/figures": f"/v1/chart/figures?symbol={s}&tf=4h",
+        "/v1/chart/derivatives": f"/v1/chart/derivatives?symbol={s}&tf=4h&limit=20",
+        "/v1/screener": f"/v1/screener?symbols={s}",
+        "/v1/screener/export.csv": f"/v1/screener/export.csv?symbols={s}",
+        "/v1/instruments": "/v1/instruments",
+        "/v1/prices": f"/v1/prices?symbols={s}",
+        "/v1/journal": "/v1/journal?limit=5",
+        "/v1/journal/analytics": "/v1/journal/analytics",
+        "/v1/alerts": "/v1/alerts",
+    }
+    # новый пункт списка ключа — сюда тоже: каждый открытый ключу эндпоинт проверяется запросом
+    assert set(by_endpoint) == apikeys.KEY_ENDPOINTS
+    return list(by_endpoint.values())
 
 
 def test_every_documented_endpoint_honours_the_key(
@@ -268,6 +280,88 @@ def test_every_documented_endpoint_honours_the_key(
         for name, raw in bad_keys.items():
             r = client.get(path, headers=_key_header(raw))
             assert r.status_code == 401, (path, name, r.text)
+
+
+# личные разделы: выгрузка данных, ключи, сессии, платежи и другие GET за ``current_user``
+PERSONAL = (
+    "/v1/me/export.json",
+    "/v1/me/api-keys",
+    "/v1/me/sessions",
+    "/v1/billing/payments",
+    "/v1/auth/me",
+    "/v1/billing/me",
+    "/v1/me/identities",
+    "/v1/me/2fa",
+    "/v1/me/notifications",
+    "/v1/watchlist",
+    "/v1/screener/screens",
+    "/v1/support/tickets",
+    "/v1/chart/layouts",
+    "/v1/journal/export.csv",
+    "/v1/alerts/triggers",
+)
+
+
+def test_key_does_not_open_personal_endpoints(db: Session, client: TestClient) -> None:
+    """Ключ Premium на личных разделах — 403 «API-ключ не даёт доступа…», и с токеном рядом тоже
+    (ключ важнее токена, вход по токену не подменяет отказ). Токен сайта — как раньше, 200. Было:
+    ``current_user`` принимал ключ, и скрипт с ключом читал выгрузку данных аккаунта, список
+    ключей, сессии и платежи."""
+    owner = _user(db, "premium")
+    key = _key_header(_key(db, owner))
+    bearer = _bearer(owner)
+    for path in PERSONAL:
+        r = client.get(path, headers=key)
+        assert r.status_code == 403, (path, r.text)
+        assert r.json()["detail"] == apikeys.OUT_OF_SCOPE, path
+        r = client.get(path, headers={**key, **bearer})
+        assert r.status_code == 403 and r.json()["detail"] == apikeys.OUT_OF_SCOPE, path
+        r = client.get(path, headers=bearer)
+        assert r.status_code == 200, (path, r.text)
+    # запись по ключу — по-прежнему «только чтение»: ключом нельзя отозвать ключ или выйти везде
+    for path in ("/v1/me/api-keys/1", "/v1/me/sessions"):
+        r = client.delete(path, headers=key)
+        assert r.status_code == 403 and r.json()["detail"] == "API-ключ даёт только чтение", path
+
+
+def test_every_other_endpoint_refuses_the_key(db: Session, client: TestClient) -> None:
+    """Список закрытый: каждый GET-эндпоинт приложения не из /api-docs по ключу Premium — 403, в
+    том числе открытые данные без входа, служебные и админка. Новый эндпоинт попадает сюда сам."""
+    from app.main import app
+
+    key = _key_header(_key(db, _user(db, "premium")))
+    paths = app.openapi()["paths"]
+    others = sorted(
+        p for p, ops in paths.items() if "get" in ops and p not in apikeys.KEY_ENDPOINTS
+    )
+    assert {"/v1/me/export.json", "/v1/admin/users", "/health", "/v1/strategies"} <= set(others)
+    for path in others:
+        r = client.get(re.sub(r"\{[^}]+\}", "1", path), headers=key)
+        assert r.status_code == 403, (path, r.text)
+        assert r.json()["detail"] == apikeys.OUT_OF_SCOPE, path
+
+
+def test_key_user_checks_scope_without_app_gate(
+    db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Пользователь по ключу не появляется за пределами списка и в приложении без общей проверки
+    (``auth._api_key_user`` вызывает ``apikeys.key_scope`` сам): роутер личных разделов отдельно —
+    тот же 403, открытый ключу эндпоинт — 200."""
+    from fastapi import FastAPI
+
+    from app.routers import user as user_router
+
+    monkeypatch.setattr(settings, "billing_enabled", True)  # тариф — по подписке, как в ``client``
+    monkeypatch.setattr(settings, "redis_url", "")
+    mini = FastAPI()
+    mini.include_router(user_router.router)
+    mini.dependency_overrides[auth.get_db] = lambda: db
+    key = _key_header(_key(db, _user(db, "premium")))
+    c = TestClient(mini)
+    r = c.get("/v1/me/export.json", headers=key)
+    assert r.status_code == 403 and r.json()["detail"] == apikeys.OUT_OF_SCOPE, r.text
+    r = c.get("/v1/journal", headers=key)
+    assert r.status_code == 200, r.text
 
 
 # из одних пробелов — то же, что пустой: uvicorn обрезает пробелы вокруг значения заголовка

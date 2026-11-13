@@ -3,6 +3,7 @@ import Link from "next/link";
 import { Footer, Header } from "@/components/site";
 import { Panel, Table, Td, Th } from "@/components/ui";
 import { getT } from "@/i18n/server";
+import { API_ENDPOINTS, PUBLIC_API_BASE as BASE } from "@/lib/apiDocs";
 
 export async function generateMetadata(): Promise<Metadata> {
   const t = await getT();
@@ -14,31 +15,6 @@ export async function generateMetadata(): Promise<Metadata> {
 
 /** Описание и параметры переносятся по словам: таблица помещается в колонку без прокрутки. */
 const WRAP = { whiteSpace: "normal", paddingBlock: 6 } as const;
-
-const BASE = "https://api.platformsol.com";
-
-const ENDPOINTS: { path: string; what: string; params: string }[] = [
-  { path: "/v1/signals", what: "Лента сигналов с фильтрами и пагинацией", params: "status, symbol, grade, direction, days, sort, order, limit, offset" },
-  { path: "/v1/signals/{public_id}", what: "Карточка сигнала: уровни, обоснование, события", params: "—" },
-  { path: "/v1/signals/{public_id}/candles", what: "Свечи вокруг сигнала", params: "tf, before, after" },
-  { path: "/v1/stats", what: "Статистика стратегии: винрейт, средний R, просадка, по градациям и месяцам", params: "scope, version, symbol, grade, days, since, until" },
-  { path: "/v1/stats/trades", what: "Список сделок статистики", params: "scope, version, symbol, grade, limit, offset" },
-  { path: "/v1/stats/export.csv", what: "Полная история сделок в CSV", params: "scope, version, symbol" },
-  { path: "/v1/stats/patterns", what: "Отработка свечных паттернов", params: "tf, type, symbol, horizon" },
-  { path: "/v1/stats/figures", what: "Отработка графических фигур", params: "tf, type" },
-  { path: "/v1/chart/candles", what: "Закрытые свечи инструмента", params: "symbol, tf, before, limit" },
-  { path: "/v1/chart/layers", what: "Структура рынка, зоны, уровни на таймфрейме", params: "symbol, tf" },
-  { path: "/v1/chart/patterns", what: "Свечные паттерны на графике", params: "symbol, tf, since, until, limit" },
-  { path: "/v1/chart/figures", what: "Графические фигуры на графике", params: "symbol, tf, since, until, limit" },
-  { path: "/v1/chart/derivatives", what: "Funding, OI, ликвидации, L/S ratio по корзинам таймфрейма", params: "symbol, tf, before, limit" },
-  { path: "/v1/screener", what: "Скринер по всем инструментам", params: "symbols" },
-  { path: "/v1/screener/export.csv", what: "Скринер в CSV", params: "symbols" },
-  { path: "/v1/instruments", what: "Список инструментов по капитализации (поле rank)", params: "—" },
-  { path: "/v1/prices", what: "Последние цены", params: "symbols" },
-  { path: "/v1/journal", what: "Ваш журнал сделок", params: "limit, offset" },
-  { path: "/v1/journal/analytics", what: "Аналитика вашего журнала", params: "—" },
-  { path: "/v1/alerts", what: "Ваши алерты", params: "symbol, status" },
-];
 
 export default async function ApiDocsPage() {
   const t = await getT();
@@ -58,7 +34,7 @@ export default async function ApiDocsPage() {
 import requests
 r = requests.get("${BASE}/v1/stats", params={"scope": "live"}, headers={"X-API-Key": "${key}"})
 print(r.json()["metrics"])`}</pre>
-          <p className="caption" style={{ margin: "8px 0 0" }}>{t("Ответы — JSON, цены и объёмы — строками (без потери точности), время — ISO 8601 в UTC или unix-секунды в полях")}{" "}<code>t</code>{t(". Ошибки: 401 — ключ неверный или отозван, 403 — тариф без API или запрос не на чтение, 429 — превышен лимит.")}</p>
+          <p className="caption" style={{ margin: "8px 0 0" }}>{t("Ответы — JSON, цены и объёмы — строками (без потери точности), время — ISO 8601 в UTC или unix-секунды в полях")}{" "}<code>t</code>{t(". Ошибки: 401 — ключ неверный или отозван, 403 — тариф без API, запрос не на чтение или эндпоинта нет в списке ниже (профиль, сессии, ключи, платежи по ключу недоступны), 429 — превышен лимит.")}</p>
         </Panel>
         <Panel title={t("Эндпоинты")} flush>
           <Table compact>
@@ -70,7 +46,7 @@ print(r.json()["metrics"])`}</pre>
               </tr>
             </thead>
             <tbody>
-              {ENDPOINTS.map((e) => (
+              {API_ENDPOINTS.map((e) => (
                 <tr key={e.path}>
                   <Td>
                     <code>GET {e.path}</code>

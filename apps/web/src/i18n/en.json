@@ -1,7 +1,7 @@
 {
   ", передаётся в заголовке": ", is passed in the header",
   ". Данные носят информационный характер и не являются инвестиционной рекомендацией.": ". The data is for information only and is not investment advice.",
-  ". Ошибки: 401 — ключ неверный или отозван, 403 — тариф без API или запрос не на чтение, 429 — превышен лимит.": ". Errors: 401 — the key is invalid or revoked, 403 — the plan has no API access or the request is not read-only, 429 — rate limit exceeded.",
+  ". Ошибки: 401 — ключ неверный или отозван, 403 — тариф без API, запрос не на чтение или эндпоинта нет в списке ниже (профиль, сессии, ключи, платежи по ключу недоступны), 429 — превышен лимит.": ". Errors: 401 — the key is invalid or revoked, 403 — the plan has no API access, the request is not read-only or the endpoint is not in the list below (profile, sessions, keys and payments are not available with a key), 429 — rate limit exceeded.",
   "/ мес": "/ mo",
   "6 цифр из приложения-аутентификатора или один из резервных кодов": "6 digits from your authenticator app or one of the backup codes",
   "API для чтения": "Read-only API",

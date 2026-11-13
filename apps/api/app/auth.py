@@ -218,8 +218,9 @@ def google_exchange(code: str, redirect_uri: str) -> dict[str, Any]:
 # Кто сделал запрос, решают две функции ниже — для ``current_user`` (вход обязателен) и
 # ``optional_user`` (без входа — гость) одинаково, чтобы правила не расходились (ревью PR #162:
 # ``optional_user`` читал только Bearer, и клиент Premium с ключом получал ответ гостя):
-# - ``X-API-Key`` (план 3.10) важнее Bearer: только GET, аккаунт активен, тариф с API,
-#   лимит запросов на ключ; ключ передан (даже пустой), но не подошёл, — 401, а не гость;
+# - ``X-API-Key`` (план 3.10) важнее Bearer: только GET и только эндпоинты /api-docs
+#   (``apikeys.key_scope``, ADR-0017), аккаунт активен, тариф с API, лимит запросов на ключ;
+#   ключ передан (даже пустой), но не подошёл, — 401, а не гость;
 # - Bearer: токен есть, но недействителен или истёк — 401 (аудит TSA-1); пользователь удалён
 #   или не найден — 401; заблокирован — 403;
 # - ни ключа, ни Bearer — гость (``None``); ``current_user`` на это отвечает 401.
@@ -235,12 +236,12 @@ def _active(user: User | None) -> User:
 
 
 def _api_key_user(request: Request, db: Session, raw: str) -> User:
-    """Вход по API-ключу (план 3.10): только GET, лимит запросов на ключ, только Premium."""
+    """Вход по API-ключу (план 3.10): только GET эндпоинтов /api-docs, лимит запросов на ключ,
+    только Premium."""
     from app import apikeys, ratelimit
     from app.entitlements import entitlements_for
 
-    if request.method != "GET":
-        raise HTTPException(403, "API-ключ даёт только чтение")
+    apikeys.key_scope(request)
     user = apikeys.find_user(db, raw)
     if user is None:
         raise HTTPException(401, "неверный или отозванный API-ключ")

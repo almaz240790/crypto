@@ -1,13 +1,19 @@
-"""API-ключи для чтения (план 3.10): формат, хэш, поиск и отзыв (на БД — в CI)."""
+"""API-ключи для чтения (план 3.10): формат, хэш, поиск и отзыв (на БД — в CI), список
+эндпоинтов, открытых ключу."""
 
 from __future__ import annotations
 
 import os
+import re
+from pathlib import Path
 
 import pytest
 from sqlalchemy import text
 
 from app import apikeys, auth
+
+# список эндпоинтов страницы /api-docs (apps/web/src/app/api-docs/page.tsx берёт его отсюда)
+API_DOCS = Path(__file__).resolve().parents[3] / "apps" / "web" / "src" / "lib" / "apiDocs.ts"
 
 
 def _db_available() -> bool:
@@ -57,3 +63,17 @@ def test_find_user_and_revoke() -> None:
             assert apikeys.find_user(s, raw) is None
         finally:
             s.rollback()
+
+
+def test_key_scope_is_the_api_docs_list() -> None:
+    """Ключ открывает ровно эндпоинты со страницы /api-docs (ADR-0017): документация и сервер не
+    расходятся. Новый эндпоинт по ключу закрыт, пока его не внесут в оба списка; каждый пункт
+    списка — действующий GET-эндпоинт приложения (опечатка не пройдёт)."""
+    from app.main import app
+
+    docs = re.findall(r'\bpath: "([^"]+)"', API_DOCS.read_text(encoding="utf-8"))
+    assert len(docs) == len(set(docs)) >= 20
+    assert set(docs) == apikeys.KEY_ENDPOINTS
+    paths = app.openapi()["paths"]
+    for path in sorted(apikeys.KEY_ENDPOINTS):
+        assert "get" in paths.get(path, {}), path
