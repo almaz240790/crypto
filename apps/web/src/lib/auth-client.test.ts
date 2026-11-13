@@ -95,6 +95,44 @@ describe("api(): истёкший токен на публичном эндпо�
     expect(calls.map((c) => `${c.url} ${c.auth}`)).toEqual([`${CANDLES} null`]);
   });
 
+  it("сервер отказал в обновлении (аккаунт заблокирован или удалён) — подписчики onSessionLost узнают: вкладка становится гостем", async () => {
+    cookie = "pl_auth=1";
+    let blocked = false;
+    handler = (url, auth) => {
+      if (url === "/v1/auth/refresh") return blocked ? json(401, { detail: "Аккаунт заблокирован. Напишите в поддержку." }) : json(200, { access_token: "a1" });
+      if (!auth) return json(200, { guest: true });
+      return blocked ? json(401, { detail: "недействительный токен" }) : json(200, { ok: auth });
+    };
+    const { api, getAccessToken, hasHint, onSessionLost } = await load();
+    const lost = vi.fn();
+    const off = onSessionLost(lost);
+    await expect(api(CANDLES)).resolves.toEqual({ ok: "Bearer a1" });
+    expect(lost).not.toHaveBeenCalled();
+    blocked = true;
+    await expect(api(CANDLES)).resolves.toEqual({ guest: true });
+    expect(lost).toHaveBeenCalledTimes(1);
+    expect(getAccessToken()).toBeNull();
+    expect(hasHint()).toBe(false);
+    off();
+    cookie = "pl_auth=1";
+    await api(CANDLES);
+    expect(lost).toHaveBeenCalledTimes(1); // отписка работает
+  });
+
+  it("сбой сети при обновлении — не конец сеанса: подписчики onSessionLost не вызываются", async () => {
+    cookie = "pl_auth=1";
+    handler = (url) => {
+      if (url === "/v1/auth/refresh") throw new TypeError("Failed to fetch");
+      return json(200, { guest: true });
+    };
+    const { api, hasHint, onSessionLost } = await load();
+    const lost = vi.fn();
+    onSessionLost(lost);
+    await expect(api(CANDLES)).resolves.toEqual({ guest: true });
+    expect(lost).not.toHaveBeenCalled();
+    expect(hasHint()).toBe(true);
+  });
+
   it("закрытый эндпоинт без сеанса — та же ошибка 401, без лишнего refresh у гостя", async () => {
     handler = () => json(401, { detail: "нужен токен" });
     const { api, ApiError } = await load();

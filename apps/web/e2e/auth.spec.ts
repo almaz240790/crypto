@@ -15,6 +15,11 @@ const ME = {
   risk: { deposit: null, risk_pct: "1.00", exchange: "binance", market_type: "futures", default_leverage: 3, experience: null },
 };
 const TOKEN = { access_token: "test.jwt.token", token_type: "bearer", expires_in: 900 };
+const CLOSED_ROW = {
+  id: "c1", symbol: "BTCUSDT", instrument_id: 1, strategy_version: "1.1.0", direction: "long", candle_close_time: "2026-10-25T08:00:00Z",
+  created_at: "", entry_market: "100.5", entry_limit: null, stop_loss: "98.5", tp1: "103", tp2: "105.5", tp3: "108",
+  rr_tp2: "2.5", score: 77, grade: "A", status: "closed_sl", flags: [], last_event_at: null, result: null,
+};
 
 async function mockApi(page: Page, calls: string[]) {
   // после входа — /chart: терминал соединился бы с настоящей Binance (своя заглушка API, mock() из helpers/chart
@@ -143,6 +148,55 @@ test("вход с 2FA: второй шаг с кодом из приложени
   await form.getByRole("button", { name: "Подтвердить" }).click();
   await expect(page).toHaveURL(/\/chart(\/|$)/);
   expect(calls).toContain("POST /v1/auth/login/2fa");
+});
+
+test("аккаунт заблокирован во время сеанса: обновление токена — 401, сайт тихо становится гостем; вход — понятный отказ", async ({ page }) => {
+  const BLOCKED = "Аккаунт заблокирован. Напишите в поддержку.";
+  const calls: string[] = [];
+  let blocked = false;
+  await blockBinance(page.context());
+  await page.route("**/v1/**", async (route) => {
+    const req = route.request();
+    const u = new URL(req.url());
+    const p = u.pathname;
+    const bearer = req.headers()["authorization"];
+    calls.push(`${req.method()} ${p}${bearer ? " bearer" : ""}`);
+    const json = (status: number, body: unknown) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
+    // сервер: вход и обновление заблокированного — отказ; его access-токен истёк
+    if (p === "/v1/auth/login") return blocked ? json(403, { detail: BLOCKED }) : json(200, TOKEN);
+    if (p === "/v1/auth/refresh") return blocked ? json(401, { detail: BLOCKED }) : json(200, TOKEN);
+    if (blocked && bearer) return json(401, { detail: "недействительный токен" });
+    if (p === "/v1/auth/me") return bearer ? json(200, ME) : json(401, { detail: "нужен токен" });
+    if (p === "/v1/signals/summary") return json(200, { active: 0, today_new: 0, next_h4_close: new Date(Date.now() + 3600e3).toISOString(), now: "", scope: "live" });
+    if (p === "/v1/signals") return json(200, { items: [CLOSED_ROW], sparklines: {}, prices: {}, total: 1, scope: "live", limit: 50, offset: 0, restrictions: null });
+    return json(404, { detail: "нет заглушки" });
+  });
+  await page.goto("/login");
+  await page.getByLabel("Email").fill("trader@example.com");
+  await page.getByLabel("Пароль").fill("correct-horse-battery");
+  await page.getByRole("button", { name: "Войти", exact: true }).click();
+  await expect(page).toHaveURL(/\/chart(\/|$)/);
+  await page.goto("/signals");
+  await expect(page.getByTitle("trader@example.com")).toBeVisible();
+
+  // админ заблокировал аккаунт; токен истёк — следующий запрос ленты: 401 → refresh 401 → гость
+  blocked = true;
+  await page.getByRole("button", { name: "сортировать по: Инструмент" }).click();
+  await expect.poll(() => calls.filter((c) => c === "POST /v1/auth/refresh").length).toBeGreaterThan(1);
+  await expect(page.getByTitle("trader@example.com")).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "Войти" }).first()).toBeVisible();
+  // тихо: лента на месте (ответ гостя), без текста ошибки на странице
+  await expect(page.getByText("1 сигналов")).toBeVisible();
+  await expect(page.getByText(/недействительный токен|заблокирован/)).toHaveCount(0);
+  expect((await page.context().cookies()).some((c) => c.name === "pl_auth" && c.value === "1")).toBe(false);
+
+  // попытка войти снова — понятный отказ, без перехода
+  await page.goto("/login");
+  await page.getByLabel("Email").fill("trader@example.com");
+  await page.getByLabel("Пароль").fill("correct-horse-battery");
+  await page.getByRole("button", { name: "Войти", exact: true }).click();
+  await expect(page.locator("form").getByRole("alert")).toHaveText(BLOCKED);
+  await expect(page).toHaveURL(/\/login$/);
 });
 
 test("язык: переключатель EN переводит шапку и форму входа, cookie сохраняется", async ({ page }) => {
