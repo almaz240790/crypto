@@ -341,6 +341,37 @@ def test_every_other_endpoint_refuses_the_key(db: Session, client: TestClient) -
         assert r.json()["detail"] == apikeys.OUT_OF_SCOPE, path
 
 
+def test_key_scope_is_not_fooled_by_the_address(db: Session, client: TestClient) -> None:
+    """Список сверяется с эндпоинтом, который выбрал роутер, а не со строкой адреса: слэш в конце,
+    закодированный слэш, похожий префикс, путь в параметрах запроса, HEAD/OPTIONS и регистр не
+    открывают ключу личные разделы и не подменяют открытый эндпоинт закрытым."""
+    _, active, _ = _world(db)
+    key = _key_header(_key(db, _user(db, "premium")))
+    # слэш в конце — переадресация без данных, после неё тот же отказ
+    r = client.get("/v1/me/export.json/", headers=key, follow_redirects=False)
+    assert r.status_code == 307 and r.content == b"", r.text
+    r = client.get("/v1/me/export.json/", headers=key)
+    assert r.status_code == 403 and r.json()["detail"] == apikeys.OUT_OF_SCOPE, r.text
+    assert client.get("/v1/signals/", headers=key).status_code == 200  # то же для открытого
+    # закодированный слэш сервер раскрывает до маршрута — эндпоинт тот же, отказ тот же
+    r = client.get("/v1/me%2Fexport.json", headers=key)
+    assert r.status_code == 403 and r.json()["detail"] == apikeys.OUT_OF_SCOPE, r.text
+    r = client.get(f"/v1/signals/{active.public_id}%2Fanalysis", headers=key)
+    assert r.status_code == 403 and r.json()["detail"] == apikeys.OUT_OF_SCOPE, r.text
+    # похожий префикс и регистр — другого эндпоинта нет, данных нет
+    for path in ("/v1/signalsX", "/v1/statsfoo", "/v1/journalx", "/V1/ME/EXPORT.JSON"):
+        assert client.get(path, headers=key).status_code == 404, path
+    # путь открытого эндпоинта в параметрах не открывает закрытый, и наоборот
+    r = client.get("/v1/me/export.json?next=/v1/signals", headers=key)
+    assert r.status_code == 403 and r.json()["detail"] == apikeys.OUT_OF_SCOPE, r.text
+    assert client.get("/v1/signals?next=/v1/me/export.json", headers=key).status_code == 200
+    # не GET — ни данных, ни входа
+    for method in ("HEAD", "OPTIONS"):
+        for path in ("/v1/signals", "/v1/me/export.json"):
+            r = client.request(method, path, headers=key)
+            assert r.status_code in (403, 405) and r.content[:1] != b"[", (method, path)
+
+
 def test_key_user_checks_scope_without_app_gate(
     db: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -409,12 +440,15 @@ def test_key_rate_limit_on_optional_and_open_endpoints(
 ) -> None:
     """Лимит на ключ — на всех эндпоинтах; запрос считается один раз, хотя ключ проверяют и
     роутер, и ``optional_user``/``current_user``."""
-    monkeypatch.setattr(apikeys, "API_RATE", (3, 60))
+    monkeypatch.setattr(apikeys, "API_RATE", (4, 60))
     inst, _, _ = _world(db)
     key = _key_header(_key(db, _user(db, "premium")))
     assert client.get(f"/v1/signals?symbol={inst.symbol}", headers=key).status_code == 200
     assert client.get("/v1/stats/export.csv", headers=key).status_code == 200
+    # отказ вне списка ключа — до проверки ключа: в лимите не считается
+    assert client.get("/v1/me/export.json", headers=key).status_code == 403
     assert client.get("/v1/instruments", headers=key).status_code == 200
+    assert client.get("/v1/journal", headers=key).status_code == 200  # ``current_user`` — один раз
     r = client.get(f"/v1/chart/layers?symbol={inst.symbol}&tf=1m", headers=key)
     assert r.status_code == 429, r.text
     assert client.get("/v1/stats", headers=key).status_code == 429
