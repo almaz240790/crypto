@@ -28,6 +28,9 @@ _hasher = PasswordHasher()
 ACCESS_TTL = timedelta(minutes=15)
 REFRESH_TTL = timedelta(days=30)
 REFRESH_COOKIE = "refresh_token"
+BLOCKED_SIGN_IN = "Аккаунт заблокирован. Напишите в поддержку."
+"""Отказ во входе и в обновлении сессии сайта заблокированному аккаунту (запросы к API с его
+токеном — 403 «аккаунт заблокирован», открытые страницы — ответ гостя)."""
 
 
 def get_db() -> Any:
@@ -91,14 +94,20 @@ def issue_refresh(db: Session, user: User, user_agent: str | None) -> str:
 
 
 def rotate_refresh(db: Session, raw: str, user_agent: str | None) -> tuple[User, str]:
+    """Новый refresh-токен вместо предъявленного (ротация). Токен неизвестен, отозван или истёк —
+    401 «сессия истекла». Аккаунт удалён, не найден или заблокирован — тоже 401 (сайт молча
+    становится гостем), и предъявленный токен отзывается сразу, с commit: повтор — «сессия истекла»,
+    после разблокировки нужен новый вход."""
     row = db.scalar(select(RefreshToken).where(RefreshToken.token_hash == sha256(raw)))
     now = datetime.now(tz=UTC)
     if row is None or row.revoked_at is not None or row.expires_at < now:
         raise HTTPException(401, "сессия истекла")
     row.revoked_at = now
     user = db.get(User, row.user_id)
-    if user is None or user.deleted_at is not None:
-        raise HTTPException(401, "пользователь не найден")
+    if user is None or user.deleted_at is not None or user.blocked_at is not None:
+        db.commit()
+        gone = user is None or user.deleted_at is not None
+        raise HTTPException(401, "пользователь не найден" if gone else BLOCKED_SIGN_IN)
     return user, issue_refresh(db, user, user_agent)
 
 
@@ -107,6 +116,17 @@ def revoke_refresh(db: Session, raw: str) -> None:
     if row and row.revoked_at is None:
         row.revoked_at = datetime.now(tz=UTC)
         db.commit()
+
+
+def ensure_can_sign_in(user: User) -> None:
+    """Сессию сайта (токены входа или билет второго шага) выдать можно: аккаунт удалён — 401
+    «пользователь не найден», заблокирован — 403 :data:`BLOCKED_SIGN_IN`. Вызывается после проверки
+    пароля, ссылки из письма, кода или провайдера (``routers/auth._issue``): без них состояние
+    аккаунта не раскрывается. Вход в админку (ADR-0011) отвечает своей одинаковой ошибкой."""
+    if user.deleted_at is not None:
+        raise HTTPException(401, "пользователь не найден")
+    if user.blocked_at is not None:
+        raise HTTPException(403, BLOCKED_SIGN_IN)
 
 
 # --- пользователи -------------------------------------------------------------------------------
@@ -273,9 +293,9 @@ def _bearer_user(request: Request, db: Session, *, blocked_is_guest: bool = Fals
     """Пользователь по ``Authorization: Bearer``; заголовка нет — ``None``.
 
     ``blocked_is_guest`` — для открытых страниц: заблокированный аккаунт получает ответ гостя, а не
-    403. Вход и обновление токена блокировку не проверяют, поэтому сайт заблокированного шлёт его
-    токен и на открытые страницы; 403 там ломал бы график и ленту, а данные тарифа ему не
-    положены."""
+    403. Вход и обновление токена заблокированному отказывают, но access-токен, выданный до
+    блокировки, живёт до ``ACCESS_TTL``, и сайт шлёт его и на открытые страницы; 403 там ломал бы
+    график и ленту, а данные тарифа ему не положены."""
     header = request.headers.get("authorization", "")
     if not header.lower().startswith("bearer "):
         return None

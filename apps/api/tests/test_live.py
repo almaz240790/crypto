@@ -14,9 +14,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import auth, live
-from app.live import Client, Hub, hub
+from app.entitlements import ENTITLEMENTS
+from app.live import Client, Hub, Viewer, hub
 from app.main import app
 from app.models import User
+from app.plans import PREMIUM
 
 
 class FakeWs:
@@ -31,8 +33,14 @@ class FakeWs:
         self.closed = True
 
 
+def _premium(user_id: int) -> Viewer:
+    """Вошедший с тарифом, которому видны все сигналы (ограничения — test_blocked_accounts)."""
+    return Viewer(user_id, ENTITLEMENTS[PREMIUM], None, datetime.now(tz=UTC) + timedelta(hours=1))
+
+
 def _client(*symbols: str, user_id: int | None = None, **opts: Any) -> Client:
-    c = Client(FakeWs(), user_id)  # type: ignore[arg-type]
+    viewer = None if user_id is None else _premium(user_id)
+    c = Client(FakeWs(), viewer)  # type: ignore[arg-type]
     c.subscribe(set(symbols), **opts)
     return c
 
@@ -50,10 +58,10 @@ def test_broadcast_filters_by_symbol_and_auth_without_waiting_for_sockets() -> N
     guest, pro = _client("BTCUSDT"), _client("ETHUSDT", user_id=7)
     h.clients.update({guest, pro})
     h.broadcast({"t": "price", "s": "BTCUSDT", "p": "1"}, symbol="BTCUSDT")
-    h.broadcast({"t": "signal", "id": "x"}, authed_only=True)
+    asyncio.run(h.signal_event({"id": "x", "scope": "live"}))
     # в очередь отправки клиента (пишет только его задача), не в сокет из слушателя
     assert _outbox(guest) == [{"t": "price", "s": "BTCUSDT", "p": "1"}]
-    assert _outbox(pro) == [{"t": "signal", "id": "x"}]
+    assert _outbox(pro) == [{"t": "signal", "id": "x", "scope": "live"}]
 
 
 def test_signal_status_event_reaches_clients_only_for_live_scope() -> None:
@@ -84,6 +92,9 @@ def test_ws_subscribe_and_pong(monkeypatch: Any) -> None:
         return None
 
     monkeypatch.setattr(Hub, "start", no_start)
+    # аккаунт токена — из БД (удалённый, заблокированный, несуществующий — гость:
+    # test_blocked_accounts)
+    monkeypatch.setattr(live, "_load_viewer", lambda user_id, until: _premium(user_id))
     token = auth.make_access_token(User(id=5, email="a@b.c", role="user"))
     with TestClient(app).websocket_connect(f"/v1/ws?token={token}") as ws:
         ws.send_text(json.dumps({"sub": ["btcusdt", "ETHUSDT"]}))

@@ -5,11 +5,13 @@ ADR-0010) обрабатывается сразу, в самом слушате�
 ``{"t":"ticks","at","p":{…}}`` для клиента, попросившего ``batch``) и формирующаяся минута
 ``{"t":"forming","s","tf":"1m","c"}`` подписчикам символа — не чаще раза в секунду на символ и
 клиента. ``candles.closed`` (только 1m) → ``price`` и ``candle``; ``signals.status`` → ``signal``
-залогиненным — через ограниченную очередь отдельной задачей: чтение БД и ошибки там не задерживают
-и не обрывают тики. Каждому клиенту пишет только его задача отправки, с таймаутом: медленный клиент
-не держит остальных и отключается. При (пере)подписке слушатель читает последние цены из ключа
-``prices:last`` — после перезапуска API и обрыва Redis цены сразу верные. Клиент не ходит на биржу
-напрямую. Без Redis (тесты, локально) слушатель спит и повторяет попытку.
+вошедшим, кому сигнал виден в ленте по тарифу (:class:`Viewer`), — через ограниченную очередь
+отдельной задачей: чтение БД и ошибки там не задерживают и не обрывают тики. Вошедший — токен в
+адресе сокета действителен, аккаунт есть, не удалён и не заблокирован; иначе гость (тики есть,
+событий сигналов нет). Каждому клиенту пишет только его задача отправки, с таймаутом: медленный
+клиент не держит остальных и отключается. При (пере)подписке слушатель читает последние цены из
+ключа ``prices:last`` — после перезапуска API и обрыва Redis цены сразу верные. Клиент не ходит на
+биржу напрямую. Без Redis (тесты, локально) слушатель спит и повторяет попытку.
 """
 
 from __future__ import annotations
@@ -20,16 +22,26 @@ import logging
 import time
 from collections import deque
 from contextlib import suppress
+from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, NamedTuple
 
 import redis.asyncio as aioredis
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from sqlalchemy import text
+from sqlalchemy import select, text
+from sqlalchemy.orm import Session
 
 from app import auth
 from app.config import settings
 from app.db import SessionLocal
+from app.entitlements import (
+    Entitlements,
+    allowed_instrument_ids,
+    entitlements_for,
+    signal_visible,
+)
+from app.models import Signal, User
+from app.signal_scope import published_filter
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -53,7 +65,8 @@ OUTBOX_MAX = 256
 EVENTS_MAX = 1000
 """Очередь закрытых минут и статусов от слушателя к обработчику; при переполнении старые — прочь."""
 DB_TIMEOUT = 5.0
-"""Чтение закрытой минуты из БД (старый market-data без свечи в событии) — не дольше."""
+"""Чтение БД из сокета — не дольше: закрытая минута (старый market-data без свечи в событии),
+аккаунт токена при подключении, сигнал события для тарифа с ограничениями."""
 FORMING_KEY = "f:"
 LOG_EVERY = 60
 
@@ -73,10 +86,103 @@ def _age(at: object) -> float | None:
     return (datetime.now(tz=UTC) - dt).total_seconds()
 
 
+class SignalInfo(NamedTuple):
+    """Что решает, виден ли сигнал тарифу, — как в ленте."""
+
+    grade: str
+    candle_close_time: datetime
+    instrument_id: int
+
+
+@dataclass(frozen=True, slots=True)
+class Viewer:
+    """Вошедший в сокет: аккаунт и права тарифа на момент подключения (сайт с новым токеном
+    подключается заново)."""
+
+    user_id: int
+    ent: Entitlements
+    instruments: frozenset[int] | None
+    """Инструменты сигналов тарифа (Free: BTC, ETH и вотчлист); None — все."""
+    until: datetime
+    """Срок access-токена: после него события вошедшим не идут — сокет, открытый до блокировки,
+    удаления или смены тарифа, не получает их дольше ``auth.ACCESS_TTL``."""
+
+    @property
+    def sees_all(self) -> bool:
+        """Тарифу видны все live-сигналы сразу (Pro, Premium, админы)."""
+        return (
+            self.instruments is None
+            and self.ent.signal_grades is None
+            and not self.ent.signal_delay_hours
+        )
+
+    def sees(self, sig: SignalInfo | None, now: datetime) -> bool:
+        """Виден ли сигнал в ленте этого тарифа — те же градация, задержка и инструменты, что в
+        ``entitlements.apply_signal_entitlements``. Сигнал не прочитан (None) — виден только тарифу,
+        которому видны все. Токен истёк — не виден."""
+        if now >= self.until:
+            return False
+        if self.sees_all:
+            return True
+        if sig is None:
+            return False
+        if self.instruments is not None and sig.instrument_id not in self.instruments:
+            return False
+        return signal_visible(self.ent, sig.grade, sig.candle_close_time, now)
+
+
+def viewer_for(
+    db: Session, user_id: int, until: datetime, now: datetime | None = None
+) -> Viewer | None:
+    """Аккаунт из токена сокета (``until`` — срок токена): есть, не удалён и не заблокирован —
+    вошедший с правами тарифа; иначе гость (None) — как заблокированный на открытых страницах
+    (``auth.optional_user``)."""
+    user = db.get(User, user_id)
+    if user is None or user.deleted_at is not None or user.blocked_at is not None:
+        return None
+    ent = entitlements_for(db, user, now)
+    ids = allowed_instrument_ids(db, user, ent)
+    return Viewer(user.id, ent, None if ids is None else frozenset(ids), until)
+
+
+def _load_viewer(user_id: int, until: datetime) -> Viewer | None:
+    with SessionLocal() as db:
+        return viewer_for(db, user_id, until)
+
+
+async def viewer_from_token(token: str | None) -> Viewer | None:
+    """Токен из адреса сокета → вошедший. Токена нет, он недействителен или истёк, аккаунт удалён,
+    не найден или заблокирован, БД не ответила за ``DB_TIMEOUT`` — гость. БД читается только для
+    действительного токена."""
+    if not token:
+        return None
+    try:
+        payload = auth.decode_access_token(token)
+        user_id = int(payload["sub"])
+        until = datetime.fromtimestamp(int(payload["exp"]), tz=UTC)
+    except Exception:
+        return None
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(_load_viewer, user_id, until), DB_TIMEOUT)
+    except Exception:
+        log.warning("сокет: аккаунт токена не прочитан — подключение гостем", exc_info=True)
+        return None
+
+
+def _signal_info(public_id: str) -> SignalInfo | None:
+    with SessionLocal() as db:
+        row = db.execute(
+            select(Signal.grade, Signal.candle_close_time, Signal.instrument_id).where(
+                Signal.public_id == public_id, published_filter()
+            )
+        ).first()
+    return None if row is None else SignalInfo(str(row[0]), row[1], int(row[2]))
+
+
 class Client:
-    def __init__(self, ws: WebSocket, user_id: int | None) -> None:
+    def __init__(self, ws: WebSocket, viewer: Viewer | None = None) -> None:
         self.ws = ws
-        self.user_id = user_id
+        self.viewer = viewer  # None — гость
         self.symbols: set[str] = set()
         self.batch = False  # тики одной пачкой раз в секунду ({"t":"ticks"}), не по символу
         self.forming = True  # формирующиеся минуты нужны (графику; ленте — нет)
@@ -93,6 +199,10 @@ class Client:
         self.overflow = False
         self.wake = asyncio.Event()
         self.dropped = 0
+
+    @property
+    def user_id(self) -> int | None:
+        return None if self.viewer is None else self.viewer.user_id
 
     def subscribe(self, symbols: set[str], batch: bool = False, forming: bool = True) -> None:
         """Замена набора подписок; неотправленное по снятым символам больше не нужно."""
@@ -415,7 +525,7 @@ class Hub:
             # форвард построчно не публикуется (план 2.11): клиентам — только события live.
             # Событие без области (трекер до миграции 0022) — не live: live-сигналов тогда не было.
             if data.get("scope") == "live":
-                self.broadcast({"t": "signal", **data}, authed_only=True)
+                await self.signal_event(data)
             return
         symbol = str(data["symbol"])
         candle = data.get("candle") if isinstance(data.get("candle"), dict) else None
@@ -438,15 +548,32 @@ class Hub:
     def _anyone_wants(self, symbol: str) -> bool:
         return any(symbol in c.symbols for c in self.clients)
 
-    def broadcast(
-        self, payload: dict[str, Any], symbol: str | None = None, authed_only: bool = False
-    ) -> None:
+    async def signal_event(self, data: dict[str, Any]) -> None:
+        """Смена статуса live-сигнала — вошедшим, кому сигнал виден в ленте по тарифу
+        (:meth:`Viewer.sees`): Pro, Premium и админам — все, Free — градация A старше 12 ч по BTC,
+        ETH и вотчлисту; гостям — ничего. Сигнал читается из БД (не дольше ``DB_TIMEOUT``), только
+        если подключён тариф с ограничениями; не прочитался — тому событие не уходит."""
+        if not any(c.viewer is not None and not c.viewer.sees_all for c in self.clients):
+            info = None
+        else:
+            try:
+                info = await asyncio.wait_for(
+                    asyncio.to_thread(_signal_info, str(data.get("id"))), DB_TIMEOUT
+                )
+            except Exception as exc:
+                info = None
+                self._error("signal row", exc)
+        text_ = json.dumps({"t": "signal", **data})
+        now = datetime.now(tz=UTC)
+        for c in list(self.clients):
+            if c.viewer is not None and c.viewer.sees(info, now):
+                c.push(text_)
+
+    def broadcast(self, payload: dict[str, Any], symbol: str | None = None) -> None:
         """В очередь отправки подходящих клиентов — без ожидания сокетов."""
         text_ = json.dumps(payload)
         for c in list(self.clients):
             if symbol is not None and symbol not in c.symbols:
-                continue
-            if authed_only and c.user_id is None:
                 continue
             c.push(text_)
 
@@ -498,17 +625,12 @@ async def ws_endpoint(ws: WebSocket) -> None:
     """Протокол: клиент → {"sub": ["BTCUSDT", ...], "batch"?: true, "forming"?: false} (замена
     набора; batch — тики пачкой {"t":"ticks"}, forming: false — без формирующихся минут) и
     {"ping": 1}; сервер → subscribed, pong, price и candle (закрытая минута), tick или ticks (живая
-    цена раз в секунду), forming (формирующаяся минута), signal. Незнакомые типы старые клиенты
-    пропускают."""
-    user_id: int | None = None
-    token = ws.query_params.get("token")
-    if token:
-        try:
-            user_id = int(auth.decode_access_token(token)["sub"])
-        except Exception:
-            user_id = None
+    цена раз в секунду), forming (формирующаяся минута), signal (вошедшим, по тарифу). Незнакомые
+    типы старые клиенты пропускают. Вход — ``?token=`` (access-токен сайта): токен удалённого,
+    несуществующего или заблокированного аккаунта — гость."""
+    viewer = await viewer_from_token(ws.query_params.get("token"))
     await ws.accept()
-    client = Client(ws, user_id)
+    client = Client(ws, viewer)
     hub.clients.add(client)
     await hub.start()
     sender = asyncio.create_task(client.pump(hub))
