@@ -752,7 +752,7 @@ test.describe("телефон, палец", () => {
     await expect(count).toHaveText("рисунков: 1");
   });
 
-  test("точку ставят удержанием: карточка свечи не закрывает чип, после рисунка сдвиг двигает график, а не перекрестие", async ({ page }) => {
+  test("точку ставят удержанием: значения свечи не закрывают чип, после рисунка сдвиг двигает график, а не перекрестие", async ({ page }) => {
     const { X, Y } = await open(page);
     const f = await finger(page);
     const count = page.getByTestId("drawings-count");
@@ -762,6 +762,7 @@ test.describe("телефон, палец", () => {
     // удержание дольше long-tap LWC (240 мс)
     await f.hold(X(0.3), Y(0.45), 400);
     await expect(chip).toContainText("Нажмите вторую точку");
+    // перекрестие с инструментом кончается с отпусканием — строка значений свечи (над графиком) ушла
     await expect(page.getByTestId("ohlc")).toHaveCount(0);
     // «Отменить» сверху: в любой точке кнопки под пальцем — она (раньше часть закрывал «×» карточки свечи)
     const cancel = chip.getByRole("button", { name: "Отменить рисунок" });

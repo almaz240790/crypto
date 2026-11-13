@@ -18,7 +18,6 @@ import { DrawingLimitCard, SelectedDrawingCard } from "./SelectedDrawingCard";
 import { download } from "./snapshot";
 import { ChartSurface, IND_COLOR_VAR, PANELS, indicatorColor, type TerminalControls } from "./chart/ChartSurface";
 import { ChartStoreContext, useChartStore } from "./chart/useChartStore";
-import { CrosshairCard } from "./chart/CrosshairCard";
 import { FoundCounter } from "./chart/FoundCounter";
 import { OhlcLegend } from "./chart/OhlcLegend";
 import { MarkupPicker } from "./MarkupPicker";
@@ -78,7 +77,7 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
   /** Состояние графика (сцена, выбор, видимая часть) — для листовых компонентов и «Найдено». */
   const [store] = useState(createChartStore);
   const instruments = useInstruments();
-  const { sheet, setSheet, closeSheet, ohlcMore, setOhlcMore, bars, setBars, objects, setObjects, panelOverlay, panelTab, setPanelTab, showPanel, objWidth, objResize, toast, say, notifyOnce } = useTerminalUi(wide);
+  const { sheet, setSheet, closeSheet, bars, setBars, objects, setObjects, panelOverlay, panelTab, setPanelTab, showPanel, objWidth, objResize, toast, say, notifyOnce } = useTerminalUi(wide);
   // вопросы о графике — Premium (админы и владелец — всегда); минутные ТФ закрыты гостю и на Free
   const { askAccess, intradayLocked } = usePlan();
   const { st, resolved, legacyFound, patch, toggleIndicator, addIndicator, removeInstance, setInstanceParams, toggleInstanceHidden, togglePanel, toggleLayer, selectMarkup, applyTemplate, applyLayout, setPaneLayout, removePane, setFibLevels } = useTerminalSettings(authed);
@@ -389,13 +388,12 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
           />
         )}
         {!desktop && <PhoneTop symbol={symbol} tf={tf} instruments={instruments} onSymbol={goSymbol} guest={!authed} type={st.type} scale={st.scale} onType={(type) => patch({ type })} onScale={(scale) => patch({ scale })} onZoom={zoom} onReset={reset} onSnapshot={snapshot} />}
-        {!desktop && <PhoneStrip {...facts} tf={tf} />}
+        {/* перекрестие телефона — значения свечи в этой строке, а не карточкой поверх графика (ADR-0009, дополнение
+            2026-11-13); на десктопе — легенда в углу графика */}
+        {!desktop && <PhoneStrip {...facts} tf={tf} store={store} onCrossClose={clearCrosshair} />}
         <div className={s.area} data-objects={panelShown ? "shown" : "hidden"} data-panel={panelOverlay ? "overlay" : "inline"} style={{ "--objects-w": objWidth } as React.CSSProperties}>
           <DrawToolbar tool={dr.tool} onTool={dr.setTool} magnet={dr.magnet} onMagnet={dr.setMagnet} series={dr.series} onSeries={dr.setSeries} hidden={dr.state.hidden} onHidden={dr.actions.hide} canUndo={dr.canUndo} canRedo={dr.canRedo} onUndo={dr.actions.undo} onRedo={dr.actions.redo} />
           <div className={s.chartCol} style={axisH ? ({ "--time-scale-h": `${axisH}px` } as React.CSSProperties) : undefined}>
-            {/* карточка перекрестия телефона (вид прежний до C2); на десктопе — легенда в углу графика. С инструментом
-                рисования её нет: на её месте чип шага с «Отменить» (ADR-0009, «Рисование») */}
-            {!desktop && !dr.tool && <CrosshairCard store={store} tick={data.tick} more={ohlcMore} onMore={setOhlcMore} onClose={clearCrosshair} />}
             {/* первая порция не загрузилась — объяснение по статусу: 403 минутного ТФ — «Pro», 404 — нет инструмента,
                 иначе сбой с «Повторить» (аудит TSA-2) */}
             {data.error ? (
