@@ -123,21 +123,24 @@ const barAt = (page: Page, x: number) =>
     return el.__chart.panes()[0]!.getSeries()[0]!.data()[idx]!.time;
   }, x);
 
-/** x страницы последней (идущей) свечи и середина области свечей по высоте. */
-const lastBar = (page: Page) =>
-  page.evaluate(() => {
+/** x страницы свечи, back свечей левее последней (0 — идущая), и середина области свечей по высоте. */
+const barFromEnd = (page: Page, back: number) =>
+  page.evaluate((back) => {
     const el = document.querySelector('[data-testid="terminal"]') as HTMLElement & { __chart: Chart };
     const r = el.getBoundingClientRect();
     const n = el.__chart.panes()[0]!.getSeries()[0]!.data().length;
-    return { x: r.left + el.__chart.timeScale().logicalToCoordinate(n - 1)!, y: r.top + el.__chart.paneSize(0).height * 0.5 };
-  });
+    return { x: r.left + el.__chart.timeScale().logicalToCoordinate(n - 1 - back)!, y: r.top + el.__chart.paneSize(0).height * 0.5 };
+  }, back);
 
 const group = (n: number, d: number) => {
   const [i, f] = Math.abs(n).toFixed(d).split(".");
   return i!.replace(/\B(?=(\d{3})+(?!\d))/g, " ") + (f ? `.${f}` : "");
 };
-/** Цена по шагу 0.1 или короткая (целым от 10 000 — formatPriceShort): строка может сжать цены на узком экране. */
-const priceRe = (v: string) => `(?:${group(Number(v), 1)}|${group(Number(v), 0)})`;
+/** Цена по шагу инструмента (d знаков) или от 10 000 короткая (целым — formatPriceShort): строка сжимает цены на узком экране. */
+const priceRe = (v: string, d = 1) => {
+  const full = group(Number(v), d).replace(".", "\\.");
+  return Number(v) >= 10_000 ? `(?:${full}|${group(Number(v), 0)})` : full;
+};
 const DATE = new Intl.DateTimeFormat("ru-RU", { timeZone: "UTC", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
 const TIME = new Intl.DateTimeFormat("ru-RU", { timeZone: "UTC", hour: "2-digit", minute: "2-digit" });
 const text = async (page: Page) => ((await page.getByTestId("ohlc").textContent()) ?? "").replace(/\s+/g, " ");
@@ -226,57 +229,97 @@ for (const [name, device] of PHONES) {
   });
 }
 
-// ландшафт телефона (высота ≤ 520, ADR-0009 «ландшафт», TSA-5) и узкий телефон: худший случай — идущая свеча (пометка
+// Ландшафт телефона (высота ≤ 520, ADR-0009 «ландшафт», TSA-5) и узкий телефон: худший случай — идущая свеча (пометка
 // «не закрыта») с длинными ценами и кнопкой индикаторов. Цены BTC сокращаются (formatPriceShort, от 10 000), а цены
-// ETH и монет дешевле цента — нет: раньше на 360 px пометка обрезалась многоточием до «не з…» и «н…»
-const NARROW: { title: string; viewport: { width: number; height: number }; rows: number; prices: Prices }[] = [
-  { title: "ландшафт 844×390", viewport: { width: 844, height: 390 }, rows: 1, prices: BTC },
-  { title: "узкий телефон 360×740", viewport: { width: 360, height: 740 }, rows: 2, prices: BTC },
-  { title: "узкий телефон 360×740, цены ETH", viewport: { width: 360, height: 740 }, rows: 2, prices: ETH },
-  { title: "узкий телефон 360×740, монета дешевле цента", viewport: { width: 360, height: 740 }, rows: 2, prices: SUBCENT },
-  { title: "ландшафт 667×375 (iPhone SE), монета дешевле цента", viewport: { width: 667, height: 375 }, rows: 1, prices: SUBCENT },
+// ETH и монет дешевле цента — нет. Ширина знаков на телефонах и в CI не та, что здесь (другой шрифт, масштаб текста,
+// ширина знака, округлённая до пикселя: в CI на ubuntu «не закрыта» — 70 px вместо здешних 66, и пометка обрезалась),
+// поэтому каждая строка проверяется и со знаками шире на 5 и 10 % — межбуквенный интервал 0.03 и 0.06 em (знак IBM Plex
+// Mono — 0.6 em) — у идущей и у закрытой свечи.
+const WIDER = [0, 5, 10] as const;
+const COINS: [string, Prices][] = [
+  ["BTC", BTC],
+  ["ETH", ETH],
+  ["монета дешевле цента", SUBCENT],
 ];
-for (const { title, viewport, rows, prices: p } of NARROW) {
-  test.describe(title, () => {
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const { defaultBrowserType, ...pixel5 } = devices["Pixel 5"];
-    test.use({ ...pixel5, viewport });
+const FIT: { title: string; viewport: { width: number; height: number }; rows: number; coins: [string, Prices][] }[] = [
+  { title: "ландшафт 844×390", viewport: { width: 844, height: 390 }, rows: 1, coins: [COINS[0]!] },
+  { title: "узкий телефон 360×740", viewport: { width: 360, height: 740 }, rows: 2, coins: COINS },
+  { title: "ландшафт 667×375 (iPhone SE)", viewport: { width: 667, height: 375 }, rows: 1, coins: COINS },
+];
 
-    test(`строка перекрестия не шире экрана и не больше ${rows === 1 ? "одной строки" : "двух строк"}: идущая свеча, длинные цены, «индикаторы» и ×`, async ({ page }) => {
-      await open(page, p);
-      await expect(page.locator("[data-layout]").first()).toHaveAttribute("data-layout", "phone");
-      const before = await geo(page);
-      const lb = await lastBar(page);
-      await longPress(page, lb.x, lb.y);
-      const ohlc = page.getByTestId("ohlc");
-      await expect(ohlc).toBeVisible();
-      await expect(ohlc).toContainText("не закрыта");
-      // время идущей свечи видно всегда (дата — и на метке шкалы времени под перекрестием)
-      await expect(ohlc).toContainText(TIME.format(new Date((T0 + 300 * H4) * 1000)));
-      await expect(ohlc.getByRole("button", { name: /индикаторы \(\d+\)/ })).toBeVisible();
-      await expect(ohlc.getByRole("button", { name: "убрать перекрестие" })).toBeVisible();
-      const m = await ohlc.evaluate((el) => {
-        const r = el.getBoundingClientRect();
-        // видимые листья: подписи и значения строки, кнопки
-        const leaves = [...el.querySelectorAll<HTMLElement>("span, strong, button")].filter((x) => x.children.length === 0 && x.getBoundingClientRect().width > 1 && getComputedStyle(x).visibility !== "hidden");
-        const boxes = leaves.map((x) => ({ t: x.textContent, ...JSON.parse(JSON.stringify(x.getBoundingClientRect())) }) as { t: string; x: number; y: number; width: number; height: number; top: number; bottom: number; left: number; right: number });
-        // строки значений (без кнопок справа) — группы листьев с одной вертикальной серединой текста (разрыв больше 6 px)
-        const data = el.querySelector("[data-fit]")!;
-        const mids = leaves.filter((x) => data.contains(x)).map((x) => { const b = x.getBoundingClientRect(); return (b.top + b.bottom) / 2; }).sort((a, b) => a - b);
-        const lines = mids.filter((v, i) => i === 0 || v - mids[i - 1]! > 6).length;
-        const clipped = [...el.querySelectorAll<HTMLElement>("*")].filter((x) => x.scrollWidth > x.clientWidth + 1 && getComputedStyle(x).overflow !== "visible").map((x) => `${x.className}: ${x.scrollWidth} > ${x.clientWidth}`);
-        return { r: JSON.parse(JSON.stringify(r)), inner: innerWidth, doc: document.documentElement.scrollWidth, lines, out: boxes.filter((b) => b.left < r.left - 0.5 || b.right > r.right + 0.5 || b.top < r.top - 0.5 || b.bottom > r.bottom + 0.5).map((b) => b.t), clipped };
-      });
-      expect(m.doc).toBeLessThanOrEqual(m.inner);
-      expect(m.r.right).toBeLessThanOrEqual(m.inner);
-      expect(m.out, "части строки за её краем").toEqual([]);
-      expect(m.clipped, "обрезанный текст").toEqual([]);
-      expect(m.lines).toBeLessThanOrEqual(rows);
-      await expectPaneClear(page);
-      expect(await geo(page)).toEqual(before);
-    });
-  });
+/** Знаки строки перекрестия (подписи, значения, кнопки) шире на pct %: межбуквенный интервал в долях em. */
+async function widen(page: Page, pct: number) {
+  if (pct > 0) await page.addStyleTag({ content: `[data-testid="ohlc"] { letter-spacing: ${(0.006 * pct).toFixed(3)}em; }` });
 }
+
+/**
+ * Строка перекрестия на своём месте: ширина страницы и края строки, части за её краем, обрезанный текст (элементы с
+ * overflow не visible, содержимое шире места) и число строк значений.
+ */
+const stripFit = (page: Page) =>
+  page.getByTestId("ohlc").evaluate((el) => {
+    const r = el.getBoundingClientRect();
+    // видимые листья: подписи и значения строки, кнопки
+    const leaves = [...el.querySelectorAll<HTMLElement>("span, strong, button")].filter((x) => x.children.length === 0 && x.getBoundingClientRect().width > 1 && getComputedStyle(x).visibility !== "hidden");
+    const boxes = leaves.map((x) => ({ t: x.textContent, ...JSON.parse(JSON.stringify(x.getBoundingClientRect())) }) as { t: string; x: number; y: number; width: number; height: number; top: number; bottom: number; left: number; right: number });
+    // строки значений (без кнопок справа) — группы листьев с одной вертикальной серединой текста (разрыв больше 6 px)
+    const data = el.querySelector("[data-fit]")!;
+    const mids = leaves.filter((x) => data.contains(x)).map((x) => { const b = x.getBoundingClientRect(); return (b.top + b.bottom) / 2; }).sort((a, b) => a - b);
+    const lines = mids.filter((v, i) => i === 0 || v - mids[i - 1]! > 6).length;
+    const clipped = [...el.querySelectorAll<HTMLElement>("*")].filter((x) => x.scrollWidth > x.clientWidth + 1 && getComputedStyle(x).overflow !== "visible").map((x) => `${x.className}: ${x.scrollWidth} > ${x.clientWidth}`);
+    return { r: JSON.parse(JSON.stringify(r)) as DOMRect, inner: innerWidth, doc: document.documentElement.scrollWidth, lines, out: boxes.filter((b) => b.left < r.left - 0.5 || b.right > r.right + 0.5 || b.top < r.top - 0.5 || b.bottom > r.bottom + 0.5).map((b) => b.t), clipped, level: el.getAttribute("data-level"), shed: el.getAttribute("data-shed") };
+  });
+
+for (const { title, viewport, rows, coins } of FIT)
+  for (const [coin, p] of coins)
+    for (const pct of WIDER)
+      test.describe(`${title}, ${coin}${pct ? `, знаки шире на ${pct} %` : ""}`, () => {
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        const { defaultBrowserType, ...pixel5 } = devices["Pixel 5"];
+        test.use({ ...pixel5, viewport });
+
+        // идущая свеча (пометка «не закрыта», время без дня на последнем шаге) и закрытая (без пометки, с датой)
+        for (const back of [0, 2])
+          test(`строка перекрестия не шире экрана, не больше ${rows === 1 ? "одной строки" : "двух строк"} и ничего не обрезано: ${back ? "закрытая" : "идущая"} свеча, «индикаторы» и ×`, async ({ page }) => {
+            await open(page, p);
+            await expect(page.locator("[data-layout]").first()).toHaveAttribute("data-layout", "phone");
+            await widen(page, pct);
+            const before = await geo(page);
+            const b = await barFromEnd(page, back);
+            await longPress(page, b.x, b.y);
+            const ohlc = page.getByTestId("ohlc");
+            await expect(ohlc).toBeVisible();
+            const time = await barAt(page, b.x);
+            const i = (time - T0) / H4;
+            expect(i).toBe(300 - back);
+            const note = ohlc.getByTitle("свеча не закрыта");
+            if (back === 0) {
+              // пометка видна всегда: словами, пока помещаются, иначе точкой с подписью для чтения с экрана
+              await expect(note).toBeVisible();
+              expect(await note.evaluate((x) => x.textContent || x.getAttribute("aria-label"))).toMatch(/^(свеча не закрыта|не закрыта|не закр\.)$/);
+              // время идущей свечи видно всегда (дата — и на метке шкалы времени под перекрестием)
+              await expect(ohlc).toContainText(TIME.format(new Date(time * 1000)));
+            } else {
+              await expect(note).toHaveCount(0);
+              await expect(ohlc).toContainText(DATE.format(new Date(time * 1000)));
+            }
+            // цены свечи под пальцем не прячутся никогда: по шагу инструмента или короткие
+            const k = candleOf(p)(i);
+            const t = await text(page);
+            for (const [label, v] of [["O", k.o], ["H", k.h], ["L", k.l], ["C", k.c]] as const) expect(t).toMatch(new RegExp(`${label} ${priceRe(v, p.d)}(?!\\d)`));
+            await expect(ohlc.getByRole("button", { name: /индикаторы \(\d+\)/ })).toBeVisible();
+            await expect(ohlc.getByRole("button", { name: "убрать перекрестие" })).toBeVisible();
+            const m = await stripFit(page);
+            const at = `шаг ${m.level}${m.shed ? `, уступили: ${m.shed}` : ""}`;
+            expect(m.doc).toBeLessThanOrEqual(m.inner);
+            expect(m.r.right).toBeLessThanOrEqual(m.inner);
+            expect(m.out, `части строки за её краем (${at})`).toEqual([]);
+            expect(m.clipped, `обрезанный текст (${at})`).toEqual([]);
+            expect(m.lines, at).toBeLessThanOrEqual(rows);
+            await expectPaneClear(page);
+            expect(await geo(page)).toEqual(before);
+          });
+      });
 
 test.describe("Pixel 5: инструмент рисования", () => {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars

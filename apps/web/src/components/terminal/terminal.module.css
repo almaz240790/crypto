@@ -196,6 +196,11 @@
   font-size: 11px;
 }
 
+/* последний шаг: всё уступленное уступлено, а строка не влезла (знаки намного шире здешних) */
+.cross[data-tiny] {
+  font-size: 10px;
+}
+
 /* одна строка (от 640 px, ландшафт): обе части значений подряд, пометка «не закрыта» — в конце */
 .crossData {
   flex: 1 1 auto;
@@ -218,12 +223,13 @@
   order: 1;
 }
 
-/* последний шаг сжатия, и всё равно тесно (уже 360 px): пометка сокращается многоточием, цены — нет */
-.cross[data-max] .crossNote {
-  flex: 0 1 auto;
-  min-width: 2ch;
-  overflow: hidden;
-  text-overflow: ellipsis;
+/* пометка точкой, когда и «не закр.» не влезает: не знак шрифта — та же ширина и высота при любом шрифте */
+.crossNote[data-dot] {
+  align-self: center;
+  width: 0.5em;
+  height: 0.5em;
+  border-radius: 50%;
+  background: currentColor;
 }
 
 .crossMore,
