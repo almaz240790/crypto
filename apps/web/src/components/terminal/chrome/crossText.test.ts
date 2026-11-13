@@ -1,6 +1,6 @@
 import type { Candle } from "@platform/charts";
 import { describe, expect, it } from "vitest";
-import { CROSS_FULL, CROSS_NO_DAY, CROSS_NO_ZONE, CROSS_SHED, CROSS_SHORT, CROSS_SMALL, CROSS_TIGHT, CROSS_TINY, crossFitKey, crossText, nextCrossFit, type CrossFit, type CrossPart, type CrossShed } from "./crossText";
+import { CROSS_FULL, CROSS_NO_DAY, CROSS_NO_ZONE, CROSS_SHED, CROSS_SHED_TINY, CROSS_SHORT, CROSS_SMALL, CROSS_TIGHT, CROSS_TINY, crossFitKey, crossText, nextCrossFit, type CrossFit, type CrossPart, type CrossShed } from "./crossText";
 
 /** Пробелы разрядов (узкий неразрывный у formatPrice, обычный у шкалы) — как один пробел. */
 const sp = (s: string | null) => (s === null ? null : s.replace(/\s/g, " "));
@@ -66,6 +66,22 @@ describe("crossText — значения свечи в строке перекр
     expect(x.up).toBe(false);
     expect(crossText(btc, "0.1", at(CROSS_NO_DAY, ["volume"])).change).not.toBeNull();
   });
+
+  it("после шрифта 10 px: у закрытой свечи только время (от 00:00 — дата), у идущей так и было; потом без даты — цены остаются", () => {
+    const tiny = CROSS_SHED.map((x) => x.id);
+    const closed: Candle = { ...btc, time: T + 8 * 3600 };
+    expect(crossText(closed, "0.1", at(CROSS_TINY, tiny)).date).toBe("20.09, 08:00");
+    expect(crossText(closed, "0.1", at(CROSS_TINY, [...tiny, "dateShort"])).date).toBe("08:00");
+    expect(crossText(btc, "0.1", at(CROSS_TINY, [...tiny, "dateShort"])).date).toBe("20.09");
+    const forming: Candle = { ...closed, open_: true };
+    expect(crossText(forming, "0.1", at(CROSS_TINY, [...tiny, "dateShort"]))).toEqual(crossText(forming, "0.1", at(CROSS_TINY, tiny)));
+    for (const k of [closed, forming]) {
+      const x = crossText(k, "0.1", at(CROSS_TINY, [...tiny, "dateShort", "date"]));
+      expect(x.date).toBeNull();
+      expect([x.open, x.high, x.low, x.close].map(sp)).toEqual(["81 226", "81 473", "80 096", "81 144"]);
+    }
+    expect(crossText(forming, "0.1", at(CROSS_TINY, [...tiny, "dateShort", "date"])).note).toBe("dot");
+  });
 });
 
 /** Строки строки перекрестия: какие части в каждой и переполнена ли она. */
@@ -89,18 +105,33 @@ describe("nextCrossFit — шаги подгонки строки", () => {
     expect(nextCrossFit(at(CROSS_NO_ZONE), over)).toEqual(at(CROSS_NO_DAY));
   });
 
-  it("одна строка (ландшафт), знаки намного шире: «не закр.», без изменения, точка, без объёма, шрифт 10 px — и всё", () => {
-    const steps = fitAll(() => [{ parts: ["note", "change", "volume"], over: true }]);
+  it("одна строка (ландшафт), знаки намного шире: «не закр.», без изменения, точка, без объёма, шрифт 10 px, время без дня, без даты — и всё", () => {
+    const steps = fitAll(() => [{ parts: ["date", "note", "change", "volume"], over: true }]);
+    const all = ["noteShort", "change", "noteDot", "volume"] as const;
     expect(steps.slice(CROSS_NO_DAY)).toEqual([
       at(CROSS_NO_DAY),
       at(CROSS_NO_DAY, ["noteShort"]),
       at(CROSS_NO_DAY, ["noteShort", "change"]),
       at(CROSS_NO_DAY, ["noteShort", "change", "noteDot"]),
-      at(CROSS_NO_DAY, ["noteShort", "change", "noteDot", "volume"]),
-      at(CROSS_TINY, ["noteShort", "change", "noteDot", "volume"]),
+      at(CROSS_NO_DAY, [...all]),
+      at(CROSS_TINY, [...all]),
+      at(CROSS_TINY, [...all, "dateShort"]),
+      at(CROSS_TINY, [...all, "dateShort", "date"]),
     ]);
-    // после шрифта 10 px сжимать нечем: дальше строка обрезается у правого края
+    expect(CROSS_SHED_TINY.map((x) => x.id)).toEqual(["dateShort", "date"]);
+    // и дата уступлена: сжимать нечем, дальше строка обрезается у правого края
     expect(nextCrossFit(steps.at(-1)!, () => true)).toBeNull();
+  });
+
+  it("дата уступает только после шрифта 10 px и только своей строке (в две строки — первой)", () => {
+    // закрытая свеча на 320 px со знаками шире здешних: первая строка (дата, O, H) не влезает и со шрифтом 10 px
+    const steps = fitAll((f) => [
+      { parts: ["date"], over: !f.shed.includes("dateShort") },
+      { parts: ["change", "volume"], over: false },
+    ]);
+    expect(steps.slice(CROSS_NO_DAY)).toEqual([at(CROSS_NO_DAY), at(CROSS_TINY), at(CROSS_TINY, ["dateShort"])]);
+    // не влезает только вторая (L и C): дата первой строки не поможет — дальше некуда
+    expect(nextCrossFit(at(CROSS_TINY, ["change", "volume"]), overOf([{ parts: ["date"], over: false }, { parts: [], over: true }]))).toBeNull();
   });
 
   it("две строки: не влезает только первая (длинные цены и пометка) — уступает пометка, а изменение и объём остаются", () => {

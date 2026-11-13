@@ -234,17 +234,19 @@ for (const [name, device] of PHONES) {
 // ETH и монет дешевле цента — нет. Ширина знаков на телефонах и в CI не та, что здесь (другой шрифт, масштаб текста,
 // ширина знака, округлённая до пикселя: в CI на ubuntu «не закрыта» — 70 px вместо здешних 66, и пометка обрезалась),
 // поэтому каждая строка проверяется и со знаками шире на 5 и 10 % — межбуквенный интервал 0.03 и 0.06 em (знак IBM Plex
-// Mono — 0.6 em) — у идущей и у закрытой свечи.
-const WIDER = [0, 5, 10] as const;
+// Mono — 0.6 em) — у идущей и у закрытой свечи. 320 px (экран уже 360 или крупный масштаб на 360) — там на 10 % у
+// закрытой свечи 1000PEPE не хватало и шрифта 10 px, и обрезалась цена H; на 360 px — ещё и знаки шире на 35 %: дата
+// уступает после шрифта 10 px, а раньше строка обрезалась.
 const COINS: [string, Prices][] = [
   ["BTC", BTC],
   ["ETH", ETH],
   ["монета дешевле цента", SUBCENT],
 ];
-const FIT: { title: string; viewport: { width: number; height: number }; rows: number; coins: [string, Prices][] }[] = [
-  { title: "ландшафт 844×390", viewport: { width: 844, height: 390 }, rows: 1, coins: [COINS[0]!] },
-  { title: "узкий телефон 360×740", viewport: { width: 360, height: 740 }, rows: 2, coins: COINS },
-  { title: "ландшафт 667×375 (iPhone SE)", viewport: { width: 667, height: 375 }, rows: 1, coins: COINS },
+const FIT: { title: string; viewport: { width: number; height: number }; rows: number; coins: [string, Prices][]; wider: number[] }[] = [
+  { title: "ландшафт 844×390", viewport: { width: 844, height: 390 }, rows: 1, coins: [COINS[0]!], wider: [0, 5, 10] },
+  { title: "узкий телефон 360×740", viewport: { width: 360, height: 740 }, rows: 2, coins: COINS, wider: [0, 5, 10, 35] },
+  { title: "узкий телефон 320×640", viewport: { width: 320, height: 640 }, rows: 2, coins: COINS, wider: [0, 5, 10] },
+  { title: "ландшафт 667×375 (iPhone SE)", viewport: { width: 667, height: 375 }, rows: 1, coins: COINS, wider: [0, 5, 10] },
 ];
 
 /** Знаки строки перекрестия (подписи, значения, кнопки) шире на pct %: межбуквенный интервал в долях em. */
@@ -270,9 +272,9 @@ const stripFit = (page: Page) =>
     return { r: JSON.parse(JSON.stringify(r)) as DOMRect, inner: innerWidth, doc: document.documentElement.scrollWidth, lines, out: boxes.filter((b) => b.left < r.left - 0.5 || b.right > r.right + 0.5 || b.top < r.top - 0.5 || b.bottom > r.bottom + 0.5).map((b) => b.t), clipped, level: el.getAttribute("data-level"), shed: el.getAttribute("data-shed") };
   });
 
-for (const { title, viewport, rows, coins } of FIT)
+for (const { title, viewport, rows, coins, wider } of FIT)
   for (const [coin, p] of coins)
-    for (const pct of WIDER)
+    for (const pct of wider)
       test.describe(`${title}, ${coin}${pct ? `, знаки шире на ${pct} %` : ""}`, () => {
         // eslint-disable-next-line @typescript-eslint/no-unused-vars
         const { defaultBrowserType, ...pixel5 } = devices["Pixel 5"];
@@ -293,16 +295,19 @@ for (const { title, viewport, rows, coins } of FIT)
             const i = (time - T0) / H4;
             expect(i).toBe(300 - back);
             const note = ohlc.getByTitle("свеча не закрыта");
+            // дата и время уступают только последними — после шрифта 10 px (шаг 6), и строка об этом говорит (data-shed);
+            // они и на метке шкалы времени под перекрестием
+            const level = Number(await ohlc.getAttribute("data-level"));
+            const shed = ((await ohlc.getAttribute("data-shed")) ?? "").split(" ");
+            if (shed.includes("dateShort") || shed.includes("date")) expect(level, `дата уступила до шрифта 10 px: ${shed.join(" ")}`).toBe(6);
+            const date = shed.includes("date") ? null : back === 0 || shed.includes("dateShort") ? TIME : DATE;
+            if (date) await expect(ohlc).toContainText(date.format(new Date(time * 1000)));
+            else await expect(ohlc).not.toContainText(TIME.format(new Date(time * 1000)));
             if (back === 0) {
               // пометка видна всегда: словами, пока помещаются, иначе точкой с подписью для чтения с экрана
               await expect(note).toBeVisible();
               expect(await note.evaluate((x) => x.textContent || x.getAttribute("aria-label"))).toMatch(/^(свеча не закрыта|не закрыта|не закр\.)$/);
-              // время идущей свечи видно всегда (дата — и на метке шкалы времени под перекрестием)
-              await expect(ohlc).toContainText(TIME.format(new Date(time * 1000)));
-            } else {
-              await expect(note).toHaveCount(0);
-              await expect(ohlc).toContainText(DATE.format(new Date(time * 1000)));
-            }
+            } else await expect(note).toHaveCount(0);
             // цены свечи под пальцем не прячутся никогда: по шагу инструмента или короткие
             const k = candleOf(p)(i);
             const t = await text(page);

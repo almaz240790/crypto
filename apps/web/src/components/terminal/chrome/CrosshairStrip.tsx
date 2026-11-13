@@ -17,9 +17,9 @@ const selectCross = (st: ChartState) => st.crosshair;
  * UTC, O, H и пометка «не закрыта»; L, C с изменением, V; шире — одна строка. Справа — «индикаторы (n)» (список значений
  * под строкой, поверх графика, только по нажатию) и «×» (убирает перекрестие). Не влезает — сжимается по шагам
  * (crossText: общие шаги, потом уступают части той строки, что не влезла), но не переносится и не обрезается: цены
- * и время видны всегда, пометка «не закрыта» — словами или точкой. Лист: читает перекрестие из хранилища графика —
- * оболочка при движении пальца не перерисовывается; монтируется на время перекрестия (PhoneStrip), поэтому список
- * закрывается вместе с ним.
+ * видны всегда, пометка «не закрыта» — словами или точкой, дата и время уступают последними (они и на метке шкалы
+ * времени). Лист: читает перекрестие из хранилища графика — оболочка при движении пальца не перерисовывается;
+ * монтируется на время перекрестия (PhoneStrip), поэтому список закрывается вместе с ним.
  */
 export const CrosshairStrip = memo(function CrosshairStrip({ store, tick, onClose }: { store: ChartStore; tick: string | null; onClose: () => void }) {
   const t = useT();
@@ -46,7 +46,7 @@ export const CrosshairStrip = memo(function CrosshairStrip({ store, tick, onClos
     >
       <div className={s.crossData} data-fit>
         <div className={s.crossRow} data-fit>
-          <span>{x.date}</span>
+          {x.date !== null && <span data-part="date">{x.date}</span>}
           <span>
             O <strong>{x.open}</strong>
           </span>
