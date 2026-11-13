@@ -34,3 +34,9 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
   { path: "/v1/journal/analytics", what: "Аналитика вашего журнала", params: "—" },
   { path: "/v1/alerts", what: "Ваши алерты", params: "symbol, status" },
 ];
+
+/** Пример запроса с новым ключом (настройки): эндпоинт и параметры из списка выше, адрес API, ключ целиком —
+ *  команду можно скопировать и запустить. Адрес в кавычках: `&` в нём иначе разбирает оболочка. */
+export function apiKeyExample(key: string): string {
+  return `curl -H "X-API-Key: ${key}" "${PUBLIC_API_BASE}/v1/signals?status=open&limit=50"`;
+}

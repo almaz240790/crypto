@@ -286,7 +286,7 @@
   "История платежей": "Payment history",
   "Как вы торгуете?": "How do you trade?",
   "Калькулятор позиции": "Position calculator",
-  "Ключ передаётся в заголовке X-API-Key и даёт только чтение (GET) тех же эндпоинтов /v1: сигналы, статистика, графики. Лимит 600 запросов в минуту на ключ. Ключ показывается один раз.": "The key is sent in the X-API-Key header and grants read-only (GET) access to the same /v1 endpoints: signals, statistics, charts. Limit: 600 requests per minute per key. The key is shown once.",
+  "Ключ передаётся в заголовке X-API-Key и даёт только чтение (GET) эндпоинтов из документации: сигналы, статистика, графики, скринер, ваши журнал и алерты. Профиль, сессии, ключи и платежи по ключу недоступны. Лимит 600 запросов в минуту на ключ. Ключ показывается один раз.": "The key is sent in the X-API-Key header and grants read-only (GET) access to the documented endpoints: signals, statistics, charts, screener, your journal and alerts. Profile, sessions, keys and payments are not available with a key. Limit: 600 requests per minute per key. The key is shown once.",
   "Ключ создан — скопируйте его сейчас": "Key created — copy it now",
   "Код для отключения": "Code to disable",
   "Код из приложения-аутентификатора (Google Authenticator, Aegis, 1Password и т. п.) спрашивается при каждом входе — по паролю, по ссылке из письма и через соцсети.": "A code from an authenticator app (Google Authenticator, Aegis, 1Password, etc.) is requested at every sign-in — with a password, an email link or a social account.",

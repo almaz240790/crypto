@@ -334,7 +334,12 @@ test("настройки: API-ключ создаётся, показывает�
   const panel = page.getByTestId("api-keys");
   await panel.getByLabel("Название ключа").fill("мой скрипт");
   await panel.getByRole("button", { name: "Создать ключ" }).click();
-  await expect(panel.getByRole("region", { name: "новый ключ" })).toContainText("pk_abc1234SECRET");
+  const fresh = panel.getByRole("region", { name: "новый ключ" });
+  await expect(fresh).toContainText("pk_abc1234SECRET");
+  // пример — настоящий запрос: адрес API (прокси сайта ключ не передаёт), параметр ленты, ключ целиком
+  await expect(fresh.locator("p code")).toHaveText(
+    'curl -H "X-API-Key: pk_abc1234SECRETSECRETSECRETSECRET" "https://api.platformsol.com/v1/signals?status=open&limit=50"',
+  );
   await expect(panel).toContainText("мой скрипт");
   page.once("dialog", (d) => d.accept());
   await panel.getByRole("button", { name: "отозвать ключ мой скрипт" }).click();
