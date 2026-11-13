@@ -154,7 +154,7 @@ test("вопрос о графике без Premium: понятное объяс
   await expect(sheet.getByLabel("текст вопроса")).toHaveCount(0);
 });
 
-test("карточка значений на телефоне: индикаторы свёрнуты, крестик закрывает", async ({ page }) => {
+test("значения свечи на телефоне — в строке состояния: индикаторы по кнопке, крестик убирает перекрестие", async ({ page }) => {
   const calls: string[] = [];
   await mock(page, calls, true);
   await page.goto("/chart/BTCUSDT/4h");
@@ -170,12 +170,15 @@ test("карточка значений на телефоне: индикато�
   const ohlc = page.getByTestId("ohlc");
   await expect(ohlc).toBeVisible();
   await expect(ohlc).toContainText("O ");
+  // строка значений — в строке состояния над графиком (ADR-0009, дополнение 2026-11-13; подробно — chart.crosshair.spec)
+  await expect(page.getByLabel("состояние").getByTestId("ohlc")).toBeVisible();
   // значения индикаторов — по кнопке
   await expect(ohlc.getByText("EMA", { exact: false })).toBeHidden();
   await ohlc.getByRole("button", { name: /индикаторы \(\d+\)/ }).tap();
   await expect(ohlc.getByText("EMA", { exact: false })).toBeVisible();
-  await ohlc.getByRole("button", { name: "закрыть карточку" }).tap();
+  await ohlc.getByRole("button", { name: "убрать перекрестие" }).tap();
   await expect(ohlc).toBeHidden();
+  await expect(term).not.toHaveAttribute("data-sticky", "1");
 });
 
 test("телефон: число свечей от ширины — около 6 px на свечу, а не 2 px при 150 свечах", async ({ page }) => {

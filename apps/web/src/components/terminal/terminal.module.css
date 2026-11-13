@@ -145,11 +145,13 @@
 }
 
 .strip {
+  position: relative;
   display: flex;
   gap: 16px;
   padding: 4px 12px;
   font-family: var(--font-mono);
   font-size: 12px;
+  line-height: 1.4;
   color: var(--text-2);
   border-bottom: 1px solid var(--border);
   overflow-x: auto;
@@ -159,6 +161,127 @@
 .strip strong {
   color: var(--text);
   font-weight: 500;
+}
+
+/*
+ * Перекрестие на телефоне (ADR-0009, дополнение 2026-11-13): значения свечи — в этой строке, а не карточкой поверх
+ * графика. Цена и тренд остаются в потоке невидимыми — строка той же высоты, график не сдвигается; строка значений
+ * (.cross) лежит поверх них. Список значений индикаторов — под строкой, поверх графика, только пока его открыли.
+ */
+.strip[data-cross] {
+  z-index: var(--z-chart-ui);
+  overflow: visible;
+}
+
+.strip[data-cross] > :not(.cross) {
+  visibility: hidden;
+}
+
+.cross {
+  --cross-gap: 12px;
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  padding-left: 12px;
+  background: var(--bg);
+}
+
+.cross[data-tight] {
+  --cross-gap: 8px;
+}
+
+.cross[data-small] {
+  font-size: 11px;
+}
+
+/* последний шаг: всё уступленное уступлено, а строка не влезла (знаки намного шире здешних) */
+.cross[data-tiny] {
+  font-size: 10px;
+}
+
+/* одна строка (от 640 px, ландшафт): обе части значений подряд, пометка «не закрыта» — в конце */
+.crossData {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  column-gap: var(--cross-gap);
+  overflow: hidden;
+}
+
+.crossRow {
+  display: contents;
+}
+
+.crossData span {
+  flex: none;
+}
+
+.crossNote {
+  order: 1;
+}
+
+/* пометка точкой, когда и «не закр.» не влезает: не знак шрифта — та же ширина и высота при любом шрифте */
+.crossNote[data-dot] {
+  align-self: center;
+  width: 0.5em;
+  height: 0.5em;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.crossMore,
+.crossClose {
+  flex: none;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.crossMore {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  column-gap: 0.5em;
+  padding: 0 4px;
+  border-radius: 6px;
+  color: var(--accent);
+  font: inherit;
+  line-height: 1.2;
+}
+
+.crossMore[aria-expanded="true"] {
+  background: var(--row-hover);
+}
+
+.crossClose {
+  width: 30px;
+  padding: 0;
+  color: var(--text-2);
+  font-size: 18px;
+  line-height: 1;
+}
+
+.crossClose:hover {
+  color: var(--text);
+}
+
+.crossList {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 4px;
+  display: grid;
+  gap: 2px;
+  max-width: calc(100% - 8px);
+  max-height: min(240px, 40vh);
+  overflow-y: auto;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
 }
 
 .area {
@@ -529,80 +652,11 @@
   min-height: 44px;
 }
 
-.ohlc {
-  position: absolute;
-  top: 6px;
-  left: 6px;
-  right: 64px;
-  z-index: 4;
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-  padding: 4px 8px;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  color: var(--text-2);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface);
-  pointer-events: none;
-}
-
-.ohlc {
-  padding-right: 32px;
-}
-
-.ohlcClose,
-.ohlcMore {
-  /* карточка прозрачна для жестов графика, а её кнопки — нет */
-  pointer-events: auto;
-}
-
-.ohlcClose {
-  position: absolute;
-  top: 2px;
-  right: 2px;
-  width: 28px;
-  height: 28px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-2);
-  font-size: 18px;
-  line-height: 1;
-  cursor: pointer;
-}
-
-.ohlcClose:hover {
-  color: var(--text);
-}
-
-.ohlcMore {
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--accent);
-  font: inherit;
-  cursor: pointer;
-}
-
-/* на телефоне значения индикаторов скрыты, пока не нажать «индикаторы (n)» */
-@media (max-width: 899.98px) {
-  .ohlc:not([data-more]) .ohlcVal {
-    display: none;
-  }
-}
-
 .indDot {
   display: inline-block;
   width: 10px;
   height: 10px;
   border-radius: 50%;
-}
-
-.ohlc strong {
-  color: var(--text);
-  font-weight: 500;
 }
 
 .fsBtn {
@@ -690,6 +744,31 @@
     gap: 4px 12px;
     flex-wrap: wrap;
     overflow-x: visible;
+    /* две строки и без тренда (пока он не пришёл): строка перекрестия в две строки не меняет её высоту */
+    min-height: calc(2 * 1.4em + 4px + 8px + 1px);
+  }
+
+  .crossData {
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: center;
+    row-gap: 4px;
+  }
+
+  .crossRow {
+    display: flex;
+    column-gap: var(--cross-gap);
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .crossNote {
+    order: 0;
+  }
+
+  /* «индикаторы» над «(n)»: кнопка на обе строки */
+  .crossMore {
+    flex-direction: column;
   }
 }
 

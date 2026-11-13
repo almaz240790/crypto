@@ -48,8 +48,6 @@ export type ObjectsResize = {
 export function useTerminalUi(wide: boolean) {
   const [sheet, setSheet] = useState<SheetId | null>(null);
   const closeSheet = useCallback(() => setSheet(null), []);
-  // карточка значений под перекрестием: на телефоне индикаторы свёрнуты, чтобы не закрывать график
-  const [ohlcMore, setOhlcMore] = useState(false);
   const [bars, setBars] = useState<"shown" | "hidden">("shown");
   const [objectsPref, setObjectsPref] = useState<Shown>("shown");
   const [overlayOpen, setOverlayOpen] = useState(false);
@@ -159,7 +157,7 @@ export function useTerminalUi(wide: boolean) {
   );
   useEffect(() => () => clearTimeout(toastTimer.current), []);
 
-  return { sheet, setSheet, closeSheet, ohlcMore, setOhlcMore, bars, setBars, objects, setObjects, panelOverlay: !wide, panelTab, setPanelTab, showPanel, objW, objWidth: objectsWidthCss(objW), objResize, toast, say, notifyOnce };
+  return { sheet, setSheet, closeSheet, bars, setBars, objects, setObjects, panelOverlay: !wide, panelTab, setPanelTab, showPanel, objW, objWidth: objectsWidthCss(objW), objResize, toast, say, notifyOnce };
 }
 
 export type TerminalUi = ReturnType<typeof useTerminalUi>;

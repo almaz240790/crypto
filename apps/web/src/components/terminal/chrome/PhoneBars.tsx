@@ -1,12 +1,14 @@
 "use client";
 
-import { CHART_TYPES, countdownSeconds, formatCountdown, type ChartType, type ScaleMode, type Timeframe } from "@platform/charts";
+import { CHART_TYPES, countdownSeconds, formatCountdown, type ChartState, type ChartStore, type ChartType, type ScaleMode, type Timeframe } from "@platform/charts";
 import Link from "next/link";
 import { useEffect, useState, type ReactNode } from "react";
 import { useT } from "@/i18n/client";
 import { formatPct, formatPrice } from "@/lib/format";
 import { INTRADAY, TF_LABEL, TIMEFRAMES } from "@/lib/timeframes";
 import type { Instrument } from "@/lib/user";
+import { useChartStore } from "../chart/useChartStore";
+import { CrosshairStrip } from "./CrosshairStrip";
 import type { HeaderFacts } from "./TerminalHeader";
 import { liveTitle, useLivePrice } from "./facts";
 import { SCALE_LABEL, TYPE_LABEL } from "./labels";
@@ -85,8 +87,14 @@ export function PhoneTop(p: TopProps) {
   );
 }
 
-/** Строка состояния телефона: свой таймер 1 с (отсчёт до закрытия и до фандинга), терминал не перерисовывается. */
-export function PhoneStrip(p: HeaderFacts & { tf: Timeframe }) {
+const selectCrossOn = (st: ChartState) => st.crosshair !== null;
+
+/**
+ * Строка состояния телефона: свой таймер 1 с (отсчёт до закрытия и до фандинга), терминал не перерисовывается.
+ * Пока есть перекрестие — в ней значения свечи под пальцем (CrosshairStrip) поверх цены и тренда: те остаются в потоке
+ * невидимыми, и строка не меняет высоту (ADR-0009, дополнение 2026-11-13).
+ */
+export function PhoneStrip(p: HeaderFacts & { tf: Timeframe; store: ChartStore; onCrossClose: () => void }) {
   const t = useT();
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
   useEffect(() => {
@@ -97,8 +105,9 @@ export function PhoneStrip(p: HeaderFacts & { tf: Timeframe }) {
   const countdown = p.lastTime == null ? null : countdownSeconds(p.tf, p.lastTime, now);
   const { price, change } = useLivePrice(p.prices, p.fallback, p.prevClose);
   const trend = p.trend;
+  const crossOn = useChartStore(selectCrossOn, p.store);
   return (
-    <div className={s.strip} aria-label={t("состояние")}>
+    <div className={s.strip} aria-label={t("состояние")} data-cross={crossOn || undefined}>
       <span>
         {t("цена")} <strong>{formatPrice(price == null ? null : String(price), p.tick)}</strong>
       </span>
@@ -115,6 +124,7 @@ export function PhoneStrip(p: HeaderFacts & { tf: Timeframe }) {
         {p.online ? t("онлайн") : t("без связи")}
       </span>
       {p.heikin && <span className="caption">{t("Heikin Ashi: паттерны и сигналы считаются по обычным свечам")}</span>}
+      {crossOn && <CrosshairStrip store={p.store} tick={p.tick} onClose={p.onCrossClose} />}
     </div>
   );
 }
