@@ -1615,5 +1615,7 @@
   "за началом": "beyond the start",
   "стандартные": "default",
   "последний уровень не выключается": "the last level can't be switched off",
-  "вернуть уровни по умолчанию — у этого рисунка и у новых": "restore the default levels for this drawing and for new ones"
+  "вернуть уровни по умолчанию — у этого рисунка и у новых": "restore the default levels for this drawing and for new ones",
+  "Линии до края": "Extend to edge",
+  "линии уровней — до правого края графика, подписи — у шкалы цены": "level lines reach the right edge of the chart, labels sit by the price scale"
 }

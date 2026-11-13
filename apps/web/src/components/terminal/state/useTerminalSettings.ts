@@ -33,6 +33,13 @@ export interface SavedV5 {
    * поле без смены версии, как paneLayout. В именованные раскладки не пишется — это настройка инструмента рисования.
    */
   fibLevels?: number[];
+  /**
+   * «Линии до края» нового Фибоначчи — выбор пользователя в карточке рисунка в прошлый раз (ADR-0009, «Рисование»,
+   * дополнение 2026-11-13), как набор уровней: поля нет — продлённый (по умолчанию); после первого переключения поле
+   * есть всегда (true тоже записывается — иначе «включил снова» на другом устройстве не отличалось бы от «не выбирал»).
+   * Новое поле без смены версии; в именованные раскладки не пишется.
+   */
+  fibExtend?: boolean;
   updated_at?: number;
 }
 
@@ -86,6 +93,8 @@ export function migrateSaved(raw: unknown): SavedV5 {
   if (typeof raw.updated_at === "number" && Number.isFinite(raw.updated_at)) out.updated_at = raw.updated_at;
   // уровни нового Фибоначчи: приведённый набор (числа, 3 знака, по возрастанию); не список — без поля
   if (Array.isArray(raw.fibLevels)) out.fibLevels = normalizeFibLevels(raw.fibLevels);
+  // «Линии до края» нового Фибоначчи: только true или false; иное — без поля (продлённый)
+  if (typeof raw.fibExtend === "boolean") out.fibExtend = raw.fibExtend;
   // раскладка панелей: мусор — без поля; ключи — только панелей из этих же настроек
   return raw.paneLayout === undefined ? out : withPaneLayout(out, normalizePaneLayout(raw.paneLayout));
 }
@@ -299,10 +308,17 @@ export function useTerminalSettings(authed: boolean) {
   );
   /** Именованная раскладка поверх текущих настроек — через ту же миграцию: v4 применяется как «Чистый». */
   const applyLayout = useCallback((raw: unknown) => update((cur) => migrateLayout(raw, cur)), [update]);
-  /** Уровни, выбранные у Фибоначчи в карточке рисунка (в том числе «стандартные»): с ними начнётся следующий. */
-  const setFibLevels = useCallback((levels: readonly number[]) => update((cur) => ({ ...cur, fibLevels: normalizeFibLevels(levels) })), [update]);
+  /**
+   * Выбор у Фибоначчи в карточке рисунка (или его отмена и повтор): уровни (в том числе «стандартные») и «Линии до
+   * края» — с ними начнётся следующий рисунок. Чего в выборе нет, остаётся как было.
+   */
+  const setFibDefaults = useCallback(
+    (p: { levels?: readonly number[]; extend?: boolean }) =>
+      update((cur) => ({ ...cur, ...(p.levels ? { fibLevels: normalizeFibLevels(p.levels) } : {}), ...(p.extend !== undefined ? { fibExtend: p.extend } : {}) })),
+    [update],
+  );
 
-  return { st, resolved, legacyFound, patch, toggleIndicator, addIndicator, removeInstance, setInstanceParams, toggleInstanceHidden, togglePanel, toggleLayer, selectMarkup, applyTemplate, applyLayout, setPaneLayout, removePane, setFibLevels };
+  return { st, resolved, legacyFound, patch, toggleIndicator, addIndicator, removeInstance, setInstanceParams, toggleInstanceHidden, togglePanel, toggleLayer, selectMarkup, applyTemplate, applyLayout, setPaneLayout, removePane, setFibDefaults };
 }
 
 export type TerminalSettings = ReturnType<typeof useTerminalSettings>;

@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { FIB_PLAQUE_ALPHA } from "@platform/charts";
 import { describe, expect, it } from "vitest";
 
 /**
@@ -145,6 +146,67 @@ describe("токены графика --chart-*", () => {
           const line = Math.min(...[surface, ...zones].map((u) => contrast(mix(fg, u, lineA), u)));
           expect(line).toBeGreaterThanOrEqual(3);
         });
+      }
+    });
+  }
+});
+
+/**
+ * Палитра уровней Фибоначчи --fib-1…--fib-6 (ADR-0009, «Рисование», дополнение 2026-11-13): hex в каждой теме, две
+ * тёмные — одинаковые; подпись цветом уровня на полупрозрачной плашке (FIB_PLAQUE_ALPHA) — не меньше 4.5:1 над фоном и
+ * 3:1 над телом свечи (рост и падение), линия уровня — не меньше 3:1 к фону; оттенки различимы и не совпадают с цветами
+ * роста, падения и выбора. Ни красного, ни зелёного (план 5.3 — только направление и результат): тон каждого оттенка
+ * не ближе 30° к --up и --down и 25° к --accent — ни один уровень не читается как покупка, продажа или выбор.
+ */
+/** Тон цвета по кругу HSL, градусы. */
+const hueOf = ([r, g, b]: Rgb): number => {
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+  if (d === 0) return Number.NaN;
+  const h = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return (h * 60 + 360) % 360;
+};
+const hueDist = (a: number, b: number) => {
+  const x = Math.abs(a - b) % 360;
+  return Math.min(x, 360 - x);
+};
+
+describe("палитра уровней Фибоначчи --fib-*", () => {
+  const FIB = Array.from({ length: 6 }, (_, i) => `--fib-${i + 1}`);
+
+  it("6 оттенков в каждой теме, hex; в двух тёмных блоках одинаковые; седьмого нет", () => {
+    for (const [mode, theme] of Object.entries(THEMES)) for (const name of FIB) expect(resolve(theme, name), `${mode} ${name}`).toMatch(HEX);
+    for (const name of FIB) {
+      expect(dark[name], name).toBeDefined();
+      expect(media[name], name).toBe(dark[name]);
+      expect(dark[name], name).not.toBe(root[name]);
+    }
+    for (const theme of [root, dark, media]) expect(theme["--fib-7"]).toBeUndefined();
+  });
+
+  for (const [mode, theme] of Object.entries(THEMES)) {
+    it(`${mode}: подпись ≥ 4.5 над фоном и ≥ 3 над свечой, линия ≥ 3; оттенки разные и не цвета роста, падения, выбора`, () => {
+      const c = (name: string) => toRgb(resolve(theme, name));
+      const surface = c("--surface");
+      const plaqueOver = (under: Rgb) => mix(surface, under, FIB_PLAQUE_ALPHA);
+      for (const name of FIB) {
+        const fg = c(name);
+        expect(contrast(fg, plaqueOver(surface)), `${name} над фоном`).toBeGreaterThanOrEqual(4.5);
+        for (const candle of ["--up", "--down"]) expect(contrast(fg, plaqueOver(c(candle))), `${name} над свечой ${candle}`).toBeGreaterThanOrEqual(3);
+        expect(contrast(fg, surface), `${name}: линия`).toBeGreaterThanOrEqual(3);
+      }
+      const values = FIB.map((n) => resolve(theme, n).toLowerCase());
+      expect(new Set(values).size).toBe(6);
+      for (const other of ["--up", "--down", "--accent", "--text-2"]) expect(values).not.toContain(resolve(theme, other).toLowerCase());
+    });
+  }
+
+  for (const [mode, theme] of Object.entries(THEMES)) {
+    it(`${mode}: ни красного, ни зелёного — тон не ближе 30° к росту и падению и 25° к выбору (план 5.3)`, () => {
+      const h = (name: string) => hueOf(toRgb(resolve(theme, name)));
+      for (const name of FIB) {
+        expect(hueDist(h(name), h("--up")), `${name} ${resolve(theme, name)} и --up`).toBeGreaterThanOrEqual(30);
+        expect(hueDist(h(name), h("--down")), `${name} ${resolve(theme, name)} и --down`).toBeGreaterThanOrEqual(30);
+        expect(hueDist(h(name), h("--accent")), `${name} ${resolve(theme, name)} и --accent`).toBeGreaterThanOrEqual(25);
       }
     });
   }

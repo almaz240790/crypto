@@ -65,3 +65,19 @@ export function shortcutLetter(e: Pick<KeyboardEvent, "key" | "code">): string |
   const m = /^Key([A-Z])$/.exec(e.code);
   return m ? m[1]!.toLowerCase() : null;
 }
+
+/** Поля ввода без текста: на них сочетания клавиш работают, как на кнопке. */
+const NON_TEXT_INPUTS: ReadonlySet<string> = new Set(["checkbox", "radio", "button", "submit", "reset"]);
+
+/**
+ * Фокус в поле, куда вводят текст (поле ввода, textarea, select): там клавиши — тексту, сочетания терминала (Esc,
+ * Delete, Ctrl+Z, цифры) не срабатывают. Флажок, переключатель и кнопка — не поле ввода: после нажатия флажка
+ * в карточке рисунка («Линии до края», «на всех таймфреймах») Esc снимает выбор, Ctrl+Z отменяет правку.
+ */
+export function typingTarget(target: EventTarget | null): boolean {
+  const el = target as { tagName?: unknown; type?: unknown } | null;
+  const tag = typeof el?.tagName === "string" ? el.tagName : "";
+  if (tag === "TEXTAREA" || tag === "SELECT") return true;
+  if (tag !== "INPUT") return false;
+  return !NON_TEXT_INPUTS.has(typeof el?.type === "string" ? el.type.toLowerCase() : "text");
+}

@@ -1,10 +1,10 @@
 import { formatPriceLabel, formatQuantity } from "../format";
 import { LABEL_GAP, type LabelCandidate, type Slot } from "../layout/types";
 import type { ThemeTokens } from "../types";
-import { fibLevelText } from "./fib";
+import { fibExtended, fibHue, fibLevelText, fibMulticolor } from "./fib";
 import { fibLevels, positionKnobs, positionScreen, rulerInfo, type Projector, type RulerInfo } from "./geometry";
 import { formatRR, positionParts, type PositionParts } from "./position";
-import { FIB_KEY_LEVELS, HANDLE_PX, POSITION_KNOB_R, POSITION_KNOB_TOUCH_R, isPosition, type Drawing, type Point, type StyleColor } from "./types";
+import { FIB_KEY_LEVELS, FIB_LABEL_EDGE_PX, HANDLE_PX, POSITION_KNOB_R, POSITION_KNOB_TOUCH_R, isPosition, type Drawing, type Point, type StyleColor } from "./types";
 
 /**
  * Подписи рисунков как кандидаты общей раскладки подписей (план 2B.2; ADR-0009, «Рисование»): уровни Фибоначчи,
@@ -38,10 +38,11 @@ const NOTE_DY = 20;
 const POS_GAP = 2;
 
 /**
- * Как рисуется подпись: text — текст без фона (как раньше у линий), plaque — на плашке цвета фона (Фибоначчи),
- * outline — плашка позиции (фон, рамка и текст цвета зоны), note — рамка заметки.
+ * Как рисуется подпись: text — текст без фона (как раньше у линий), plaque — на плашке цвета фона (измеритель), fib —
+ * уровень Фибоначчи на полупрозрачной плашке цвета фона (свечи под ней видны, FIB_PLAQUE_ALPHA), outline — плашка
+ * позиции (фон, рамка и текст цвета зоны), note — рамка заметки.
  */
-export type DrawingLabelStyle = "text" | "plaque" | "outline" | "note";
+export type DrawingLabelStyle = "text" | "plaque" | "fib" | "outline" | "note";
 /**
  * Нет свободного места: fixed — подпись на своём месте всё равно (заметка — это сам рисунок), soft — первое место,
  * не задевающее легенду, кнопки, полосу цены и другие подписи рисунков (поверх подписи разметки старше — можно), а
@@ -110,6 +111,17 @@ export interface DrawingLabelInput {
 export function drawingColor(tokens: ThemeTokens, c: StyleColor): string {
   const map: Record<StyleColor, string> = { accent: tokens.text2, up: tokens.up, down: tokens.down, warn: tokens.warn, text2: tokens.text2, text3: tokens.text3 };
   return map[c] ?? tokens.text2;
+}
+
+/**
+ * Цвет уровня Фибоначчи (ADR-0009, «Рисование», дополнение 2026-11-13): у разноцветного (цвет рисунка по умолчанию) —
+ * оттенок уровня из палитры --fib-* (fibHue), 0, 1 и уровни вне набора — нейтральные (--text-2); у рисунка с выбранным
+ * цветом — этот цвет у всех уровней.
+ */
+export function fibLevelColor(tokens: ThemeTokens, d: Pick<Drawing, "style">, level: number): string {
+  if (!fibMulticolor(d)) return drawingColor(tokens, d.style.color);
+  const hue = fibHue(level);
+  return hue === null ? tokens.text2 : (tokens.fib[hue] ?? tokens.text2);
 }
 
 /**
@@ -191,6 +203,17 @@ export function fibXs(span: number, left: number, right: number, width: number):
   return [...new Set(out)];
 }
 
+/**
+ * Места подписи уровня продлённого Фибоначчи (x под label; ADR-0009, «Рисование», дополнение 2026-11-13): столбец у
+ * шкалы цены — правый край плашки на FIB_LABEL_EDGE_PX левее края панели, у правого конца линии: подписи уровней
+ * выровнены и не лежат на свечах A–B. Ключевым (soft) после столбца — прежние места у рисунка (fibXs): столбец на их
+ * высоте занят (полоса текущей цены, подпись старше) — подпись остаётся на своей линии, а не пропадает.
+ */
+export function fibEdgeXs(span: number, left: number, right: number, width: number, soft: boolean): number[] {
+  const col = width - FIB_LABEL_EDGE_PX - span;
+  return soft ? [col, ...fibXs(span, left, right, width).filter((x) => x !== col)] : [col];
+}
+
 /** Все подписи видимых рисунков, начатого рисунка и измерителя — в координатах панели (CSS px). */
 export function drawingLabels(o: DrawingLabelInput): DrawingLabel[] {
   const out: DrawingLabel[] = [];
@@ -212,13 +235,17 @@ function labelsOf(d: Drawing, base: number, o: DrawingLabelInput, out: DrawingLa
     const x = proj.x(p.time), y = proj.y(p.price);
     return x === null || y === null ? null : { x, y };
   };
-  /** Подпись у линии: прямоугольник от x + 2, над линией (низ строки на 3 px выше) или под ней. */
-  const line = (part: string, text: string, xs: readonly number[], y: number, opts: { style?: DrawingLabelStyle; strong?: boolean; mode?: DrawingLabelMode; rank?: number; below?: boolean } = {}) => {
+  /**
+   * Подпись у линии: прямоугольник от x + 2, над линией (низ строки на 3 px выше) или под ней. Места — сначала все над
+   * линией, потом все под ней; byX — по каждому x над и под линией (столбец продлённого Фибоначчи раньше запасных мест).
+   */
+  const line = (part: string, text: string, xs: readonly number[], y: number, opts: { style?: DrawingLabelStyle; strong?: boolean; mode?: DrawingLabelMode; rank?: number; below?: boolean; color?: string; byX?: boolean } = {}) => {
     const weight = opts.strong ? 600 : 400;
     const w = measure(text, "mono", LABEL_PX, weight) + 2 * TEXT_DX;
     const above = xs.map((x) => ({ x: x + TEXT_DX, y: y - LINE_GAP - LABEL_H }));
     const below = xs.map((x) => ({ x: x + TEXT_DX, y: y + LINE_GAP }));
-    out.push({ id: `${d.id}#${part}`, drawingId: d.id, lines: [text], style: opts.style ?? "text", color, font: "mono", px: LABEL_PX, weight, w, h: LABEL_H, slots: opts.below === false ? above : [...above, ...below], mode: opts.mode ?? "soft", rank: base + (opts.rank ?? 0) });
+    const slots = opts.below === false ? above : opts.byX ? above.flatMap((s, i) => [s, below[i]!]) : [...above, ...below];
+    out.push({ id: `${d.id}#${part}`, drawingId: d.id, lines: [text], style: opts.style ?? "text", color: opts.color ?? color, font: "mono", px: LABEL_PX, weight, w, h: LABEL_H, slots, mode: opts.mode ?? "soft", rank: base + (opts.rank ?? 0) });
   };
   if (isPosition(d.type)) return positionLabels(d, base, o, out);
   const a = xy(0);
@@ -277,9 +304,10 @@ function labelsOf(d: Drawing, base: number, o: DrawingLabelInput, out: DrawingLa
       const b = xy(1);
       if (!b) return;
       const left = Math.min(a.x, b.x), right = Math.max(a.x, b.x);
+      const ext = fibExtended(d);
       // Фибоначчи за экраном (график прокрутили) — без подписей: иначе запасное место у края панели собирало бы все
-      // его уровни у текущей цены без линий рядом
-      if (right < 0 || left > W) return;
+      // его уровни у текущей цены без линий рядом. Продлённый левее экрана — с подписями: его линии идут через панель
+      if (left > W || (!ext && right < 0)) return;
       for (const { level, price } of fibLevels(d.points[0]!, d.points[1]!, d.levels)) {
         const y = proj.y(price);
         if (y === null) continue;
@@ -290,7 +318,9 @@ function labelsOf(d: Drawing, base: number, o: DrawingLabelInput, out: DrawingLa
         // от x до конца плашки: отступ плашки, отступ текста, текст, поле плашки справа
         const span = TEXT_DX + measure(text, "mono", LABEL_PX, key ? 600 : 400) + 2 * TEXT_DX;
         // второстепенный уровень без места не подписывается: подписи не ложатся друг на друга и на разметку
-        line(`L${level}`, text, fibXs(span, left, right, W), y, { style: "plaque", strong: key, mode: key || edge ? "soft" : "drop", rank: key || edge ? 0 : 1 });
+        const soft = key || edge;
+        const xs = ext ? fibEdgeXs(span, left, right, W, soft) : fibXs(span, left, right, W);
+        line(`L${level}`, text, xs, y, { style: "fib", strong: key, mode: soft ? "soft" : "drop", rank: soft ? 0 : 1, color: fibLevelColor(tokens, d, level), byX: ext });
       }
       return;
     }

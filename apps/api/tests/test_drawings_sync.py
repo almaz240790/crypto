@@ -219,6 +219,24 @@ def test_api_fib_levels_round_trip_normalised(api: Api) -> None:
 
 
 @db_only
+def test_api_fib_extend_in_style_round_trip(api: Api) -> None:
+    """«Линии до края» Фибоначчи (ADR-0009, дополнение 2026-11-13) — поле style.extend: style
+    хранится словарём, поле доходит до второго устройства без миграции; рисунок без поля остаётся
+    без поля (клиент рисует его продлённым)."""
+    off = {"color": "text2", "width": 1, "dashed": False, "extend": False}
+    r = api.put([api.item("fib_x", style=off), api.item("fib_y")])
+    assert r.status_code == 200, r.text
+    assert [d["style"] for d in r.json()["items"]] == [off, api.item("fib_y")["style"]]
+    items = {d["client_id"]: d["style"] for d in api.get()["items"]}
+    assert items["fib_x"] == off
+    assert "extend" not in items["fib_y"]
+    # включили снова — новая версия побеждает по updated_at
+    on = {**off, "extend": True}
+    r = api.put([api.item("fib_x", style=on, updated_at=2_000)])
+    assert r.json()["items"][0]["style"] == on
+
+
+@db_only
 def test_api_fib_levels_rejected_with_422_per_drawing(api: Api) -> None:
     cases: dict[str, list[float]] = {
         "25 значений": [i / 100 for i in range(25)],
