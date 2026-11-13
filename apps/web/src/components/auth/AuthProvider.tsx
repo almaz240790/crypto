@@ -9,7 +9,7 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
-import { getMe, hasHint, logout as doLogout, type Me } from "@/lib/auth-client";
+import { getMe, hasHint, logout as doLogout, onSessionLost, type Me } from "@/lib/auth-client";
 
 type AuthState = {
   user: Me | null;
@@ -48,6 +48,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // Загрузка профиля — внешняя система (API); в микрозадаче, чтобы не каскадить рендер.
     if (hasHint()) queueMicrotask(() => void reload());
   }, [reload]);
+
+  // Сервер отказал в обновлении токена (сеанс истёк, аккаунт заблокирован или удалён): запросы уже идут как гость —
+  // шапка и разделы тоже, без ошибки на странице.
+  useEffect(() => onSessionLost(() => setUser(null)), []);
 
   const logout = useCallback(async () => {
     await doLogout();
