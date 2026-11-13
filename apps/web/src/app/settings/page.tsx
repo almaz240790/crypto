@@ -9,6 +9,7 @@ import s from "@/components/tools/tools.module.css";
 import { NotificationsPanel } from "@/components/settings/Notifications";
 import { applyTheme } from "@/components/ui/ThemeToggle";
 import { Button, EmptyState, Input, Panel, Select } from "@/components/ui";
+import { apiKeyExample } from "@/lib/apiDocs";
 import { patchProfile, patchRisk, pwnedCount } from "@/lib/auth-client";
 import { changePassword, createApiKey, deleteAccount, disableTwoFactor, enableTwoFactor, exportData, getApiKeys, getIdentities, getSessions, getTwoFactor, revokeAllSessions, revokeApiKey, revokeSession, setupTwoFactor, type ApiKeyRow, type SessionRow, type TwoFactorStatus } from "@/lib/user";
 
@@ -61,8 +62,6 @@ function SessionsPanel({ note, onLogoutAll }: { note: (text: string, kind?: "ok"
 import { formatTimeUTC } from "@/lib/format";
 import { useT } from "@/i18n/client";
 
-const API_BASE = typeof window === "undefined" ? "" : window.location.origin;
-
 /** API-ключи для чтения (план 3.10, Premium): список, создание с показом один раз, отзыв. */
 function ApiKeysPanel({ note }: { note: (text: string, kind?: "ok" | "error") => void }) {
   const t = useT();
@@ -103,7 +102,7 @@ function ApiKeysPanel({ note }: { note: (text: string, kind?: "ok" | "error") =>
     await load();
   }
   return (
-    <Panel title={t("API-ключи для чтения (Premium)")} footer={<>{t("Ключ передаётся в заголовке X-API-Key и даёт только чтение (GET) тех же эндпоинтов /v1: сигналы, статистика, графики. Лимит 600 запросов в минуту на ключ. Ключ показывается один раз.")}{" "}<Link href="/api-docs">{t("Документация API")}</Link>.</>}>
+    <Panel title={t("API-ключи для чтения (Premium)")} footer={<>{t("Ключ передаётся в заголовке X-API-Key и даёт только чтение (GET) эндпоинтов из документации: сигналы, статистика, графики, скринер, ваши журнал и алерты. Профиль, сессии, ключи и платежи по ключу недоступны. Лимит 600 запросов в минуту на ключ. Ключ показывается один раз.")}{" "}<Link href="/api-docs">{t("Документация API")}</Link>.</>}>
       <div className={s.form} data-testid="api-keys">
         {denied ? (
           <span className="text-2">{denied}</span>
@@ -126,7 +125,7 @@ function ApiKeysPanel({ note }: { note: (text: string, kind?: "ok" | "error") =>
               <div role="region" aria-label={t("новый ключ")}>
                 <p style={{ margin: "0 0 6px" }}>{t("Новый ключ (больше не покажется):")}</p>
                 <code style={{ display: "block", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>{fresh}</code>
-                <p className="caption" style={{ margin: "6px 0 0" }}>{t("Пример:")}{" "}<code>{`curl -H "X-API-Key: ${fresh.slice(0, 10)}…" ${API_BASE}/v1/signals?tab=all`}</code>
+                <p className="caption" style={{ margin: "6px 0 0" }}>{t("Пример:")}{" "}<code>{apiKeyExample(fresh)}</code>
                 </p>
               </div>
             )}
