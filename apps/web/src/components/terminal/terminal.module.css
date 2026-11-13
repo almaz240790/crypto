@@ -958,10 +958,19 @@
   margin-left: auto;
 }
 
+/* «Линии до края» — первым в строке уровней, на высоте переключателей (подписи групп — над ними) */
+.fibExtend {
+  min-height: 26px;
+}
+
 @media (pointer: coarse) {
   .fibToggle {
     min-width: var(--touch-min);
     padding: 0 6px;
+  }
+
+  .fibExtend {
+    min-height: var(--touch-min);
   }
 }
 
@@ -1270,7 +1279,8 @@
 }
 
 .page:not([data-layout="desktop"]) .fibGroup,
-.page:not([data-layout="desktop"]) .fibReset {
+.page:not([data-layout="desktop"]) .fibReset,
+.page:not([data-layout="desktop"]) .fibExtend {
   flex: none;
 }
 

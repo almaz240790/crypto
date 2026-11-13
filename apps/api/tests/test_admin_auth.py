@@ -20,7 +20,7 @@ from fastapi import HTTPException
 from sqlalchemy import select, text
 
 from app import admin_auth as aa
-from app import auth, ratelimit, twofactor
+from app import apikeys, auth, ratelimit, twofactor
 from app.config import settings
 from app.models import AdminSession, TwoFactor, User
 
@@ -818,7 +818,9 @@ def test_grace_is_for_admins_without_2fa_only(
     for bad in ("garbage", admin_token, aa.make_device(owner.id)):
         r = c.get("/v1/admin/users", headers={"authorization": f"Bearer {bad}"})
         assert r.status_code == 401, bad[:12]
-    assert c.get("/v1/admin/users", headers={"x-api-key": "pk_whatever"}).status_code == 401
+    # API-ключ открывает только эндпоинты /api-docs (ADR-0017): админка по ключу — 403
+    r = c.get("/v1/admin/users", headers={"x-api-key": "pk_whatever"})
+    assert r.status_code == 403 and r.json()["detail"] == apikeys.OUT_OF_SCOPE
     # выдать права админки в переходном режиме нельзя (кода ещё нет) — даже с «кодом»
     target, _, _ = world.user(role="user")
     url = f"/v1/admin/users/{target.id}"

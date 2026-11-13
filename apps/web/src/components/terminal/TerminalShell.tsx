@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { usePopover } from "@/components/ui";
-import { shortcutLetter } from "@/components/ui/keyboard";
+import { shortcutLetter, typingTarget } from "@/components/ui/keyboard";
 import { getAccessToken } from "@/lib/auth-client";
 import { MQ, useMediaQuery } from "@/lib/breakpoints";
 import { TF_LABEL, TIMEFRAMES, INTRADAY } from "@/lib/timeframes";
@@ -80,7 +80,7 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
   const { sheet, setSheet, closeSheet, bars, setBars, objects, setObjects, panelOverlay, panelTab, setPanelTab, showPanel, objWidth, objResize, toast, say, notifyOnce } = useTerminalUi(wide);
   // вопросы о графике — Premium (админы и владелец — всегда); минутные ТФ закрыты гостю и на Free
   const { askAccess, intradayLocked } = usePlan();
-  const { st, resolved, legacyFound, patch, toggleIndicator, addIndicator, removeInstance, setInstanceParams, toggleInstanceHidden, togglePanel, toggleLayer, selectMarkup, applyTemplate, applyLayout, setPaneLayout, removePane, setFibLevels } = useTerminalSettings(authed);
+  const { st, resolved, legacyFound, patch, toggleIndicator, addIndicator, removeInstance, setInstanceParams, toggleInstanceHidden, togglePanel, toggleLayer, selectMarkup, applyTemplate, applyLayout, setPaneLayout, removePane, setFibDefaults } = useTerminalSettings(authed);
   // «Разбор» (резерв): вкладка и пункт тулбара — владельцу и админам, если ресурс topdown ответил 200
   const topdown = useTopdown(symbol, tf, user);
   const role = user?.role ?? null;
@@ -122,7 +122,7 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
     (r: DrawingsRefused) => say(r.code === "limit" ? t("Лимит рисунков на {symbol} исчерпан: рисунок сохранён только на этом устройстве", { symbol: r.symbol }) : t("Сервер не принял рисунок: он сохранён только на этом устройстве")),
     [say, t],
   );
-  const dr = useDrawings(symbol, authed, setFibLevels, drawingsRefused);
+  const dr = useDrawings(symbol, authed, setFibDefaults, drawingsRefused);
   const data = useTerminalData(symbol, tf, user ? getAccessToken() : null);
   const trend = useTrend(data.layers);
   const figures = data.figures?.items ?? NO_FIGURES;
@@ -132,8 +132,8 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement | null)?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      // в поле ввода текста клавиши — тексту; флажок карточки («Линии до края») — как кнопка: Esc, Ctrl+Z работают
+      if (typingTarget(e.target)) return;
       // буква — по клавише и на русской раскладке (Ctrl+Я — это Ctrl+Z)
       const letter = shortcutLetter(e);
       if (e.key === "Escape") {
@@ -296,8 +296,9 @@ export function TerminalShell({ symbol, tf }: { symbol: string; tf: Timeframe })
       },
       profile: riskProfile,
       fibLevels: st.fibLevels,
+      fibExtend: st.fibExtend,
     }),
-    [dr.state, dr.tool, dr.magnet, dr.series, dr.draft, dr.actions, dr.setDraft, dr.setStep, setDrawTool, riskProfile, st.fibLevels],
+    [dr.state, dr.tool, dr.magnet, dr.series, dr.draft, dr.actions, dr.setDraft, dr.setStep, setDrawTool, riskProfile, st.fibLevels, st.fibExtend],
   );
   const fundingRate = data.derivatives?.funding_current ?? null;
   const fundingNext = data.derivatives?.next_funding_t ?? null;

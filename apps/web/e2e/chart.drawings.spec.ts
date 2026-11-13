@@ -5,7 +5,7 @@ import { census, installCensus, intersects, violations } from "./helpers/census"
 /**
  * Рисование как в TradingView (ADR-0009, «Рисование»; замечание владельца: «Фибоначчи спамится, как только хочешь
  * натянуть»): один рисунок на выбор инструмента, точки нажатиями, жест графика не рисует, «рисовать серию»,
- * «Отменить» и Esc, нейтральный цвет Фибоначчи. Ревью: палец над готовым рисунком (сдвиг и щипок — графику, правится
+ * «Отменить» и Esc, разноцветный Фибоначчи. Ревью: палец над готовым рисунком (сдвиг и щипок — графику, правится
  * выбранный), шкалы — жесты графика, долгое касание, двойной клик, дрожь руки, отмена перетаскивания, подписи у края.
  */
 
@@ -131,6 +131,10 @@ async function finger(page: Page) {
       await send("touchEnd", []);
     },
     drag,
+    /** Палец на графике без отпускания (направляющая точки — пока он стоит): коснуться, сдвинуть, поднять. */
+    start: (x: number, y: number) => send("touchStart", [[x, y]]),
+    move: (x: number, y: number) => send("touchMove", [[x, y]]),
+    end: () => send("touchEnd", []),
     /**
      * Сдвиг графика ровно на путь пальца: палец стоит 120 мс перед отпусканием. Без этого LWC продолжает сдвиг
      * инерцией (kineticScroll.touch — если отпускание пришло не позже 50 мс после последнего сдвига), а будет ли она
@@ -235,17 +239,21 @@ test.describe("десктоп, мышь", () => {
     await expect(count).toHaveText("рисунков: 0");
   });
 
-  test("Фибоначчи — нейтральный цвет: линии и подписи уровней --text-2, не салатовый и не охра; 0.618 выделен", async ({ page }) => {
-    // линии и подписи рисунков — в canvas: записываем цвет каждой горизонтальной линии и подписи
+  test("Фибоначчи — разноцветный: у уровня свой цвет --fib-* (0 и 1 — --text-2), линия и подпись одного цвета, не салатовый и не охра; 0.618 выделен; полосы залиты в пределах A–B", async ({ page }) => {
+    // линии, подписи и заливки рисунков — в canvas: записываем цвет каждой горизонтальной линии, подписи и заливки
     await page.addInitScript(() => {
-      type Rec = { texts: { t: string; x: number; y: number; fill: string; font: string }[]; strokes: { x0: number; y0: number; x1: number; y1: number; style: string; width: number; alpha: number }[] };
-      const log: Rec = { texts: [], strokes: [] };
+      type Rec = { texts: { t: string; x: number; y: number; fill: string; font: string }[]; strokes: { x0: number; y0: number; x1: number; y1: number; style: string; width: number; alpha: number }[]; fills: { x: number; w: number; fill: string; alpha: number }[] };
+      const log: Rec = { texts: [], strokes: [], fills: [] };
       (window as unknown as { __draw: Rec }).__draw = log;
       const P = CanvasRenderingContext2D.prototype as CanvasRenderingContext2D & { __m?: number[]; __l?: number[] };
-      const { fillText, moveTo, lineTo, stroke } = P;
+      const { fillText, fillRect, moveTo, lineTo, stroke } = P;
       P.fillText = function (t: string, x: number, y: number, w?: number) {
         log.texts.push({ t: String(t), x, y, fill: String(this.fillStyle), font: this.font });
         return fillText.call(this, t, x, y, w);
+      };
+      P.fillRect = function (x: number, y: number, w: number, h: number) {
+        if (this.globalAlpha < 1) log.fills.push({ x, w, fill: String(this.fillStyle), alpha: this.globalAlpha });
+        return fillRect.call(this, x, y, w, h);
       };
       P.moveTo = function (this: typeof P, x: number, y: number) {
         this.__m = [x, y];
@@ -265,31 +273,57 @@ test.describe("десктоп, мышь", () => {
     await page.mouse.click(X(0.3), Y(0.3));
     await page.mouse.click(X(0.55), Y(0.6));
     await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 1");
+    // запись — с кадров готового рисунка: пока ставили точки, на их цене была направляющая (салатовая горизонталь через
+    // панель, ADR-0009, дополнение 2026-11-13) — её линия на высоте уровня 1 не линия уровня
+    await page.evaluate(() => {
+      const log = (window as unknown as { __draw: { texts: unknown[]; strokes: unknown[]; fills: unknown[] } }).__draw;
+      log.texts.length = 0;
+      log.strokes.length = 0;
+      log.fills.length = 0;
+    });
     // снять выбор — без хэндлов, только сам рисунок
     await page.keyboard.press("Escape");
     await page.waitForTimeout(300);
     const tokens = await page.getByTestId("terminal").evaluate((el) => {
       const cs = getComputedStyle(el);
-      return { text2: cs.getPropertyValue("--text-2").trim().toLowerCase(), accent: cs.getPropertyValue("--accent").trim().toLowerCase(), warn: cs.getPropertyValue("--warn").trim().toLowerCase() };
+      const v = (n: string) => cs.getPropertyValue(n).trim().toLowerCase();
+      return { text2: v("--text-2"), accent: v("--accent"), warn: v("--warn"), up: v("--up"), down: v("--down"), fib: [1, 2, 3, 4, 5, 6].map((i) => v(`--fib-${i}`)) };
     });
+    // цвет уровня — как в packages/charts (drawings/fib.ts, fibHue): 0 и 1 нейтральные, коррекция от тёплых к холодным
+    // (оранжевый, золотой, бирюзовый, синий, фиолетовый, пурпурный — без красного и зелёного, план 5.3)
+    const hue: Record<string, number | null> = { "0": null, "0.236": 5, "0.382": 0, "0.5": 1, "0.618": 2, "0.705": 3, "0.786": 4, "1": null, "1.272": 0, "1.618": 2 };
+    const want = (level: string) => (hue[level] === null ? tokens.text2 : tokens.fib[hue[level]!]!);
     const drawn = await page.evaluate(() => {
       const log = (window as unknown as { __draw: { texts: { t: string; x: number; y: number; fill: string; font: string }[]; strokes: { x0: number; y0: number; x1: number; y1: number; style: string; width: number; alpha: number }[] } }).__draw;
-      // подпись уровня — над линией (y − 3; у края панели — внутри рисунка): по ней находим линию этого уровня
+      // подпись уровня — над линией (низ строки на 3 px выше) или под ней (верх на 3 px ниже; плашка 14 px): по ней
+      // находим линию этого уровня; из двух обводок (в пределах A–B и продление до края) — левая, в пределах A–B
       const labels = log.texts.filter((t) => /^\d+(\.\d+)? · /.test(t.t)).slice(-10);
-      return labels.map((l) => ({ label: l, line: [...log.strokes].reverse().find((s) => s.y0 === s.y1 && s.x1 > s.x0 && Math.abs(s.y0 - (l.y + 3)) < 0.01) ?? null }));
+      const lineOf = (l: { y: number }) =>
+        log.strokes.filter((s) => s.y0 === s.y1 && s.x1 > s.x0 && (Math.abs(s.y0 - (l.y + 3)) < 0.01 || Math.abs(s.y0 - (l.y - 17)) < 0.01)).sort((a, b) => a.x0 - b.x0)[0] ?? null;
+      return labels.map((l) => ({ label: l, line: lineOf(l) }));
     });
     expect(drawn).toHaveLength(10);
+    for (const t of tokens.fib) expect(t).toMatch(/^#[0-9a-f]{6}$/);
     for (const { label, line } of drawn) {
-      expect(label.fill.toLowerCase(), label.t).toBe(tokens.text2);
+      const level = label.t.split(" · ")[0]!;
+      expect(label.fill.toLowerCase(), label.t).toBe(want(level));
       expect(line, label.t).not.toBeNull();
-      expect(line!.style.toLowerCase(), label.t).toBe(tokens.text2);
-      expect([tokens.accent, tokens.warn]).not.toContain(line!.style.toLowerCase());
+      expect(line!.style.toLowerCase(), label.t).toBe(want(level));
+      expect([tokens.accent, tokens.warn, tokens.up, tokens.down]).not.toContain(line!.style.toLowerCase());
     }
+    expect(new Set(drawn.map((d) => d.line!.style.toLowerCase())).size).toBeGreaterThanOrEqual(7);
     const key = drawn.find((d) => d.label.t.startsWith("0.618 · "))!;
     const minor = drawn.find((d) => d.label.t.startsWith("0.236 · "))!;
     expect(key.line!.width).toBeGreaterThan(minor.line!.width);
     expect(key.line!.alpha).toBeGreaterThan(minor.line!.alpha);
     expect(key.label.font).toMatch(/^600 /);
+    // полосы между уровнями — цветом уровня, слабо (0.08) и только в пределах A–B (за B — только линии)
+    const ab = key.line!;
+    const bands = await page.evaluate(() => (window as unknown as { __draw: { fills: { x: number; w: number; fill: string; alpha: number }[] } }).__draw.fills.filter((f) => Math.abs(f.alpha - 0.08) < 1e-9));
+    const palette = [tokens.text2, ...tokens.fib];
+    const own = bands.filter((f) => palette.includes(f.fill.toLowerCase()));
+    expect(own.filter((f) => Math.abs(f.x - ab.x0) < 0.5 && Math.abs(f.x + f.w - ab.x1) < 0.5).length).toBeGreaterThanOrEqual(9);
+    for (const f of own.filter((f) => Math.abs(f.x - ab.x0) < 0.5)) expect(f.x + f.w, "заливка не правее B").toBeLessThanOrEqual(ab.x1 + 0.5);
   });
 });
 
@@ -1331,5 +1365,289 @@ test.describe("позиция, палец", () => {
     const d1 = await position(page);
     expect(d1.points[1]!.time).toBeGreaterThan(d1.points[0]!.time);
     expect((await plot(page)).price).toEqual(p0.price);
+  });
+});
+
+/**
+ * Направляющая точки (просьба владельца с iPhone: «нужно когда нажимаешь не точку а линия горизонтальная чтоб поймать
+ * край свечи»; ADR-0009, «Рисование», дополнение 2026-11-13): пока точку ставят или тянут — горизонталь салатовым через
+ * всю область свечей на цене точки после магнита и метка этой цены на шкале; у пальца — и пунктирная вертикаль.
+ * Палец подняли, правку закончили, инструмент сняли, курсор ушёл на шкалу — направляющей нет.
+ */
+type GuideSnap = { price: number; text: string; y: number | null; touch: boolean; snapped: boolean } | null;
+const guideNow = (page: Page) => page.evaluate(() => (document.querySelector('[data-testid="terminal"]') as HTMLElement & { __guide: () => GuideSnap }).__guide());
+/** Горизонталь перекрестия LWC видна? (на время направляющей скрыта) и ширина шкалы цены. */
+const crossInfo = (page: Page) =>
+  page.evaluate(() => {
+    const c = (document.querySelector('[data-testid="terminal"]') as HTMLElement & { __chart: { options(): { crosshair: { horzLine: { visible: boolean } } }; priceScale(id: string): { width(): number } } }).__chart;
+    return { horz: c.options().crosshair.horzLine.visible, scaleW: c.priceScale("right").width() };
+  });
+/** Свеча у доли ширины области свечей: время, максимум, минимум; x свечи и y максимума и минимума — координаты страницы. */
+const candleNear = (page: Page, frac: number) =>
+  page.evaluate((frac) => {
+    type Bar = { time: number; high: number; low: number };
+    const el = document.querySelector('[data-testid="terminal"]') as HTMLElement & { __chart: { timeScale(): { width(): number; timeToCoordinate(t: number): number | null }; panes(): { getSeries(): { priceToCoordinate(p: number): number | null; data(): Bar[] }[] }[] } };
+    const r = el.getBoundingClientRect();
+    const ts = el.__chart.timeScale();
+    const s = el.__chart.panes()[0]!.getSeries()[0]!;
+    const want = ts.width() * frac;
+    let best: (Bar & { x: number }) | null = null;
+    for (const c of s.data()) {
+      const x = ts.timeToCoordinate(c.time);
+      if (x === null) continue;
+      if (!best || Math.abs(x - want) < Math.abs(best.x - want)) best = { ...c, x };
+    }
+    const b = best!;
+    return { time: b.time, high: b.high, low: b.low, x: r.left + b.x, yHigh: r.top + s.priceToCoordinate(b.high)!, yLow: r.top + s.priceToCoordinate(b.low)!, top: r.top, left: r.left };
+  }, frac);
+
+/** Запись холста: салатовые линии (направляющая) и тексты (метка на шкале) — последние 400 каждого. */
+async function recordCanvas(page: Page) {
+  await page.addInitScript(() => {
+    type Rec = { strokes: { x0: number; y0: number; x1: number; y1: number; style: string; dash: number[]; alpha: number }[]; texts: { t: string; x: number; y: number; fill: string }[] };
+    const log: Rec = { strokes: [], texts: [] };
+    (window as unknown as { __rec: Rec }).__rec = log;
+    const P = CanvasRenderingContext2D.prototype as CanvasRenderingContext2D & { __m?: number[]; __l?: number[] };
+    const { fillText, moveTo, lineTo, stroke } = P;
+    const keep = <T,>(a: T[], v: T) => {
+      a.push(v);
+      if (a.length > 400) a.shift();
+    };
+    P.fillText = function (t: string, x: number, y: number, w?: number) {
+      keep(log.texts, { t: String(t), x, y, fill: String(this.fillStyle) });
+      return fillText.call(this, t, x, y, w);
+    };
+    P.moveTo = function (this: typeof P, x: number, y: number) {
+      this.__m = [x, y];
+      return moveTo.call(this, x, y);
+    };
+    P.lineTo = function (this: typeof P, x: number, y: number) {
+      this.__l = [x, y];
+      return lineTo.call(this, x, y);
+    };
+    P.stroke = function (this: typeof P, ...a: unknown[]) {
+      if (this.__m && this.__l) keep(log.strokes, { x0: this.__m[0]!, y0: this.__m[1]!, x1: this.__l[0]!, y1: this.__l[1]!, style: String(this.strokeStyle), dash: this.getLineDash(), alpha: this.globalAlpha });
+      return (stroke as (...args: unknown[]) => void).apply(this, a);
+    } as typeof P.stroke;
+  });
+}
+type Rec = { strokes: { x0: number; y0: number; x1: number; y1: number; style: string; dash: number[]; alpha: number }[]; texts: { t: string; x: number; y: number; fill: string }[] };
+const rec = (page: Page) => page.evaluate(() => {
+  const r = (window as unknown as { __rec: Rec }).__rec;
+  const out = { strokes: [...r.strokes], texts: [...r.texts] };
+  r.strokes.length = 0;
+  r.texts.length = 0;
+  return out;
+});
+const colors = (page: Page) =>
+  page.getByTestId("terminal").evaluate((el) => {
+    const cs = getComputedStyle(el);
+    return { accent: cs.getPropertyValue("--accent").trim().toLowerCase(), surface: cs.getPropertyValue("--surface").trim().toLowerCase() };
+  });
+/** Горизонталь направляющей в записи: салатовая, от левого края области свечей до правого, на высоте y (панель). */
+const guideLine = (r: Rec, accent: string, y: number, w: number) => r.strokes.filter((s) => s.style.toLowerCase() === accent && s.y0 === s.y1 && Math.abs(s.y0 - y) < 0.6 && s.x0 === 0 && Math.abs(s.x1 - w) < 1);
+
+test.describe("направляющая точки, мышь", () => {
+  test("инструмент выбран: над свечой у максимума — горизонталь и метка на шкале на цене максимума (магнит); шкала цены той же ширины; над шкалой и без инструмента — нет", async ({ page }) => {
+    await recordCanvas(page);
+    await open(page);
+    await chartSettled(page);
+    const { accent, surface } = await colors(page);
+    const c = await candleNear(page, 0.5);
+    const { w } = await plot(page);
+    const before = await crossInfo(page);
+    expect(before.horz).toBe(true);
+    // без инструмента — нет
+    await page.mouse.move(c.x, c.yHigh - 6);
+    await painted(page);
+    expect(await guideNow(page)).toBeNull();
+    await page.getByRole("toolbar", { name: "панель рисования" }).getByRole("button", { name: "Фибоначчи" }).click();
+    await page.mouse.move(c.x + 1, c.yHigh - 7);
+    await page.mouse.move(c.x, c.yHigh - 6);
+    await painted(page);
+    await painted(page);
+    const g = (await guideNow(page))!;
+    expect(g).toMatchObject({ price: c.high, touch: false, snapped: true });
+    expect(Math.abs(Number(g.text) - c.high)).toBeLessThanOrEqual(0.05 + 1e-9);
+    expect(g.y!).toBeCloseTo(c.yHigh - c.top, 0);
+    // нарисовано: горизонталь салатовым через всю область свечей и метка с той же ценой (текст цвета поверхности)
+    const r = await rec(page);
+    expect(guideLine(r, accent, g.y!, w).length).toBeGreaterThan(0);
+    expect(r.texts.some((t) => t.t === g.text && t.fill.toLowerCase() === surface && Math.abs(t.y - g.y!) < 12)).toBe(true);
+    // одна горизонталь: перекрестие LWC по горизонтали скрыто, шкала цены не сузилась и не расширилась
+    const during = await crossInfo(page);
+    expect(during.horz).toBe(false);
+    expect(during.scaleW).toBe(before.scaleW);
+    // над шкалой цены — нет, перекрестие вернулось; снова над свечами — есть
+    await page.mouse.move(c.left + w + 20, c.yHigh);
+    await painted(page);
+    expect(await guideNow(page)).toBeNull();
+    expect((await crossInfo(page)).horz).toBe(true);
+    await page.mouse.move(c.x, c.yHigh - 6);
+    await painted(page);
+    expect(await guideNow(page)).not.toBeNull();
+    // Esc снимает инструмент — направляющей нет и под курсором
+    await page.keyboard.press("Escape");
+    await page.mouse.move(c.x + 2, c.yHigh - 6);
+    await painted(page);
+    expect(await guideNow(page)).toBeNull();
+    expect((await crossInfo(page)).scaleW).toBe(before.scaleW);
+  });
+
+  test("клик — точка A, направляющая ведёт B; ручка готового Фибоначчи — направляющая, пока тянут, у минимума свечи — на нём; отпустили — нет", async ({ page }) => {
+    await recordCanvas(page);
+    const { X, Y } = await open(page);
+    await chartSettled(page);
+    const { accent } = await colors(page);
+    const { w } = await plot(page);
+    await page.getByRole("toolbar", { name: "панель рисования" }).getByRole("button", { name: "Фибоначчи" }).click();
+    await page.mouse.click(X(0.3), Y(0.3));
+    await page.mouse.move(X(0.5), Y(0.55));
+    await painted(page);
+    const gB = (await guideNow(page))!;
+    expect(gB).not.toBeNull();
+    await page.mouse.click(X(0.5), Y(0.55));
+    await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 1");
+    await painted(page);
+    expect(await guideNow(page)).toBeNull();
+    const fib = (await stored(page))[0]!;
+    expect(fib.points[1]!.price).toBe(gB.price);
+    // ручка B: нажали — направляющая на её цене; тянут к минимуму свечи — на минимуме (магнит); отпустили — нет
+    const [, hB] = await onScreen(page, fib.points);
+    await page.mouse.move(hB!.x, hB!.y);
+    await page.mouse.down();
+    await painted(page);
+    expect(await guideNow(page)).toMatchObject({ price: fib.points[1]!.price, touch: false });
+    const c = await candleNear(page, 0.62);
+    await page.mouse.move(hB!.x + 20, hB!.y + 10, { steps: 3 });
+    await page.mouse.move(c.x, c.yLow + 6, { steps: 4 });
+    await painted(page);
+    const g = (await guideNow(page))!;
+    expect(g).toMatchObject({ price: c.low, snapped: true, touch: false });
+    expect(guideLine(await rec(page), accent, g.y!, w).length).toBeGreaterThan(0);
+    await page.mouse.up();
+    await painted(page);
+    expect(await guideNow(page)).toBeNull();
+    await expect.poll(async () => (await stored(page))[0]!.points[1]).toEqual({ time: c.time, price: c.low });
+  });
+});
+
+test.describe("направляющая точки, палец", () => {
+  test.use(pixel5);
+
+  test("Фибоначчи: палец на второй точке — горизонталь и метка на минимуме свечи и пунктирная вертикаль, пока держат; подняли — нет, B на минимуме; сдвиг из середины нового рисунка — графику, без направляющей", async ({ page }) => {
+    await recordCanvas(page);
+    const { X, Y } = await open(page);
+    await chartSettled(page);
+    const f = await finger(page);
+    const { accent, surface } = await colors(page);
+    const { w } = await plot(page);
+    await page.getByRole("button", { name: "Рисовать" }).tap();
+    await page.getByRole("dialog", { name: "Рисование" }).getByRole("button", { name: "Фибоначчи" }).tap();
+    await f.tap(X(0.2), Y(0.3));
+    await expect(page.getByTestId("draw-chip")).toContainText("Нажмите вторую точку");
+    await painted(page);
+    expect(await guideNow(page)).toBeNull();
+    const c = await candleNear(page, 0.65);
+    await f.start(c.x, c.yLow + 6);
+    await painted(page);
+    await painted(page);
+    const g = (await guideNow(page))!;
+    expect(g).toMatchObject({ price: c.low, touch: true, snapped: true });
+    const r = await rec(page);
+    expect(guideLine(r, accent, g.y!, w).length).toBeGreaterThan(0);
+    // вертикаль — пунктир на времени свечи от верха до низа панели (высота — сейчас: с чипом рисования панель ниже) с
+    // разрывом над свечой: от верха — до максимума, от минимума — до низа; фитиль не закрыт
+    const h = (await plot(page)).h;
+    const vert = r.strokes.filter((s) => s.style.toLowerCase() === accent && s.x0 === s.x1 && Math.abs(s.x0 - (c.x - c.left)) < 1 && s.dash.length > 0);
+    expect(vert.some((s) => s.y0 === 0 && s.y1 < c.yHigh - c.top)).toBe(true);
+    expect(vert.some((s) => s.y0 > c.yLow - c.top && Math.abs(s.y1 - h) < 1)).toBe(true);
+    expect(r.texts.some((t) => t.t === g.text && t.fill.toLowerCase() === surface)).toBe(true);
+    await f.end();
+    await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 1");
+    await painted(page);
+    expect(await guideNow(page)).toBeNull();
+    const fib = (await stored(page))[0]!;
+    expect(fib.points[1]).toEqual({ time: c.time, price: c.low });
+    // «Палец после рисунка» (FI-6) как прежде: сдвиг из середины только что нарисованного — график едет, направляющей нет
+    const [a, b] = await onScreen(page, fib.points);
+    const mid = { x: (a!.x + b!.x) / 2, y: (a!.y + b!.y) / 2 };
+    const r0 = await range(page);
+    await f.start(mid.x, mid.y);
+    await painted(page);
+    expect(await guideNow(page)).toBeNull();
+    for (let i = 1; i <= 8; i++) await f.move(mid.x - i * 8, mid.y);
+    await painted(page);
+    expect(await guideNow(page)).toBeNull();
+    await page.waitForTimeout(120);
+    await f.end();
+    await expect.poll(async () => (await range(page))!.from).not.toBe(r0!.from);
+    expect((await stored(page))[0]!.points).toEqual(fib.points);
+  });
+
+  test("цены как у BTC на узкой шкале телефона: метка направляющей — форматом шкалы («82 639»), шкала той же ширины, свечи не уезжают из-под пальца; линия встаёт на цене направляющей", async ({ page }) => {
+    // свечи ≈ 80 000 (шаг 0.1): шкала телефона пишет крупные цены целым числом; метка «82 639.0» была шире шкалы — LWC
+    // расширял шкалу, пока палец на графике, свеча под пальцем менялась, и линия вставала не там, где была направляющая
+    const big = (i: number) => {
+      const o = (100 + Math.sin(i / 7) * 5) * 800;
+      const c = o + Math.cos(i / 5) * 800;
+      return { t: T0 + i * H4, o: o.toFixed(1), h: (Math.max(o, c) + 800).toFixed(1), l: (Math.min(o, c) - 800).toFixed(1), c: c.toFixed(1), v: "1000", open: false };
+    };
+    await mock(page, []);
+    await page.route("**/v1/chart/candles**", (route) => {
+      const u = new URL(route.request().url());
+      const older = u.searchParams.get("before") !== null;
+      const candles = older ? [] : Array.from({ length: 300 }, (_, i) => big(i));
+      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ symbol: "BTCUSDT", tf: u.searchParams.get("tf"), candles, current: older ? null : { ...big(300), open: true }, has_older: false, tick_size: "0.1", server_time: "" }) });
+    });
+    await page.goto("/chart/BTCUSDT/4h");
+    await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 0");
+    await chartSettled(page);
+    const f = await finger(page);
+    await page.getByRole("button", { name: "Рисовать" }).tap();
+    await page.getByRole("dialog", { name: "Рисование" }).getByRole("button", { name: "Горизонтальная линия" }).tap();
+    await painted(page);
+    const w0 = (await crossInfo(page)).scaleW;
+    const c = await candleNear(page, 0.5);
+    expect(c.high).toBeGreaterThan(10_000);
+    await f.start(c.x, c.yHigh - 4);
+    await painted(page);
+    await painted(page);
+    const g = (await guideNow(page))!;
+    expect(g).toMatchObject({ price: c.high, touch: true, snapped: true });
+    // как метка перекрестия и деления этой шкалы: разряды через пробел, без дробной части
+    expect(g.text).toBe(String(Math.round(c.high)).replace(/\B(?=(\d{3})+(?!\d))/g, " "));
+    expect((await crossInfo(page)).scaleW).toBe(w0);
+    // свеча под пальцем — та же, что при касании: шкала не сдвинула область свечей
+    const c2 = await candleNear(page, 0.5);
+    expect(c2.x).toBeCloseTo(c.x, 0);
+    await f.end();
+    await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 1");
+    expect((await stored(page))[0]!.points[0]!.price).toBe(g.price);
+    expect((await crossInfo(page)).scaleW).toBe(w0);
+  });
+
+  test("ручка выбранного Фибоначчи пальцем: направляющая, пока палец на ручке; подняли — нет", async ({ page }) => {
+    const { X, Y } = await open(page);
+    await chartSettled(page);
+    const f = await finger(page);
+    await page.getByRole("button", { name: "Рисовать" }).tap();
+    await page.getByRole("dialog", { name: "Рисование" }).getByRole("button", { name: "Фибоначчи" }).tap();
+    await f.tap(X(0.2), Y(0.3));
+    await f.tap(X(0.6), Y(0.5));
+    await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 1");
+    const fib = (await stored(page))[0]!;
+    const [hA] = await onScreen(page, fib.points);
+    await f.start(hA!.x, hA!.y);
+    await painted(page);
+    expect(await guideNow(page)).toMatchObject({ price: fib.points[0]!.price, touch: true });
+    for (let i = 1; i <= 6; i++) await f.move(hA!.x + i * 4, hA!.y + i * 5);
+    await painted(page);
+    const g = (await guideNow(page))!;
+    expect(g.touch).toBe(true);
+    await f.end();
+    await painted(page);
+    expect(await guideNow(page)).toBeNull();
+    await expect.poll(async () => (await stored(page))[0]!.points[0]!.price).toBe(g.price);
   });
 });

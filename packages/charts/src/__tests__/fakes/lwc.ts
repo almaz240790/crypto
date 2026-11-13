@@ -10,7 +10,7 @@ import type { Candle, ChartType, ThemeTokens } from "../../types";
 
 export type Range = { from: number; to: number };
 
-export const TOKENS: ThemeTokens = { bg: "#101214", surface: "#14171a", border: "#2a2f35", text: "#e8eaed", text2: "#aab1b9", text3: "#8a929b", up: "#2fbf71", down: "#ef5350", accent: "#c6f432", warn: "#d9a441", ind: ["#5b9cff", "#b18cff", "#4dd0e1", "#ffb74d", "#f06292", "#9ccc65"], fontSans: "Manrope", fontMono: "IBM Plex Mono" };
+export const TOKENS: ThemeTokens = { bg: "#101214", surface: "#14171a", border: "#2a2f35", text: "#e8eaed", text2: "#aab1b9", text3: "#8a929b", up: "#2fbf71", down: "#ef5350", accent: "#c6f432", warn: "#d9a441", ind: ["#5b9cff", "#b18cff", "#4dd0e1", "#ffb74d", "#f06292", "#9ccc65"], fib: ["#f39a4c", "#e3c04a", "#3dbfdc", "#7d9cf5", "#b48cf2", "#e57ad0"], fontSans: "Manrope", fontMono: "IBM Plex Mono" };
 
 export function makeTheme(version = 1, mode: "light" | "dark" = "dark", tokens: ThemeTokens = TOKENS): ChartTheme {
   return {

@@ -172,3 +172,24 @@ describe("уровни нового Фибоначчи (ADR-0009, «Рисова
     expect(migrateLayout({ ...DEFAULT_SAVED, fibLevels: [0, 0.5, 1] }, cur).fibLevels).toEqual([0, 0.5, 1]);
   });
 });
+
+describe("«Линии до края» нового Фибоначчи (ADR-0009, «Рисование», дополнение 2026-11-13)", () => {
+  it("true и false сохраняются (через JSON — как из localStorage и с сервера); иное и поля нет — без поля (продлённый)", () => {
+    for (const v of [true, false]) {
+      const s = migrateSaved({ ...DEFAULT_SAVED, fibExtend: v });
+      expect(s.fibExtend).toBe(v);
+      expect(migrateSaved(JSON.parse(JSON.stringify(s))).fibExtend).toBe(v);
+    }
+    for (const v of [undefined, null, "false", 0, 1]) expect("fibExtend" in migrateSaved({ ...DEFAULT_SAVED, fibExtend: v }), String(v)).toBe(false);
+    // сохранение v4: разметка сбрасывается, выбор — нет
+    expect(migrateSaved({ ...V4, fibExtend: false }).fibExtend).toBe(false);
+  });
+
+  it("именованная раскладка выбор не хранит и не меняет; раскладка с сервера — приносит свой", () => {
+    const cur: SavedV5 = { ...DEFAULT_SAVED, fibExtend: false, fibLevels: [0, 1] };
+    const named = layoutData(cur, "BTCUSDT", "4h");
+    expect("fibExtend" in named).toBe(false);
+    expect(migrateLayout(named, cur).fibExtend).toBe(false);
+    expect(migrateLayout({ ...DEFAULT_SAVED, fibExtend: true }, cur).fibExtend).toBe(true);
+  });
+});

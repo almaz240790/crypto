@@ -3,7 +3,7 @@ import { hitTest, positionHit, positionKnobs, positionScreen, type Projector } f
 import { DRAWING_LABEL_PRIORITY, DRAWING_TEXT, drawingLabels, handleCandidate, handleRects, positionLabelTexts, positionRiskText, toCandidate, type DrawingLabel } from "../drawings/labels";
 import { atrAt, flipPosition, formatRR, positionError, positionFieldError, positionFromEntry, positionParts, roundToTick, setPositionEnd, setPositionPrice, withRiskPct, withRiskReward } from "../drawings/position";
 import { DrawingsPrimitive } from "../drawings/primitive";
-import { DEFAULT_STYLE, POSITION_FILL_ALPHA, type Drawing } from "../drawings/types";
+import { DEFAULT_STYLE, FIB_LABEL_EDGE_PX, POSITION_FILL_ALPHA, type Drawing } from "../drawings/types";
 import { AtrCalc } from "../indicators/core";
 import { layoutLabels } from "../layout/labels";
 import { monoMeasurer } from "../layout/measure";
@@ -227,7 +227,10 @@ describe("подписи позиции", () => {
   });
 
   it("Фибоначчи за экраном (слева и справа) — без подписей; частично на экране — с подписями в панели", () => {
-    const fib = (from: number, to: number): Drawing => ({ ...pos("position-long", 100, 96, 108), id: "F", type: "fib", points: [{ time: T0 + from * H, price: 120 }, { time: T0 + to * H, price: 80 }], levels: [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1] });
+    const fib = (from: number, to: number, extend = false): Drawing => {
+      const p = pos("position-long", 100, 96, 108);
+      return { ...p, id: "F", type: "fib", style: { ...p.style, extend }, points: [{ time: T0 + from * H, price: 120 }, { time: T0 + to * H, price: 80 }], levels: [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1] };
+    };
     expect(labelsOf([fib(-160, -144)])).toEqual([]);
     expect(labelsOf([fib(160, 176)])).toEqual([]);
     expect(labelsOf([fib(101, 103)])).toEqual([]);
@@ -237,6 +240,12 @@ describe("подписи позиции", () => {
     for (const l of res.external!) expect(l.rect.x + l.rect.w).toBeLessThanOrEqual(1000);
     // и в раскладке: за экраном слева — ни одной подписи у правого края
     expect(layoutLabels(labelsOf([fib(-160, -144)]).map(toCandidate), obstacles(), VP, BUDGET).external).toEqual([]);
+    // продлённый (по умолчанию): правее экрана — без подписей; левее — его линии идут через панель, подписи у их концов
+    expect(labelsOf([fib(160, 176, true)])).toEqual([]);
+    expect(labelsOf([fib(101, 103, true)])).toEqual([]);
+    const past = layoutLabels(labelsOf([fib(-160, -144, true)]).map(toCandidate), obstacles(), VP, BUDGET).external!;
+    expect(past.length).toBeGreaterThanOrEqual(4);
+    for (const l of past) expect(l.rect.x + l.rect.w).toBeCloseTo(1000 - FIB_LABEL_EDGE_PX, 6);
   });
 
   it("порядок: начатый и выбранный рисунок раньше остальных; уровни Фибоначчи — ключевые раньше", () => {

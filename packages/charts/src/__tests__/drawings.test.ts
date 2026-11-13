@@ -2,9 +2,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { channelOffset, distToSegment, extend, fibLevels, hitTest, lineAt, magnetSnap, positionStats, rulerInfo, type Projector } from "../drawings/geometry";
 import { addDrawing, alive, canRedo, canUndo, clearDrawings, commitMove, createState, mergeRemote, redo, removeDrawing, resolve, toggleLock, undo, updateDrawing, visibleOn } from "../drawings/store";
 import { atrAt } from "../drawings/position";
-import { HANDLE_TOUCH_PX, UNDO_STEPS, pointsNeeded, type Drawing, type Point } from "../drawings/types";
+import { FIB_LABEL_EDGE_PX, FIB_PLAQUE_ALPHA, HANDLE_TOUCH_PX, UNDO_STEPS, pointsNeeded, type Drawing, type Point } from "../drawings/types";
 import { DrawingsPrimitive, formatDrawingPrice } from "../drawings/primitive";
-import { fibXs, handleRects } from "../drawings/labels";
+import { fibLevelColor, fibXs, handleRects } from "../drawings/labels";
 import { intersects } from "../layout/labels";
 import type { Candle } from "../types";
 import { H, T0, TOKENS, bars, makeEnv } from "./fakes/lwc";
@@ -318,11 +318,13 @@ function render(drawings: Drawing[]) {
 describe("Фибоначчи и цвет рисунков по умолчанию", () => {
   const fib = (color: Drawing["style"]["color"]): Drawing => ({ ...d("f", "fib", [{ time: T0 + 10 * H, price: 120 }, { time: T0 + 40 * H, price: 80 }]), style: { color, width: 1, dashed: false }, levels: [0, 0.236, 0.382, 0.5, 0.618, 0.705, 0.786, 1, 1.272, 1.618] });
 
-  it("уровни — нейтральный --text-2, без салатового, охры и заливки; 0.5 и 0.618 выделены толщиной и непрозрачностью", () => {
+  it("уровни — свой цвет палитры --fib-* (0 и 1 — --text-2), без салатового и охры; 0.5 и 0.618 выделены толщиной и непрозрачностью", () => {
     const c = render([fib("text2")]);
-    const levels = c.strokes.filter((s) => s.y0 === s.y1);
+    // линии в пределах A–B (вторая обводка уровня — продление до края панели, бледнее)
+    const right = makeEnv(() => bars(60)).chart.timeScale().logicalToCoordinate(40);
+    const levels = c.strokes.filter((s) => s.y0 === s.y1 && s.x1 <= right + 1e-6);
     expect(levels).toHaveLength(10);
-    expect(new Set(levels.map((s) => s.style))).toEqual(new Set([TOKENS.text2]));
+    expect(c.strokes.filter((s) => s.y0 === s.y1 && s.x1 === PANE_W)).toHaveLength(10);
     for (const s of c.strokes) expect([TOKENS.accent, TOKENS.warn]).not.toContain(s.style);
     const byY = new Map(levels.map((s) => [Math.round(s.y0), s]));
     // та же шкала цены, что у render(): уровень → y
@@ -334,16 +336,20 @@ describe("Фибоначчи и цвет рисунков по умолчани�
     for (const s of key) expect(s).toMatchObject({ alpha: 1, width: 1.5, dash: [] });
     for (const s of edge) expect(s).toMatchObject({ alpha: 1, width: 1, dash: [] });
     for (const s of minor) expect(s).toMatchObject({ alpha: 0.6, width: 1, dash: [4, 3] });
-    // подписи — тем же нейтральным цветом на плашке цвета фона; ключевые — полужирные
+    for (const l of [0, 0.236, 0.382, 0.5, 0.618, 0.705, 0.786, 1, 1.272, 1.618]) expect(byY.get(yOf(l))!.style, String(l)).toBe(fibLevelColor(TOKENS, fib("text2"), l));
+    for (const s of edge) expect(s.style).toBe(TOKENS.text2);
+    // подписи — цветом уровня на полупрозрачной плашке цвета фона; ключевые — полужирные
     const labels = c.texts.filter((t) => / · /.test(t.text));
-    expect(labels).toHaveLength(10);
-    expect(new Set(labels.map((t) => t.fill))).toEqual(new Set([TOKENS.text2]));
+    expect(labels.length).toBeGreaterThanOrEqual(6);
+    for (const t of labels) expect(t.fill, t.text).toBe(fibLevelColor(TOKENS, fib("text2"), Number(t.text.split(" · ")[0])));
     expect(labels.find((t) => t.text.startsWith("0.618 · "))!.font).toMatch(/^600 /);
-    expect(labels.find((t) => t.text.startsWith("0.236 · "))!.font).not.toMatch(/^600 /);
-    expect(new Set(c.rects)).toEqual(new Set([alpha(TOKENS.surface, 0.85)]));
+    expect(labels.find((t) => t.text.startsWith("0 · "))!.font).not.toMatch(/^600 /);
+    // плашки подписей — полупрозрачные; остальные заливки — полосы между уровнями (цвет уровня, globalAlpha)
+    expect(c.rects.filter((r) => r === alpha(TOKENS.surface, FIB_PLAQUE_ALPHA))).toHaveLength(labels.length);
+    expect(c.rects).not.toContain(alpha(TOKENS.surface, 0.85));
   });
 
-  it("подписи уровней не уходят под шкалу цены: правый конец у края панели — подпись внутри рисунка, узкий — слева", () => {
+  it("подписи уровней не уходят под шкалу цены: продлённый — столбцом у края панели; не продлённый у края — внутри рисунка, узкий — слева", () => {
     // шкала времени подделки: 0…110 логических на 800 px — свеча 108 у самого правого края
     const at = (i: number) => T0 + i * H;
     const inside = (c: ReturnType<typeof canvas>) => {
@@ -356,22 +362,27 @@ describe("Фибоначчи и цвет рисунков по умолчани�
       for (const b of c.boxes) expect(b.x + b.w).toBeLessThanOrEqual(PANE_W);
       return labels;
     };
-    const wide = inside(render([{ ...fib("text2"), points: [{ time: at(60), price: 120 }, { time: at(108), price: 80 }] }]));
+    // продлённый (по умолчанию): подписи — столбцом, правый край у края панели минус зазор
+    for (const t of inside(render([{ ...fib("text2"), points: [{ time: at(60), price: 120 }, { time: at(108), price: 80 }] }]))) expect(t.x - 2 + t.w + 4, t.text).toBeCloseTo(PANE_W - FIB_LABEL_EDGE_PX, 6);
+    // не продлённый — прежние места у рисунка
+    const old = (points: Drawing["points"]): Drawing => ({ ...fib("text2"), points, style: { ...fib("text2").style, extend: false } });
+    const wide = inside(render([old([{ time: at(60), price: 120 }, { time: at(108), price: 80 }])]));
     // внутри рисунка: конец подписи — левее правого конца
     const series = makeEnv(() => bars(60)).chart.timeScale();
     const right = series.logicalToCoordinate(108);
     for (const t of wide) expect(t.x + t.w).toBeLessThanOrEqual(right);
     // узкий у края: подписи слева от левого конца
-    const narrow = inside(render([{ ...fib("text2"), points: [{ time: at(104), price: 120 }, { time: at(108), price: 80 }] }]));
+    const narrow = inside(render([old([{ time: at(104), price: 120 }, { time: at(108), price: 80 }])]));
     const left = series.logicalToCoordinate(104);
     for (const t of narrow) expect(t.x + t.w).toBeLessThanOrEqual(left);
     // место справа есть — подписи справа, как раньше
-    const free = render([fib("text2")]).texts.filter((t) => / · /.test(t.text));
+    const free = render([old(fib("text2").points)]).texts.filter((t) => / · /.test(t.text));
     for (const t of free) expect(t.x).toBeGreaterThan(series.logicalToCoordinate(40));
   });
 
-  it("прежний цвет по умолчанию (accent) рисуется нейтральным; выбранный цвет — как есть", () => {
-    expect(new Set(render([fib("accent")]).strokes.map((s) => s.style))).toEqual(new Set([TOKENS.text2]));
+  it("прежний цвет по умолчанию (accent) рисуется как нынешний (разноцветным); выбранный цвет — как есть", () => {
+    expect(render([fib("accent")]).strokes.map((s) => s.style)).toEqual(render([fib("text2")]).strokes.map((s) => s.style));
+    expect(new Set(render([fib("accent")]).strokes.map((s) => s.style))).not.toContain(TOKENS.accent);
     const line = { ...d("t", "trend", [{ time: T0 + 10 * H, price: 120 }, { time: T0 + 40 * H, price: 80 }]), style: { color: "down" as const, width: 1 as const, dashed: false } };
     expect(render([line]).strokes[0]!.style).toBe(TOKENS.down);
   });
@@ -400,14 +411,17 @@ describe("рисунок «на всех таймфреймах» с точка�
     expect(proj.x(T0 - 2.5 * H)).toBeCloseTo(xAt(-2.5), 9);
   });
 
-  it("линии уровней — от A до B, подписи — у правого конца, а не стопкой у левого края панели", () => {
+  it("линии уровней — от A до B (и продление от B до края), подписи — правее рисунка, а не стопкой у левого края панели", () => {
     const c = render([fib]);
-    const levels = c.strokes.filter((s) => s.y0 === s.y1);
+    const levels = c.strokes.filter((s) => s.y0 === s.y1 && s.x1 < PANE_W);
     expect(levels).toHaveLength(4);
     for (const s of levels) {
       expect(s.x0).toBeCloseTo(xAt(10.75), 6);
       expect(s.x1).toBeCloseTo(xAt(40.25), 6);
     }
+    const ext = c.strokes.filter((s) => s.y0 === s.y1 && s.x1 === PANE_W);
+    expect(ext).toHaveLength(4);
+    for (const s of ext) expect(s.x0).toBeCloseTo(xAt(40.25), 6);
     const labels = c.texts.filter((t) => / · /.test(t.text));
     expect(labels).toHaveLength(4);
     for (const t of labels) expect(t.x, t.text).toBeGreaterThan(xAt(40.25));

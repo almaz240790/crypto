@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DrawingController, type DrawProjector } from "../drawings/controller";
+import { DrawingController, type DrawGuide, type DrawProjector } from "../drawings/controller";
 import { positionScreen } from "../drawings/geometry";
 import { atrAt } from "../drawings/position";
 import { CLICK_SLOP_PX, DBLCLICK_MS, DEFAULT_STYLE, FIB_LEVELS, HANDLE_TOUCH_PX, type Drawing } from "../drawings/types";
@@ -60,18 +60,18 @@ const projOf = (pxBar: number): DrawProjector => ({
 });
 const CANDLES = bars(100);
 
-function setup(o: { magnet?: boolean; items?: Drawing[]; coarse?: boolean; pxBar?: number; candles?: Candle[]; tick?: number | null; tf?: () => number; stale?: boolean; proj?: DrawProjector; fibLevels?: () => readonly number[] | null | undefined } = {}) {
+function setup(o: { magnet?: boolean; items?: Drawing[]; coarse?: boolean; pxBar?: number; candles?: Candle[]; tick?: number | null; tf?: () => number; stale?: boolean; proj?: DrawProjector; fibLevels?: () => readonly number[] | null | undefined; fibExtend?: () => boolean | null | undefined } = {}) {
   const doc = new FakeTarget();
   const el = Object.assign(new FakeTarget(), { ownerDocument: doc, getBoundingClientRect: () => ({ left: 0, top: 0 }), setPointerCapture: () => undefined });
   let items: Drawing[] = o.items ?? [];
   let n = 0;
   let selected: string | null = null;
   const clock = { now: 0 };
-  const log = { created: [] as Drawing[], selected: [] as (string | null)[], drafts: [] as (Drawing | null)[], steps: [] as number[], done: [] as boolean[], rulers: [] as (Drawing | null)[], editEnds: 0, moves: [] as { id: string; final: boolean; points: Drawing["points"]; origin?: Drawing["points"] }[] };
+  const log = { created: [] as Drawing[], selected: [] as (string | null)[], drafts: [] as (Drawing | null)[], steps: [] as number[], done: [] as boolean[], rulers: [] as (Drawing | null)[], guides: [] as (DrawGuide | null)[], editEnds: 0, moves: [] as { id: string; final: boolean; points: Drawing["points"]; origin?: Drawing["points"] }[] };
   const ctrl = new DrawingController(
     el as unknown as HTMLElement,
     o.proj ?? projOf(o.pxBar ?? PX_BAR),
-    { getDrawings: () => items, getCandles: () => o.candles ?? CANDLES, tfSeconds: H, ...(o.tf ? { getTfSeconds: o.tf } : {}), getTick: () => o.tick ?? null, timeframe: null, touch: o.coarse ?? false, magnet: o.magnet ?? false, newId: () => `n${++n}`, getSelectedId: () => selected, now: () => clock.now, ...(o.fibLevels ? { getFibLevels: o.fibLevels } : {}) },
+    { getDrawings: () => items, getCandles: () => o.candles ?? CANDLES, tfSeconds: H, ...(o.tf ? { getTfSeconds: o.tf } : {}), getTick: () => o.tick ?? null, timeframe: null, touch: o.coarse ?? false, magnet: o.magnet ?? false, newId: () => `n${++n}`, getSelectedId: () => selected, now: () => clock.now, ...(o.fibLevels ? { getFibLevels: o.fibLevels } : {}), ...(o.fibExtend ? { getFibExtend: o.fibExtend } : {}) },
     {
       onCreate: (d) => {
         log.created.push(d);
@@ -92,6 +92,7 @@ function setup(o: { magnet?: boolean; items?: Drawing[]; coarse?: boolean; pxBar
       onDone: (ended) => log.done.push(ended),
       onStep: (k) => log.steps.push(k),
       onRuler: (d) => log.rulers.push(d),
+      onGuide: (g) => log.guides.push(g),
       onEditEnd: () => log.editEnds++,
     },
   );
@@ -134,7 +135,11 @@ function setup(o: { magnet?: boolean; items?: Drawing[]; coarse?: boolean; pxBar
   const select = (id: string | null) => {
     selected = id;
   };
-  return { ctrl, el, doc, log, items: () => items, selected: () => selected, select, clock, mouse: pointer("mouse"), finger: pointer("touch"), pen: pointer("pen"), pointer, touchReachesChart, dblReachesChart, lastDraft, fire };
+  /** Направляющая точки сейчас (последнее onGuide; не было — null). */
+  const guide = () => log.guides[log.guides.length - 1] ?? null;
+  /** Указатель ушёл с графика (pointerleave на самом элементе графика). */
+  const leave = (pointerType = "mouse") => el.dispatch("pointerleave", { pointerType, pointerId: 1 });
+  return { ctrl, el, doc, log, items: () => items, selected: () => selected, select, clock, mouse: pointer("mouse"), finger: pointer("touch"), pen: pointer("pen"), pointer, touchReachesChart, dblReachesChart, lastDraft, fire, guide, leave };
 }
 
 /** Точка на свече i с ценой p — в пикселях. */
@@ -178,6 +183,29 @@ describe("уровни нового Фибоначчи", () => {
     expect(draw(s).levels).toEqual(FIB_LEVELS);
     remembered = [Number.NaN];
     expect(draw(s).levels).toEqual(FIB_LEVELS);
+  });
+
+  it("«Линии до края» выключали в прошлый раз — новый Фибоначчи (и предпросмотр) с extend: false; включили или выбора нет — без поля", () => {
+    let remembered: boolean | null | undefined = false;
+    const s = setup({ fibExtend: () => remembered });
+    s.ctrl.setTool("fib");
+    s.mouse.tap(...at(10, 120));
+    s.mouse.move(...at(20, 100));
+    expect(s.lastDraft()!.style.extend).toBe(false);
+    s.mouse.tap(...at(30, 90));
+    expect(s.log.created[0]!.style).toEqual({ color: "text2", width: 1, dashed: false, extend: false });
+    for (const v of [true, null, undefined]) {
+      remembered = v;
+      expect("extend" in draw(s).style, String(v)).toBe(false);
+    }
+    // у других инструментов поля нет, что бы ни было выбрано
+    remembered = false;
+    s.ctrl.setTool("trend");
+    s.mouse.tap(...at(10, 120));
+    s.mouse.tap(...at(30, 90));
+    const trend = s.log.created.at(-1)!;
+    expect(trend.type).toBe("trend");
+    expect("extend" in trend.style).toBe(false);
   });
 
   it("у других инструментов уровней нет, какой бы набор ни был выбран", () => {
@@ -1376,3 +1404,249 @@ describe("сдвиг рисунка за тело на логарифмичес�
   });
 });
 
+
+/**
+ * Направляющая точки (просьба владельца: «нужно когда нажимаешь не точку а линия горизонтальная чтоб поймать край
+ * свечи»; ADR-0009, «Рисование», дополнение 2026-11-13): пока точку ставят или тянут — горизонталь на её цене после
+ * магнита (хозяин рисует её через панель и метку цены на шкале). Мышь — наведение с инструментом и перетаскивание
+ * ручки; палец — пока он на графике (точка A, B, протягивание, ручки). Палец подняли, правка кончилась, инструмент
+ * снят — направляющей нет.
+ */
+describe("направляющая точки", () => {
+  const near = (i: number, part: "high" | "low", px: number) => {
+    const c = CANDLES[i]!;
+    // px выше максимума или ниже минимума: магнит (12 px) уводит точку на край свечи
+    return [xOf(c.time), part === "high" ? yOf(c.high) - px : yOf(c.low) + px] as const;
+  };
+
+  it("мышь: с инструментом — под курсором, с магнитом — на краю свечи; над шкалой цены, вне графика и без инструмента — нет", () => {
+    const c = CANDLES[20]!;
+    const s = setup({ magnet: true });
+    s.mouse.move(...near(20, "high", 6));
+    expect(s.guide()).toBeNull();
+    s.ctrl.setTool("fib");
+    s.mouse.move(xOf(c.time) + 3, yOf(c.high) - 6);
+    expect(s.guide()).toEqual({ time: c.time, price: c.high, snapped: true, touch: false });
+    // без магнита — цена под курсором как есть
+    s.ctrl.setMagnet(false);
+    s.mouse.move(...at(20, 130));
+    expect(s.guide()).toEqual({ time: c.time, price: 130, snapped: false, touch: false });
+    // над шкалой цены — нет; вернулись — снова есть; ушли с графика — нет
+    s.mouse.move(PLOT_W + 10, yOf(130));
+    expect(s.guide()).toBeNull();
+    s.mouse.move(...at(20, 130));
+    expect(s.guide()).not.toBeNull();
+    s.leave();
+    expect(s.guide()).toBeNull();
+    // инструмент сняли (Esc, «Отменить») — нет
+    s.mouse.move(...at(20, 130));
+    s.ctrl.setTool(null);
+    expect(s.guide()).toBeNull();
+    s.mouse.move(...at(25, 125));
+    expect(s.guide()).toBeNull();
+  });
+
+  it("мышь: клик — точка A, направляющая ведёт следующую точку вместе с предпросмотром; рисунок готов — направляющей нет, в «серии» — снова под курсором", () => {
+    const s = setup();
+    s.ctrl.setTool("trend");
+    s.mouse.tap(...at(10, 120));
+    expect(s.guide()).toEqual({ time: T0 + 10 * H, price: 120, snapped: false, touch: false });
+    s.mouse.move(...at(20, 100));
+    expect(s.guide()).toEqual({ time: T0 + 20 * H, price: 100, snapped: false, touch: false });
+    expect(s.lastDraft()!.points[1]).toEqual({ time: T0 + 20 * H, price: 100 });
+    s.mouse.tap(...at(30, 90));
+    expect(s.log.created).toHaveLength(1);
+    expect(s.guide()).toBeNull();
+    s.ctrl.setSeries(true);
+    s.ctrl.setTool("hline");
+    s.mouse.tap(...at(40, 110));
+    expect(s.log.created).toHaveLength(2);
+    expect(s.guide()).toEqual({ time: T0 + 40 * H, price: 110, snapped: false, touch: false });
+  });
+
+  it("мышь: нажать-протянуть — направляющая за указателем; у одноточечного (линия) — на месте нажатия, где будет линия", () => {
+    const s = setup();
+    s.ctrl.setTool("rect");
+    s.mouse.down(...at(10, 120));
+    expect(s.guide()).toMatchObject({ time: T0 + 10 * H, price: 120 });
+    s.mouse.move(...at(20, 110));
+    s.mouse.move(...at(30, 95));
+    expect(s.guide()).toMatchObject({ time: T0 + 30 * H, price: 95 });
+    s.mouse.up(...at(30, 95));
+    expect(s.log.created[0]!.points).toEqual([{ time: T0 + 10 * H, price: 120 }, { time: T0 + 30 * H, price: 95 }]);
+    const t = setup();
+    t.ctrl.setTool("hline");
+    t.mouse.down(...at(10, 120));
+    t.mouse.move(...at(10, 117));
+    t.mouse.move(...at(12, 110));
+    expect(t.guide()).toMatchObject({ time: T0 + 10 * H, price: 120 });
+    t.mouse.up(...at(12, 110));
+    expect(t.log.created[0]!.points).toEqual([{ time: T0 + 10 * H, price: 120 }]);
+    expect(t.guide()).toBeNull();
+  });
+
+  it("палец до точки A: пока палец стоит — направляющая на точке, которую поставит касание (магнит — край свечи); подняли — A там же, направляющей нет", () => {
+    const c = CANDLES[30]!;
+    const s = setup({ magnet: true, coarse: true });
+    s.ctrl.setTool("trend");
+    s.finger.down(...near(30, "low", 8));
+    expect(s.guide()).toEqual({ time: c.time, price: c.low, snapped: true, touch: true });
+    // жест по-прежнему принадлежит графику до сдвига: касания доходят до LWC
+    expect(s.touchReachesChart("touchstart", 1)).toBe(true);
+    // дрожь пальца в пределах касания — направляющая там же
+    s.finger.move(xOf(c.time) + 3, yOf(c.low) + 9);
+    expect(s.guide()).toMatchObject({ time: c.time, price: c.low });
+    s.finger.up(xOf(c.time) + 3, yOf(c.low) + 9);
+    expect(s.guide()).toBeNull();
+    expect(s.ctrl.placed).toBe(1);
+    expect(s.lastDraft()!.points[0]).toEqual({ time: c.time, price: c.low });
+  });
+
+  it("палец до точки A: сдвиг графика — направляющая пропадает с началом сдвига, точки нет; щипок — тоже", () => {
+    const s = setup({ coarse: true });
+    s.ctrl.setTool("fib");
+    s.finger.down(...at(30, 100));
+    expect(s.guide()).not.toBeNull();
+    s.finger.move(...at(28, 100));
+    s.finger.move(...at(20, 100));
+    expect(s.guide()).toBeNull();
+    s.finger.up(...at(20, 100));
+    expect(s.ctrl.placed).toBe(0);
+    s.finger.down(...at(30, 100));
+    expect(s.guide()).not.toBeNull();
+    s.pointer("touch", 2).down(...at(40, 100));
+    expect(s.guide()).toBeNull();
+    s.finger.move(...at(29, 100));
+    expect(s.guide()).toBeNull();
+    s.pointer("touch", 2).up(...at(40, 100));
+    s.finger.up(...at(29, 100));
+    expect(s.guide()).toBeNull();
+    expect(s.ctrl.placed).toBe(0);
+  });
+
+  it("палец после A: нажатие на вторую точку — направляющая, пока держат; протягивание ведёт её с точкой; подняли — нет", () => {
+    const s = setup({ coarse: true });
+    s.ctrl.setTool("fib");
+    s.finger.tap(...at(10, 120));
+    expect(s.guide()).toBeNull();
+    s.finger.down(...at(30, 90));
+    expect(s.guide()).toEqual({ time: T0 + 30 * H, price: 90, snapped: false, touch: true });
+    s.finger.move(...at(33, 87));
+    s.finger.move(...at(35, 85));
+    expect(s.guide()).toEqual({ time: T0 + 35 * H, price: 85, snapped: false, touch: true });
+    expect(s.lastDraft()!.points[1]).toEqual({ time: T0 + 35 * H, price: 85 });
+    s.finger.up(...at(35, 85));
+    expect(s.guide()).toBeNull();
+    // касание рядом с протянутой точкой (палец её закрывает) подтвердит её — направляющая у неё, а не под пальцем
+    const px = [xOf(T0 + 35 * H) + 6, yOf(85) + 7] as const;
+    s.finger.down(...px);
+    expect(s.guide()).toEqual({ time: T0 + 35 * H, price: 85, snapped: false, touch: true });
+    s.finger.up(...px);
+    expect(s.log.created[0]!.points[1]).toEqual({ time: T0 + 35 * H, price: 85 });
+    expect(s.guide()).toBeNull();
+  });
+
+  it("палец: протянули к краю свечи — направляющая на её максимуме (магнит), точка там же", () => {
+    const c = CANDLES[40]!;
+    const s = setup({ magnet: true, coarse: true });
+    s.ctrl.setTool("trend");
+    s.finger.tap(...at(10, 120));
+    s.finger.down(...at(30, 110));
+    s.finger.move(...at(35, 108));
+    s.finger.move(...near(40, "high", 7));
+    expect(s.guide()).toEqual({ time: c.time, price: c.high, snapped: true, touch: true });
+    expect(s.lastDraft()!.points[1]).toEqual({ time: c.time, price: c.high });
+    s.finger.up(...near(40, "high", 7));
+    expect(s.guide()).toBeNull();
+  });
+
+  it("ручка мышью: нажали — направляющая на точке, тянут — за ней с магнитом, отпустили — нет; тело — без направляющей", () => {
+    const c = CANDLES[50]!;
+    const s = setup({ items: [FIB], magnet: true });
+    s.mouse.down(...at(40, 80));
+    expect(s.guide()).toEqual({ time: T0 + 40 * H, price: 80, snapped: false, touch: false });
+    s.mouse.move(...at(45, 90));
+    s.mouse.move(...near(50, "low", 5));
+    expect(s.guide()).toEqual({ time: c.time, price: c.low, snapped: true, touch: false });
+    s.mouse.up(...near(50, "low", 5));
+    expect(s.log.moves.at(-1)).toMatchObject({ final: true, points: [FIB.points[0], { time: c.time, price: c.low }] });
+    expect(s.guide()).toBeNull();
+    // тело: точку не ставят и не тянут — направляющей нет
+    const n = s.log.guides.length;
+    s.mouse.drag(...at(25, 100), ...at(20, 95));
+    expect(s.log.guides.slice(n).every((g) => g === null)).toBe(true);
+    expect(s.guide()).toBeNull();
+  });
+
+  it("ручка пальцем у выбранного: направляющая, пока палец на ручке; второй палец (щипок) — нет", () => {
+    const s = setup({ items: [FIB], coarse: true });
+    s.select("F");
+    s.finger.down(...at(10, 120));
+    expect(s.guide()).toEqual({ time: T0 + 10 * H, price: 120, snapped: false, touch: true });
+    s.finger.move(...at(12, 124));
+    expect(s.guide()).toMatchObject({ time: T0 + 12 * H, price: 124, touch: true });
+    s.pointer("touch", 2).down(...at(40, 100));
+    expect(s.guide()).toBeNull();
+    s.pointer("touch", 2).up(...at(40, 100));
+    s.finger.up(...at(12, 124));
+    expect(s.guide()).toBeNull();
+    // отмена жеста системой — тоже нет
+    s.finger.down(...at(10, 120));
+    expect(s.guide()).not.toBeNull();
+    s.finger.cancel(...at(10, 120));
+    expect(s.guide()).toBeNull();
+  });
+
+  it("позиция: ручки входа, стопа и цели — направляющая на их цене (по шагу цены) у левого края; правый край и тело — без неё", () => {
+    const s = setup({ items: [POS], tick: 0.1 });
+    s.mouse.down(200, 416);
+    expect(s.guide()).toEqual({ time: T0 + 20 * H, price: 96, snapped: false, touch: false });
+    s.mouse.move(200, 430);
+    s.mouse.move(200, 441);
+    expect(s.guide()).toEqual({ time: T0 + 20 * H, price: s.log.moves.at(-1)!.points[1]!.price, snapped: false, touch: false });
+    expect(s.guide()!.price).toBe(89.8);
+    s.mouse.up(200, 441);
+    expect(s.guide()).toBeNull();
+    const end = setup({ items: [POS] });
+    end.mouse.drag(500, 400, 600, 420);
+    expect(end.log.guides.every((g) => g === null)).toBe(true);
+    const body = setup({ items: [POS] });
+    body.mouse.drag(300, 384, 330, 404);
+    expect(body.log.guides.every((g) => g === null)).toBe(true);
+  });
+
+  it("у всех инструментов с ценой точки — направляющая; позиция — на цене входа по шагу; у вертикальной линии (только время) — нет", () => {
+    for (const tool of ["fib", "trend", "ray", "extended", "hline", "hray", "rect", "channel", "ruler", "note"] as const) {
+      const s = setup();
+      s.ctrl.setTool(tool);
+      s.mouse.move(...at(20, 104));
+      expect(s.guide(), tool).toEqual({ time: T0 + 20 * H, price: 104, snapped: false, touch: false });
+    }
+    for (const tool of ["position-long", "position-short"] as const) {
+      const s = setup({ tick: 0.1 });
+      s.ctrl.setTool(tool);
+      s.mouse.move(xOf(T0 + 20 * H), yOf(104.2375));
+      expect(s.guide(), tool).toEqual({ time: T0 + 20 * H, price: 104.2, snapped: false, touch: false });
+      s.mouse.tap(xOf(T0 + 20 * H), yOf(104.2375));
+      expect(s.log.created[0]!.points[0]!.price).toBe(104.2);
+    }
+    const v = setup();
+    v.ctrl.setTool("vline");
+    v.mouse.move(...at(20, 104));
+    expect(v.guide()).toBeNull();
+  });
+
+  it("сообщается только смена: курсор в пределах той же точки (магнит, та же свеча) — без новых событий; попадание по рисункам не меняется", () => {
+    const c = CANDLES[20]!;
+    const s = setup({ magnet: true, items: [FIB] });
+    s.ctrl.setTool("trend");
+    s.mouse.move(xOf(c.time), yOf(c.high) - 6);
+    const n = s.log.guides.length;
+    expect(s.guide()).toMatchObject({ price: c.high, snapped: true });
+    s.mouse.move(xOf(c.time) + 2, yOf(c.high) - 5);
+    s.mouse.move(xOf(c.time) - 2, yOf(c.high) - 3);
+    expect(s.log.guides).toHaveLength(n);
+    expect(s.ctrl.hitAt(...at(40, 80))).toBe("F");
+    expect(s.ctrl.hitAt(...at(70, 160))).toBeNull();
+  });
+});

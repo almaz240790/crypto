@@ -5,11 +5,13 @@ import {
   alive,
   canRedo,
   canUndo,
+  changedFibExtend,
   changedFibLevels,
   cleanDrawingLevels,
   clearDrawings,
   commitMove,
   createState,
+  fibExtended,
   mergeRemote,
   normalizeFibLevels,
   redo,
@@ -76,21 +78,29 @@ function load(symbol: string): Drawing[] {
   }
 }
 
+/** Выбор у Фибоначчи, который запоминается для новых рисунков: набор уровней и «Линии до края». */
+export type FibDefaults = { levels?: number[]; extend?: boolean };
+
+/** Хозяину — только то, что изменилось (null — не менялось); ничего не изменилось — не вызывается. */
+function notifyFibDefaults(cb: ((p: FibDefaults) => void) | undefined, levels: number[] | null, extend: boolean | null): void {
+  if (levels || extend !== null) cb?.({ ...(levels ? { levels } : {}), ...(extend !== null ? { extend } : {}) });
+}
+
 /**
  * Рисунки инструмента: состояние с undo/redo, инструмент, магнит, «серия», localStorage; с входом —
  * синхронизация с сервером (оптимистичная запись, офлайн-очередь, последняя запись побеждает).
  * Инструмент — на один рисунок (ADR-0009, «Рисование»): после рисунка контроллер снимает его, если «серия» выключена.
  *
- * onFibLevels — пользователь изменил уровни Фибоначчи: правкой в карточке (в том числе «стандартные»), отменой или
- * повтором такой правки. Хозяин запоминает набор для новых рисунков (настройки терминала); слияние с сервером и копия
- * на другой инструмент его не вызывают. onRefused — сервер не принял рисунки (лимит тарифа и др.): хозяин коротко
- * сообщает об этом.
+ * onFibDefaults — пользователь изменил уровни Фибоначчи или «Линии до края»: правкой в карточке (в том числе
+ * «стандартные»), отменой или повтором такой правки; в вызове — только то, что изменилось. Хозяин запоминает выбор для
+ * новых рисунков (настройки терминала); слияние с сервером и копия на другой инструмент его не вызывают. onRefused —
+ * сервер не принял рисунки (лимит тарифа и др.): хозяин коротко сообщает об этом.
  *
  * Очередь синхронизации общая для всех инструментов: из ответа сервера в состояние попадают только рисунки открытого
  * инструмента (аудит FI-2, DTS-1) — копия на другой инструмент и правки, оставшиеся в очереди до смены инструмента,
  * в чужой график не переезжают.
  */
-export function useDrawings(symbol: string, authed: boolean, onFibLevels?: (levels: number[]) => void, onRefused?: (r: DrawingsRefused) => void) {
+export function useDrawings(symbol: string, authed: boolean, onFibDefaults?: (p: FibDefaults) => void, onRefused?: (r: DrawingsRefused) => void) {
   const [state, setState] = useState<DrawingsState>(() => createState());
   const [tool, setTool] = useState<DrawingType | null>(null);
   const [magnet, setMagnet] = useState(true);
@@ -107,10 +117,10 @@ export function useDrawings(symbol: string, authed: boolean, onFibLevels?: (leve
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
-  const onFibLevelsRef = useRef(onFibLevels);
+  const onFibDefaultsRef = useRef(onFibDefaults);
   useEffect(() => {
-    onFibLevelsRef.current = onFibLevels;
-  }, [onFibLevels]);
+    onFibDefaultsRef.current = onFibDefaults;
+  }, [onFibDefaults]);
   const onRefusedRef = useRef(onRefused);
   useEffect(() => {
     onRefusedRef.current = onRefused;
@@ -269,24 +279,31 @@ export function useDrawings(symbol: string, authed: boolean, onFibLevels?: (leve
       clear: () => setState((s) => clearDrawings(s)),
       lock: (id: string) => setState((s) => toggleLock(s, id)),
       patch: (id: string, p: Partial<Drawing>) => {
-        // уровни Фибоначчи хранятся приведёнными; выбранный набор — он же у следующего рисунка
+        // уровни Фибоначчи хранятся приведёнными; выбранный набор и «Линии до края» — они же у следующего рисунка
         const levels = p.levels ? normalizeFibLevels(p.levels) : null;
+        const cur = stateRef.current.items.find((d) => d.id === id);
         // тот же набор («стандартные» у рисунка со стандартными уровнями) — без пустого шага отмены и синхронизации
-        const cur = levels && Object.keys(p).length === 1 ? stateRef.current.items.find((d) => d.id === id) : undefined;
-        if (!cur || !sameFibLevels(cur.levels, levels)) setState((s) => updateDrawing(s, id, levels ? { ...p, levels } : p));
-        if (levels) onFibLevelsRef.current?.(levels);
+        const same = levels !== null && Object.keys(p).length === 1 && cur !== undefined && sameFibLevels(cur.levels, levels);
+        if (!same) setState((s) => updateDrawing(s, id, levels ? { ...p, levels } : p));
+        const extend = p.style && cur?.type === "fib" && fibExtended({ style: p.style }) !== fibExtended(cur) ? fibExtended({ style: p.style }) : null;
+        notifyFibDefaults(onFibDefaultsRef.current, levels, extend);
       },
       hide: (v: boolean) => setState((s) => setHidden(s, v)),
-      // отмена и повтор правки уровней возвращают и набор для новых Фибоначчи: он — то, что пользователь видит у рисунка
+      // отмена и повтор правки уровней и «Линий до края» возвращают и выбор для новых Фибоначчи: он — то, что
+      // пользователь видит у рисунка
       undo: () => {
-        const levels = changedFibLevels(stateRef.current.items, undo(stateRef.current).items);
+        const after = undo(stateRef.current).items;
+        const levels = changedFibLevels(stateRef.current.items, after);
+        const extend = changedFibExtend(stateRef.current.items, after);
         setState((s) => undo(s));
-        if (levels) onFibLevelsRef.current?.(levels);
+        notifyFibDefaults(onFibDefaultsRef.current, levels, extend);
       },
       redo: () => {
-        const levels = changedFibLevels(stateRef.current.items, redo(stateRef.current).items);
+        const after = redo(stateRef.current).items;
+        const levels = changedFibLevels(stateRef.current.items, after);
+        const extend = changedFibExtend(stateRef.current.items, after);
         setState((s) => redo(s));
-        if (levels) onFibLevelsRef.current?.(levels);
+        notifyFibDefaults(onFibDefaultsRef.current, levels, extend);
       },
       /**
        * Копия на другой инструмент (план 2A.5): время как есть, цены умножаются на ratio. "limit" — у цели уже лимит

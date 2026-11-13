@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const api = vi.fn();
 vi.mock("./auth-client", () => ({ api: (...args: unknown[]) => api(...args) }));
 
-const { queueAdd, queueFlush, queueRead } = await import("./drawings");
+const { fromWire, queueAdd, queueFlush, queueRead, toWire } = await import("./drawings");
 type Wire = Parameters<typeof queueAdd>[0][number];
 
 const w = (id: string, symbol = "BTCUSDT", updated_at = 1000): Wire => ({ client_id: id, symbol, timeframe: null, type: "hline", points: [{ time: 1, price: 100 }], style: { color: "text2", width: 1, dashed: false }, text: null, levels: null, locked: false, updated_at, deleted_at: null });
@@ -61,5 +61,18 @@ describe("queueFlush", () => {
   it("пустая очередь — без запроса", async () => {
     expect(await queueFlush()).toEqual({ items: [], rejected: [] });
     expect(api).not.toHaveBeenCalled();
+  });
+});
+
+describe("формат обмена: «Линии до края» Фибоначчи (style.extend)", () => {
+  it("поле стиля доходит до сервера и обратно как есть; рисунок без поля остаётся без поля (продлён по умолчанию)", () => {
+    const fib = { id: "f1", type: "fib" as const, points: [{ time: 1, price: 100 }, { time: 2, price: 110 }], style: { color: "text2" as const, width: 1 as const, dashed: false, extend: false }, locked: false, timeframe: null, updated_at: 5 };
+    const wire = toWire(fib, "BTCUSDT");
+    expect(wire.style).toEqual({ color: "text2", width: 1, dashed: false, extend: false });
+    // сервер хранит style словарём (routers/drawings.py) и отдаёт как принял
+    const back = fromWire(JSON.parse(JSON.stringify(wire)) as typeof wire);
+    expect(back.style.extend).toBe(false);
+    const old = fromWire({ ...wire, style: { color: "text2", width: 1, dashed: false } });
+    expect("extend" in old.style).toBe(false);
   });
 });

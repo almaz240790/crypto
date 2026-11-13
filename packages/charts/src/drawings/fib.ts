@@ -94,3 +94,63 @@ export function changedFibLevels(before: readonly Drawing[], after: readonly Dra
   }
   return out;
 }
+
+/**
+ * Линии уровней до правого края панели (ADR-0009, «Рисование», дополнение 2026-11-13): по умолчанию — да. Поля нет
+ * (рисунки до 11.2026, другие клиенты) — продлены; style.extend === false — линии только от A до B, подписи у рисунка.
+ */
+export function fibExtended(d: Pick<Drawing, "style">): boolean {
+  return d.style?.extend !== false;
+}
+
+/**
+ * «Линии до края» живого Фибоначчи, изменённые шагом истории (отмена, повтор): новое значение — его хозяин запоминает
+ * для новых рисунков, как набор уровней (changedFibLevels). null — шаг этого не менял.
+ */
+export function changedFibExtend(before: readonly Drawing[], after: readonly Drawing[]): boolean | null {
+  const prev = new Map(before.map((d) => [d.id, d]));
+  let out: boolean | null = null;
+  for (const d of after) {
+    const was = prev.get(d.id);
+    if (!was || was === d || d.type !== "fib" || d.deleted_at || was.deleted_at) continue;
+    if (fibExtended(was) !== fibExtended(d)) out = fibExtended(d);
+  }
+  return out;
+}
+
+/**
+ * Разноцветный Фибоначчи (как у TradingView по умолчанию): цвет рисунка — умолчание (text2; accent — прежнее умолчание
+ * до 11.2026). Цвет, выбранный иначе (up, down, warn, text3 — другой клиент или будущий выбор цвета), — у всех уровней
+ * один, без заливки, как раньше.
+ */
+export function fibMulticolor(d: Pick<Drawing, "style">): boolean {
+  return d.style.color === "text2" || d.style.color === "accent";
+}
+
+/**
+ * Оттенок уровня — номер в палитре --fib-1…--fib-6 (0 оранжевый, 1 золотой, 2 бирюзовый, 3 синий, 4 фиолетовый,
+ * 5 пурпурный). Красного и зелёного в палитре нет (план 5.3: только направление и результат) — ни один уровень не
+ * похож на сигнал покупки или продажи. Коррекция идёт от тёплых к холодным, как у TradingView (где у него красный —
+ * пурпурный, где зелёный — золотой): 0.236 пурпурный, 0.382 оранжевый, 0.5 золотой, 0.618 бирюзовый, 0.705 синий,
+ * 0.786 фиолетовый. Золотое сечение — один цвет: 0.618, 1.618 и −0.618 бирюзовые; цели по движению — те же оттенки,
+ * что у расширений на столько же хода (−0.272 и 1.272 оранжевые). Соседние уровни набора различаются.
+ */
+const FIB_HUE: ReadonlyMap<number, number> = new Map([
+  [-1, 3],
+  [-0.618, 2],
+  [-0.272, 0],
+  [0.236, 5],
+  [0.382, 0],
+  [0.5, 1],
+  [0.618, 2],
+  [0.705, 3],
+  [0.786, 4],
+  [1.272, 0],
+  [1.618, 2],
+  [2.618, 5],
+]);
+
+/** Номер оттенка уровня в палитре --fib-*; null — нейтральный (0, 1 и уровни вне набора — с другого клиента). */
+export function fibHue(level: number): number | null {
+  return FIB_HUE.get(level) ?? null;
+}

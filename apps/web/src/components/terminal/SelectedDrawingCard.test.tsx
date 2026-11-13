@@ -21,7 +21,13 @@ function groups(html: string): { label: string; chips: Chip[] }[] {
   }
   return out;
 }
-const render = (levels: number[] | undefined, locked = false) => renderToStaticMarkup(<FibLevels levels={levels} locked={locked} onChange={() => undefined} />);
+const render = (levels: number[] | undefined, locked = false, extend = true) => renderToStaticMarkup(<FibLevels levels={levels} locked={locked} extend={extend} onChange={() => undefined} onExtend={() => undefined} />);
+/** Переключатель «Линии до края»: флажок с подписью; null — его нет. */
+function extendBox(html: string): { checked: boolean; disabled: boolean } | null {
+  const m = /<label[^>]*><input([^>]*)\/?>\s*(?:<!-- -->)?\s*Линии до края<\/label>/.exec(html);
+  if (!m) return null;
+  return { checked: /\schecked(=""|\s|$)/.test(m[1]!), disabled: /\sdisabled(=""|\s|$)/.test(m[1]!) };
+}
 
 describe("FibLevels", () => {
   it("три группы простыми словами; переключатель на каждый уровень, нажаты — показанные (без набора — по умолчанию)", () => {
@@ -64,5 +70,21 @@ describe("FibLevels", () => {
     const garbage = groups(render([Number.NaN] as number[])).flatMap((x) => x.chips);
     expect(garbage.filter((c) => c.pressed).map((c) => c.text)).toEqual(FIB_LEVELS.map(String));
     expect(groups(render([])).flatMap((x) => x.chips).filter((c) => c.pressed)).toHaveLength(FIB_LEVELS.length);
+  });
+});
+
+describe("FibLevels: «Линии до края»", () => {
+  it("флажок в панели уровней, до групп уровней (на телефоне — в начале строки, без прокрутки); включён по умолчанию", () => {
+    const html = render(undefined);
+    expect(extendBox(html)).toEqual({ checked: true, disabled: false });
+    expect(html.indexOf("Линии до края")).toBeLessThan(html.indexOf('aria-label="цели по движению"'));
+    expect(html).toContain('type="checkbox"');
+    // переключатели уровней — по-прежнему 14 кнопок aria-pressed: флажок не среди них
+    expect(groups(html).flatMap((x) => x.chips)).toHaveLength(FIB_PRESET_LEVELS.length);
+  });
+
+  it("выключен — у рисунка с extend: false; у заблокированного недоступен", () => {
+    expect(extendBox(render(undefined, false, false))).toEqual({ checked: false, disabled: false });
+    expect(extendBox(render([0, 1], true, true))).toEqual({ checked: true, disabled: true });
   });
 });

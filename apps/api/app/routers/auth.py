@@ -96,6 +96,10 @@ def _set_refresh_cookie(response: Response, raw: str) -> None:
 def _issue(
     db: Session, user: User, request: Request, response: Response, *, verified: bool = False
 ) -> TokenOut:
+    """Итог любого входа (пароль, второй шаг, ссылка, Google, Telegram, регистрация): токены или
+    билет 2FA. Удалённому — 401, заблокированному — 403 «Аккаунт заблокирован. Напишите в
+    поддержку.» (``auth.ensure_can_sign_in``), после проверки пароля, ссылки или кода."""
+    auth.ensure_can_sign_in(user)
     if auth.promote_owner(user, settings.owner_email_set):
         db.commit()
     if not verified and twofactor.is_enabled(db.get(TwoFactor, user.id)):

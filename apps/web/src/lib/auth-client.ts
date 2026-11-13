@@ -35,6 +35,19 @@ export class ApiError extends Error {
 
 let accessToken: string | null = null;
 let refreshing: Promise<string | null> | null = null;
+const sessionLost = new Set<() => void>();
+
+/**
+ * Подписка на конец сеанса: сервер отказал в обновлении токена (сеанс истёк или отозван, аккаунт заблокирован или
+ * удалён). Токен и подсказка входа к этому моменту сброшены — вкладка уже гость; AuthProvider забывает пользователя,
+ * и шапка показывает «Войти» без ошибки на странице. Сбой сети концом сеанса не считается. Возвращает отписку.
+ */
+export function onSessionLost(fn: () => void): () => void {
+  sessionLost.add(fn);
+  return () => {
+    sessionLost.delete(fn);
+  };
+}
 
 export const HINT_COOKIE = "pl_auth";
 
@@ -77,6 +90,7 @@ export function refresh(): Promise<string | null> {
         if (!res.ok) {
           accessToken = null;
           setHint(false);
+          for (const fn of sessionLost) fn();
           return null;
         }
         const j = (await res.json()) as { access_token: string };

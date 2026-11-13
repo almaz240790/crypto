@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { H4, T0, chartSettled, mock, type MockServer } from "./helpers/chart";
+import { H4, T0, chartSettled, mock, painted, type MockServer } from "./helpers/chart";
 import { installStrokes, paneStrokes } from "./helpers/strokes";
 
 /**
@@ -452,8 +452,80 @@ async function candlesByTf(page: Page) {
   });
 }
 
+/**
+ * Где точки рисунка на экране (координаты панели): между свечами — по доле интервала, правее последней — шагом таймфрейма.
+ */
+const pointsAt = (page: Page, pts: Pt[], step: number) =>
+  page.evaluate(
+    ({ pts, step }) => {
+      const el = document.querySelector('[data-testid="terminal"]') as Term;
+      const ts = el.__chart.timeScale();
+      const s = el.__chart.panes()[0]!.getSeries()[0]!;
+      const times = s.data().map((c) => c.time);
+      return pts.map((p) => {
+        let i = times.length - 1;
+        while (i > 0 && times[i]! > p.time) i--;
+        const x0 = ts.timeToCoordinate(times[i]!)!;
+        const next = times[i + 1];
+        const x1 = next !== undefined ? ts.timeToCoordinate(next)! : x0 + (x0 - ts.timeToCoordinate(times[i - 1]!)!);
+        return { x: x0 + ((p.time - times[i]!) / ((next ?? times[i]! + step) - times[i]!)) * (x1 - x0), y: s.priceToCoordinate(p.price)! };
+      });
+    },
+    { pts, step },
+  );
+
+/** Правый край плашки подписи продлённого Фибоначчи — на столько левее края панели (FIB_LABEL_EDGE_PX). */
+const EDGE_GAP = 4;
+
+/**
+ * Вид Фибоначчи на успокоившемся графике (ADR-0009, «Рисование», дополнение 2026-11-13). extended: линии уровней 0
+ * и 1 — от A до B и дальше от B до правого края панели; подписи 0, 0.5, 0.618, 1 и остальные поместившиеся — столбцом
+ * у шкалы цены (правый край — край панели минус зазор), у своих линий; есть место правее B — подписи не на свечах A–B.
+ * Не продлённый: линии только от A до B, подписи — вплотную к рисунку (справа, внутри или слева), как раньше.
+ */
+async function expectFibView(page: Page, d: Stored, step: number, extended: boolean, name: string) {
+  await chartSettled(page);
+  await painted(page);
+  const [a, b] = (await pointsAt(page, d.points, step)) as [{ x: number; y: number }, { x: number; y: number }];
+  const { w, h } = await view(page);
+  expect(b.x - a.x, `${name}: B правее A`).toBeGreaterThan(2);
+  const strokes = await paneStrokes(page, 2);
+  for (const y of [b.y, a.y]) {
+    const lvl = strokes.filter((st) => st.points.length === 2 && Math.abs(st.points[0]![1] - y) < 1 && Math.abs(st.points[1]![1] - y) < 1);
+    const span = (st: (typeof lvl)[number]) => [Math.min(st.points[0]![0], st.points[1]![0]), Math.max(st.points[0]![0], st.points[1]![0])] as const;
+    const found = JSON.stringify(lvl.map((st) => st.points));
+    expect(lvl.some((st) => Math.abs(span(st)[0] - a.x) < 1.5 && Math.abs(span(st)[1] - b.x) < 1.5), `${name}: линия уровня на y=${y.toFixed(1)} от A ${a.x.toFixed(1)} до B ${b.x.toFixed(1)}; найдено ${found}`).toBe(true);
+    const edge = lvl.some((st) => Math.abs(span(st)[0] - b.x) < 1.5 && Math.abs(span(st)[1] - w) < 1);
+    expect(edge, `${name}: продление уровня на y=${y.toFixed(1)} от B ${b.x.toFixed(1)} до края ${w}; найдено ${found}`).toBe(extended);
+  }
+  await expect.poll(async () => (await levelLabels(page)).filter((l) => l.id.startsWith(`${d.id}#`)).length, `${name}: подписи уровней`).toBeGreaterThanOrEqual(4);
+  const ls = (await levelLabels(page)).filter((l) => l.id.startsWith(`${d.id}#`));
+  for (const key of [0, 0.5, 0.618, 1]) expect(ls.map((l) => l.id), `${name}: подпись ${key}`).toContain(`${d.id}#L${key}`);
+  for (const l of ls) {
+    const r = l.rect;
+    expect(r.x >= 0 && r.x + r.w <= w + 0.5 && r.y >= 0 && r.y + r.h <= h + 0.5, `${name}: ${l.text} в панели ${JSON.stringify(r)}`).toBe(true);
+    if (extended) {
+      expect(Math.abs(r.x + r.w - (w - EDGE_GAP)), `${name}: ${l.text} — у шкалы цены (край ${w}), прямоугольник ${JSON.stringify(r)}`).toBeLessThanOrEqual(1);
+      // цена уровня точно (в подписи — округлённая до шага): B − (B − A) × уровень
+      const level = Number(l.id.slice(l.id.indexOf("#L") + 2));
+      const [p1, p2] = d.points as [Pt, Pt];
+      expectAtLine(l, await lineY(page, p2.price - (p2.price - p1.price) * level));
+      if (w - EDGE_GAP - r.w >= b.x + 2) expect(r.x, `${name}: ${l.text} не на свечах A–B (B ${b.x.toFixed(1)})`).toBeGreaterThanOrEqual(b.x);
+    } else {
+      expect(r.x <= b.x + 4 && r.x + r.w >= a.x - 4, `${name}: ${l.text} у рисунка ${a.x.toFixed(1)}…${b.x.toFixed(1)}, прямоугольник ${JSON.stringify(r)}`).toBe(true);
+    }
+  }
+  return { a, b };
+}
+
+/** Флажок «Линии до края» в панели уровней выбранного Фибоначчи. */
+const extendBox = (page: Page) => panel(page).getByRole("checkbox", { name: "Линии до края" });
+const storedExtend = async (page: Page, i = 0) => ((await stored(page))[i] as Stored & { style: { extend?: boolean } }).style.extend;
+/** «Линии до края» для новых Фибоначчи — в настройках терминала, как набор уровней (null — ещё не выбирали). */
+const rememberedExtend = (page: Page) => page.evaluate(() => (JSON.parse(localStorage.getItem("pl-terminal") ?? "{}") as { fibExtend?: boolean }).fibExtend ?? null);
+
 test.describe("рисунок с другого таймфрейма", () => {
-  test("Фибоначчи с 1ч на 4ч и 1Д: точки между свечами — линии уровней от A до B, подписи у рисунка, а не у левого края", async ({ page }) => {
+  test("Фибоначчи с 1ч на 4ч и 1Д: линии уровней от A до B и до правого края, подписи у шкалы цены; «Линии до края» — прежний вид, после перезагрузки тоже", async ({ page }) => {
     await installStrokes(page);
     await mock(page, []);
     await candlesByTf(page);
@@ -487,50 +559,82 @@ test.describe("рисунок с другого таймфрейма", () => {
     await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 1");
     const d0 = (await stored(page))[0]!;
     expect(d0.points.map((p) => p.time)).toEqual([pick.a.time, pick.b.time]);
+    // новый рисунок — продлённый по умолчанию: поля в стиле нет
+    expect(await storedExtend(page)).toBeUndefined();
     await card(page).getByRole("button", { name: "снять выделение" }).click();
 
     for (const [name, url, want] of [["4ч", "4h", H4], ["1Д", "1d", 86400]] as const) {
       await page.getByRole("link", { name }).click();
       await expect(page).toHaveURL(new RegExp(`/chart/BTCUSDT/${url}$`));
       await expect.poll(step).toBe(want);
-      // график таймфрейма — новый: координаты точек и подписи сравниваются на успокоившемся виде (chartSettled), а не
-      // на кадре, после которого вид ещё перестраивается
-      await chartSettled(page);
-      // где точки должны быть: между свечами — по доле интервала, правее последней — шагом таймфрейма
-      const at = await page.evaluate(
-        ({ pts, want }) => {
-          const el = document.querySelector('[data-testid="terminal"]') as Term;
-          const ts = el.__chart.timeScale();
-          const s = el.__chart.panes()[0]!.getSeries()[0]!;
-          const times = s.data().map((c) => c.time);
-          return pts.map((p) => {
-            let i = times.length - 1;
-            while (i > 0 && times[i]! > p.time) i--;
-            const x0 = ts.timeToCoordinate(times[i]!)!;
-            const next = times[i + 1];
-            const x1 = next !== undefined ? ts.timeToCoordinate(next)! : x0 + (x0 - ts.timeToCoordinate(times[i - 1]!)!);
-            return { x: x0 + ((p.time - times[i]!) / ((next ?? times[i]! + want) - times[i]!)) * (x1 - x0), y: s.priceToCoordinate(p.price)! };
-          });
-        },
-        { pts: d0.points, want },
-      );
-      const [a, b] = at as [{ x: number; y: number }, { x: number; y: number }];
-      expect(b.x - a.x, `${name}: B правее A`).toBeGreaterThan(2);
-      // подписи 0, 0.5, 0.618, 1 и остальные поместившиеся — вплотную к рисунку (справа, внутри или слева), не у левого края
-      await expect.poll(async () => (await levelLabels(page)).length, name).toBeGreaterThanOrEqual(4);
-      for (const l of await levelLabels(page)) {
-        expect(l.rect.x <= b.x + 4 && l.rect.x + l.rect.w >= a.x - 4, `${name}: ${l.text} у рисунка ${a.x.toFixed(1)}…${b.x.toFixed(1)}, прямоугольник ${JSON.stringify(l.rect)}`).toBe(true);
-      }
-      // линии уровней 0 (цена B) и 1 (цена A) — от x точки A до x точки B
-      const strokes = await paneStrokes(page, 2);
-      for (const y of [b.y, a.y]) {
-        const lvl = strokes.filter((st) => st.points.length === 2 && Math.abs(st.points[0]![1] - y) < 1 && Math.abs(st.points[1]![1] - y) < 1 && Math.abs(st.points[0]![0] - st.points[1]![0]) < 300);
-        expect(
-          lvl.some((st) => Math.abs(Math.min(st.points[0]![0], st.points[1]![0]) - a.x) < 1.5 && Math.abs(Math.max(st.points[0]![0], st.points[1]![0]) - b.x) < 1.5),
-          `${name}: линия уровня на y=${y.toFixed(1)} от ${a.x.toFixed(1)} до ${b.x.toFixed(1)}; найдено ${JSON.stringify(lvl.map((st) => st.points))}`,
-        ).toBe(true);
-      }
+      // график таймфрейма — новый: координаты точек и подписи сравниваются на успокоившемся виде, а не на кадре, после
+      // которого вид ещё перестраивается
+      await expectFibView(page, d0, want, true, name);
     }
+
+    // 1Д: выбрать рисунок (клик по телу A–B), «уровни» → «Линии до края» выключить — линии от A до B, подписи у
+    // рисунка (правка рисунка: шаг отмены и синхронизация)
+    const mid = async () => {
+      const box = (await term.boundingBox())!;
+      const [p, q] = await pointsAt(page, d0.points, 86400);
+      return { x: box.x + (p!.x + q!.x) / 2, y: box.y + (p!.y + q!.y) / 2 };
+    };
+    const m1 = await mid();
+    await page.mouse.click(m1.x, m1.y);
+    await expect(card(page)).toContainText("Фибоначчи");
+    await card(page).getByRole("button", { name: /уровни/ }).click();
+    await expect(extendBox(page)).toBeChecked();
+    await extendBox(page).click();
+    await expect(extendBox(page)).not.toBeChecked();
+    await expect.poll(() => storedExtend(page)).toBe(false);
+    expect((await stored(page))[0]!.points).toEqual(d0.points);
+    // выбор запоминается для новых Фибоначчи (настройки терминала), как набор уровней
+    await expect.poll(() => rememberedExtend(page)).toBe(false);
+    // фокус — на флажке, но флажок не поле ввода: Esc снимает выбор, как после нажатия кнопки карточки
+    await expect(extendBox(page)).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(card(page)).toHaveCount(0);
+    await expectFibView(page, d0, 86400, false, "1Д, не продлён");
+
+    // выбор переживает перезагрузку (память гостя); включили снова — снова до края
+    await page.reload();
+    await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 1");
+    await expect.poll(step).toBe(86400);
+    await expectFibView(page, d0, 86400, false, "1Д после перезагрузки");
+    expect(await storedExtend(page)).toBe(false);
+    const m2 = await mid();
+    await page.mouse.click(m2.x, m2.y);
+    await expect(card(page)).toContainText("Фибоначчи");
+    await card(page).getByRole("button", { name: /уровни/ }).click();
+    await expect(extendBox(page)).not.toBeChecked();
+    await extendBox(page).click();
+    await expect.poll(() => storedExtend(page)).toBe(true);
+    await expect.poll(() => rememberedExtend(page)).toBe(true);
+    // Ctrl+Z с фокусом на флажке отменяет правку (отмена снимает выбор) — и рисунку, и выбору для новых; Ctrl+Y — повтор
+    await expect(extendBox(page)).toBeFocused();
+    await page.keyboard.press("Control+z");
+    await expect.poll(() => storedExtend(page)).toBe(false);
+    await expect(card(page)).toHaveCount(0);
+    await expect.poll(() => rememberedExtend(page)).toBe(false);
+    await page.keyboard.press("Control+y");
+    await expect.poll(() => storedExtend(page)).toBe(true);
+    await expect.poll(() => rememberedExtend(page)).toBe(true);
+    await expectFibView(page, d0, 86400, true, "1Д, снова до края");
+
+    // выключили ещё раз — и новый Фибоначчи не продлён: в стиле extend: false (выбор из настроек, как набор уровней)
+    const m3 = await mid();
+    await page.mouse.click(m3.x, m3.y);
+    await expect(card(page)).toContainText("Фибоначчи");
+    await card(page).getByRole("button", { name: /уровни/ }).click();
+    await extendBox(page).click();
+    await expect.poll(() => rememberedExtend(page)).toBe(false);
+    await page.keyboard.press("Escape");
+    await expect(card(page)).toHaveCount(0);
+    const box = (await term.boundingBox())!;
+    await drawFib(page, { x: box.x + box.width * 0.12, y: box.y + box.height * 0.56 }, { x: box.x + box.width * 0.3, y: box.y + box.height * 0.46 });
+    await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 2");
+    expect(await storedExtend(page, 1)).toBe(false);
+    expect(await storedExtend(page, 0)).toBe(false);
   });
 });
 
@@ -647,22 +751,29 @@ test.describe("телефон 390×844, палец", () => {
     await expect.poll(async () => Math.max(...(await onScreen(page, d0.points)).map((h) => h.y)), "ручки — над карточкой").toBeLessThanOrEqual(opened.y - 10);
     expect(await margin()).toBeGreaterThan(0.25);
     const t = (await page.getByTestId("terminal").boundingBox())!;
-    const retracement = [0, 0.236, 0.382, 0.5, 0.618, 1];
+    // ключевые уровни коррекции подписаны всегда и над карточкой; второстепенные (0.236, 0.382) столбцом у шкалы цены
+    // подписаны, когда им хватает места рядом с соседними (тесные — без подписи, ADR-0009, дополнение 2026-11-13), и
+    // тогда тоже над карточкой
+    const key = [0, 0.5, 0.618, 1];
     await expect
       .poll(async () => {
         const ls = await levelLabels(page);
-        return retracement.filter((l) => {
+        return key.filter((l) => {
           const x = ls.find((q) => q.id === `${d0.id}#L${l}`);
           return x && t.y + x.rect.y + x.rect.h <= opened.y;
         });
-      }, "подписи уровней коррекции — над карточкой")
-      .toEqual(retracement);
-    // переключение видно на графике: 0.382 выключили — его подписи нет, включили — снова есть
-    await toggle(page, "0.382").tap();
-    await expect(toggle(page, "0.382")).toHaveAttribute("aria-pressed", "false");
-    await expect.poll(() => labelOf(page, d0.id, 0.382)).toBeNull();
-    await toggle(page, "0.382").tap();
-    await expect.poll(async () => (await labelOf(page, d0.id, 0.382))?.text ?? null).toMatch(/^0\.382 · /);
+      }, "подписи ключевых уровней коррекции — над карточкой")
+      .toEqual(key);
+    for (const l of [0.236, 0.382]) {
+      const x = await labelOf(page, d0.id, l);
+      if (x) expect(t.y + x.rect.y + x.rect.h, `подпись ${l} — над карточкой`).toBeLessThanOrEqual(opened.y);
+    }
+    // переключение видно на графике: 0.618 выключили — его подписи нет, включили — снова есть
+    await toggle(page, "0.618").tap();
+    await expect(toggle(page, "0.618")).toHaveAttribute("aria-pressed", "false");
+    await expect.poll(() => labelOf(page, d0.id, 0.618)).toBeNull();
+    await toggle(page, "0.618").tap();
+    await expect.poll(async () => (await labelOf(page, d0.id, 0.618))?.text ?? null).toMatch(/^0\.618 · /);
     // ручку B тянут пальцем вниз, к карточке: поле шкалы за ней не растёт — точка остаётся под пальцем, а не уезжает
     const m0 = await margin();
     const [, hb] = await onScreen(page, d0.points);
@@ -680,6 +791,48 @@ test.describe("телефон 390×844, палец", () => {
     await card(page).getByRole("button", { name: "снять выделение" }).tap();
     await expect(card(page)).toHaveCount(0);
     await expect.poll(margin).toBeCloseTo(0.2, 6);
+  });
+
+  test("Фибоначчи со свинга 1ч на 1Д (как у владельца на 1Н): линии до правого края, подписи столбцом у шкалы цены; «Линии до края» в карточке — прежний вид, и после перезагрузки", async ({ page }) => {
+    // рисунок «на всех таймфреймах» с точками между свечами 1Д — в памяти гостя до загрузки (свинг последних часов)
+    const now = T0 + 300 * H4;
+    const hour = Math.floor(now / 3600) * 3600;
+    const seeded = { id: "FX", type: "fib", points: [{ time: hour - 60 * 3600, price: 98 }, { time: hour - 20 * 3600, price: 103 }], style: { color: "text2", width: 1, dashed: false }, locked: false, timeframe: null, updated_at: 1 };
+    await page.addInitScript((d) => {
+      if (!localStorage.getItem("pl-drawings:BTCUSDT")) localStorage.setItem("pl-drawings:BTCUSDT", JSON.stringify([d]));
+    }, seeded);
+    await installStrokes(page);
+    await mock(page, []);
+    await candlesByTf(page);
+    await page.goto("/chart/BTCUSDT/1d");
+    await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 1");
+    const f = await finger(page);
+    const d0 = (await stored(page))[0]!;
+    await expectFibView(page, d0, 86400, true, "телефон 1Д");
+
+    // касание по рисунку — выбор; свёрнутая карточка — одна строка; «уровни» → флажок «Линии до края» — первым в строке
+    const box = (await page.getByTestId("terminal").boundingBox())!;
+    const [p, q] = await pointsAt(page, d0.points, 86400);
+    await f.tap(box.x + (p!.x + q!.x) / 2, box.y + (p!.y + q!.y) / 2);
+    await expect(card(page)).toContainText("Фибоначчи");
+    expect((await card(page).boundingBox())!.height).toBeLessThanOrEqual(72);
+    await card(page).getByRole("button", { name: /уровни/ }).tap();
+    await expect(extendBox(page)).toBeChecked();
+    const cb = (await extendBox(page).locator("xpath=..").boundingBox())!;
+    const strip = (await panel(page).boundingBox())!;
+    expect(cb.x + cb.width, "флажок виден без прокрутки строки").toBeLessThanOrEqual(strip.x + strip.width);
+    expect(cb.height, "цель касания").toBeGreaterThanOrEqual(44);
+    await extendBox(page).tap();
+    await expect(extendBox(page)).not.toBeChecked();
+    await expect.poll(() => storedExtend(page)).toBe(false);
+    await card(page).getByRole("button", { name: "снять выделение" }).tap();
+    await expect(card(page)).toHaveCount(0);
+    await expectFibView(page, d0, 86400, false, "телефон 1Д, не продлён");
+
+    await page.reload();
+    await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 1");
+    expect(await storedExtend(page)).toBe(false);
+    await expectFibView(page, d0, 86400, false, "телефон 1Д после перезагрузки");
   });
 
   test("заблокированный Фибоначчи: касание выбирает — в раскрытой карточке «разблокировать» и «удалить»; сдвиг по нему — графику", async ({ page }) => {
