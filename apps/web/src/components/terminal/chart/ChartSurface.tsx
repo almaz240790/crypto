@@ -133,6 +133,8 @@ type Props = {
     profile?: RiskProfile | null;
     /** Уровни нового Фибоначчи — набор, выбранный пользователем в прошлый раз (настройки терминала); без него — по умолчанию. */
     fibLevels?: readonly number[];
+    /** «Линии до края» нового Фибоначчи — выбор в прошлый раз (настройки терминала); без него — продлённый. */
+    fibExtend?: boolean;
   };
 };
 
@@ -639,6 +641,7 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
         newId: () => `d_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`,
         getSelectedId: () => drawingsRef.current?.state.selectedId ?? null,
         getFibLevels: () => drawingsRef.current?.fibLevels,
+        getFibExtend: () => drawingsRef.current?.fibExtend,
       },
       {
         onCreate: (d) => drawingsRef.current?.onCreate(d),

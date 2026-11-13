@@ -73,6 +73,11 @@ export type ControllerOptions = {
    * или с мусором — уровни по умолчанию FIB_LEVELS (normalizeFibLevels).
    */
   getFibLevels?: () => readonly number[] | null | undefined;
+  /**
+   * «Линии до края» нового Фибоначчи — выбор пользователя в прошлый раз (настройки терминала, ADR-0009, дополнение
+   * 2026-11-13): false — рисунок с style.extend: false; true или нет выбора — продлённый (поля в стиле нет).
+   */
+  getFibExtend?: () => boolean | null | undefined;
   /** Часы, мс (по умолчанию performance.now): двойной клик сразу после рисунка. */
   now?: () => number;
 };
@@ -711,7 +716,7 @@ export class DrawingController {
       id: this.opts.newId(),
       type,
       points: pts,
-      style: { ...DEFAULT_STYLE, color },
+      style: { ...DEFAULT_STYLE, color, ...(type === "fib" && this.opts.getFibExtend?.() === false ? { extend: false } : {}) },
       locked: false,
       timeframe: this.opts.timeframe,
       levels: type === "fib" ? normalizeFibLevels(this.opts.getFibLevels?.()) : undefined,

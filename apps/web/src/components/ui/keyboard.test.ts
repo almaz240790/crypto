@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { navKey, rovingIndex, shortcutLetter, typeaheadIndex } from "./keyboard";
+import { navKey, rovingIndex, shortcutLetter, typeaheadIndex, typingTarget } from "./keyboard";
 
 describe("navKey", () => {
   it("стрелки по ориентации группы, Home/End — в обеих", () => {
@@ -77,5 +77,22 @@ describe("shortcutLetter", () => {
     expect(shortcutLetter({ key: "1", code: "Digit1" })).toBeNull();
     expect(shortcutLetter({ key: "Escape", code: "Escape" })).toBeNull();
     expect(shortcutLetter({ key: "+", code: "Equal" })).toBeNull();
+  });
+});
+
+describe("typingTarget", () => {
+  const el = (tagName: string, type?: string) => ({ tagName, ...(type !== undefined ? { type } : {}) }) as unknown as EventTarget;
+  it("поле ввода текста, textarea и select — клавиши тексту, сочетания терминала не срабатывают", () => {
+    for (const type of ["text", "search", "number", "email", "password", ""]) expect(typingTarget(el("INPUT", type)), type).toBe(true);
+    expect(typingTarget(el("INPUT"))).toBe(true);
+    expect(typingTarget(el("TEXTAREA"))).toBe(true);
+    expect(typingTarget(el("SELECT"))).toBe(true);
+  });
+  it("флажок, переключатель и кнопки — не поле ввода: Esc и Ctrl+Z после нажатия флажка работают", () => {
+    for (const type of ["checkbox", "radio", "button", "submit", "reset", "CHECKBOX"]) expect(typingTarget(el("INPUT", type)), type).toBe(false);
+    expect(typingTarget(el("BUTTON"))).toBe(false);
+    expect(typingTarget(el("DIV"))).toBe(false);
+    expect(typingTarget(null)).toBe(false);
+    expect(typingTarget({} as EventTarget)).toBe(false);
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { FIB_LEVEL_GROUPS, changedFibLevels, cleanDrawingLevels, fibLevelGroup, fibLevelText, normalizeFibLevels, sameFibLevels, toggleFibLevel } from "../drawings/fib";
+import { FIB_LEVEL_GROUPS, changedFibExtend, changedFibLevels, cleanDrawingLevels, fibLevelGroup, fibLevelText, normalizeFibLevels, sameFibLevels, toggleFibLevel } from "../drawings/fib";
 import { fibLevels, hitTest, type Projector } from "../drawings/geometry";
 import { DRAWING_TEXT, drawingLabels, fibLevelColor, formatDrawingPrice, toCandidate } from "../drawings/labels";
 import { DrawingsPrimitive } from "../drawings/primitive";
@@ -122,6 +122,29 @@ describe("отмена и повтор правки уровней", () => {
     expect(changedFibLevels(created.items, undo(created).items)).toBeNull();
     const moved = updateDrawing(withTarget, "F", { points: [{ time: T0, price: 1 }, { time: T0 + H, price: 2 }] });
     expect(changedFibLevels(moved.items, undo(moved).items)).toBeNull();
+  });
+
+  it("«Линии до края»: шаг истории называет значение, к которому вернулся рисунок (его запоминают для новых, как набор)", () => {
+    let s = addDrawing(createState(), fib());
+    const created = s;
+    s = updateDrawing(s, "F", { style: { ...s.items[0]!.style, extend: false } });
+    expect(changedFibExtend(created.items, s.items)).toBe(false);
+    const back = undo(s);
+    // до правки поля не было — продлён
+    expect("extend" in back.items[0]!.style).toBe(false);
+    expect(changedFibExtend(s.items, back.items)).toBe(true);
+    expect(changedFibExtend(back.items, redo(back).items)).toBe(false);
+    // шаг, который «Линии до края» не менял (уровни, сдвиг, отмена создания), значения не называет
+    expect(changedFibExtend(created.items, undo(created).items)).toBeNull();
+    const levels = updateDrawing(s, "F", { levels: [0, 1] });
+    expect(changedFibExtend(levels.items, undo(levels).items)).toBeNull();
+    // true и «поля нет» — одно и то же
+    const explicit = updateDrawing(created, "F", { style: { ...created.items[0]!.style, extend: true } });
+    expect(changedFibExtend(created.items, explicit.items)).toBeNull();
+    // у других типов поля нет смысла
+    const line = addDrawing(createState(), { ...fib(), id: "L", type: "trend" });
+    const off = updateDrawing(line, "L", { style: { ...line.items[0]!.style, extend: false } });
+    expect(changedFibExtend(line.items, off.items)).toBeNull();
   });
 });
 

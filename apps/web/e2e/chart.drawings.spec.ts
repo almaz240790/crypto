@@ -275,10 +275,11 @@ test.describe("десктоп, мышь", () => {
     const tokens = await page.getByTestId("terminal").evaluate((el) => {
       const cs = getComputedStyle(el);
       const v = (n: string) => cs.getPropertyValue(n).trim().toLowerCase();
-      return { text2: v("--text-2"), accent: v("--accent"), warn: v("--warn"), fib: [1, 2, 3, 4, 5, 6, 7, 8].map((i) => v(`--fib-${i}`)) };
+      return { text2: v("--text-2"), accent: v("--accent"), warn: v("--warn"), up: v("--up"), down: v("--down"), fib: [1, 2, 3, 4, 5, 6].map((i) => v(`--fib-${i}`)) };
     });
     // цвет уровня — как в packages/charts (drawings/fib.ts, fibHue): 0 и 1 нейтральные, коррекция от тёплых к холодным
-    const hue: Record<string, number | null> = { "0": null, "0.236": 0, "0.382": 1, "0.5": 2, "0.618": 4, "0.705": 3, "0.786": 5, "1": null, "1.272": 6, "1.618": 5 };
+    // (оранжевый, золотой, бирюзовый, синий, фиолетовый, пурпурный — без красного и зелёного, план 5.3)
+    const hue: Record<string, number | null> = { "0": null, "0.236": 5, "0.382": 0, "0.5": 1, "0.618": 2, "0.705": 3, "0.786": 4, "1": null, "1.272": 0, "1.618": 2 };
     const want = (level: string) => (hue[level] === null ? tokens.text2 : tokens.fib[hue[level]!]!);
     const drawn = await page.evaluate(() => {
       const log = (window as unknown as { __draw: { texts: { t: string; x: number; y: number; fill: string; font: string }[]; strokes: { x0: number; y0: number; x1: number; y1: number; style: string; width: number; alpha: number }[] } }).__draw;
@@ -296,7 +297,7 @@ test.describe("десктоп, мышь", () => {
       expect(label.fill.toLowerCase(), label.t).toBe(want(level));
       expect(line, label.t).not.toBeNull();
       expect(line!.style.toLowerCase(), label.t).toBe(want(level));
-      expect([tokens.accent, tokens.warn]).not.toContain(line!.style.toLowerCase());
+      expect([tokens.accent, tokens.warn, tokens.up, tokens.down]).not.toContain(line!.style.toLowerCase());
     }
     expect(new Set(drawn.map((d) => d.line!.style.toLowerCase())).size).toBeGreaterThanOrEqual(7);
     const key = drawn.find((d) => d.label.t.startsWith("0.618 · "))!;

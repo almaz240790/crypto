@@ -29,10 +29,13 @@ const fib = (o: { levels?: number[]; points?: Drawing["points"]; style?: Partial
 });
 
 /** Светлая тема: та же раскладка палитры, другие значения. */
-const LIGHT: ThemeTokens = { ...TOKENS, surface: "#ffffff", text2: "#4a524f", up: "#0a7f55", down: "#c8283a", fib: ["#bd3049", "#a65108", "#7f6400", "#3a7520", "#0c6d87", "#3157c9", "#7444c4", "#a8328f"] };
+const LIGHT: ThemeTokens = { ...TOKENS, surface: "#ffffff", text2: "#4a524f", up: "#0a7f55", down: "#c8283a", fib: ["#a65108", "#7f6400", "#0c6d87", "#3157c9", "#7444c4", "#a8328f"] };
 
-/** Ожидаемый оттенок уровня (номер в палитре --fib-1…--fib-8; null — нейтральный --text-2). */
-const HUE: Record<string, number | null> = { "-1": 7, "-0.618": 5, "-0.272": 6, "0": null, "0.236": 0, "0.382": 1, "0.5": 2, "0.618": 4, "0.705": 3, "0.786": 5, "1": null, "1.272": 6, "1.618": 5, "2.618": 0 };
+/**
+ * Ожидаемый оттенок уровня (номер в палитре --fib-1…--fib-6: оранжевый, золотой, бирюзовый, синий, фиолетовый,
+ * пурпурный; null — нейтральный --text-2).
+ */
+const HUE: Record<string, number | null> = { "-1": 3, "-0.618": 2, "-0.272": 0, "0": null, "0.236": 5, "0.382": 0, "0.5": 1, "0.618": 2, "0.705": 3, "0.786": 4, "1": null, "1.272": 0, "1.618": 2, "2.618": 5 };
 
 describe("цвет уровня: разноцветный по умолчанию, одноцветный — выбранным цветом", () => {
   it("0 и 1 нейтральные, остальные — свой оттенок палитры; соседние уровни различаются (тёмная и светлая тема)", () => {
@@ -45,9 +48,11 @@ describe("цвет уровня: разноцветный по умолчани�
         expect(colors[i], String(l)).toBe(hue === null ? tokens.text2 : tokens.fib[hue]);
       });
       for (let i = 1; i < colors.length; i++) expect(colors[i], `${FIB_PRESET_LEVELS[i - 1]} и ${FIB_PRESET_LEVELS[i]}`).not.toBe(colors[i - 1]);
-      // ключевые 0.5 и 0.618 — не цвета роста и падения (не похожи на сигнал) и не салатовый выбора
-      for (const key of [0.5, 0.618]) expect([tokens.up, tokens.down, tokens.accent]).not.toContain(fibLevelColor(tokens, fib(), key));
+      // ни один уровень — не цвет роста, падения или выбора (не похож на сигнал; оттенки — chartTokens.test в apps/web)
+      for (const c of colors) expect([tokens.up, tokens.down, tokens.accent]).not.toContain(c);
     }
+    // набор задействует всю палитру и не выходит за неё
+    expect(new Set(FIB_PRESET_LEVELS.map(fibHue).filter((h) => h !== null))).toEqual(new Set(TOKENS.fib.map((_, i) => i)));
   });
 
   it("уровень вне палитры (с другого клиента) — нейтральный; прежний цвет по умолчанию (accent) — тоже разноцветный", () => {
@@ -55,7 +60,7 @@ describe("цвет уровня: разноцветный по умолчани�
     expect(fibLevelColor(TOKENS, fib(), 0.33)).toBe(TOKENS.text2);
     expect(fibMulticolor(fib())).toBe(true);
     expect(fibMulticolor(fib({ style: { color: "accent" } }))).toBe(true);
-    expect(fibLevelColor(TOKENS, fib({ style: { color: "accent" } }), 0.618)).toBe(TOKENS.fib[4]);
+    expect(fibLevelColor(TOKENS, fib({ style: { color: "accent" } }), 0.618)).toBe(TOKENS.fib[2]);
   });
 
   it("цвет, выбранный пользователем (не text2 и не accent), — у всех уровней один", () => {
@@ -69,13 +74,13 @@ describe("цвет уровня: разноцветный по умолчани�
 
   describe("палитра из CSS (tokensFromElement)", () => {
     afterEach(() => vi.unstubAllGlobals());
-    it("--fib-1…--fib-8; нет переменной — запасной цвет, а не пустая строка", () => {
+    it("--fib-1…--fib-6; нет переменной — запасной цвет, а не пустая строка", () => {
       const vars: Record<string, string> = Object.fromEntries(LIGHT.fib.map((c, i) => [`--fib-${i + 1}`, c]));
       vi.stubGlobal("getComputedStyle", () => ({ getPropertyValue: (n: string) => vars[n] ?? "" }));
       expect(tokensFromElement({} as HTMLElement).fib).toEqual(LIGHT.fib);
       delete vars["--fib-3"];
       const t = tokensFromElement({} as HTMLElement);
-      expect(t.fib).toHaveLength(8);
+      expect(t.fib).toHaveLength(6);
       expect(t.fib[2]).toMatch(/^#[0-9a-f]{6}$/i);
     });
   });
@@ -175,7 +180,7 @@ describe("отрисовка продлённого Фибоначчи", () => {
     // 0 и 1 — нейтральные, 0.618 — свой цвет
     expect(levelStrokes(c, 80)[0]!.style).toBe(TOKENS.text2);
     expect(levelStrokes(c, 120)[0]!.style).toBe(TOKENS.text2);
-    expect(levelStrokes(c, priceOf(d, 0.618))[0]!.style).toBe(TOKENS.fib[4]);
+    expect(levelStrokes(c, priceOf(d, 0.618))[0]!.style).toBe(TOKENS.fib[2]);
   });
 
   it("Фибоначчи левее экрана (график ушёл вперёд) — линии от левого края панели до правого; B за правым краем — без продления", () => {
@@ -232,7 +237,7 @@ describe("отрисовка продлённого Фибоначчи", () => {
     expect(single.fills.filter((f) => f.alpha === FIB_FILL_ALPHA)).toHaveLength(0);
     const light = render([fib()], LIGHT);
     const d = fib();
-    expect(levelStrokes(light, priceOf(d, 0.5))[0]!.style).toBe(LIGHT.fib[2]);
+    expect(levelStrokes(light, priceOf(d, 0.5))[0]!.style).toBe(LIGHT.fib[1]);
     expect(levelStrokes(light, priceOf(d, 0))[0]!.style).toBe(LIGHT.text2);
   });
 

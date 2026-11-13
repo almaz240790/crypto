@@ -77,8 +77,8 @@ export function seriesColors(t: ThemeTokens) {
   };
 }
 
-/** Палитра уровней Фибоначчи без CSS (светлая тема tokens.css): --fib-1…--fib-8. */
-const FIB_FALLBACK = ["#bd3049", "#a65108", "#7f6400", "#3a7520", "#0c6d87", "#3157c9", "#7444c4", "#a8328f"] as const;
+/** Палитра уровней Фибоначчи без CSS (светлая тема tokens.css): --fib-1…--fib-6. */
+const FIB_FALLBACK = ["#a65108", "#7f6400", "#0c6d87", "#3157c9", "#7444c4", "#a8328f"] as const;
 
 /** Чтение токенов из CSS-переменных элемента (в браузере). Имена — из apps/web/src/styles/tokens.css. */
 export function tokensFromElement(el: HTMLElement): ThemeTokens {

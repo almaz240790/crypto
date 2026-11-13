@@ -520,7 +520,9 @@ async function expectFibView(page: Page, d: Stored, step: number, extended: bool
 
 /** Флажок «Линии до края» в панели уровней выбранного Фибоначчи. */
 const extendBox = (page: Page) => panel(page).getByRole("checkbox", { name: "Линии до края" });
-const storedExtend = async (page: Page) => ((await stored(page))[0] as Stored & { style: { extend?: boolean } }).style.extend;
+const storedExtend = async (page: Page, i = 0) => ((await stored(page))[i] as Stored & { style: { extend?: boolean } }).style.extend;
+/** «Линии до края» для новых Фибоначчи — в настройках терминала, как набор уровней (null — ещё не выбирали). */
+const rememberedExtend = (page: Page) => page.evaluate(() => (JSON.parse(localStorage.getItem("pl-terminal") ?? "{}") as { fibExtend?: boolean }).fibExtend ?? null);
 
 test.describe("рисунок с другого таймфрейма", () => {
   test("Фибоначчи с 1ч на 4ч и 1Д: линии уровней от A до B и до правого края, подписи у шкалы цены; «Линии до края» — прежний вид, после перезагрузки тоже", async ({ page }) => {
@@ -586,8 +588,11 @@ test.describe("рисунок с другого таймфрейма", () => {
     await expect(extendBox(page)).not.toBeChecked();
     await expect.poll(() => storedExtend(page)).toBe(false);
     expect((await stored(page))[0]!.points).toEqual(d0.points);
-    // фокус — на флажке (Esc в поле карточки выбор не снимает): снять выделение кнопкой карточки
-    await card(page).getByRole("button", { name: "снять выделение" }).click();
+    // выбор запоминается для новых Фибоначчи (настройки терминала), как набор уровней
+    await expect.poll(() => rememberedExtend(page)).toBe(false);
+    // фокус — на флажке, но флажок не поле ввода: Esc снимает выбор, как после нажатия кнопки карточки
+    await expect(extendBox(page)).toBeFocused();
+    await page.keyboard.press("Escape");
     await expect(card(page)).toHaveCount(0);
     await expectFibView(page, d0, 86400, false, "1Д, не продлён");
 
@@ -604,9 +609,32 @@ test.describe("рисунок с другого таймфрейма", () => {
     await expect(extendBox(page)).not.toBeChecked();
     await extendBox(page).click();
     await expect.poll(() => storedExtend(page)).toBe(true);
-    await card(page).getByRole("button", { name: "снять выделение" }).click();
+    await expect.poll(() => rememberedExtend(page)).toBe(true);
+    // Ctrl+Z с фокусом на флажке отменяет правку (отмена снимает выбор) — и рисунку, и выбору для новых; Ctrl+Y — повтор
+    await expect(extendBox(page)).toBeFocused();
+    await page.keyboard.press("Control+z");
+    await expect.poll(() => storedExtend(page)).toBe(false);
     await expect(card(page)).toHaveCount(0);
+    await expect.poll(() => rememberedExtend(page)).toBe(false);
+    await page.keyboard.press("Control+y");
+    await expect.poll(() => storedExtend(page)).toBe(true);
+    await expect.poll(() => rememberedExtend(page)).toBe(true);
     await expectFibView(page, d0, 86400, true, "1Д, снова до края");
+
+    // выключили ещё раз — и новый Фибоначчи не продлён: в стиле extend: false (выбор из настроек, как набор уровней)
+    const m3 = await mid();
+    await page.mouse.click(m3.x, m3.y);
+    await expect(card(page)).toContainText("Фибоначчи");
+    await card(page).getByRole("button", { name: /уровни/ }).click();
+    await extendBox(page).click();
+    await expect.poll(() => rememberedExtend(page)).toBe(false);
+    await page.keyboard.press("Escape");
+    await expect(card(page)).toHaveCount(0);
+    const box = (await term.boundingBox())!;
+    await drawFib(page, { x: box.x + box.width * 0.12, y: box.y + box.height * 0.56 }, { x: box.x + box.width * 0.3, y: box.y + box.height * 0.46 });
+    await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 2");
+    expect(await storedExtend(page, 1)).toBe(false);
+    expect(await storedExtend(page, 0)).toBe(false);
   });
 });
 

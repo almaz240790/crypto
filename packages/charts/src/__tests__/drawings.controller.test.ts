@@ -60,7 +60,7 @@ const projOf = (pxBar: number): DrawProjector => ({
 });
 const CANDLES = bars(100);
 
-function setup(o: { magnet?: boolean; items?: Drawing[]; coarse?: boolean; pxBar?: number; candles?: Candle[]; tick?: number | null; tf?: () => number; stale?: boolean; proj?: DrawProjector; fibLevels?: () => readonly number[] | null | undefined } = {}) {
+function setup(o: { magnet?: boolean; items?: Drawing[]; coarse?: boolean; pxBar?: number; candles?: Candle[]; tick?: number | null; tf?: () => number; stale?: boolean; proj?: DrawProjector; fibLevels?: () => readonly number[] | null | undefined; fibExtend?: () => boolean | null | undefined } = {}) {
   const doc = new FakeTarget();
   const el = Object.assign(new FakeTarget(), { ownerDocument: doc, getBoundingClientRect: () => ({ left: 0, top: 0 }), setPointerCapture: () => undefined });
   let items: Drawing[] = o.items ?? [];
@@ -71,7 +71,7 @@ function setup(o: { magnet?: boolean; items?: Drawing[]; coarse?: boolean; pxBar
   const ctrl = new DrawingController(
     el as unknown as HTMLElement,
     o.proj ?? projOf(o.pxBar ?? PX_BAR),
-    { getDrawings: () => items, getCandles: () => o.candles ?? CANDLES, tfSeconds: H, ...(o.tf ? { getTfSeconds: o.tf } : {}), getTick: () => o.tick ?? null, timeframe: null, touch: o.coarse ?? false, magnet: o.magnet ?? false, newId: () => `n${++n}`, getSelectedId: () => selected, now: () => clock.now, ...(o.fibLevels ? { getFibLevels: o.fibLevels } : {}) },
+    { getDrawings: () => items, getCandles: () => o.candles ?? CANDLES, tfSeconds: H, ...(o.tf ? { getTfSeconds: o.tf } : {}), getTick: () => o.tick ?? null, timeframe: null, touch: o.coarse ?? false, magnet: o.magnet ?? false, newId: () => `n${++n}`, getSelectedId: () => selected, now: () => clock.now, ...(o.fibLevels ? { getFibLevels: o.fibLevels } : {}), ...(o.fibExtend ? { getFibExtend: o.fibExtend } : {}) },
     {
       onCreate: (d) => {
         log.created.push(d);
@@ -178,6 +178,29 @@ describe("уровни нового Фибоначчи", () => {
     expect(draw(s).levels).toEqual(FIB_LEVELS);
     remembered = [Number.NaN];
     expect(draw(s).levels).toEqual(FIB_LEVELS);
+  });
+
+  it("«Линии до края» выключали в прошлый раз — новый Фибоначчи (и предпросмотр) с extend: false; включили или выбора нет — без поля", () => {
+    let remembered: boolean | null | undefined = false;
+    const s = setup({ fibExtend: () => remembered });
+    s.ctrl.setTool("fib");
+    s.mouse.tap(...at(10, 120));
+    s.mouse.move(...at(20, 100));
+    expect(s.lastDraft()!.style.extend).toBe(false);
+    s.mouse.tap(...at(30, 90));
+    expect(s.log.created[0]!.style).toEqual({ color: "text2", width: 1, dashed: false, extend: false });
+    for (const v of [true, null, undefined]) {
+      remembered = v;
+      expect("extend" in draw(s).style, String(v)).toBe(false);
+    }
+    // у других инструментов поля нет, что бы ни было выбрано
+    remembered = false;
+    s.ctrl.setTool("trend");
+    s.mouse.tap(...at(10, 120));
+    s.mouse.tap(...at(30, 90));
+    const trend = s.log.created.at(-1)!;
+    expect(trend.type).toBe("trend");
+    expect("extend" in trend.style).toBe(false);
   });
 
   it("у других инструментов уровней нет, какой бы набор ни был выбран", () => {
