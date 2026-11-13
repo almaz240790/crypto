@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { DrawGuide } from "../drawings/controller";
 import { formatDrawingPrice } from "../drawings/labels";
 import { DrawingsPrimitive } from "../drawings/primitive";
+import { formatPriceLabel, formatPriceShort } from "../format";
+import type { AxisLabelView } from "../render/axisViews";
 import { GUIDE_GAP_PX, type Drawing } from "../drawings/types";
 import type { ThemeTokens } from "../types";
 import { bars, H, makeEnv, T0, TOKENS } from "./fakes/lwc";
@@ -210,6 +212,31 @@ describe("метка цены направляющей на шкале", () => {
     s.prim.updateAllViews();
     expect(v.fixedCoordinate?.()).not.toBe(y0);
     expect(v.fixedCoordinate?.()).toBeCloseTo(s.y(104.25)!, 9);
+  });
+
+  it("текст — форматом шкалы цены серии (как метка перекрестия): на узкой шкале телефона «82 639», а не «82 639.0» — шкала не расширяется под метку", () => {
+    // узкая шкала телефона (instrumentPriceFormat(tick, narrow)): крупные цены — целым числом
+    const env = makeEnv(() => candles, { top: 90000, bottom: 75000 });
+    let format = { calls: 0, format: (p: number) => (format.calls++, formatPriceShort(p, 1)) };
+    Object.assign(env.series, { priceFormatter: () => format });
+    const prim = new DrawingsPrimitive(TOKENS);
+    prim.attached({ chart: env.chart, series: env.series, requestUpdate: () => undefined } as never);
+    prim.projector!.setBars(candles.map((c) => c.time), H);
+    prim.update({ precision: 1 });
+    prim.setGuide(G({ price: 82639.04 }));
+    const v = prim.priceAxisViews()[0]! as AxisLabelView;
+    expect(v.text()).toBe("82 639");
+    expect(prim.guideDebug()!.text).toBe("82 639");
+    // кадры (updateAllViews на каждой перерисовке LWC) — тот же объект метки и без нового текста
+    const spec = v.spec;
+    const calls = format.calls;
+    for (let i = 0; i < 5; i++) prim.updateAllViews();
+    expect(v.spec).toBe(spec);
+    expect(format.calls).toBe(calls);
+    // формат сменился (шаг цены пришёл, десктоп) — текст новым форматом на ближайшем кадре
+    format = { calls: 0, format: (p: number) => (format.calls++, formatPriceLabel(p, 1)) };
+    prim.updateAllViews();
+    expect(v.text()).toBe("82 639.0");
   });
 
   it("без точности инструмента — запись подписей рисунков", () => {

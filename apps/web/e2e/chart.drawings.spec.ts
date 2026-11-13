@@ -1584,6 +1584,48 @@ test.describe("направляющая точки, палец", () => {
     expect((await stored(page))[0]!.points).toEqual(fib.points);
   });
 
+  test("цены как у BTC на узкой шкале телефона: метка направляющей — форматом шкалы («82 639»), шкала той же ширины, свечи не уезжают из-под пальца; линия встаёт на цене направляющей", async ({ page }) => {
+    // свечи ≈ 80 000 (шаг 0.1): шкала телефона пишет крупные цены целым числом; метка «82 639.0» была шире шкалы — LWC
+    // расширял шкалу, пока палец на графике, свеча под пальцем менялась, и линия вставала не там, где была направляющая
+    const big = (i: number) => {
+      const o = (100 + Math.sin(i / 7) * 5) * 800;
+      const c = o + Math.cos(i / 5) * 800;
+      return { t: T0 + i * H4, o: o.toFixed(1), h: (Math.max(o, c) + 800).toFixed(1), l: (Math.min(o, c) - 800).toFixed(1), c: c.toFixed(1), v: "1000", open: false };
+    };
+    await mock(page, []);
+    await page.route("**/v1/chart/candles**", (route) => {
+      const u = new URL(route.request().url());
+      const older = u.searchParams.get("before") !== null;
+      const candles = older ? [] : Array.from({ length: 300 }, (_, i) => big(i));
+      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ symbol: "BTCUSDT", tf: u.searchParams.get("tf"), candles, current: older ? null : { ...big(300), open: true }, has_older: false, tick_size: "0.1", server_time: "" }) });
+    });
+    await page.goto("/chart/BTCUSDT/4h");
+    await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 0");
+    await chartSettled(page);
+    const f = await finger(page);
+    await page.getByRole("button", { name: "Рисовать" }).tap();
+    await page.getByRole("dialog", { name: "Рисование" }).getByRole("button", { name: "Горизонтальная линия" }).tap();
+    await painted(page);
+    const w0 = (await crossInfo(page)).scaleW;
+    const c = await candleNear(page, 0.5);
+    expect(c.high).toBeGreaterThan(10_000);
+    await f.start(c.x, c.yHigh - 4);
+    await painted(page);
+    await painted(page);
+    const g = (await guideNow(page))!;
+    expect(g).toMatchObject({ price: c.high, touch: true, snapped: true });
+    // как метка перекрестия и деления этой шкалы: разряды через пробел, без дробной части
+    expect(g.text).toBe(String(Math.round(c.high)).replace(/\B(?=(\d{3})+(?!\d))/g, " "));
+    expect((await crossInfo(page)).scaleW).toBe(w0);
+    // свеча под пальцем — та же, что при касании: шкала не сдвинула область свечей
+    const c2 = await candleNear(page, 0.5);
+    expect(c2.x).toBeCloseTo(c.x, 0);
+    await f.end();
+    await expect(page.getByTestId("drawings-count")).toHaveText("рисунков: 1");
+    expect((await stored(page))[0]!.points[0]!.price).toBe(g.price);
+    expect((await crossInfo(page)).scaleW).toBe(w0);
+  });
+
   test("ручка выбранного Фибоначчи пальцем: направляющая, пока палец на ручке; подняли — нет", async ({ page }) => {
     const { X, Y } = await open(page);
     await chartSettled(page);

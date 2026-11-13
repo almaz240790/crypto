@@ -1,8 +1,8 @@
-import type { IChartApi, IPrimitivePaneRenderer, IPrimitivePaneView, ISeriesApi, ISeriesPrimitive, ISeriesPrimitiveAxisView, SeriesAttachedParameter, SeriesType, Time } from "lightweight-charts";
+import type { IChartApi, IPriceFormatter, IPrimitivePaneRenderer, IPrimitivePaneView, ISeriesApi, ISeriesPrimitive, ISeriesPrimitiveAxisView, SeriesAttachedParameter, SeriesType, Time } from "lightweight-charts";
 import { layoutLabels } from "../layout/labels";
 import type { TextMeasurer } from "../layout/measure";
 import type { LabelCandidate, PlacedLabel, Rect } from "../layout/types";
-import { AxisLabelView } from "../render/axisViews";
+import { AxisLabelView, type AxisViewSpec } from "../render/axisViews";
 import { logicalX } from "../render/projector";
 import { alpha } from "../theme";
 import type { Candle, ThemeTokens } from "../types";
@@ -99,6 +99,8 @@ const POSITION_TEXT_DX = 4;
 /** Пустая полоса свечей: подписи рисунков свечи не обходят. */
 const NO_CANDLES = { x0: 0, spacing: 0, halfWidth: 0, top: new Float32Array(0), bottom: new Float32Array(0) };
 const NO_BUDGET = { canvas: 0, perLayer: {} };
+/** Пунктир вертикали направляющей одним массивом на модуль: setLineDash копирует его, кадр не выделяет память. */
+const GUIDE_DASH_LIST: number[] = [...GUIDE_DASH];
 
 class Renderer implements IPrimitivePaneRenderer {
   constructor(
@@ -143,13 +145,16 @@ class Renderer implements IPrimitivePaneRenderer {
     if (y !== null) line(ctx, 0, y, width, y);
     if (g.touch && x !== null) {
       ctx.globalAlpha = GUIDE_VERTICAL_ALPHA;
-      ctx.setLineDash([...GUIDE_DASH]);
+      ctx.setLineDash(GUIDE_DASH_LIST);
+      // разрыв — от верхней до нижней из высот точки, максимума и минимума свечи (без массивов: кадр без выделений памяти)
       const c = this.src.candleAt(g.time);
       const yH = c ? this.proj.y(c.high) : null, yL = c ? this.proj.y(c.low) : null;
-      const ys = [y, yH, yL].filter((v): v is number => v !== null);
-      if (ys.length === 0) line(ctx, x, 0, x, height);
+      let lo = y ?? Infinity, hi = y ?? -Infinity;
+      if (yH !== null) (lo = Math.min(lo, yH)), (hi = Math.max(hi, yH));
+      if (yL !== null) (lo = Math.min(lo, yL)), (hi = Math.max(hi, yL));
+      if (lo === Infinity) line(ctx, x, 0, x, height);
       else {
-        const top = Math.min(...ys) - GUIDE_GAP_PX, bottom = Math.max(...ys) + GUIDE_GAP_PX;
+        const top = lo - GUIDE_GAP_PX, bottom = hi + GUIDE_GAP_PX;
         if (top > 0) line(ctx, x, 0, x, top);
         if (bottom < height) line(ctx, x, bottom, x, height);
       }
@@ -473,9 +478,15 @@ export class DrawingsPrimitive implements ISeriesPrimitive<Time> {
   private lastBars: { times: number[]; step: number } | null = null;
   private requestUpdate: (() => void) | null = null;
   private chart: IChartApi | null = null;
+  /** Формат цены основной серии (метка перекрестия и деления шкалы); без серии — null. */
+  private seriesFormat: (() => IPriceFormatter) | null = null;
   private readonly views = [new View(this)];
   /** Метка цены направляющей на шкале: один постоянный вид (LWC хранит обёртки видов по ссылке на массив, M04). */
   private readonly guideAxis = new AxisLabelView();
+  /** Её данные — один объект: на кадре (updateAllViews) меняется только высота, без выделения памяти. */
+  private readonly guideSpec: AxisViewSpec = { y: 0, text: "", textColor: "", backColor: "", tick: true };
+  /** Текст метки посчитан для этой цены, этого формата серии и этой точности (иначе — заново). */
+  private readonly guideTextFor: { price: number; format: IPriceFormatter | null; precision: number | null; text: string } = { price: NaN, format: null, precision: null, text: "" };
   private readonly axisViews: readonly ISeriesPrimitiveAxisView[] = [this.guideAxis];
   /** Горизонталь перекрестия LWC скрыта этим примитивом (на время направляющей). */
   private crossHidden = false;
@@ -492,6 +503,8 @@ export class DrawingsPrimitive implements ISeriesPrimitive<Time> {
     if (this.lastBars) this.projector.setBars(this.lastBars.times, this.lastBars.step);
     this.requestUpdate = p.requestUpdate;
     this.chart = p.chart;
+    const series = p.series;
+    this.seriesFormat = typeof series.priceFormatter === "function" ? () => series.priceFormatter() : null;
     this.syncCrosshair();
     this.updateGuideAxis();
   }
@@ -508,6 +521,7 @@ export class DrawingsPrimitive implements ISeriesPrimitive<Time> {
       }
     }
     this.chart = null;
+    this.seriesFormat = null;
     this.projector = null;
     this.requestUpdate = null;
     this.guideAxis.spec = null;
@@ -535,12 +549,41 @@ export class DrawingsPrimitive implements ISeriesPrimitive<Time> {
     this.chart.applyOptions({ crosshair: { horzLine: { visible: !hide, labelVisible: !hide } } });
   }
 
-  /** Метка цены направляющей: высота — по текущей шкале (кадр — updateAllViews), цена — с точностью инструмента. */
+  /**
+   * Метка цены направляющей: высота — по текущей шкале (кадр — updateAllViews). Как метки разметки (OverlayPrimitive.axisSpec,
+   * сплошная): фон — цвет смысла (салатовый действия), текст — цвет поверхности. Кадр не выделяет память: объект метки
+   * один, текст пересчитывается только при смене цены, формата или точности.
+   */
   private updateGuideAxis(): void {
     const g = this.guide;
     const y = g && this.projector ? this.projector.y(g.price) : null;
-    // как метки разметки (OverlayPrimitive.axisSpec, сплошная): фон — цвет смысла (салатовый действия), текст — цвет поверхности
-    this.guideAxis.spec = g && y !== null && Number.isFinite(y) ? { y, text: formatDrawingPrice(g.price, this.precision), textColor: this.tokens.surface, backColor: this.tokens.accent, tick: true } : null;
+    if (!g || y === null || !Number.isFinite(y)) {
+      this.guideAxis.spec = null;
+      return;
+    }
+    const spec = this.guideSpec;
+    spec.y = y;
+    spec.text = this.guideText(g.price);
+    spec.textColor = this.tokens.surface;
+    spec.backColor = this.tokens.accent;
+    this.guideAxis.spec = spec;
+  }
+
+  /**
+   * Текст метки направляющей — форматом шкалы цены основной серии, как у метки перекрестия, которую она заменяет: на узкой
+   * шкале телефона крупные цены — целым числом («82 639»). Запись подписей рисунков («82 639.0») шире такой шкалы, а LWC
+   * меряет ширину шкалы и по меткам примитивов: шкала расширялась, пока палец на графике, свечи уезжали из-под пальца, и
+   * точка вставала не на той свече, что показывала направляющая. Без серии (тесты) — запись подписей рисунков.
+   */
+  private guideText(price: number): string {
+    const format = this.seriesFormat?.() ?? null;
+    const f = this.guideTextFor;
+    if (f.price === price && f.format === format && f.precision === this.precision) return f.text;
+    f.price = price;
+    f.format = format;
+    f.precision = this.precision;
+    f.text = format ? format.format(price) : formatDrawingPrice(price, this.precision);
+    return f.text;
   }
 
   /** Снимок направляющей для e2e (el.__guide()): цена, текст и высота метки на шкале, палец, магнит. */
@@ -548,7 +591,7 @@ export class DrawingsPrimitive implements ISeriesPrimitive<Time> {
     const g = this.guide;
     if (!g) return null;
     const spec = this.guideAxis.spec;
-    return { price: g.price, text: spec?.text ?? formatDrawingPrice(g.price, this.precision), y: spec?.y ?? null, touch: g.touch, snapped: g.snapped };
+    return { price: g.price, text: spec?.text ?? this.guideText(g.price), y: spec?.y ?? null, touch: g.touch, snapped: g.snapped };
   }
 
   updateAllViews(): void {
