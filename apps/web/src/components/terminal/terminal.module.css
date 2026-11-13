@@ -1086,6 +1086,45 @@
   min-height: 0;
 }
 
+/* мультичарт без права (план, раздел 4: Premium): что это и где подписка — вместо сетки, по центру */
+.multiUpsell {
+  flex: 1 1 auto;
+  display: grid;
+  place-items: center;
+  padding: var(--gap-5) var(--gap-4);
+  overflow-y: auto;
+}
+
+.multiUpsellBody {
+  display: grid;
+  justify-items: center;
+  gap: var(--gap-3);
+  max-width: 560px;
+  color: var(--text-2);
+  text-align: center;
+}
+
+.multiUpsellBody h2 {
+  margin: 0;
+  color: var(--text);
+  font-size: 20px;
+}
+
+.multiUpsellBody p {
+  margin: 0;
+}
+
+.multiUpsellShot {
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.multiUpsellNote {
+  font-size: 13px;
+}
+
 /* выбор разметки графика (план 2B.2): пресеты сверху вкладки «Слои», пояснение — одной строкой под названием */
 .markup {
   display: grid;

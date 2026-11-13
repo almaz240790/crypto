@@ -20,7 +20,6 @@ import { presetNote, presetTitle } from "./MarkupPicker";
 import { MARKUP_MENU_MAX } from "./chrome/MarkupMenu";
 import { SymbolPicker } from "./chrome/TerminalHeader";
 import { useLivePrice } from "./chrome/facts";
-import { usePlan } from "./state/usePlan";
 import { useTerminalData } from "./useTerminalData";
 import { useT } from "@/i18n/client";
 import { MQ } from "@/lib/breakpoints";
@@ -70,7 +69,7 @@ function CellPrice({ store, prices, fallback, tick, error }: { store: ChartStore
 }
 
 /**
- * Ячейка. Минутные ТФ — по тарифу, как в терминале (usePlan, аудит TSA-4): закрытые (гость, Free) — в списке
+ * Ячейка. Минутные ТФ — по тарифу, как в терминале (usePlan страницы, аудит TSA-4): закрытые (гость, Free) — в списке
  * недоступны с пометкой «Pro», сохранённая минутная ячейка показывается на 4ч (сохранение не меняется — после входа
  * с Pro она снова минутная); отказ сервера (403) и другие сбои — объяснение вместо графика (ChartLoadError).
  */
@@ -136,10 +135,10 @@ function CellsMarkupMenu({ value, onSelect }: { value: PresetId; onSelect: (id: 
   );
 }
 
-export function MultiChart() {
+/** intradayLocked — минутные ТФ закрыты (usePlan страницы, MultiChartClient: один запрос тарифа на страницу). */
+export function MultiChart({ intradayLocked }: { intradayLocked: boolean }) {
   const t = useT();
   const { user } = useAuth();
-  const { intradayLocked } = usePlan();
   const [saved, setSaved] = useState<Saved | null>(null);
   const [desktop, setDesktop] = useState<boolean | null>(null);
   const [instruments, setInstruments] = useState<Instrument[]>([]);

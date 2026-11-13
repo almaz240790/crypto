@@ -1013,6 +1013,7 @@
   "разрыв цены вниз": "price gap down",
   "Начать бесплатно": "Start free",
   "Всё из Pro": "Everything in Pro",
+  "Мультичарт: 2 или 4 графика на экране": "Multichart: 2 or 4 charts on one screen",
   "Вопросы о графике": "Chart questions",
   "Открыть график": "Open chart",
   "Популярный": "Popular",
@@ -1095,7 +1096,7 @@
   "подпись прямо на графике": "a label right on the chart",
   "К графику": "To the chart",
   "Подписка": "Subscription",
-  "Все индикаторы, рисование и автоматическая разметка доступны бесплатно. Подписка Pro и Premium добавляет минутные таймфреймы, больше рисунков и алертов, синхронизацию и API.": "All indicators, drawing and automatic markup are free. Pro and Premium subscriptions add minute timeframes, more drawings and alerts, sync and API.",
+  "Все индикаторы, рисование и автоматическая разметка доступны бесплатно. Подписка Pro добавляет минутные таймфреймы, больше рисунков и алертов и синхронизацию; Premium — ещё мультичарт, вопросы о графике и API.": "All indicators, drawing and automatic markup are free. Pro adds minute timeframes, more drawings and alerts, and sync; Premium also adds the multichart, chart questions and API.",
   "после входа, подписка Pro": "after sign-in, Pro subscription",
   "Таймфреймы 1m–15m доступны после входа с подпиской Pro.": "1m–15m timeframes are available after sign-in with a Pro subscription.",
   "Таймфреймы 1m–15m доступны с подпиской Pro.": "1m–15m timeframes are available with a Pro subscription.",
@@ -1615,5 +1616,8 @@
   "за началом": "beyond the start",
   "стандартные": "default",
   "последний уровень не выключается": "the last level can't be switched off",
-  "вернуть уровни по умолчанию — у этого рисунка и у новых": "restore the default levels for this drawing and for new ones"
+  "вернуть уровни по умолчанию — у этого рисунка и у новых": "restore the default levels for this drawing and for new ones",
+  "Доступно с подпиской Premium": "Available with a Premium subscription",
+  "Мультичарт — 2 или 4 графика на одном экране: у каждого свой инструмент и таймфрейм, разметка структуры рынка, зон и уровней — одна на все графики. Работает на десктопе (ширина экрана от 900 px).": "Multichart is 2 or 4 charts on one screen: each has its own symbol and timeframe, and one market structure, zones and levels markup applies to all of them. Works on desktop (screen width from 900 px).",
+  "Если подписка Premium уже есть, войдите.": "If you already have Premium, sign in."
 }

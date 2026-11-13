@@ -27,8 +27,14 @@ const TICKS: Record<string, string> = { BTCUSDT: "0.1", ETHUSDT: "0.01", [SUBCEN
 /**
  * Данные заглушки API на одного пользователя (несколько страниц — несколько устройств). drawings — строки сервера:
  * рисунок в формате API (client_id, symbol, …) и порядковый номер записи __seq — курсор чтения, как synced_at у API.
+ * billing — BILLING_ENABLED у API (по умолчанию выключен, как на production до запуска оплаты).
  */
-export type MockServer = { drawings: Record<string, unknown>[]; layout: Record<string, unknown> | null; layouts?: Record<string, Record<string, unknown>>; alerts?: Record<string, unknown>[]; plan?: "free" | "pro" | "premium" };
+export type MockServer = { drawings: Record<string, unknown>[]; layout: Record<string, unknown> | null; layouts?: Record<string, Record<string, unknown>>; alerts?: Record<string, unknown>[]; plan?: "free" | "pro" | "premium"; billing?: boolean };
+/** Тарифы /v1/billing/plans — как catalog() у API. */
+const PLANS = [
+  { code: "pro", title: "Pro", prices: { "1": "9.00", "3": "24.30", "12": "76.00" }, price_month: "9.00", price_year: "76.00" },
+  { code: "premium", title: "Premium", prices: { "1": "19.00", "3": "51.30", "12": "160.00" }, price_month: "19.00", price_year: "160.00" },
+];
 /** Лимит рисунков на инструмент по тарифу — как ENTITLEMENTS у API. */
 const DRAWINGS_LIMIT = { free: 10, pro: 100, premium: null } as const;
 /** rich — насыщенная разметка для переписи подписей (план 2B.2, §14.3): уровни вокруг текущей цены. */
@@ -116,7 +122,9 @@ export async function mock(page: Page, calls: string[], authed = false, server: 
     const json = (status: number, body: unknown) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
     if (p === "/v1/auth/refresh") return json(authed ? 200 : 401, authed ? { access_token: "t" } : { detail: "нет" });
     if (p === "/v1/auth/me") return json(200, { id: 7, email: "t@example.com", name: null, email_verified: true, role: "user", locale: "ru", timezone: "UTC", theme: "system", risk: {} });
-    if (p === "/v1/billing/me") return json(200, { plan: server.plan ?? "premium", billing_enabled: false, balance_usd: "0", subscription: null });
+    // мультичарт — как entitlements_for у API: Premium, а пока оплата выключена — у всех
+    if (p === "/v1/billing/me") return json(200, { plan: server.plan ?? "premium", billing_enabled: !!server.billing, balance_usd: "0", subscription: null, multichart: !server.billing || (server.plan ?? "premium") === "premium" });
+    if (p === "/v1/billing/plans") return json(200, { plans: PLANS, billing_enabled: !!server.billing });
     if (p === "/v1/instruments") return json(200, [{ symbol: "BTCUSDT", tick_size: "0.1" }, { symbol: "ETHUSDT", tick_size: "0.01" }, { symbol: SUBCENT, tick_size: "0.0000001" }]);
     if (p === "/v1/chart/candles") {
       const tf = u.searchParams.get("tf");

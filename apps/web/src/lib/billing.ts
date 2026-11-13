@@ -9,6 +9,8 @@ export type Months = 1 | 3 | 12;
 export type BillingMe = {
   plan: "free" | "pro" | "premium";
   billing_enabled: boolean;
+  /** Право на мультичарт (Premium; пока оплата выключена — у всех). Нет у API до 2026-11-13. */
+  multichart?: boolean;
   balance_usd: string;
   subscription: {
     plan: string;
