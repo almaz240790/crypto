@@ -1,6 +1,6 @@
 import type { Candle } from "@platform/charts";
 import { describe, expect, it } from "vitest";
-import { CROSS_FIT_MAX, CROSS_NO_ZONE, CROSS_SHORT, CROSS_SMALL, CROSS_TIGHT, crossFitKey, crossText } from "./crossText";
+import { CROSS_FIT_MAX, CROSS_NO_DAY, CROSS_NO_ZONE, CROSS_SHORT, CROSS_SMALL, CROSS_TIGHT, crossFitKey, crossText } from "./crossText";
 
 /** Пробелы разрядов (узкий неразрывный у formatPrice, обычный у шкалы) — как один пробел. */
 const sp = (s: string | null) => (s === null ? null : s.replace(/\s/g, " "));
@@ -29,10 +29,21 @@ describe("crossText — значения свечи в строке перекр
     expect(sp(crossText({ ...btc, open: 3456.78 }, "0.01", CROSS_SHORT).open)).toBe("3 456.78");
   });
 
-  it("последний шаг — время без «UTC»; изменения нет при открытии 0", () => {
+  it("шаг 4 — время без «UTC»; изменения нет при открытии 0", () => {
     expect(crossText(btc, "0.1", CROSS_NO_ZONE).date).toBe("20.09, 00:00");
-    expect(CROSS_FIT_MAX).toBe(CROSS_NO_ZONE);
     expect(crossText({ ...btc, open: 0 }, "0.1", 0).change).toBeNull();
+  });
+
+  it("последний шаг — у идущей свечи без дня: время, а у свечи от 00:00 (сутки, неделя) — дата; закрытая — как на шаге 4", () => {
+    expect(CROSS_FIT_MAX).toBe(CROSS_NO_DAY);
+    const forming: Candle = { ...btc, time: T + 16 * 3600, open_: true };
+    expect(crossText(forming, "0.1", CROSS_NO_ZONE).date).toBe("20.09, 16:00");
+    expect(crossText(forming, "0.1", CROSS_NO_DAY).date).toBe("16:00");
+    expect(crossText({ ...btc, open_: true }, "0.1", CROSS_NO_DAY).date).toBe("20.09");
+    expect(crossText(btc, "0.1", CROSS_NO_DAY).date).toBe("20.09, 00:00");
+    expect(crossText({ ...btc, time: T + 16 * 3600 }, "0.1", CROSS_NO_DAY).date).toBe("20.09, 16:00");
+    // цены и остальное — как на шаге 4
+    expect({ ...crossText(forming, "0.1", CROSS_NO_DAY), date: "" }).toEqual({ ...crossText(forming, "0.1", CROSS_NO_ZONE), date: "" });
   });
 });
 

@@ -5,16 +5,30 @@ import { formatPrice } from "@/lib/format";
  * Значения свечи под перекрестием для строки состояния телефона (ADR-0009, дополнение 2026-11-13). Строка не
  * переносится: если не влезает, CrosshairStrip сжимает её по шагам, пока не влезет (уровень — номер последнего шага):
  * 1 — промежутки 8 px и короткие подписи («инд.», «не закрыта»), 2 — шрифт 11 px, 3 — цены короче (formatPriceShort,
- * как шкала цены телефона: от 10 000 — целым числом), 4 — время без «UTC». Чистые функции — vitest.
+ * как шкала цены телефона: от 10 000 — целым числом), 4 — время без «UTC», 5 — у идущей свечи без дня: только время
+ * (у свечи от 00:00 — суток и недели — только дата). Цены ETH (~3 000) и монет дешевле цента короче не становятся, и
+ * на 360 px пометка «не закрыта» без шага 5 обрезалась до «не з…» и «н…». Идущая свеча — нынешняя, а полные дата и
+ * время — на метке шкалы времени под перекрестием. Чистые функции — vitest.
  */
 export const CROSS_TIGHT = 1;
 export const CROSS_SMALL = 2;
 export const CROSS_SHORT = 3;
 export const CROSS_NO_ZONE = 4;
-export const CROSS_FIT_MAX = CROSS_NO_ZONE;
+export const CROSS_NO_DAY = 5;
+export const CROSS_FIT_MAX = CROSS_NO_DAY;
 
 /** Время свечи — UTC, как было в карточке: «20.09, 00:00». */
 const DATE = new Intl.DateTimeFormat("ru-RU", { timeZone: "UTC", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+const DAY = new Intl.DateTimeFormat("ru-RU", { timeZone: "UTC", day: "2-digit", month: "2-digit" });
+const TIME = new Intl.DateTimeFormat("ru-RU", { timeZone: "UTC", hour: "2-digit", minute: "2-digit" });
+
+/** Дата и время свечи по шагу сжатия: «20.09, 00:00 UTC» → «20.09, 00:00» → у идущей свечи «16:00» или «20.09». */
+function dateText(k: Candle, level: number): string {
+  const at = new Date(k.time * 1000);
+  if (level >= CROSS_NO_DAY && k.open_) return at.getUTCHours() === 0 && at.getUTCMinutes() === 0 ? DAY.format(at) : TIME.format(at);
+  const date = DATE.format(at);
+  return level >= CROSS_NO_ZONE ? date : `${date} UTC`;
+}
 
 export type CrossText = {
   date: string;
@@ -31,9 +45,8 @@ export type CrossText = {
 export function crossText(k: Candle, tick: string | null, level: number): CrossText {
   const precision = tickPrecision(tick);
   const px = (v: number) => (level >= CROSS_SHORT ? formatPriceShort(v, precision) : formatPrice(v, tick));
-  const date = DATE.format(new Date(k.time * 1000));
   return {
-    date: level >= CROSS_NO_ZONE ? date : `${date} UTC`,
+    date: dateText(k, level),
     open: px(k.open),
     high: px(k.high),
     low: px(k.low),

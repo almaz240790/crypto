@@ -14,37 +14,48 @@ type Chart = {
   panes(): { getSeries(): { data(): { time: number }[] }[] }[];
 };
 
-/** Свечи как у BTC (~80 000, шаг 0.1, объём ~100K): длинные цены — худший случай для ширины строки. */
-const big = (i: number) => {
-  const o = 80000 + Math.sin(i / 7) * 4000 + Math.sin(i / 23) * 2500;
-  const c = o + Math.cos(i / 5) * 700;
-  return { t: T0 + i * H4, o: o.toFixed(1), h: (Math.max(o, c) + 320).toFixed(1), l: (Math.min(o, c) - 290).toFixed(1), c: c.toFixed(1), v: String(90000 + (i % 13) * 1300), open: false };
+/** Инструмент заглушки: символ, шаг цены, уровень цен, знаков после точки, объём. */
+type Prices = { sym: string; tick: string; base: number; d: number; v: number };
+/** Как у BTC (~80 000, шаг 0.1, объём ~100K): длинные цены — худший случай для ширины строки, если их не сократить. */
+const BTC: Prices = { sym: "BTCUSDT", tick: "0.1", base: 80000, d: 1, v: 90000 };
+/** Как у ETH (~3 300, шаг 0.01): цены той же длины, что у BTC, но короче не становятся (formatPriceShort — от 10 000). */
+const ETH: Prices = { sym: "ETHUSDT", tick: "0.01", base: 3300, d: 2, v: 1_230_000 };
+/** Монета дешевле цента (1000PEPE, шаг 1e-7 в записи API): самые длинные цены — 9 знаков и короче не становятся. */
+const SUBCENT: Prices = { sym: "1000PEPEUSDT", tick: "1.000E-7", base: 0.0049, d: 7, v: 123_456_789 };
+
+const candleOf = (p: Prices) => (i: number) => {
+  const k = p.base / 80000;
+  const o = p.base + (Math.sin(i / 7) * 4000 + Math.sin(i / 23) * 2500) * k;
+  const c = o + Math.cos(i / 5) * 700 * k;
+  return { t: T0 + i * H4, o: o.toFixed(p.d), h: (Math.max(o, c) + 320 * k).toFixed(p.d), l: (Math.min(o, c) - 290 * k).toFixed(p.d), c: c.toFixed(p.d), v: String(p.v + (i % 13) * 1300), open: false };
 };
+const big = candleOf(BTC);
 
 /**
- * Поверх заглушки mock(): свечи в масштабе BTC; разметка — только тренд старших ТФ (для строки «Тренд: …»), фигур и
- * паттернов нет — их цены около 100 растянули бы шкалу. Остальное — заглушке.
+ * Поверх заглушки mock(): свечи в масштабе инструмента (по умолчанию BTC); разметка — только тренд старших ТФ (для
+ * строки «Тренд: …»), фигур и паттернов нет — их цены около 100 растянули бы шкалу. Остальное — заглушке.
  */
-async function btcPrices(page: Page) {
+async function prices(page: Page, p: Prices = BTC) {
+  const candle = candleOf(p);
   await page.route("**/v1/chart/**", (route) => {
     const u = new URL(route.request().url());
     const json = (body: unknown) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
     if (u.pathname === "/v1/chart/candles") {
       const before = u.searchParams.get("before");
-      const items = before ? [] : Array.from({ length: 300 }, (_, i) => big(i));
-      return json({ symbol: "BTCUSDT", tf: u.searchParams.get("tf"), candles: items, current: before ? null : { ...big(300), open: true }, has_older: false, tick_size: "0.1", server_time: "" });
+      const items = before ? [] : Array.from({ length: 300 }, (_, i) => candle(i));
+      return json({ symbol: p.sym, tf: u.searchParams.get("tf"), candles: items, current: before ? null : { ...candle(300), open: true }, has_older: false, tick_size: p.tick, server_time: "" });
     }
-    if (u.pathname === "/v1/chart/layers") return json({ symbol: "BTCUSDT", tf: "4h", structure: { tf: "4h", strategy_version: "1.2.0", swings: [], events: [], zones: [], levels: {}, equal_levels: [], sweeps: [], bias: { bias: "short", d1_trend: "down", w1_trend: "up", ema50_d1: "80000" }, atr: "900" }, signals: [], server_time: "" });
-    if (u.pathname === "/v1/chart/figures") return json({ symbol: "BTCUSDT", tf: "4h", note: "", items: [], stats: {} });
-    if (u.pathname === "/v1/chart/patterns") return json({ symbol: "BTCUSDT", tf: "4h", horizon: 5, note: "", items: [], stats: {} });
+    if (u.pathname === "/v1/chart/layers") return json({ symbol: p.sym, tf: "4h", structure: { tf: "4h", strategy_version: "1.2.0", swings: [], events: [], zones: [], levels: {}, equal_levels: [], sweeps: [], bias: { bias: "short", d1_trend: "down", w1_trend: "up", ema50_d1: String(p.base) }, atr: "900" }, signals: [], server_time: "" });
+    if (u.pathname === "/v1/chart/figures") return json({ symbol: p.sym, tf: "4h", note: "", items: [], stats: {} });
+    if (u.pathname === "/v1/chart/patterns") return json({ symbol: p.sym, tf: "4h", horizon: 5, note: "", items: [], stats: {} });
     return route.fallback();
   });
 }
 
-async function open(page: Page) {
+async function open(page: Page, p: Prices = BTC) {
   await mock(page, [], true);
-  await btcPrices(page);
-  await page.goto("/chart/BTCUSDT/4h");
+  await prices(page, p);
+  await page.goto(`/chart/${p.sym}/4h`);
   const term = page.getByTestId("terminal");
   await expect(term.locator("canvas").first()).toBeVisible();
   // строка состояния с трендом — две строки на телефоне; график успокоился (ширина шкалы цены, вид)
@@ -128,6 +139,7 @@ const group = (n: number, d: number) => {
 /** Цена по шагу 0.1 или короткая (целым от 10 000 — formatPriceShort): строка может сжать цены на узком экране. */
 const priceRe = (v: string) => `(?:${group(Number(v), 1)}|${group(Number(v), 0)})`;
 const DATE = new Intl.DateTimeFormat("ru-RU", { timeZone: "UTC", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+const TIME = new Intl.DateTimeFormat("ru-RU", { timeZone: "UTC", hour: "2-digit", minute: "2-digit" });
 const text = async (page: Page) => ((await page.getByTestId("ohlc").textContent()) ?? "").replace(/\s+/g, " ");
 
 const PHONES = [
@@ -215,19 +227,23 @@ for (const [name, device] of PHONES) {
 }
 
 // ландшафт телефона (высота ≤ 520, ADR-0009 «ландшафт», TSA-5) и узкий телефон: худший случай — идущая свеча (пометка
-// «не закрыта») с ценами BTC и кнопкой индикаторов
-const NARROW: { title: string; viewport: { width: number; height: number }; rows: number }[] = [
-  { title: "ландшафт 844×390", viewport: { width: 844, height: 390 }, rows: 1 },
-  { title: "узкий телефон 360×740", viewport: { width: 360, height: 740 }, rows: 2 },
+// «не закрыта») с длинными ценами и кнопкой индикаторов. Цены BTC сокращаются (formatPriceShort, от 10 000), а цены
+// ETH и монет дешевле цента — нет: раньше на 360 px пометка обрезалась многоточием до «не з…» и «н…»
+const NARROW: { title: string; viewport: { width: number; height: number }; rows: number; prices: Prices }[] = [
+  { title: "ландшафт 844×390", viewport: { width: 844, height: 390 }, rows: 1, prices: BTC },
+  { title: "узкий телефон 360×740", viewport: { width: 360, height: 740 }, rows: 2, prices: BTC },
+  { title: "узкий телефон 360×740, цены ETH", viewport: { width: 360, height: 740 }, rows: 2, prices: ETH },
+  { title: "узкий телефон 360×740, монета дешевле цента", viewport: { width: 360, height: 740 }, rows: 2, prices: SUBCENT },
+  { title: "ландшафт 667×375 (iPhone SE), монета дешевле цента", viewport: { width: 667, height: 375 }, rows: 1, prices: SUBCENT },
 ];
-for (const { title, viewport, rows } of NARROW) {
+for (const { title, viewport, rows, prices: p } of NARROW) {
   test.describe(title, () => {
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { defaultBrowserType, ...pixel5 } = devices["Pixel 5"];
     test.use({ ...pixel5, viewport });
 
-    test(`строка перекрестия не шире экрана и не больше ${rows === 1 ? "одной строки" : "двух строк"}: идущая свеча, цены BTC, «индикаторы» и ×`, async ({ page }) => {
-      await open(page);
+    test(`строка перекрестия не шире экрана и не больше ${rows === 1 ? "одной строки" : "двух строк"}: идущая свеча, длинные цены, «индикаторы» и ×`, async ({ page }) => {
+      await open(page, p);
       await expect(page.locator("[data-layout]").first()).toHaveAttribute("data-layout", "phone");
       const before = await geo(page);
       const lb = await lastBar(page);
@@ -235,6 +251,8 @@ for (const { title, viewport, rows } of NARROW) {
       const ohlc = page.getByTestId("ohlc");
       await expect(ohlc).toBeVisible();
       await expect(ohlc).toContainText("не закрыта");
+      // время идущей свечи видно всегда (дата — и на метке шкалы времени под перекрестием)
+      await expect(ohlc).toContainText(TIME.format(new Date((T0 + 300 * H4) * 1000)));
       await expect(ohlc.getByRole("button", { name: /индикаторы \(\d+\)/ })).toBeVisible();
       await expect(ohlc.getByRole("button", { name: "убрать перекрестие" })).toBeVisible();
       const m = await ohlc.evaluate((el) => {
@@ -301,7 +319,7 @@ test.describe("Pixel 5: инструмент рисования", () => {
 test("десктоп без изменений: под перекрестием — строка легенды на графике «Откр … Закр»", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await mock(page, [], true);
-  await btcPrices(page);
+  await prices(page);
   await page.goto("/chart/BTCUSDT/4h");
   const term = page.getByTestId("terminal");
   await expect(term.locator("canvas").first()).toBeVisible();
