@@ -2,8 +2,15 @@ import { INTERACTION } from "../presets";
 import type { Candle } from "../types";
 import { normalizeFibLevels } from "./fib";
 import { hitTest, magnetSnap, positionScreen, type Hit, type Projector } from "./geometry";
-import { POSITION_PARTS, POSITION_PART_INDEX, atrAt, positionDir, positionFromEntry, roundToTick, setPositionEnd, setPositionPrice } from "./position";
+import { POSITION_PARTS, POSITION_PART_INDEX, atrAt, positionDir, positionFromEntry, positionParts, roundToTick, setPositionEnd, setPositionPrice } from "./position";
 import { CLICK_SLOP_PX, DBLCLICK_MS, DBLCLICK_SLOP_PX, DEFAULT_STYLE, HANDLE_PX, HANDLE_TOUCH_PX, POSITION_BARS, POSITION_EDGE_PX, POSITION_KNOB_TOUCH_PX, WIDE_TYPES, isPosition, pointsNeeded, type Drawing, type DrawingType, type Point } from "./types";
+
+/**
+ * Направляющая точки, которую ставят или тянут: время и цена после магнита и привязки ко времени (у позиции — цена по
+ * шагу инструмента). snapped — магнит включён и точка на цене свечи (открытие, максимум, минимум, закрытие): поймали
+ * край свечи. touch — палец или перо (хозяин рисует и вертикаль: палец закрывает точку).
+ */
+export type DrawGuide = { time: number; price: number; snapped: boolean; touch: boolean };
 
 /**
  * Контроллер жестов рисования (план 2A.5, 2A.7; ADR-0009, «Рисование»): постановка точек кликами и касаниями,
@@ -27,7 +34,13 @@ import { CLICK_SLOP_PX, DBLCLICK_MS, DBLCLICK_SLOP_PX, DEFAULT_STYLE, HANDLE_PX,
  *   Правка: ручки входа, стопа и цели двигают свою цену (по вертикали, не за вход), правый край — длительность,
  *   тело — всю позицию;
  * - измеритель — временный (план 2A.5): две точки — измерение (onRuler), а не рисунок; его убирает следующее нажатие на
- *   графике (оно делает и своё — сдвиг, выбор), Esc, выбор инструмента и хозяин (clearRuler).
+ *   графике (оно делает и своё — сдвиг, выбор), Esc, выбор инструмента и хозяин (clearRuler);
+ * - направляющая точки (onGuide; ADR-0009, «Рисование», дополнение 2026-11-13): пока точку ставят или тянут — её цена и
+ *   время после магнита; хозяин рисует горизонталь через панель и метку цены на шкале. Мышь — наведение с инструментом
+ *   (следующая точка, в том числе A) и нажатие с протягиванием; палец — пока он на графике: до точки A — пока не
+ *   сдвинулся (сдвиг — жест графика), после A — нажатие и протягивание следующей точки; ручки рисунка (точки, вход, стоп
+ *   и цель позиции) — мышью и пальцем, пока их держат. Тело, правый край позиции и вертикальная линия — без неё (цену
+ *   точки не выбирают). Палец подняли, правка кончилась, инструмент снят, указатель ушёл с графика — null.
  */
 export type ControllerEvents = {
   onCreate: (d: Drawing) => void;
@@ -47,6 +60,11 @@ export type ControllerEvents = {
    * хранилище, на сервер и в лимит рисунков он не попадает.
    */
   onRuler?: (d: Drawing | null) => void;
+  /**
+   * Направляющая точки сменилась (null — её нет): только при смене, не на каждом сдвиге указателя в пределах той же точки.
+   * Попадание по рисункам и подписи она не меняет — хозяин рисует её поверх, временно.
+   */
+  onGuide?: (g: DrawGuide | null) => void;
   /**
    * Правка рисунка закончилась (отпустили, отменили, щипок вторым пальцем): то, что хозяин отложил на время правки
    * (editing), — теперь.
@@ -131,6 +149,8 @@ export class DrawingController {
   private ruler: Drawing | null = null;
   /** Инструмент, переданный хозяином последним (syncTool). */
   private ownerTool: DrawingType | null = null;
+  /** Направляющая, сообщённая хозяину последней (onGuide). */
+  private guide: DrawGuide | null = null;
   private readonly handlers: Array<[EventTarget, string, (e: Event) => void]> = [];
 
   constructor(
@@ -149,6 +169,8 @@ export class DrawingController {
     const doc: EventTarget = el.ownerDocument ?? el;
     on(doc, "pointerup", (e) => this.up(e as PointerEvent));
     on(doc, "pointercancel", (e) => this.cancelGesture(e as PointerEvent));
+    // мышь ушла с графика — направляющей под ней нет
+    on(el, "pointerleave", (e) => this.leave(e as PointerEvent));
     // Esc убирает измерение (как у TradingView): инструмента уже нет — снять его хозяину нечего
     on(doc, "keydown", (e) => {
       if ((e as KeyboardEvent).key === "Escape") this.clearRuler();
@@ -241,8 +263,84 @@ export class DrawingController {
     this.lastRaw = null;
     this.preview = null;
     this.previewDragged = false;
+    this.clearGuide();
     this.ev.onDraft(null);
     this.ev.onStep?.(0);
+  }
+
+  /** Сообщить направляющую на точке p (null — убрать); то же, что уже сообщено, — не сообщается. */
+  private setGuide(p: Point | null, touch: boolean): void {
+    const cur = this.guide;
+    if (!p) {
+      if (!cur) return;
+      this.guide = null;
+      this.ev.onGuide?.(null);
+      return;
+    }
+    const snapped = this.isSnapped(p);
+    if (cur && cur.time === p.time && cur.price === p.price && cur.snapped === snapped && cur.touch === touch) return;
+    this.guide = { time: p.time, price: p.price, snapped, touch };
+    this.ev.onGuide?.(this.guide);
+  }
+
+  private clearGuide(): void {
+    this.setGuide(null, false);
+  }
+
+  /** Магнит включён и точка — на цене своей свечи (O/H/L/C). */
+  private isSnapped(p: Point): boolean {
+    if (!this.opts.magnet) return false;
+    const c = this.candleAt(p.time);
+    return c !== undefined && (p.price === c.open || p.price === c.high || p.price === c.low || p.price === c.close);
+  }
+
+  /**
+   * Точка инструмента для направляющей: у позиции вход — по шагу цены (как поставит makeDraft), у вертикальной линии —
+   * нет (цену у неё не выбирают).
+   */
+  private guidePoint(p: Point | null): Point | null {
+    const tool = this.tool;
+    if (!p || !tool || tool === "vline") return null;
+    return isPosition(tool) ? { time: p.time, price: roundToTick(p.price, this.opts.getTick?.() ?? null) } : p;
+  }
+
+  /**
+   * Что поставит касание (клик) в (x, y): пальцем рядом с протянутой точкой — она (placeEnd подтверждает её), иначе —
+   * точка под указателем с магнитом.
+   */
+  private tapTarget(x: number, y: number, touch: boolean): Point | null {
+    const pv = this.preview;
+    if (touch && pv && this.previewDragged) {
+      const dist = this.distTo(pv, x, y);
+      if (dist !== null && dist <= HANDLE_TOUCH_PX) return this.guidePoint(pv);
+    }
+    return this.guidePoint(this.toPoint(x, y));
+  }
+
+  /** Мышь над графиком без нажатия: с инструментом — направляющая на точке под ней (над шкалами — нет). */
+  private hoverGuide(p: Xy): void {
+    if (!this.tool || !this.inPlot(p)) return this.clearGuide();
+    this.setGuide(this.guidePoint(this.toPoint(p.x, p.y)), false);
+  }
+
+  /**
+   * Точка правки рисунка для направляющей: ручка точки — она; ручка входа, стопа или цели позиции — её цена у левого
+   * края (там ручки); правый край позиции, тело и вертикальная линия — нет.
+   */
+  private editPoint(hit: Hit, type: DrawingType, pts: readonly Point[]): Point | null {
+    if (hit.part !== "point" || type === "vline") return null;
+    if (!isPosition(type)) return pts[hit.index] ?? null;
+    const part = POSITION_PARTS[hit.index];
+    if (!part || part === "end") return null;
+    const pp = positionParts({ type, points: pts as Point[] });
+    const p = pts[POSITION_PART_INDEX[part]];
+    return pp && p ? { time: pp.start, price: p.price } : null;
+  }
+
+  /** pointerleave не всплывает, но фаза перехвата идёт через график: уход с вложенного элемента — не уход с графика. */
+  private leave(e: Pick<PointerEvent, "pointerType" | "target">): void {
+    if (e.target && e.target !== this.el) return;
+    if (e.pointerType === "mouse" && !this.gesture) this.clearGuide();
   }
 
   private local(e: ClientXy): Xy {
@@ -302,8 +400,18 @@ export class DrawingController {
     return Math.abs(time - a) < Math.abs(b - time) ? a : b;
   }
 
+  /** Свеча с этим временем (буфер упорядочен по времени: поиск делением — на каждом сдвиге указателя). */
   private candleAt(time: number): Candle | undefined {
-    return this.opts.getCandles().find((c) => c.time === time);
+    const c = this.opts.getCandles();
+    let lo = 0, hi = c.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const t = c[mid]!.time;
+      if (t === time) return c[mid];
+      if (t < time) lo = mid + 1;
+      else hi = mid - 1;
+    }
+    return undefined;
   }
 
   /** Экранное расстояние от (x, y) до точки рисунка; null — точка за пределами шкал. */
@@ -343,6 +451,7 @@ export class DrawingController {
       // рисунка под первым пальцем отменяется (рисунок — на место, без шага отмены)
       this.pointers.add(e.pointerId);
       g0.multi = true;
+      this.clearGuide();
       if (g0.mode === "place") {
         g0.mode = "pass";
         this.blockTouch = false;
@@ -363,7 +472,7 @@ export class DrawingController {
     this.gesture = g;
     this.blockTouch = false;
     // шкалы цены и времени, другие панели — жесты графика (масштаб шкалы, прокрутка): ни точек, ни правки
-    if (!g.plot) return;
+    if (!g.plot) return this.clearGuide();
     if (this.tool) {
       // мышью нажатие всегда ставит точку (можно протянуть); пальцем — только когда рисунок уже начат,
       // иначе это жест графика, а точку A ставит касание без сдвига (в up)
@@ -375,15 +484,19 @@ export class DrawingController {
         DrawingController.consume(e);
         this.capture(e);
       }
+      // направляющая — на точке, которую поставит это нажатие (палец до A: пока не сдвинулся)
+      this.setGuide(this.tapTarget(start.x, start.y, touch), touch);
       return;
     }
     const hit = this.editHit(start, touch);
-    if (!hit) return;
+    // ни точки, ни правки (сдвиг графика, выбор): направляющей от прежнего жеста (отпускание потерялось) не остаётся
+    if (!hit) return this.clearGuide();
     g.mode = "edit";
     this.blockTouch = touch;
     DrawingController.consume(e);
     const d = this.opts.getDrawings().find((q) => q.id === hit.id)!;
     this.drag = { hit, type: d.type, start, origin: d.points.map((p) => ({ ...p })), last: null };
+    this.setGuide(this.editPoint(hit, d.type, d.points), touch);
     // нажатие мышью по рисунку — выбор им самим (на устройстве с мышью и экраном тело потом тянется и пальцем)
     if (!touch) this.touched = hit.id;
     this.ev.onSelect(hit.id);
@@ -410,13 +523,14 @@ export class DrawingController {
     if (own && !g.moved && Math.hypot(x - g.start.x, y - g.start.y) > (g.touch ? INTERACTION.tapSlopPx : CLICK_SLOP_PX)) g.moved = true;
     if (own && g.mode === "edit") {
       DrawingController.consume(e);
-      if (g.moved && !g.multi && this.drag) this.dragTo(x, y);
+      if (g.moved && !g.multi && this.drag) this.dragTo(x, y, g.touch);
       return;
     }
     if (!this.tool) return;
     if (own && g.mode === "place") {
       DrawingController.consume(e);
-      if (!g.moved) return;
+      // дрожь в пределах касания (клика): точку поставит отпускание — направляющая там, где он её поставит
+      if (!g.moved) return this.setGuide(this.tapTarget(x, y, g.touch), g.touch);
       // мышь протянули от первой точки: A — там, где нажали, следующая — под указателем; одноточечный рисунок этим
       // уже готов (точка — где нажали), отпускание его завершит
       if (this.pending.length === 0) {
@@ -426,11 +540,25 @@ export class DrawingController {
         this.lastRaw = g.start;
         if (pointsNeeded(this.tool) > 1) this.ev.onStep?.(1);
       }
-      this.previewAt(x, y);
+      const p = this.previewAt(x, y);
+      // направляющая — на точке, которая встанет: у одноточечного — A (где нажали), иначе — протягиваемая
+      const done = this.pending.length >= pointsNeeded(this.tool);
+      if (p || done) this.setGuide(this.guidePoint(done ? this.pending[0]! : p), g.touch);
       return;
     }
-    // мышь без нажатия: предпросмотр следующей точки за курсором (над шкалами — не ведём)
-    if (!g && e.pointerType === "mouse" && this.pending.length > 0 && this.inPlot({ x, y })) this.previewAt(x, y);
+    if (own) {
+      // палец до точки A: жест графика; пока не сдвинулся — направляющая на точке, которую поставит касание
+      if (g.touch && g.plot && !g.moved && !g.multi) this.setGuide(this.guidePoint(this.toPoint(x, y)), true);
+      else this.clearGuide();
+      return;
+    }
+    if (g || e.pointerType !== "mouse") return;
+    // мышь без нажатия: предпросмотр следующей точки и направляющая за курсором (над шкалами — нет)
+    if (!this.inPlot({ x, y })) return this.clearGuide();
+    if (this.pending.length > 0) {
+      const p = this.previewAt(x, y);
+      if (p) this.setGuide(this.guidePoint(p), false);
+    } else this.hoverGuide({ x, y });
   }
 
   private up(e: PointerLike): void {
@@ -441,10 +569,17 @@ export class DrawingController {
     if (e.pointerId !== g.id || this.pointers.size > 0) {
       // пальцы отпускают по одному: жест заканчивается с последним, а с двумя пальцами — это не касание
       g.multi = true;
-      if (this.pointers.size === 0) this.endGesture(g, null);
+      if (this.pointers.size === 0) {
+        this.endGesture(g, null);
+        this.clearGuide();
+      }
       return;
     }
-    this.endGesture(g, this.local(e));
+    const at = this.local(e);
+    this.endGesture(g, at);
+    // палец подняли — направляющей нет; мышь осталась над графиком — она под курсором, пока инструмент выбран
+    if (g.touch) this.clearGuide();
+    else this.hoverGuide(at);
   }
 
   private endGesture(g: Gesture, at: Xy | null): void {
@@ -472,6 +607,7 @@ export class DrawingController {
     this.pointers.delete(e.pointerId);
     if (this.pointers.size > 0) return;
     this.gesture = null;
+    this.clearGuide();
     if (g.mode === "edit") this.endDrag(g);
     else if (g.mode === "place") this.restorePreview();
   }
@@ -482,7 +618,7 @@ export class DrawingController {
     this.emitDraft();
   }
 
-  private dragTo(x: number, y: number): void {
+  private dragTo(x: number, y: number, touch: boolean): void {
     const { hit, type, start, origin } = this.drag!;
     let pts = origin.map((p) => ({ ...p }));
     if (hit.part === "point" && isPosition(type)) {
@@ -545,6 +681,7 @@ export class DrawingController {
       }
     }
     this.drag!.last = pts;
+    this.setGuide(this.editPoint(hit, type, pts), touch);
     this.ev.onMove(hit.id, pts, false);
   }
 
@@ -643,11 +780,13 @@ export class DrawingController {
     this.ev.onDone?.(ended);
   }
 
-  private previewAt(x: number, y: number): void {
+  /** Предпросмотр следующей точки под (x, y): она же (с магнитом); null — точка за пределами шкал. */
+  private previewAt(x: number, y: number): Point | null {
     const p = this.toPoint(x, y);
-    if (!p) return;
+    if (!p) return null;
     this.preview = p;
     this.emitDraft();
+    return p;
   }
 
   private emitDraft(): void {

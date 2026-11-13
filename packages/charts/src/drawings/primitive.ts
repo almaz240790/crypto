@@ -1,21 +1,23 @@
-import type { IChartApi, IPrimitivePaneRenderer, IPrimitivePaneView, ISeriesApi, ISeriesPrimitive, SeriesAttachedParameter, SeriesType, Time } from "lightweight-charts";
+import type { IChartApi, IPriceFormatter, IPrimitivePaneRenderer, IPrimitivePaneView, ISeriesApi, ISeriesPrimitive, ISeriesPrimitiveAxisView, SeriesAttachedParameter, SeriesType, Time } from "lightweight-charts";
 import { layoutLabels } from "../layout/labels";
 import type { TextMeasurer } from "../layout/measure";
 import type { LabelCandidate, PlacedLabel, Rect } from "../layout/types";
+import { AxisLabelView, type AxisViewSpec } from "../render/axisViews";
 import { logicalX } from "../render/projector";
 import { alpha } from "../theme";
 import type { Candle, ThemeTokens } from "../types";
 import { channelShift, extend, fibLevels, lineAt, positionKnobs, positionScreen, rulerInfo, type Projector, type RulerInfo } from "./geometry";
 import { DRAWING_TEXT, drawingColor, drawingLabels, fibLevelColor, formatDrawingPrice, handleCandidate, handleRects, toCandidate, type DrawingLabel, type DrawingText, type MeasureText, type RiskProfile } from "./labels";
-import type { DrawProjector } from "./controller";
+import type { DrawGuide, DrawProjector } from "./controller";
 import { atrAt } from "./position";
 import { fibExtended, fibMulticolor } from "./fib";
-import { FIB_EXTEND_ALPHA, FIB_FILL_ALPHA, FIB_KEY_LEVELS, FIB_MINOR_ALPHA, FIB_PLAQUE_ALPHA, HANDLE_PX, POSITION_FILL_ALPHA, POSITION_KNOB_R, POSITION_KNOB_TOUCH_R, isPosition, type Drawing, type Point } from "./types";
+import { FIB_EXTEND_ALPHA, FIB_FILL_ALPHA, FIB_KEY_LEVELS, FIB_MINOR_ALPHA, FIB_PLAQUE_ALPHA, GUIDE_DASH, GUIDE_GAP_PX, GUIDE_SNAP_R, GUIDE_VERTICAL_ALPHA, GUIDE_WIDTH, HANDLE_PX, POSITION_FILL_ALPHA, POSITION_KNOB_R, POSITION_KNOB_TOUCH_R, isPosition, type Drawing, type Point } from "./types";
 
 /**
  * Примитив LWC, рисующий все рисунки поверх основной серии (план 2A.5): линии, каналы, зоны,
- * Фибоначчи, позиции, заметки, временный измеритель; хэндлы у выбранного рисунка. Координаты считает
- * ``TimeProjector`` — по индексам баров с экстраполяцией за правый край.
+ * Фибоначчи, позиции, заметки, временный измеритель; хэндлы у выбранного рисунка; направляющая точки, которую ставят
+ * или тянут, и метка её цены на шкале. Координаты считает ``TimeProjector`` — по индексам баров с экстраполяцией за
+ * правый край.
  */
 export class TimeProjector {
   private times: number[] = [];
@@ -97,6 +99,8 @@ const POSITION_TEXT_DX = 4;
 /** Пустая полоса свечей: подписи рисунков свечи не обходят. */
 const NO_CANDLES = { x0: 0, spacing: 0, halfWidth: 0, top: new Float32Array(0), bottom: new Float32Array(0) };
 const NO_BUDGET = { canvas: 0, perLayer: {} };
+/** Пунктир вертикали направляющей одним массивом на модуль: setLineDash копирует его, кадр не выделяет память. */
+const GUIDE_DASH_LIST: number[] = [...GUIDE_DASH];
 
 class Renderer implements IPrimitivePaneRenderer {
   constructor(
@@ -108,6 +112,10 @@ class Renderer implements IPrimitivePaneRenderer {
     target.useMediaCoordinateSpace(({ context: ctx, mediaSize }) => {
       const width = mediaSize.width;
       const src = this.src;
+      // направляющая — под рисунками (их линии и подписи читаются поверх), над свечами
+      const g = src.guide;
+      const gx = g ? this.proj.x(g.time) : null, gy = g ? this.proj.y(g.price) : null;
+      if (g) this.drawGuide(ctx, g, gx, gy, width, mediaSize.height);
       const all = src.draft ? [...src.drawings, src.draft] : src.drawings;
       for (const d of src.ruler ? [...all, src.ruler] : all) this.drawOne(ctx, d, width);
       // подписи — поверх всех рисунков, на местах из общей раскладки с разметкой
@@ -118,7 +126,54 @@ class Renderer implements IPrimitivePaneRenderer {
       }
       // ручки выбранного и начатого — поверх подписей; у временного измерителя ручек нет (его не правят)
       for (const d of all) if ((d === src.draft || d.id === src.selectedId) && !d.locked) this.drawHandles(ctx, d);
+      // точка поймала край свечи (магнит) — отметка поверх ручки
+      if (g?.snapped && gx !== null && gy !== null) this.drawSnap(ctx, gx, gy);
     });
+  }
+
+  /**
+   * Направляющая точки: горизонталь через всю панель на цене точки; у пальца — и пунктирная вертикаль на её времени
+   * (палец закрывает точку) с разрывом над свечой и точкой: фитиль, край которого ловят, вертикаль не закрывает. Цвет —
+   * салатовый выбора и действий: не цвет рисунков (нейтральный) и не перекрестие.
+   */
+  private drawGuide(ctx: Ctx, g: DrawGuide, x: number | null, y: number | null, width: number, height: number): void {
+    const color = this.src.tokens.accent;
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = GUIDE_WIDTH;
+    ctx.setLineDash([]);
+    if (y !== null) line(ctx, 0, y, width, y);
+    if (g.touch && x !== null) {
+      ctx.globalAlpha = GUIDE_VERTICAL_ALPHA;
+      ctx.setLineDash(GUIDE_DASH_LIST);
+      // разрыв — от верхней до нижней из высот точки, максимума и минимума свечи (без массивов: кадр без выделений памяти)
+      const c = this.src.candleAt(g.time);
+      const yH = c ? this.proj.y(c.high) : null, yL = c ? this.proj.y(c.low) : null;
+      let lo = y ?? Infinity, hi = y ?? -Infinity;
+      if (yH !== null) (lo = Math.min(lo, yH)), (hi = Math.max(hi, yH));
+      if (yL !== null) (lo = Math.min(lo, yL)), (hi = Math.max(hi, yL));
+      if (lo === Infinity) line(ctx, x, 0, x, height);
+      else {
+        const top = lo - GUIDE_GAP_PX, bottom = hi + GUIDE_GAP_PX;
+        if (top > 0) line(ctx, x, 0, x, top);
+        if (bottom < height) line(ctx, x, bottom, x, height);
+      }
+    }
+    ctx.restore();
+  }
+
+  private drawSnap(ctx: Ctx, x: number, y: number): void {
+    const t = this.src.tokens;
+    ctx.save();
+    ctx.setLineDash([]);
+    ctx.fillStyle = t.accent;
+    ctx.strokeStyle = t.surface;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(x, y, GUIDE_SNAP_R, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
   }
 
   private color(d: Drawing): string {
@@ -390,6 +445,11 @@ export class DrawingsPrimitive implements ISeriesPrimitive<Time> {
    */
   ruler: Drawing | null = null;
   selectedId: string | null = null;
+  /**
+   * Направляющая точки (DrawingController.onGuide; ADR-0009, «Рисование», дополнение 2026-11-13) — временная: не
+   * подпись и не рисунок, раскладку подписей и попадание не трогает. Меняется через setGuide.
+   */
+  guide: DrawGuide | null = null;
   projector: TimeProjector | null = null;
   touch = false;
   /** Знаков после запятой у цен в подписях — по шагу цены инструмента; null — шаг ещё неизвестен. */
@@ -417,7 +477,19 @@ export class DrawingsPrimitive implements ISeriesPrimitive<Time> {
   };
   private lastBars: { times: number[]; step: number } | null = null;
   private requestUpdate: (() => void) | null = null;
+  private chart: IChartApi | null = null;
+  /** Формат цены основной серии (метка перекрестия и деления шкалы); без серии — null. */
+  private seriesFormat: (() => IPriceFormatter) | null = null;
   private readonly views = [new View(this)];
+  /** Метка цены направляющей на шкале: один постоянный вид (LWC хранит обёртки видов по ссылке на массив, M04). */
+  private readonly guideAxis = new AxisLabelView();
+  /** Её данные — один объект: на кадре (updateAllViews) меняется только высота, без выделения памяти. */
+  private readonly guideSpec: AxisViewSpec = { y: 0, text: "", textColor: "", backColor: "", tick: true };
+  /** Текст метки посчитан для этой цены, этого формата серии и этой точности (иначе — заново). */
+  private readonly guideTextFor: { price: number; format: IPriceFormatter | null; precision: number | null; text: string } = { price: NaN, format: null, precision: null, text: "" };
+  private readonly axisViews: readonly ISeriesPrimitiveAxisView[] = [this.guideAxis];
+  /** Горизонталь перекрестия LWC скрыта этим примитивом (на время направляющей). */
+  private crossHidden = false;
   /** Растёт при каждом update(): подписи раскладки разметки — того же состояния, что и кадр. */
   private rev = 0;
   private sent: { rev: number; labels: DrawingLabel[] } | null = null;
@@ -430,17 +502,111 @@ export class DrawingsPrimitive implements ISeriesPrimitive<Time> {
     this.projector = new TimeProjector(p.chart, p.series);
     if (this.lastBars) this.projector.setBars(this.lastBars.times, this.lastBars.step);
     this.requestUpdate = p.requestUpdate;
+    this.chart = p.chart;
+    const series = p.series;
+    this.seriesFormat = typeof series.priceFormatter === "function" ? () => series.priceFormatter() : null;
+    this.syncCrosshair();
+    this.updateGuideAxis();
   }
 
   detached(): void {
     this.lastBars = this.projector?.bars() ?? this.lastBars;
+    // перекрестие — как было: примитив мог отсоединиться посреди направляющей (смена типа графика, график закрыт)
+    if (this.crossHidden) {
+      this.crossHidden = false;
+      try {
+        this.chart?.applyOptions({ crosshair: { horzLine: { visible: true, labelVisible: true } } });
+      } catch {
+        /* график уже уничтожен */
+      }
+    }
+    this.chart = null;
+    this.seriesFormat = null;
     this.projector = null;
     this.requestUpdate = null;
+    this.guideAxis.spec = null;
+  }
+
+  /**
+   * Направляющая точки (null — убрать). Та же, что сейчас, — без перерисовки. Подписей не меняет (rev тот же: раскладка
+   * кадра не пересчитывается из-за неё). Пока она есть, горизонталь перекрестия LWC скрыта: на её месте — направляющая
+   * на цене после магнита, и у шкалы одна метка, а не две рядом с разными числами.
+   */
+  setGuide(g: DrawGuide | null): void {
+    const cur = this.guide;
+    if (g === cur || (g && cur && g.time === cur.time && g.price === cur.price && g.snapped === cur.snapped && g.touch === cur.touch)) return;
+    this.guide = g;
+    this.syncCrosshair();
+    this.updateGuideAxis();
+    this.requestUpdate?.();
+  }
+
+  /** Горизонталь перекрестия LWC: скрыта, пока есть направляющая; переключается только при смене. */
+  private syncCrosshair(): void {
+    const hide = this.guide !== null;
+    if (hide === this.crossHidden || !this.chart) return;
+    this.crossHidden = hide;
+    this.chart.applyOptions({ crosshair: { horzLine: { visible: !hide, labelVisible: !hide } } });
+  }
+
+  /**
+   * Метка цены направляющей: высота — по текущей шкале (кадр — updateAllViews). Как метки разметки (OverlayPrimitive.axisSpec,
+   * сплошная): фон — цвет смысла (салатовый действия), текст — цвет поверхности. Кадр не выделяет память: объект метки
+   * один, текст пересчитывается только при смене цены, формата или точности.
+   */
+  private updateGuideAxis(): void {
+    const g = this.guide;
+    const y = g && this.projector ? this.projector.y(g.price) : null;
+    if (!g || y === null || !Number.isFinite(y)) {
+      this.guideAxis.spec = null;
+      return;
+    }
+    const spec = this.guideSpec;
+    spec.y = y;
+    spec.text = this.guideText(g.price);
+    spec.textColor = this.tokens.surface;
+    spec.backColor = this.tokens.accent;
+    this.guideAxis.spec = spec;
+  }
+
+  /**
+   * Текст метки направляющей — форматом шкалы цены основной серии, как у метки перекрестия, которую она заменяет: на узкой
+   * шкале телефона крупные цены — целым числом («82 639»). Запись подписей рисунков («82 639.0») шире такой шкалы, а LWC
+   * меряет ширину шкалы и по меткам примитивов: шкала расширялась, пока палец на графике, свечи уезжали из-под пальца, и
+   * точка вставала не на той свече, что показывала направляющая. Без серии (тесты) — запись подписей рисунков.
+   */
+  private guideText(price: number): string {
+    const format = this.seriesFormat?.() ?? null;
+    const f = this.guideTextFor;
+    if (f.price === price && f.format === format && f.precision === this.precision) return f.text;
+    f.price = price;
+    f.format = format;
+    f.precision = this.precision;
+    f.text = format ? format.format(price) : formatDrawingPrice(price, this.precision);
+    return f.text;
+  }
+
+  /** Снимок направляющей для e2e (el.__guide()): цена, текст и высота метки на шкале, палец, магнит. */
+  guideDebug(): { price: number; text: string; y: number | null; touch: boolean; snapped: boolean } | null {
+    const g = this.guide;
+    if (!g) return null;
+    const spec = this.guideAxis.spec;
+    return { price: g.price, text: spec?.text ?? this.guideText(g.price), y: spec?.y ?? null, touch: g.touch, snapped: g.snapped };
+  }
+
+  updateAllViews(): void {
+    this.updateGuideAxis();
+  }
+
+  priceAxisViews(): readonly ISeriesPrimitiveAxisView[] {
+    return this.axisViews;
   }
 
   update(patch: Partial<Pick<DrawingsPrimitive, "drawings" | "draft" | "ruler" | "selectedId" | "tokens" | "touch" | "precision" | "profile" | "text">>): void {
     Object.assign(this, patch);
     this.rev++;
+    // тема и точность — и у метки направляющей
+    if (this.guide) this.updateGuideAxis();
     this.requestUpdate?.();
   }
 
@@ -455,6 +621,20 @@ export class DrawingsPrimitive implements ISeriesPrimitive<Time> {
   private rulerStats(p1: Point, p2: Point): RulerInfo {
     const pr = this.projector;
     return rulerInfo(p1, p2, (t) => (pr ? pr.timeToLogical(t) : 0), this.closedAtr(Math.min(p1.time, p2.time)));
+  }
+
+  /** Свеча графика с этим временем (буфер упорядочен по времени); правее последней и без свечей — нет. */
+  candleAt(time: number): Candle | undefined {
+    const all = this.candles?.() ?? [];
+    let lo = 0, hi = all.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const t = all[mid]!.time;
+      if (t === time) return all[mid];
+      if (t < time) lo = mid + 1;
+      else hi = mid - 1;
+    }
+    return undefined;
   }
 
   private closedAtr(time: number): number | null {
