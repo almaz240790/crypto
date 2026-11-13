@@ -652,6 +652,9 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
         onDone: (ended) => drawingsRef.current?.onToolDone(ended),
         // измеритель временный (план 2A.5): не рисунок — только на графике, без состояния рисунков и синхронизации
         onRuler: (d) => prim.update({ ruler: d }),
+        // направляющая точки (ADR-0009, дополнение 2026-11-13): прямо в примитив, мимо React — без перерисовки терминала
+        // на каждом сдвиге указателя
+        onGuide: (g) => prim.setGuide(g),
         onEditEnd: () => {
           if (!marginWaitRef.current) return;
           marginWaitRef.current = false;
@@ -660,6 +663,8 @@ export function ChartSurface({ candles, current, tf, type, indicators, markup, a
       },
     );
     drawCtrlRef.current = dctrl;
+    // снимок направляющей для e2e (как __chart и __overlay у ChartController)
+    (el as HTMLElement & { __guide?: () => unknown }).__guide = () => prim.guideDebug();
     // подписи рисунков — в общей раскладке с подписями разметки: разметка их обходит, они не ложатся на неё
     ctrl.setDrawingLabels((measure) => prim.labelCandidates(measure));
     prim.linked = () => ctrl.drawingLabels();

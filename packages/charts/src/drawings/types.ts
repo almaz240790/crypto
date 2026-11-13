@@ -92,6 +92,19 @@ export const FIB_PLAQUE_ALPHA = 0.7;
 export const FIB_LABEL_EDGE_PX = 4;
 
 /**
+ * Направляющая точки (ADR-0009, «Рисование», дополнение 2026-11-13): горизонталь — сплошная GUIDE_WIDTH px салатовым
+ * (выбор и действия); вертикаль у пальца — пунктир GUIDE_DASH той же толщины, непрозрачность GUIDE_VERTICAL_ALPHA
+ * (вторична: цену ловят по горизонтали), с разрывом над свечой точки и самой точкой (от максимума до минимума свечи и
+ * GUIDE_GAP_PX сверху и снизу): вертикаль показывает свечу, но не закрывает её фитиль; точка на краю свечи (магнит) —
+ * кружок радиуса GUIDE_SNAP_R с ободком цвета поверхности.
+ */
+export const GUIDE_WIDTH = 1;
+export const GUIDE_DASH: readonly number[] = [4, 4];
+export const GUIDE_VERTICAL_ALPHA = 0.7;
+export const GUIDE_GAP_PX = 6;
+export const GUIDE_SNAP_R = 3;
+
+/**
  * Позиция Long/Short — как в TradingView (ADR-0009, «Рисование», дополнение «Позиция»): одно нажатие на цену входа
  * ставит готовую позицию. Стоп — на POSITION_STOP_ATR × ATR(POSITION_ATR_PERIOD) от входа (ниже у Long, выше у
  * Short), без ATR — POSITION_FALLBACK_PCT % цены; цель — POSITION_RR риска за входом; ширина — POSITION_BARS свечей
