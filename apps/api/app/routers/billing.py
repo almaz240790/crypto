@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from app import auth, billing
 from app.config import settings
+from app.entitlements import entitlements_for
 from app.models import Payment, User
 from app.payments import nowpayments
 from app.plans import catalog
@@ -31,7 +32,12 @@ def plans() -> dict[str, Any]:
 def me(
     user: User = Depends(auth.current_user), db: Session = Depends(auth.get_db)
 ) -> dict[str, Any]:
-    return billing.billing_status(db, user)
+    """Тариф и подписка; ``multichart`` — право на /multichart (Premium, админы и владелец; пока
+    оплата выключена — у всех). Гость узнаёт о замке по ``billing_enabled`` из ``/plans``."""
+    return {
+        **billing.billing_status(db, user),
+        "multichart": entitlements_for(db, user).multichart,
+    }
 
 
 @router.get("/payments")

@@ -1,6 +1,7 @@
 """Тарифные ограничения (план, раздел 4; задача 3.3). Одна система сигналов для всех — различаются
 скорость доступа, набор инструментов и глубина инструментария. Пока ``BILLING_ENABLED=false``
-все пользователи получают уровень Pro (``billing.plan_for``).
+все пользователи получают уровень Pro (``billing.plan_for``), а мультичарт открыт всем, включая
+гостей (``entitlements_for``; ADR-0009, дополнение 2026-11-13).
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.billing import plan_for
+from app.config import settings
 from app.models import Instrument, Signal, User, Watchlist, WatchlistItem
 from app.plans import FREE, PREMIUM, PRO
 
@@ -44,9 +46,12 @@ class Entitlements:
     layouts_limit: int | None = None
     """Именованных раскладок (раздел 4: 0 / 5 / 20)."""
     alerts_limit: int | None = None
+    """Активных алертов (план 2A.6, лимит по тарифу: 3 / 50 / без лимита — на утверждение)."""
     api_access: bool = False
     """API-ключи для чтения (план 3.10) — Premium."""
-    """Активных алертов (план 2A.6, лимит по тарифу: 3 / 50 / без лимита — на утверждение)."""
+    multichart: bool = False
+    """Мультичарт /multichart (раздел 4: «Все + мультичарт (v2)») — Premium. Замок — на странице
+    сайта: данные ячеек те же, что у терминала."""
 
 
 ENTITLEMENTS: dict[str, Entitlements] = {
@@ -58,7 +63,7 @@ ENTITLEMENTS: dict[str, Entitlements] = {
 }
 
 
-ENTITLEMENTS[PREMIUM] = replace(ENTITLEMENTS[PREMIUM], api_access=True)
+ENTITLEMENTS[PREMIUM] = replace(ENTITLEMENTS[PREMIUM], api_access=True, multichart=True)
 
 
 def entitlements(plan: str) -> Entitlements:
@@ -67,10 +72,13 @@ def entitlements(plan: str) -> Entitlements:
 
 def entitlements_for(db: Session, user: User | None, now: datetime | None = None) -> Entitlements:
     if user is None:
-        return ENTITLEMENTS[FREE]
-    if user.role in ("admin", "owner"):
+        ent = ENTITLEMENTS[FREE]
+    elif user.role in ("admin", "owner"):
         return ENTITLEMENTS[PREMIUM]
-    return entitlements(plan_for(db, user, now))
+    else:
+        ent = entitlements(plan_for(db, user, now))
+    # до включения оплаты мультичарт у всех, как было до решения: замок — только с BILLING_ENABLED
+    return ent if settings.billing_enabled else replace(ent, multichart=True)
 
 
 def visible_since(ent: Entitlements, now: datetime) -> datetime | None:
@@ -137,4 +145,5 @@ def restrictions_dict(ent: Entitlements) -> dict[str, object]:
         "layouts_limit": ent.layouts_limit,
         "alerts_limit": ent.alerts_limit,
         "api_access": ent.api_access,
+        "multichart": ent.multichart,
     }
